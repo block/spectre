@@ -1,0 +1,62 @@
+#!/bin/sh
+
+set -eu
+
+if [ "$#" -eq 0 ]; then
+  set -- $(git ls-files '*.go')
+fi
+
+status=0
+
+for file do
+  [ -f "$file" ] || continue
+
+  awk '
+    function reject(start) {
+      printf "%s:%d: comment exceeds two lines\n", FILENAME, start > "/dev/stderr"
+      rejected = 1
+    }
+
+    {
+      if (in_block) {
+        block_lines++
+        if (block_lines == 3) {
+          reject(block_start)
+        }
+        if ($0 ~ /\*\//) {
+          in_block = 0
+        }
+        next
+      }
+
+      if ($0 ~ /^[[:space:]]*\/\//) {
+        if (line_lines == 0) {
+          line_start = FNR
+        }
+        line_lines++
+        if (line_lines == 3) {
+          reject(line_start)
+        }
+        next
+      }
+
+      line_lines = 0
+
+      if ($0 ~ /\/\*/) {
+        block_start = FNR
+        block_lines = 1
+        remainder = $0
+        sub(/^.*\/\*/, "", remainder)
+        if (remainder !~ /\*\//) {
+          in_block = 1
+        }
+      }
+    }
+
+    END {
+      exit rejected ? 1 : 0
+    }
+  ' "$file" || status=1
+done
+
+exit "$status"

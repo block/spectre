@@ -1,0 +1,5 @@
+pre-commit:
+  commands:
+    comment-length:
+      glob: "*.go"
+      run: check-comment-length {staged_files}
