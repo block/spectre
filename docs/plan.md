@@ -62,21 +62,93 @@ For example, field comparators can compare user roles without regard to order an
 explicitly ignore a response-generation timestamp. Default comparison still checks
 user IDs, names, and user ordering. Neither comparator deletes fields.
 
-## Implementation order
+## Implementation checklist
 
-1. Define missing-value arguments and how to pair unordered array elements.
-2. Build descriptor loading, decoding, and TypeScript declaration generation.
-3. Build esbuild/Sobek loading, registration validation, and bounded execution.
-4. Implement recursive dispatch, handled-field tracking, and structural comparison.
-5. Integrate gRPC forwarding, quarantine, and sanitised capture. Track each
-   invocation separately from its trace ID. Bound candidate work without waiting
-   for it before returning the reference response. Compare RPC status separately
-   from bodies. Quarantine must not depend on capture delivery succeeding.
+### 1. Resolve comparison and transport decisions
 
-Test equivalent binary/JSON decoding, presence and precision, callback ordering,
-per-occurrence coverage, immutable inputs, runtime isolation, and failure handling.
-Integration tests must cover forwarding fidelity, cancellation, capacity limits,
-quarantine races, and reference delivery during candidate or comparator failure.
+- [ ] Define missing-value arguments, including how missing values differ from
+  present default values.
+- [ ] Define unordered-array pairing before child comparisons so positional
+  failures cannot later be erased by a parent comparator.
+- [ ] Decide unary-first scope and exact JSON transport support. Define
+  stream-message pairing if streaming is included in the initial scope.
+- [ ] Define the policy for unable-to-compare outcomes, quarantine recovery,
+  application metadata, and capture delivery failures.
+
+### 2. Load schemas and prepare typed payloads
+
+- [x] Load local descriptor sets and resolve imported files, messages, and RPC
+  methods without relying on process-global registrations.
+- [x] Reject malformed or empty descriptor sets, missing imports, duplicate
+  definitions, and unresolved types; test loading and lookup failures.
+- [ ] Decode binary protobuf and ProtoJSON into consistent JS objects, preserving
+  presence, JSON field names, string-encoded 64-bit integers, and base64 bytes.
+- [ ] Handle unsupported and unknown data explicitly without silently dropping it.
+- [ ] Generate TypeScript declarations matching the decoded objects and directly
+  typed comparator arguments, without exposing descriptors to scripts.
+- [ ] Test the host's binary/JSON decoding equivalence, presence, precision,
+  nested collections, and unsupported or unknown data handling.
+
+### 3. Load and execute comparator scripts
+
+- [ ] Embed esbuild to compile a TypeScript entry file and optional helper imports
+  at load time.
+- [ ] Run the compiled JavaScript in Sobek and provide the `spectre` module's
+  `field`, `message`, and `rpc` registration functions during module evaluation.
+- [ ] Validate targets against the schema and reject unresolved targets and
+  duplicate registrations before activation.
+- [ ] Support registering the same ordinary function for multiple targets without
+  requiring exports or filename conventions.
+- [ ] Enforce synchronous callbacks with two direct arguments and boolean results.
+  Treat errors and non-boolean results as unable to compare.
+- [ ] Use a fresh runtime for each comparison and protect payloads from mutation.
+- [ ] Bound comparison workers and payload sizes, and enforce execution deadlines.
+- [ ] Add TS7 type-checking to development and CI through `bit`; keep esbuild
+  responsible only for transpilation.
+- [ ] Test script loading, invalid registrations, runtime isolation, immutable
+  inputs, callback failures, deadlines, and capacity limits.
+
+### 4. Dispatch comparators and compare remaining structure
+
+- [ ] Traverse payloads from leaves upward, using the agreed missing-value and
+  array-pairing rules independently of registration order.
+- [ ] Give field comparators precedence over message comparators at the same
+  location, and run response-message comparators before the final RPC comparator.
+- [ ] Pass complete objects to parents and preserve every child failure regardless
+  of parent or RPC results.
+- [ ] Track handled fields and subtrees by concrete occurrence paths in Go.
+  Message and RPC comparators cover their full scopes.
+- [ ] Structurally compare all unhandled data after custom dispatch finishes.
+- [ ] Report equivalence only when every callback returns true and all unhandled
+  structure matches; keep divergence distinct from unable-to-compare outcomes.
+- [ ] Test precedence, callback ordering, repeated-message occurrences, parent
+  coverage, preserved failures, and structural comparison of the remainder.
+- [ ] Test unordered role comparison and ignored timestamps while still checking
+  user IDs, names, and user ordering.
+
+### 5. Integrate forwarding, quarantine, and capture
+
+- [ ] Add ingress startup and configuration under `cmd/spectre-ingress`, keeping
+  application logic under `internal` with explicit dependencies and no global state.
+- [ ] Implement forwarding for the agreed transports, preserving reference
+  response fidelity, metadata, status, deadlines, and cancellation.
+- [ ] Track each invocation separately from its trace ID and associate its
+  reference and candidate results.
+- [ ] Mirror requests to the candidate with bounded work and return the reference
+  response without waiting for the candidate or comparison.
+- [ ] Compare RPC status separately from response bodies and dispatch body
+  comparisons asynchronously.
+- [ ] Apply the agreed policy when candidate execution or comparison fails.
+- [ ] Quarantine the candidate on divergence and stop further candidate traffic,
+  including under concurrent requests; implement the agreed recovery policy.
+- [ ] Capture structural difference paths without payload values and apply the
+  agreed delivery-failure policy. Quarantine must not depend on capture delivery.
+- [ ] Test forwarding fidelity, invocation correlation, cancellation, capacity
+  limits, quarantine races, and capture failures.
+- [ ] Test that candidate and comparator failures do not prevent or delay delivery
+  of the reference response.
+- [ ] Verify candidate isolation and egress control as separate prerequisites
+  before enabling mirroring against services that can produce side effects.
 
 ## Open decisions
 
