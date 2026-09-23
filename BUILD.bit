@@ -1,0 +1,12 @@
+test-go = go.test { package = "./..." }
+fmt-go = go.fmt {}
+lint-go = go.lint {}
+
+# Run all tests
+target tests = [test-go]
+
+# Lint everything
+target lint = [lint-go]
+
+# Format everything
+target fmt = [fmt-go]

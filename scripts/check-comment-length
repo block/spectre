@@ -17,11 +17,19 @@ for file do
       rejected = 1
     }
 
+    function has_block_text(text) {
+      sub(/\*\/.*$/, "", text)
+      sub(/^[[:space:]]*\* ?/, "", text)
+      return text ~ /[^[:space:]]/
+    }
+
     {
       if (in_block) {
-        block_lines++
-        if (block_lines == 3) {
-          reject(block_start)
+        if (has_block_text($0)) {
+          block_lines++
+          if (block_lines == 3) {
+            reject(block_start)
+          }
         }
         if ($0 ~ /\*\//) {
           in_block = 0
@@ -30,6 +38,11 @@ for file do
       }
 
       if ($0 ~ /^[[:space:]]*\/\//) {
+        # Match Go doc directives without treating spaced prose as a directive.
+        if ($0 ~ /^[[:space:]]*\/\/[[:space:]]*$/ ||
+            $0 ~ /^[[:space:]]*\/\/(line |extern |export |[a-z0-9]+:[a-z0-9])/) {
+          next
+        }
         if (line_lines == 0) {
           line_start = FNR
         }
@@ -44,9 +57,9 @@ for file do
 
       if ($0 ~ /\/\*/) {
         block_start = FNR
-        block_lines = 1
         remainder = $0
         sub(/^.*\/\*/, "", remainder)
+        block_lines = has_block_text(remainder) ? 1 : 0
         if (remainder !~ /\*\//) {
           in_block = 1
         }
