@@ -1,9 +1,30 @@
-test-go = go.test { package = "./..." }
+# Build file for github.com/alecthomas/bit
+
+sample-proto = exec {
+  command = "mkdir -p internal/sample/pb dist && protoc -I internal/sample/proto --go_out=internal/sample/pb --go_opt=paths=source_relative --go-grpc_out=internal/sample/pb --go-grpc_opt=paths=source_relative --include_imports --descriptor_set_out=dist/sample.pb internal/sample/proto/users.proto internal/sample/proto/service.proto"
+  inputs = ["internal/sample/proto/*.proto", "bin/.protoc-36.2.pkg", "bin/.protoc-gen-go-1.36.12.pkg", "bin/.protoc-gen-go-grpc-1.3.0.pkg"]
+  output = ["internal/sample/pb/users.pb.go", "internal/sample/pb/service.pb.go", "internal/sample/pb/service_grpc.pb.go", "dist/sample.pb"]
+}
+
+test-go = go.test {
+  package = "./..."
+  flags = ["-timeout=30s"]
+  depends_on = [sample-proto]
+}
 fmt-go = go.fmt {}
-lint-go = go.lint {}
+lint-go = go.lint { depends_on = [sample-proto] }
+
+explicit sample-bin = go.exe {
+  package = "./cmd/spectre-sample"
+  output = "dist/spectre-sample"
+  depends_on = [sample-proto]
+}
+
+# Generate the sample descriptors and build its local gRPC server.
+target sample = [sample-bin]
 
 # Run all tests
-target tests = [test-go]
+target test = [test-go]
 
 # Lint everything
 target lint = [lint-go]

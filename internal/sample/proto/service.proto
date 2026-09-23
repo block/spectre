@@ -1,0 +1,33 @@
+syntax = "proto3";
+
+package spectre.sample.v1;
+
+import "google/protobuf/timestamp.proto";
+import "users.proto";
+
+option go_package = "github.com/block/spectre/internal/sample/pb;samplepb";
+
+// UserService supplies read-only sample data for ingress experiments.
+service UserService {
+  rpc GetUser(GetUserRequest) returns (GetUserResponse);
+  rpc ListUsers(ListUsersRequest) returns (ListUsersResponse);
+}
+
+message GetUserRequest {
+  string id = 1;
+}
+
+message GetUserResponse {
+  User user = 1;
+}
+
+message ListUsersRequest {
+  repeated string ids = 1;
+  optional Role role = 2;
+}
+
+message ListUsersResponse {
+  repeated User users = 1;
+  google.protobuf.Timestamp generated_at = 2;
+  int64 total_count = 3;
+}

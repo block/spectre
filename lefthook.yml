@@ -1,5 +1,17 @@
 pre-commit:
   commands:
+    fmt:
+      priority: 1
+      run: bit fmt
+      stage_fixed: true
     comment-length:
       glob: "*.go"
+      exclude: "**/*.pb.go"
       run: check-comment-length {staged_files}
+
+pre-push:
+  commands:
+    lint:
+      run: bit lint
+    test:
+      run: bit test

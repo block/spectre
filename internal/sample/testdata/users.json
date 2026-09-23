@@ -1,0 +1,46 @@
+{
+  "users": [
+    {
+      "id": "user-1",
+      "name": "Alex Example",
+      "nickname": "",
+      "roles": ["ROLE_ADMIN", "ROLE_EDITOR"],
+      "labels": {"team": "migration", "region": "au"},
+      "profile": {
+        "addresses": [
+          {"lines": ["1 Example Street", "Suite 2"], "city": "Sydney", "postalCode": "2000", "countryCode": "AU"},
+          {"lines": ["2 Sample Lane"], "city": "Melbourne", "postalCode": "3000", "countryCode": "AU"}
+        ],
+        "marketingConsent": false,
+        "preferences": {
+          "theme": {"text": "dark"},
+          "notifications": {"enabled": false},
+          "ranking": {"weight": 0.75}
+        }
+      },
+      "avatar": "AAECA/8=",
+      "revision": "9007199254740993",
+      "createdAt": "2025-01-02T03:04:05.123456789Z",
+      "email": "alex@example.invalid"
+    },
+    {
+      "id": "user-2",
+      "name": "Sam Sample",
+      "roles": ["ROLE_READER"],
+      "labels": {"team": "platform"},
+      "profile": {
+        "addresses": [],
+        "preferences": {"theme": {"text": "light"}}
+      },
+      "revision": "18446744073709551615",
+      "createdAt": "2025-02-03T04:05:06Z",
+      "phone": {"countryCode": "+61", "number": "000000000", "extension": ""}
+    },
+    {
+      "id": "user-3",
+      "name": "Taylor Test"
+    }
+  ],
+  "generatedAt": "2025-03-04T05:06:07Z",
+  "totalCount": "3"
+}
