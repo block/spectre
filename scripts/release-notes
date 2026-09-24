@@ -1,0 +1,20 @@
+#!/bin/bash
+set -euo pipefail
+
+if [[ "$#" -ne 1 ]]; then
+  echo "usage: scripts/release-notes VERSION" >&2
+  exit 2
+fi
+
+root="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$root"
+
+if [[ -z "${GITHUB_REPOSITORY:-}" ]]; then
+  remote_url="$(git remote get-url origin)"
+  GITHUB_REPOSITORY="${remote_url#*github.com[:/]}"
+  GITHUB_REPOSITORY="${GITHUB_REPOSITORY%.git}"
+fi
+export GITHUB_REPOSITORY
+export GITHUB_SERVER_URL="${GITHUB_SERVER_URL:-https://github.com}"
+
+exec git-sv release-notes --tag "$1"

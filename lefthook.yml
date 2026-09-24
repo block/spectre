@@ -2,12 +2,17 @@ pre-commit:
   commands:
     fmt:
       priority: 1
-      run: bit fmt
+      run: bin/bit fmt
       stage_fixed: true
     comment-length:
       glob: "*.go"
       exclude: "**/*.pb.go"
       run: check-comment-length {staged_files}
+
+commit-msg:
+  commands:
+    conventional-commit:
+      run: bin/git-sv validate-commit-message --path . --file "{1}" --source message
 
 pre-push:
   commands:

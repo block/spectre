@@ -22,7 +22,7 @@ jobs:
         run: |
           version="$(git tag --points-at HEAD --list 'v*' | head -n 1)"
           if [[ -z "$version" ]]; then
-            version="$(svu next --always)"
+            version="v$(git-sv next-version)"
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             git tag --annotate "$version" --message "Release $version"
@@ -36,5 +36,7 @@ jobs:
           VERSION: ${{ steps.release.outputs.version }}
         run: |
           if ! gh release view "$VERSION" >/dev/null 2>&1; then
-            gh release create "$VERSION" --generate-notes --verify-tag
+            notes_file="$RUNNER_TEMP/release-notes.md"
+            scripts/release-notes "$VERSION" > "$notes_file"
+            gh release create "$VERSION" --title "$VERSION" --notes-file "$notes_file" --verify-tag
           fi
