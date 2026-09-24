@@ -14,6 +14,7 @@ import (
 	"github.com/block/spectre/internal"
 	"github.com/block/spectre/internal/ingress"
 	"github.com/block/spectre/internal/logger"
+	"github.com/block/spectre/internal/schema"
 )
 
 type cli struct {
@@ -40,7 +41,7 @@ func main() {
 func (c *cli) Run(runtime *commandContext) error {
 	transport := ingress.NewTransport(c.Config)
 	defer transport.CloseIdleConnections()
-	handler, err := ingress.New(c.Config, transport, runtime.log)
+	handler, err := ingress.New(c.Config, transport, schema.NewReflectionLoader(), runtime.log)
 	if err != nil {
 		return errors.Wrap(err, "configure ingress")
 	}

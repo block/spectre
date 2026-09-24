@@ -17,6 +17,8 @@ type Config struct {
 	Candidate string `required:"" help:"Candidate backend URL using a literal loopback IP and http, https, or h2c."`
 	// CandidateTimeout limits the duration of a candidate request.
 	CandidateTimeout time.Duration `default:"30s" help:"Maximum duration of a candidate request."`
+	// ReflectionTimeout limits the startup descriptor comparison.
+	ReflectionTimeout time.Duration `default:"10s" help:"Maximum duration of the startup gRPC reflection check."`
 	// CandidateMaxInFlight limits concurrent candidate requests.
 	CandidateMaxInFlight int `default:"64" help:"Maximum concurrent candidate requests before quarantine."`
 	// CandidateBufferBytes limits queued request data across all candidates.
@@ -54,6 +56,7 @@ func (c Config) Validate() error {
 		value time.Duration
 	}{
 		{name: "candidate timeout", value: c.CandidateTimeout},
+		{name: "reflection timeout", value: c.ReflectionTimeout},
 		{name: "read header timeout", value: c.ReadHeaderTimeout},
 		{name: "idle timeout", value: c.IdleTimeout},
 		{name: "shutdown timeout", value: c.ShutdownTimeout},

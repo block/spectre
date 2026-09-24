@@ -15,6 +15,7 @@ import (
 	"sync"
 
 	"github.com/alecthomas/errors"
+	"google.golang.org/protobuf/types/descriptorpb"
 
 	"github.com/block/spectre/internal/middleware/health"
 	"github.com/block/spectre/internal/middleware/logging"
@@ -22,13 +23,14 @@ import (
 
 // Handler forwards requests to both backends and returns only the reference response.
 type Handler struct {
-	reference *httputil.ReverseProxy
-	candidate *httputil.ReverseProxy
-	config    Config
-	log       *slog.Logger
-	buffer    *bufferBudget
-	requests  chan struct{}
-	health    *health.Handler
+	reference   *httputil.ReverseProxy
+	candidate   *httputil.ReverseProxy
+	config      Config
+	log         *slog.Logger
+	buffer      *bufferBudget
+	requests    chan struct{}
+	health      *health.Handler
+	descriptors DescriptorLoader
 
 	mu            sync.Mutex
 	closing       bool
@@ -37,17 +39,25 @@ type Handler struct {
 	idle          chan struct{}
 }
 
+// DescriptorLoader loads a backend's protobuf descriptor set.
+type DescriptorLoader interface {
+	Load(ctx context.Context, endpoint string) (*descriptorpb.FileDescriptorSet, error)
+}
+
 type candidateRun struct {
 	cancel context.CancelFunc
 }
 
 // New constructs an ingress handler from its parsed configuration.
-func New(config Config, transport http.RoundTripper, log *slog.Logger) (*Handler, error) {
+func New(config Config, transport http.RoundTripper, descriptors DescriptorLoader, log *slog.Logger) (*Handler, error) {
 	if err := config.Validate(); err != nil {
 		return nil, err
 	}
 	if transport == nil {
 		return nil, errors.New("transport is required")
+	}
+	if descriptors == nil {
+		return nil, errors.New("descriptor loader is required")
 	}
 	if log == nil {
 		return nil, errors.New("logger is required")
@@ -81,6 +91,7 @@ func New(config Config, transport http.RoundTripper, log *slog.Logger) (*Handler
 		log:           log,
 		buffer:        newBufferBudget(config.CandidateBufferBytes),
 		requests:      make(chan struct{}, config.MaxInFlightRequests),
+		descriptors:   descriptors,
 		candidateRuns: make(map[*candidateRun]struct{}),
 		idle:          idle,
 	}

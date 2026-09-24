@@ -37,6 +37,9 @@
 - Use `log/slog` for logging.
 - Wrap errors with `github.com/alecthomas/errors/v2`.
 - Define and use constructor functions for all public types.
+- Name every input parameter in function, method, and interface signatures.
+- Name result parameters when intrinsic types such as `bool`, `int`, or `string`
+  do not convey their meaning. Do not use naked returns.
 - Keep every comment to at most two lines.
 - Document every public symbol.
 

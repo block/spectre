@@ -15,6 +15,7 @@ import (
 
 	"github.com/alecthomas/assert/v2"
 	"github.com/alecthomas/errors"
+	"google.golang.org/protobuf/types/descriptorpb"
 
 	"github.com/block/spectre/internal/ingress"
 )
@@ -113,7 +114,7 @@ func TestUsesConfiguredH2CProtocol(t *testing.T) {
 	config := newTestConfig("h2c://"+listener.Addr().String(), candidate.URL)
 	transport := ingress.NewTransport(config)
 	t.Cleanup(transport.CloseIdleConnections)
-	handler, err := ingress.New(config, transport, slog.New(slog.DiscardHandler))
+	handler, err := ingress.New(config, transport, matchingDescriptorLoader(), slog.New(slog.DiscardHandler))
 	assert.NoError(t, err)
 	proxy := httptest.NewServer(handler)
 	t.Cleanup(proxy.Close)
@@ -213,7 +214,7 @@ func TestHealthEndpointsAreLocalAndTrackReadiness(t *testing.T) {
 	})
 	var logs bytes.Buffer
 	config := newTestConfig("http://127.0.0.1:50051", "http://127.0.0.1:50052")
-	handler, err := ingress.New(config, transport, slog.New(slog.NewJSONHandler(&logs, nil)))
+	handler, err := ingress.New(config, transport, matchingDescriptorLoader(), slog.New(slog.NewJSONHandler(&logs, nil)))
 	assert.NoError(t, err)
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/livez", nil))
@@ -227,11 +228,22 @@ func TestHealthEndpointsAreLocalAndTrackReadiness(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	serveDone := make(chan error, 1)
 	go func() { serveDone <- handler.Serve(ctx, listener) }()
-	for _, path := range []string{"/livez", "/readyz"} {
-		response, err := http.Get("http://" + listener.Addr().String() + path)
+	healthResponse, err := http.Get("http://" + listener.Addr().String() + "/livez")
+	assert.NoError(t, err)
+	assert.Equal(t, http.StatusNoContent, healthResponse.StatusCode)
+	assert.NoError(t, healthResponse.Body.Close())
+	deadline := time.Now().Add(time.Second)
+	for {
+		healthResponse, err = http.Get("http://" + listener.Addr().String() + "/readyz")
 		assert.NoError(t, err)
-		assert.Equal(t, http.StatusNoContent, response.StatusCode)
-		assert.NoError(t, response.Body.Close())
+		assert.NoError(t, healthResponse.Body.Close())
+		if healthResponse.StatusCode == http.StatusNoContent {
+			break
+		}
+		assert.Equal(t, http.StatusServiceUnavailable, healthResponse.StatusCode)
+		if time.Now().After(deadline) {
+			t.Fatal("ingress did not become ready after descriptor comparison")
+		}
 	}
 	select {
 	case <-backendRequests:
@@ -252,6 +264,45 @@ func TestHealthEndpointsAreLocalAndTrackReadiness(t *testing.T) {
 	assert.False(t, strings.Contains(logs.String(), `"msg":"HTTP request"`))
 }
 
+func TestDescriptorMismatchKeepsServerUnreadyAndLogs(t *testing.T) {
+	config := newTestConfig("http://127.0.0.1:50051", "http://127.0.0.1:50052")
+	descriptors := descriptorLoaderFunc(func(ctx context.Context, endpoint string) (*descriptorpb.FileDescriptorSet, error) {
+		_ = ctx
+		return &descriptorpb.FileDescriptorSet{File: []*descriptorpb.FileDescriptorProto{{Name: &endpoint}}}, nil
+	})
+	messages := make(chan string, 2)
+	handler, err := ingress.New(config, http.DefaultTransport, descriptors, slog.New(&observedLogHandler{messages: messages}))
+	assert.NoError(t, err)
+	listener, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
+	assert.NoError(t, err)
+	ctx, cancel := context.WithCancel(t.Context())
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- handler.Serve(ctx, listener) }()
+
+comparison:
+	for {
+		select {
+		case message := <-messages:
+			if message == "Backend descriptors differ" {
+				break comparison
+			}
+		case <-time.After(time.Second):
+			t.Fatal("descriptor mismatch was not logged")
+		}
+	}
+	response, err := http.Get("http://" + listener.Addr().String() + "/readyz")
+	assert.NoError(t, err)
+	assert.Equal(t, http.StatusServiceUnavailable, response.StatusCode)
+	assert.NoError(t, response.Body.Close())
+	cancel()
+	select {
+	case err := <-serveDone:
+		assert.NoError(t, err)
+	case <-time.After(time.Second):
+		t.Fatal("ingress server did not stop after cancellation")
+	}
+}
+
 func TestServeDrainsReferenceAfterContextCancellation(t *testing.T) {
 	referenceContext := make(chan context.Context, 1)
 	releaseReference := make(chan struct{})
@@ -270,7 +321,7 @@ func TestServeDrainsReferenceAfterContextCancellation(t *testing.T) {
 	t.Cleanup(candidate.Close)
 	config := newTestConfig(reference.URL, candidate.URL)
 	config.ShutdownTimeout = time.Second
-	handler, err := ingress.New(config, http.DefaultTransport, slog.New(slog.DiscardHandler))
+	handler, err := ingress.New(config, http.DefaultTransport, matchingDescriptorLoader(), slog.New(slog.DiscardHandler))
 	assert.NoError(t, err)
 	listener, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
 	assert.NoError(t, err)
@@ -404,7 +455,7 @@ func TestCandidateBufferOverflowQuarantinesCandidate(t *testing.T) {
 	config.Reference = "http://127.0.0.1:50051"
 	config.Candidate = "http://127.0.0.1:50052"
 	config.CandidateBufferBytes = 4
-	handler, err := ingress.New(config, transport, slog.New(slog.DiscardHandler))
+	handler, err := ingress.New(config, transport, matchingDescriptorLoader(), slog.New(slog.DiscardHandler))
 	assert.NoError(t, err)
 	request := httptest.NewRequest(http.MethodPost, "http://proxy.example/overflow", strings.NewReader("12345"))
 	response := httptest.NewRecorder()
@@ -449,7 +500,7 @@ func TestDefaultBufferSupportsCandidateConcurrencyLimit(t *testing.T) {
 	})
 	config := newTestConfig("http://127.0.0.1:50051", "http://127.0.0.1:50052")
 	config.CandidateTimeout = 10 * time.Second
-	handler, err := ingress.New(config, transport, slog.New(slog.DiscardHandler))
+	handler, err := ingress.New(config, transport, matchingDescriptorLoader(), slog.New(slog.DiscardHandler))
 	assert.NoError(t, err)
 
 	for range config.CandidateMaxInFlight {
@@ -568,7 +619,7 @@ func TestCandidateConcurrencyLimitQuarantinesAllRequests(t *testing.T) {
 	})
 	config := newTestConfig("http://127.0.0.1:50051", "http://127.0.0.1:50052")
 	config.CandidateMaxInFlight = 2
-	handler, err := ingress.New(config, transport, slog.New(slog.DiscardHandler))
+	handler, err := ingress.New(config, transport, matchingDescriptorLoader(), slog.New(slog.DiscardHandler))
 	assert.NoError(t, err)
 
 	for _, path := range []string{"first", "second"} {
@@ -606,7 +657,7 @@ func TestRejectsIngressRequestsOverCapacity(t *testing.T) {
 	})
 	config := newTestConfig("http://127.0.0.1:50051", "http://127.0.0.1:50052")
 	config.MaxInFlightRequests = 1
-	handler, err := ingress.New(config, transport, slog.New(slog.DiscardHandler))
+	handler, err := ingress.New(config, transport, matchingDescriptorLoader(), slog.New(slog.DiscardHandler))
 	assert.NoError(t, err)
 	firstDone := make(chan struct{})
 	go func() {
@@ -656,6 +707,10 @@ func TestRejectsUnsafeConfiguration(t *testing.T) {
 			update:  func(config *ingress.Config) { config.CandidateTimeout = 0 },
 			message: "candidate timeout must be positive",
 		},
+		"ReflectionTimeout": {
+			update:  func(config *ingress.Config) { config.ReflectionTimeout = 0 },
+			message: "reflection timeout must be positive",
+		},
 		"CandidateTargetsIngress": {
 			update: func(config *ingress.Config) {
 				config.Listen = "127.0.0.1:50050"
@@ -675,7 +730,7 @@ func TestRejectsUnsafeConfiguration(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			config := newTestConfig("http://127.0.0.1:50051", "http://127.0.0.1:50052")
 			test.update(&config)
-			_, err := ingress.New(config, http.DefaultTransport, slog.New(slog.DiscardHandler))
+			_, err := ingress.New(config, http.DefaultTransport, matchingDescriptorLoader(), slog.New(slog.DiscardHandler))
 			assert.Error(t, err)
 			assert.Contains(t, err.Error(), test.message)
 		})
@@ -690,7 +745,7 @@ func newTestHandler(t *testing.T, reference, candidate string) *ingress.Handler 
 func newTestHandlerWithTransport(t *testing.T, reference, candidate string, transport http.RoundTripper) *ingress.Handler {
 	t.Helper()
 	config := newTestConfig(reference, candidate)
-	handler, err := ingress.New(config, transport, slog.New(slog.DiscardHandler))
+	handler, err := ingress.New(config, transport, matchingDescriptorLoader(), slog.New(slog.DiscardHandler))
 	assert.NoError(t, err)
 	return handler
 }
@@ -730,6 +785,44 @@ type roundTripperFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripperFunc) RoundTrip(request *http.Request) (*http.Response, error) {
 	return f(request)
+}
+
+type descriptorLoaderFunc func(context.Context, string) (*descriptorpb.FileDescriptorSet, error)
+
+func (f descriptorLoaderFunc) Load(ctx context.Context, endpoint string) (*descriptorpb.FileDescriptorSet, error) {
+	return f(ctx, endpoint)
+}
+
+func matchingDescriptorLoader() descriptorLoaderFunc {
+	return func(ctx context.Context, endpoint string) (*descriptorpb.FileDescriptorSet, error) {
+		_, _ = ctx, endpoint
+		return &descriptorpb.FileDescriptorSet{}, nil
+	}
+}
+
+type observedLogHandler struct {
+	messages chan<- string
+}
+
+func (h *observedLogHandler) Enabled(ctx context.Context, level slog.Level) (enabled bool) {
+	_, _ = ctx, level
+	return true
+}
+
+func (h *observedLogHandler) Handle(ctx context.Context, record slog.Record) error {
+	_ = ctx
+	h.messages <- record.Message
+	return nil
+}
+
+func (h *observedLogHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	_ = attrs
+	return h
+}
+
+func (h *observedLogHandler) WithGroup(name string) slog.Handler {
+	_ = name
+	return h
 }
 
 type blockingBody struct {
