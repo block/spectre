@@ -7,4 +7,10 @@ name="$(basename "$0")"
 src="./cmd/${name}"
 mkdir -p "$dest"
 
-"${root}/bin/go" build -C "${root}/${src}" -ldflags="-s -w -buildid=" -o "$dest/${name}" . && exec "$dest/${name}" "$@"
+build="$(mktemp "${dest}/.${name}.XXXXXX")"
+trap 'rm -f "$build"' EXIT
+# Publish with an atomic rename so concurrent launches only expose complete binaries.
+"${root}/bin/go" build -C "${root}/${src}" -ldflags="-s -w -buildid=" -o "$build" .
+mv -f "$build" "$dest/${name}"
+trap - EXIT
+exec "$dest/${name}" "$@"

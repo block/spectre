@@ -1,6 +1,7 @@
 package ingress_test
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"log/slog"
@@ -202,6 +203,53 @@ func TestServeStopsAfterContextCancellation(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("ingress server did not stop after cancellation")
 	}
+}
+
+func TestHealthEndpointsAreLocalAndTrackReadiness(t *testing.T) {
+	backendRequests := make(chan struct{}, 1)
+	transport := roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+		backendRequests <- struct{}{}
+		return noContentResponse(request), nil
+	})
+	var logs bytes.Buffer
+	config := newTestConfig("http://127.0.0.1:50051", "http://127.0.0.1:50052")
+	handler, err := ingress.New(config, transport, slog.New(slog.NewJSONHandler(&logs, nil)))
+	assert.NoError(t, err)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/livez", nil))
+	assert.Equal(t, http.StatusNoContent, response.Code)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	assert.Equal(t, http.StatusServiceUnavailable, response.Code)
+
+	listener, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
+	assert.NoError(t, err)
+	ctx, cancel := context.WithCancel(t.Context())
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- handler.Serve(ctx, listener) }()
+	for _, path := range []string{"/livez", "/readyz"} {
+		response, err := http.Get("http://" + listener.Addr().String() + path)
+		assert.NoError(t, err)
+		assert.Equal(t, http.StatusNoContent, response.StatusCode)
+		assert.NoError(t, response.Body.Close())
+	}
+	select {
+	case <-backendRequests:
+		t.Fatal("health request reached a backend")
+	default:
+	}
+
+	cancel()
+	select {
+	case err := <-serveDone:
+		assert.NoError(t, err)
+	case <-time.After(time.Second):
+		t.Fatal("ingress server did not stop after cancellation")
+	}
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	assert.Equal(t, http.StatusServiceUnavailable, response.Code)
+	assert.False(t, strings.Contains(logs.String(), `"msg":"HTTP request"`))
 }
 
 func TestServeDrainsReferenceAfterContextCancellation(t *testing.T) {

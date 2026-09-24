@@ -13,14 +13,14 @@ From the repository root with Hermit activated, build and run the sample:
 
 ```sh
 bit sample
-./scripts/spectre-ingress check-schema dist/sample.pb
-./scripts/spectre-sample
+spectre-ingress check-schema dist/sample.pb
+spectre-sample
 ```
 
 Run a second sample on port 50052, then start the ingress proxy:
 
 ```sh
-./scripts/spectre-ingress serve \
+spectre-ingress serve \
   --reference=h2c://127.0.0.1:50051 \
   --candidate=h2c://127.0.0.1:50052
 ```
@@ -36,9 +36,9 @@ Use `--listen=127.0.0.1:50052` to run a second instance and `--data=path/to/user
 to load a different ProtoJSON `ListUsersResponse` at startup. With `grpcurl` installed:
 
 ```sh
-grpcurl -plaintext -d '{}' localhost:50051 spectre.sample.v1.UserService/ListUsers
-grpcurl -plaintext -d '{"id":"user-1"}' localhost:50051 spectre.sample.v1.UserService/GetUser
-grpcurl -plaintext -d '{"role":"ROLE_READER"}' localhost:50051 spectre.sample.v1.UserService/ListUsers
+grpcurl -plaintext -d '{}' localhost:50050 spectre.sample.v1.UserService/ListUsers
+grpcurl -plaintext -d '{"id":"user-1"}' localhost:50050 spectre.sample.v1.UserService/GetUser
+grpcurl -plaintext -d '{"role":"ROLE_READER"}' localhost:50050 spectre.sample.v1.UserService/ListUsers
 ```
 
 The [sample data](internal/sample/testdata/users.json) includes nested messages,

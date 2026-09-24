@@ -2,9 +2,10 @@
 
 set -eu
 
-checker="$(dirname "$0")/check-comment-length"
+script_dir=$(CDPATH='' cd -- "$(dirname "$0")" && pwd)
+checker="$script_dir/check-comment-length"
 testdir=$(mktemp -d)
-trap 'rm -f "$testdir/input.go" "$testdir/output"; rmdir "$testdir"' EXIT
+trap 'rm -rf "$testdir"' EXIT
 
 check() {
   name=$1
@@ -81,5 +82,19 @@ check SeparateComments 0 '// First line.
 var first = 1
 // First line.
 // Second line.'
+
+tracked="$testdir/tracked"
+mkdir "$tracked"
+git -C "$tracked" init -q
+printf '%s\n' '// First line.
+// Second line.
+// Third line.' > "$tracked/file with space.go"
+git -C "$tracked" add "file with space.go"
+actual=0
+(cd "$tracked" && "$checker" >/dev/null 2>&1) || actual=$?
+if [ "$actual" -ne 1 ]; then
+  printf 'TrackedFilenameWithSpaces: expected status 1, got %s\n' "$actual" >&2
+  exit 1
+fi
 
 printf 'Comment-length regression tests passed\n'

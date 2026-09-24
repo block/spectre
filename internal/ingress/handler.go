@@ -15,6 +15,9 @@ import (
 	"sync"
 
 	"github.com/alecthomas/errors"
+
+	"github.com/block/spectre/internal/middleware/health"
+	"github.com/block/spectre/internal/middleware/logging"
 )
 
 // Handler forwards requests to both backends and returns only the reference response.
@@ -25,6 +28,7 @@ type Handler struct {
 	log       *slog.Logger
 	buffer    *bufferBudget
 	requests  chan struct{}
+	health    *health.Handler
 
 	mu            sync.Mutex
 	closing       bool
@@ -70,7 +74,7 @@ func New(config Config, transport http.RoundTripper, log *slog.Logger) (*Handler
 	}
 	idle := make(chan struct{})
 	close(idle)
-	return &Handler{
+	handler := &Handler{
 		reference:     newReverseProxy(reference, transport, log, false),
 		candidate:     newReverseProxy(candidate, transport, log, true),
 		config:        config,
@@ -79,11 +83,18 @@ func New(config Config, transport http.RoundTripper, log *slog.Logger) (*Handler
 		requests:      make(chan struct{}, config.MaxInFlightRequests),
 		candidateRuns: make(map[*candidateRun]struct{}),
 		idle:          idle,
-	}, nil
+	}
+	requestHandler := logging.New(http.HandlerFunc(handler.serveProxy), log)
+	handler.health = health.New(requestHandler)
+	return handler, nil
 }
 
-// ServeHTTP mirrors a request without allowing candidate work to delay the response.
+// ServeHTTP serves health checks or mirrors a request to both backends.
 func (h *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
+	h.health.ServeHTTP(writer, request)
+}
+
+func (h *Handler) serveProxy(writer http.ResponseWriter, request *http.Request) {
 	select {
 	case h.requests <- struct{}{}:
 		defer func() { <-h.requests }()

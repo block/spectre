@@ -28,11 +28,15 @@ func (h *Handler) Serve(ctx context.Context, listener net.Listener) error {
 	}
 	limitedListener := netutil.LimitListener(listener, h.config.MaxConnections)
 	serveDone := make(chan error, 1)
+	// Readiness becomes false before graceful shutdown stops accepting requests.
+	h.health.SetReady(true)
+	defer h.health.SetReady(false)
 	go func() { serveDone <- server.Serve(limitedListener) }()
 	h.log.InfoContext(ctx, "Ingress proxy listening", "address", listener.Addr().String())
 
 	select {
 	case err := <-serveDone:
+		h.health.SetReady(false)
 		shutdownContext, cancel := context.WithTimeout(serverContext, h.config.ShutdownTimeout)
 		defer cancel()
 		shutdownErrors := make([]error, 0, 4)
@@ -50,6 +54,7 @@ func (h *Handler) Serve(ctx context.Context, listener net.Listener) error {
 		}
 		return errors.Join(shutdownErrors...)
 	case <-ctx.Done():
+		h.health.SetReady(false)
 		shutdownContext, cancel := context.WithTimeout(serverContext, h.config.ShutdownTimeout)
 		defer cancel()
 		shutdownErrors := make([]error, 0, 4)

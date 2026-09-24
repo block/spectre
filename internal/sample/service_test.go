@@ -1,9 +1,14 @@
 package sample_test
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -46,6 +51,49 @@ func TestUserRPCs(t *testing.T) {
 			assert.Equal(t, test.code, status.Code(err))
 		})
 	}
+}
+
+func TestServerHealthAndGRPC(t *testing.T) {
+	service, expected := newTestService(t)
+	grpcServer := grpc.NewServer()
+	samplepb.RegisterUserServiceServer(grpcServer, service)
+	var logs bytes.Buffer
+	server := sample.NewServer(grpcServer, slog.New(slog.NewJSONHandler(&logs, nil)))
+	assertHealthStatus(t, server, "/livez", http.StatusNoContent)
+	assertHealthStatus(t, server, "/readyz", http.StatusServiceUnavailable)
+	assert.Equal(t, "", logs.String())
+
+	listener, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
+	assert.NoError(t, err)
+	ctx, cancel := context.WithCancel(t.Context())
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- server.Serve(ctx, listener) }()
+
+	for _, path := range []string{"/livez", "/readyz"} {
+		response, err := http.Get("http://" + listener.Addr().String() + path)
+		assert.NoError(t, err)
+		assert.Equal(t, http.StatusNoContent, response.StatusCode)
+		assert.NoError(t, response.Body.Close())
+	}
+	assert.Equal(t, "", logs.String())
+	connection, err := grpc.NewClient(listener.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	assert.NoError(t, err)
+	t.Cleanup(func() { assert.NoError(t, connection.Close()) })
+	response, err := samplepb.NewUserServiceClient(connection).ListUsers(t.Context(), &samplepb.ListUsersRequest{})
+	assert.NoError(t, err)
+	assert.True(t, proto.Equal(expected, response))
+
+	cancel()
+	select {
+	case err := <-serveDone:
+		assert.NoError(t, err)
+	case <-time.After(time.Second):
+		t.Fatal("sample server did not stop after cancellation")
+	}
+	assert.True(t, strings.Contains(logs.String(), `"path":"/spectre.sample.v1.UserService/ListUsers"`))
+	logged := logs.String()
+	assertHealthStatus(t, server, "/readyz", http.StatusServiceUnavailable)
+	assert.Equal(t, logged, logs.String())
 }
 
 func TestListFilters(t *testing.T) {
@@ -179,6 +227,13 @@ func newTestService(t *testing.T) (*sample.Service, *samplepb.ListUsersResponse)
 	fixture := &samplepb.ListUsersResponse{}
 	assert.NoError(t, protojson.Unmarshal(data, fixture))
 	return service, fixture
+}
+
+func assertHealthStatus(t *testing.T, handler http.Handler, path string, expected int) {
+	t.Helper()
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+	assert.Equal(t, expected, response.Code)
 }
 
 func newTestClient(t *testing.T, service *sample.Service) samplepb.UserServiceClient {

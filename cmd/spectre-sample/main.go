@@ -40,9 +40,7 @@ func main() {
 	server := grpc.NewServer()
 	samplepb.RegisterUserServiceServer(server, service)
 	reflection.Register(server)
-	// Stop closes listeners and active RPCs so shutdown never waits on a stalled sample client.
-	stopServer := context.AfterFunc(ctx, server.Stop)
-	defer stopServer()
+	sampleServer := sample.NewServer(server, log)
 	log.InfoContext(ctx, "Sample gRPC server listening", "address", listener.Addr().String())
-	kctx.FatalIfErrorf(errors.Wrap(server.Serve(listener), "serve sample gRPC"))
+	kctx.FatalIfErrorf(errors.Wrap(sampleServer.Serve(ctx, listener), "serve sample gRPC"))
 }
