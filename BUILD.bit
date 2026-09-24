@@ -1,5 +1,9 @@
 # Build file for github.com/alecthomas/bit
 
+param version = "dev"
+param registry : string
+param image-tag : string
+
 sample-proto = exec {
   command = "mkdir -p internal/sample/pb dist && protoc -I internal/sample/proto --go_out=internal/sample/pb --go_opt=paths=source_relative --go-grpc_out=internal/sample/pb --go-grpc_opt=paths=source_relative --include_imports --descriptor_set_out=dist/sample.pb internal/sample/proto/users.proto internal/sample/proto/service.proto"
   inputs = ["internal/sample/proto/*.proto", "bin/.protoc-36.2.pkg", "bin/.protoc-gen-go-1.36.12.pkg", "bin/.protoc-gen-go-grpc-1.3.0.pkg"]
@@ -11,17 +15,25 @@ test-go = go.test {
   flags = ["-timeout=30s"]
   depends_on = [sample-proto]
 }
-test-comment-length = exec {
+test-comment-length = exec.test {
   command = "sh scripts/check-comment-length.test.sh"
   inputs = ["scripts/check-comment-length", "scripts/check-comment-length.test.sh"]
 }
-test-launcher = exec {
+test-launcher = exec.test {
   command = "scripts/spectre-ingress.test.sh"
   inputs = ["scripts/spectre-ingress", "scripts/spectre-ingress.test.sh"]
 }
-test-release-version = exec {
+test-release-version = exec.test {
   command = "scripts/release-version.test.sh"
   inputs = [".gitsv/config.yml", "scripts/release-version.test.sh", "bin/.git-sv-3.0.2.pkg"]
+}
+test-container-publisher = exec.test {
+  command = "sh scripts/publish-container-images.test.sh"
+  inputs = ["scripts/publish-container-images", "scripts/publish-container-images.test.sh"]
+}
+explicit test-container = exec.test {
+  command = "container.test.sh #{local-image.ref} #{version}"
+  inputs = ["scripts/container.test.sh"]
 }
 fmt-go = go.fmt {}
 fmt-check-go = go.fmt-l {}
@@ -38,6 +50,10 @@ lint-action-pins = exec {
   command = "ratchet lint .github/workflows/*.yml"
   inputs = [".github/workflows/*.yml", "bin/.ratchet-0.12.0.pkg"]
 }
+lint-dockerfile = exec.test {
+  command = "hadolint Dockerfile"
+  inputs = ["Dockerfile", "bin/.hadolint-2.15.1.pkg"]
+}
 lint-scripts = exec {
   command = "shellcheck scripts/*"
   inputs = ["scripts/*", "bin/.shellcheck-0.11.0.pkg"]
@@ -48,15 +64,30 @@ explicit sample-bin = go.exe {
   output = "dist/spectre-sample"
   depends_on = [sample-proto]
 }
+explicit local-image = docker.image {
+  tag = "spectre-ingress:#{version}"
+  build_args = { VERSION = version }
+}
+explicit publish-release-image = docker.image {
+  tag = "#{registry}/spectre:#{image-tag}"
+  build_args = { VERSION = version }
+  platform = ["linux/amd64", "linux/arm64"]
+}
 
 # Generate the sample descriptors and build its local gRPC server.
 target sample = [sample-bin]
 
+# Build the ingress container image.
+target container = [local-image]
+
+# Publish the ingress container image.
+target publish-container = [publish-release-image]
+
 # Run all tests
-target test = [test-go, test-comment-length, test-launcher, test-release-version]
+target test = [test-go, test-comment-length, test-launcher, test-release-version, test-container-publisher]
 
 # Lint everything
-target lint = [lint-go, lint-actions, lint-action-pins, lint-scripts, fmt-check-go]
+target lint = [lint-go, lint-actions, lint-action-pins, lint-dockerfile, lint-scripts, fmt-check-go]
 
 # Format everything
 target fmt = [fmt-go, fmt-action-pins]

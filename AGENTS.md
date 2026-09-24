@@ -16,6 +16,7 @@
 # Automation
 
 - Use `bit` and define tasks in `BUILD.bit` for all automation that would normally go in a Makefile, Justfile, or other build file.
+- Run `bit -s <provider>` before adding build configuration so the most specific provider and correct fields are used.
 - Run tests, linting, and formatting through `bit` targets instead of invoking the underlying commands manually.
 - All tools used in build files or documentation must be installed in the repository's Hermit environment.
 - Invoke commands from `scripts` by name. Never prefix them with the repository-relative scripts path because Hermit adds that directory to `PATH`.

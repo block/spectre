@@ -1,0 +1,35 @@
+#!/bin/sh
+
+set -eu
+
+version=${1:?usage: publish-container-images VERSION}
+release=${version#v}
+
+for registry in ghcr.io/block docker.io/blockossreleases; do
+  image="$registry/spectre"
+  release_image="$image:$release"
+
+  if docker buildx imagetools inspect "$release_image" >/dev/null 2>&1; then
+    printf '%s already exists; skipping build\n' "$release_image"
+  else
+    bit \
+      -P "version=$version" \
+      -P "registry=$registry" \
+      -P "image-tag=$release" \
+      publish-container
+  fi
+
+  # Exact versions may be immutable; retries only retarget the mutable aliases.
+  case "$release" in
+    *-*) continue ;;
+  esac
+
+  major=${release%%.*}
+  minor_patch=${release#*.}
+  minor=${minor_patch%%.*}
+  for tag in "$major.$minor" "$major" latest; do
+    docker buildx imagetools create \
+      --tag "$image:$tag" \
+      "$release_image"
+  done
+done

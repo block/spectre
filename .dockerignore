@@ -1,0 +1,15 @@
+.git
+.github
+bin
+dist
+docs
+scripts
+**/*_test.go
+BUILD.bit
+CONTRIBUTING.md
+GOVERNANCE.md
+LICENSE
+Procfile
+README.md
+lefthook.yml
+renovate.json
