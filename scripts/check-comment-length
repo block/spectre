@@ -3,8 +3,10 @@
 set -eu
 
 if [ "$#" -eq 0 ]; then
-  git ls-files -z -- '*.go' | xargs -0 "$0" --
-  exit $?
+  if git ls-files -z -- '*.go' | xargs -0 "$0" --; then
+    exit 0
+  fi
+  exit 1
 fi
 
 status=0
