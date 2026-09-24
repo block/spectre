@@ -22,15 +22,22 @@ jobs:
         run: |
           version="$(git tag --points-at HEAD --list 'v*' | head -n 1)"
           if [[ -z "$version" ]]; then
-            version="v$(git-sv next-version)"
+            next_version="$(git-sv next-version)"
+            if [[ -z "$next_version" ]]; then
+              echo "should_release=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            version="v$next_version"
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             git tag --annotate "$version" --message "Release $version"
             git push origin "refs/tags/$version"
           fi
 
+          echo "should_release=true" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
       - name: Create GitHub release
+        if: steps.release.outputs.should_release == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.release.outputs.version }}

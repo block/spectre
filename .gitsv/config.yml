@@ -1,8 +1,8 @@
 versioning:
   update-major: []
   update-minor: [feat]
-  update-patch: [build, ci, chore, docs, fix, perf, refactor, revert, style, test]
-  ignore-unknown: false
+  update-patch: [fix, perf, revert]
+  ignore-unknown: true
 
 tag:
   pattern: "v%d.%d.%d"

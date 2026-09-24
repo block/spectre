@@ -19,6 +19,10 @@ test-launcher = exec {
   command = "scripts/spectre-ingress.test.sh"
   inputs = ["scripts/spectre-ingress", "scripts/spectre-ingress.test.sh"]
 }
+test-release-version = exec {
+  command = "scripts/release-version.test.sh"
+  inputs = [".gitsv/config.yml", "scripts/release-version.test.sh", "bin/.git-sv-3.0.2.pkg"]
+}
 fmt-go = go.fmt {}
 fmt-check-go = go.fmt-l {}
 fmt-action-pins = exec {
@@ -49,7 +53,7 @@ explicit sample-bin = go.exe {
 target sample = [sample-bin]
 
 # Run all tests
-target test = [test-go, test-comment-length, test-launcher]
+target test = [test-go, test-comment-length, test-launcher, test-release-version]
 
 # Lint everything
 target lint = [lint-go, lint-actions, lint-action-pins, lint-scripts, fmt-check-go]
