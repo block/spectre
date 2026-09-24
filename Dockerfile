@@ -31,4 +31,4 @@ COPY --from=build /out/spectre-ingress /usr/local/bin/spectre-ingress
 USER 65534:65534
 EXPOSE 50050
 ENTRYPOINT ["spectre-ingress"]
-CMD ["serve", "--listen=0.0.0.0:50050"]
+CMD ["--listen=0.0.0.0:50050"]

@@ -14,21 +14,11 @@ import (
 	"github.com/block/spectre/internal"
 	"github.com/block/spectre/internal/ingress"
 	"github.com/block/spectre/internal/logger"
-	"github.com/block/spectre/internal/schema"
 )
 
 type cli struct {
-	Log         logger.Config    `embed:""`
-	Version     kong.VersionFlag `help:"Print the version and exit."`
-	CheckSchema checkSchemaCmd   `cmd:"" help:"Validate a local protobuf descriptor set."`
-	Serve       serveCmd         `cmd:"" help:"Mirror HTTP requests to reference and candidate backends."`
-}
-
-type checkSchemaCmd struct {
-	DescriptorSet string `arg:"" type:"existingfile" help:"Binary protobuf descriptor set, including imports."`
-}
-
-type serveCmd struct {
+	Log            logger.Config    `embed:""`
+	Version        kong.VersionFlag `help:"Print the version and exit."`
 	ingress.Config `embed:""`
 }
 
@@ -47,19 +37,7 @@ func main() {
 	kctx.FatalIfErrorf(kctx.Run(&commandContext{ctx: ctx, log: log}))
 }
 
-func (c *checkSchemaCmd) Run(runtime *commandContext) error {
-	data, err := os.ReadFile(c.DescriptorSet)
-	if err != nil {
-		return errors.Wrap(err, "read descriptor set")
-	}
-	if _, err := schema.New(data); err != nil {
-		return errors.Wrap(err, "validate descriptor set")
-	}
-	runtime.log.InfoContext(runtime.ctx, "Descriptor set is valid", "path", c.DescriptorSet)
-	return nil
-}
-
-func (c *serveCmd) Run(runtime *commandContext) error {
+func (c *cli) Run(runtime *commandContext) error {
 	transport := ingress.NewTransport(c.Config)
 	defer transport.CloseIdleConnections()
 	handler, err := ingress.New(c.Config, transport, runtime.log)

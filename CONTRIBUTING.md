@@ -1,8 +1,7 @@
 # Contributing
 
-The `spectre-ingress` command validates local protobuf descriptor sets and mirrors
-HTTP requests to reference and candidate services. It returns the reference response
-without waiting for the candidate response.
+The `spectre-ingress` command mirrors HTTP requests to reference and candidate
+services. It returns the reference response without waiting for the candidate response.
 
 Logs default to info-level, colorized text on stderr. Use `--log-level=debug|info|warn|error`
 to change the minimum level and `--log-json` for JSON output.
@@ -14,7 +13,7 @@ Build the local Alpine-based image with `bit container`. Its entry point is the
 backends in the same network namespace:
 
 ```sh
-docker run --rm --network=host spectre-ingress:dev serve \
+docker run --rm --network=host spectre-ingress:dev \
   --listen=0.0.0.0:50050 \
   --reference=h2c://127.0.0.1:50051 \
   --candidate=h2c://127.0.0.1:50052
@@ -29,14 +28,13 @@ From the repository root with Hermit activated, build and run the sample:
 
 ```sh
 bit sample
-spectre-ingress check-schema dist/sample.pb
 spectre-sample
 ```
 
 Run a second sample on port 50052, then start the ingress proxy:
 
 ```sh
-spectre-ingress serve \
+spectre-ingress \
   --reference=h2c://127.0.0.1:50051 \
   --candidate=h2c://127.0.0.1:50052
 ```
