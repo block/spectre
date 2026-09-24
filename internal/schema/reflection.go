@@ -3,16 +3,16 @@ package schema
 import (
 	"context"
 	"crypto/tls"
+	"net/http"
 	"net/url"
-	"sort"
+	"slices"
 	"strings"
 
+	"connectrpc.com/connect"
+	"connectrpc.com/grpcreflect"
 	"github.com/alecthomas/errors"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials"
-	"google.golang.org/grpc/credentials/insecure"
-	reflectionpb "google.golang.org/grpc/reflection/grpc_reflection_v1"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/descriptorpb"
 )
 
@@ -33,38 +33,26 @@ func (loader *ReflectionLoader) Load(ctx context.Context, endpoint string) (*des
 	if parsed.Host == "" {
 		return nil, errors.Errorf("reflection endpoint must be absolute: %q", endpoint)
 	}
-	transportCredentials, err := reflectionCredentials(parsed)
+	client, closeClient, err := reflectionClient(parsed)
 	if err != nil {
-		return nil, errors.Wrap(err, "configure reflection credentials")
+		return nil, errors.Wrap(err, "configure reflection client")
 	}
-	connection, err := grpc.NewClient(parsed.Host, grpc.WithTransportCredentials(transportCredentials))
-	if err != nil {
-		return nil, errors.Wrap(err, "create reflection client")
-	}
-	defer func() { _ = connection.Close() }()
+	defer closeClient()
 
-	stream, err := reflectionpb.NewServerReflectionClient(connection).ServerReflectionInfo(ctx)
-	if err != nil {
-		return nil, errors.Wrap(err, "open reflection stream")
-	}
-	response, err := reflectionRequest(stream, &reflectionpb.ServerReflectionRequest{
-		MessageRequest: &reflectionpb.ServerReflectionRequest_ListServices{ListServices: ""},
-	})
+	stream := client.NewStream(ctx)
+	defer func() { _, _ = stream.Close() }()
+	services, err := stream.ListServices()
 	if err != nil {
 		return nil, errors.Wrap(err, "list reflected services")
 	}
-	services := response.GetListServicesResponse()
-	if services == nil {
-		return nil, errors.New("reflection service list response is missing")
-	}
 
-	serviceNames := make([]string, 0, len(services.GetService()))
-	for _, service := range services.GetService() {
-		if !strings.HasPrefix(service.GetName(), "grpc.reflection.") {
-			serviceNames = append(serviceNames, service.GetName())
+	serviceNames := make([]protoreflect.FullName, 0, len(services))
+	for _, service := range services {
+		if !strings.HasPrefix(string(service), "grpc.reflection.") {
+			serviceNames = append(serviceNames, service)
 		}
 	}
-	sort.Strings(serviceNames)
+	slices.Sort(serviceNames)
 	files, err := loadServiceFiles(stream, serviceNames)
 	if err != nil {
 		return nil, errors.Wrap(err, "load reflected service files")
@@ -74,7 +62,7 @@ func (loader *ReflectionLoader) Load(ctx context.Context, endpoint string) (*des
 	for name := range files {
 		fileNames = append(fileNames, name)
 	}
-	sort.Strings(fileNames)
+	slices.Sort(fileNames)
 	set := &descriptorpb.FileDescriptorSet{File: make([]*descriptorpb.FileDescriptorProto, 0, len(files))}
 	for _, name := range fileNames {
 		set.File = append(set.File, files[name])
@@ -83,26 +71,16 @@ func (loader *ReflectionLoader) Load(ctx context.Context, endpoint string) (*des
 }
 
 func loadServiceFiles(
-	stream reflectionpb.ServerReflection_ServerReflectionInfoClient,
-	serviceNames []string,
+	stream *grpcreflect.ClientStream,
+	serviceNames []protoreflect.FullName,
 ) (map[string]*descriptorpb.FileDescriptorProto, error) {
 	files := map[string]*descriptorpb.FileDescriptorProto{}
 	for _, serviceName := range serviceNames {
-		serviceResponse, err := reflectionRequest(stream, &reflectionpb.ServerReflectionRequest{
-			MessageRequest: &reflectionpb.ServerReflectionRequest_FileContainingSymbol{FileContainingSymbol: serviceName},
-		})
+		descriptors, err := stream.FileContainingSymbol(serviceName)
 		if err != nil {
 			return nil, errors.Wrapf(err, "load descriptors for service %q", serviceName)
 		}
-		descriptors := serviceResponse.GetFileDescriptorResponse()
-		if descriptors == nil {
-			return nil, errors.Errorf("reflection descriptor response for service %q is missing", serviceName)
-		}
-		for _, data := range descriptors.GetFileDescriptorProto() {
-			file := &descriptorpb.FileDescriptorProto{}
-			if err := proto.Unmarshal(data, file); err != nil {
-				return nil, errors.Wrapf(err, "decode reflected descriptor for service %q", serviceName)
-			}
+		for _, file := range descriptors {
 			if file.GetName() == "" {
 				return nil, errors.Errorf("reflected descriptor for service %q has no file name", serviceName)
 			}
@@ -115,34 +93,21 @@ func loadServiceFiles(
 	return files, nil
 }
 
-func reflectionCredentials(endpoint *url.URL) (credentials.TransportCredentials, error) {
-	switch endpoint.Scheme {
+func reflectionClient(endpoint *url.URL) (*grpcreflect.Client, func(), error) {
+	baseURL := *endpoint
+	protocols := new(http.Protocols)
+	protocols.SetHTTP2(true)
+	transport := &http.Transport{Protocols: protocols}
+	switch baseURL.Scheme {
 	case "http", "h2c":
-		return insecure.NewCredentials(), nil
+		baseURL.Scheme = "http"
+		protocols.SetUnencryptedHTTP2(true)
 	case "https":
-		return credentials.NewTLS(&tls.Config{MinVersion: tls.VersionTLS12}), nil
+		transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12}
 	default:
-		return nil, errors.Errorf("reflection endpoint must use http, https, or h2c: %q", endpoint.String())
+		return nil, nil, errors.Errorf("reflection endpoint must use http, https, or h2c: %q", endpoint.String())
 	}
-}
-
-func reflectionRequest(
-	stream reflectionpb.ServerReflection_ServerReflectionInfoClient,
-	request *reflectionpb.ServerReflectionRequest,
-) (*reflectionpb.ServerReflectionResponse, error) {
-	if err := stream.Send(request); err != nil {
-		return nil, errors.Wrap(err, "send reflection request")
-	}
-	response, err := stream.Recv()
-	if err != nil {
-		return nil, errors.Wrap(err, "receive reflection response")
-	}
-	if reflectionError := response.GetErrorResponse(); reflectionError != nil {
-		return nil, errors.Errorf(
-			"reflection request failed with code %d: %s",
-			reflectionError.GetErrorCode(),
-			reflectionError.GetErrorMessage(),
-		)
-	}
-	return response, nil
+	httpClient := &http.Client{Transport: transport}
+	client := grpcreflect.NewClient(httpClient, baseURL.String(), connect.WithGRPC())
+	return client, transport.CloseIdleConnections, nil
 }

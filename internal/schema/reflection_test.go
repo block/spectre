@@ -2,26 +2,36 @@ package schema_test
 
 import (
 	"net"
+	"net/http"
 	"testing"
 
+	"connectrpc.com/grpcreflect"
 	"github.com/alecthomas/assert/v2"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/reflection"
 	"google.golang.org/protobuf/reflect/protodesc"
 	"google.golang.org/protobuf/reflect/protoreflect"
 
-	samplepb "github.com/block/spectre/internal/sample/pb"
+	"github.com/block/spectre/internal/sample/pb/samplepbconnect"
 	"github.com/block/spectre/internal/schema"
 )
 
 func TestReflectionLoaderLoadsApplicationDescriptors(t *testing.T) {
 	listener, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
 	assert.NoError(t, err)
-	server := grpc.NewServer()
-	samplepb.RegisterUserServiceServer(server, &samplepb.UnimplementedUserServiceServer{})
-	reflection.Register(server)
+	mux := http.NewServeMux()
+	path, handler := samplepbconnect.NewUserServiceHandler(samplepbconnect.UnimplementedUserServiceHandler{})
+	mux.Handle(path, handler)
+	reflector := grpcreflect.NewStaticReflector(samplepbconnect.UserServiceName)
+	path, handler = grpcreflect.NewHandlerV1(reflector)
+	mux.Handle(path, handler)
+	path, handler = grpcreflect.NewHandlerV1Alpha(reflector)
+	mux.Handle(path, handler)
+	protocols := new(http.Protocols)
+	protocols.SetHTTP1(true)
+	protocols.SetHTTP2(true)
+	protocols.SetUnencryptedHTTP2(true)
+	server := &http.Server{Handler: mux, Protocols: protocols}
 	go func() { _ = server.Serve(listener) }()
-	t.Cleanup(server.Stop)
+	t.Cleanup(func() { assert.NoError(t, server.Close()) })
 
 	set, err := schema.NewReflectionLoader().Load(t.Context(), "h2c://"+listener.Addr().String())
 	assert.NoError(t, err)

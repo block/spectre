@@ -8,20 +8,19 @@ import (
 	"time"
 
 	"github.com/alecthomas/errors"
-	"google.golang.org/grpc"
 
 	"github.com/block/spectre/internal/middleware/health"
 	"github.com/block/spectre/internal/middleware/logging"
 )
 
-// Server serves sample gRPC requests and HTTP health checks on one listener.
+// Server serves sample Connect requests and HTTP health checks on one listener.
 type Server struct {
 	health *health.Handler
 }
 
-// NewServer constructs a sample server around a configured gRPC server.
-func NewServer(grpcServer *grpc.Server, log *slog.Logger) *Server {
-	handler := logging.New(grpcServer, log)
+// NewServer constructs a sample server around a configured Connect handler.
+func NewServer(connectHandler http.Handler, log *slog.Logger) *Server {
+	handler := logging.New(connectHandler, log)
 	return &Server{health: health.New(handler)}
 }
 
@@ -54,7 +53,7 @@ func (s *Server) Serve(ctx context.Context, listener net.Listener) error {
 	return errors.Wrap(err, "serve sample HTTP")
 }
 
-// ServeHTTP serves sample gRPC requests and health checks.
+// ServeHTTP serves sample Connect requests and health checks.
 func (s *Server) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	s.health.ServeHTTP(writer, request)
 }

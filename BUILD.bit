@@ -5,9 +5,9 @@ param registry : string
 param image-tag : string
 
 sample-proto = exec {
-  command = "mkdir -p internal/sample/pb dist && protoc -I internal/sample/proto --go_out=internal/sample/pb --go_opt=paths=source_relative --go-grpc_out=internal/sample/pb --go-grpc_opt=paths=source_relative --include_imports --descriptor_set_out=dist/sample.pb internal/sample/proto/users.proto internal/sample/proto/service.proto"
-  inputs = ["internal/sample/proto/*.proto", "bin/.protoc-36.2.pkg", "bin/.protoc-gen-go-1.36.12.pkg", "bin/.protoc-gen-go-grpc-1.3.0.pkg"]
-  output = ["internal/sample/pb/users.pb.go", "internal/sample/pb/service.pb.go", "internal/sample/pb/service_grpc.pb.go", "dist/sample.pb"]
+  command = "mkdir -p internal/sample/pb dist && buf generate && buf build --as-file-descriptor-set -o dist/sample.pb"
+  inputs = ["buf.yaml", "buf.gen.yaml", "internal/sample/proto/*.proto", "bin/.buf-1.73.0.pkg", "bin/.protoc-gen-go-1.36.12.pkg", "bin/.protoc-gen-connect-go-1.21.0.pkg"]
+  output = ["internal/sample/pb/users.pb.go", "internal/sample/pb/service.pb.go", "internal/sample/pb/samplepbconnect/service.connect.go", "dist/sample.pb"]
 }
 
 test-go = go.test {
@@ -42,6 +42,10 @@ fmt-action-pins = exec {
   inputs = [".github/workflows/*.yml", "bin/.ratchet-0.12.0.pkg"]
 }
 lint-go = go.lint { depends_on = [sample-proto] }
+lint-proto = exec.test {
+  command = "buf lint"
+  inputs = ["buf.yaml", "internal/sample/proto/*.proto", "bin/.buf-1.73.0.pkg"]
+}
 lint-actions = exec {
   command = "actionlint"
   inputs = [".github/workflows/*.yml", "bin/.actionlint-1.7.12.pkg"]
@@ -74,7 +78,7 @@ explicit publish-release-image = docker.image {
   platform = ["linux/amd64", "linux/arm64"]
 }
 
-# Generate the sample descriptors and build its local gRPC server.
+# Generate the sample descriptors and build its local Connect server.
 target sample = [sample-bin]
 
 # Build the ingress container image.
@@ -87,7 +91,7 @@ target publish-container = [publish-release-image]
 target test = [test-go, test-comment-length, test-launcher, test-release-version, test-container-publisher]
 
 # Lint everything
-target lint = [lint-go, lint-actions, lint-action-pins, lint-dockerfile, lint-scripts, fmt-check-go]
+target lint = [lint-go, lint-proto, lint-actions, lint-action-pins, lint-dockerfile, lint-scripts, fmt-check-go]
 
 # Format everything
 target fmt = [fmt-go, fmt-action-pins]

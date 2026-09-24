@@ -1,13 +1,12 @@
-// Package sample provides a deterministic gRPC service for ingress experiments.
+// Package sample provides a deterministic Connect service for ingress experiments.
 package sample
 
 import (
 	"context"
 	"slices"
 
+	"connectrpc.com/connect"
 	"github.com/alecthomas/errors"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 
@@ -16,7 +15,6 @@ import (
 
 // Service serves a read-only snapshot loaded from ProtoJSON.
 type Service struct {
-	samplepb.UnimplementedUserServiceServer
 	// The snapshot is immutable after construction; each RPC returns an independent copy.
 	snapshot *samplepb.ListUsersResponse
 }
@@ -41,38 +39,46 @@ func New(data []byte) (*Service, error) {
 }
 
 // GetUser returns one sample user, or InvalidArgument or NotFound for an invalid ID.
-func (s *Service) GetUser(ctx context.Context, request *samplepb.GetUserRequest) (*samplepb.GetUserResponse, error) {
+func (s *Service) GetUser(ctx context.Context, request *connect.Request[samplepb.GetUserRequest]) (*connect.Response[samplepb.GetUserResponse], error) {
 	if err := ctx.Err(); err != nil {
-		return nil, errors.Wrap(status.FromContextError(err).Err(), "get user")
+		code := connect.CodeCanceled
+		if errors.Is(err, context.DeadlineExceeded) {
+			code = connect.CodeDeadlineExceeded
+		}
+		return nil, connect.NewError(code, errors.Wrap(err, "get user"))
 	}
-	if request.GetId() == "" {
-		return nil, errors.Wrap(status.Error(codes.InvalidArgument, "id is required"), "get user")
+	if request.Msg.GetId() == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("id is required"))
 	}
 	for _, user := range s.snapshot.GetUsers() {
-		if user.GetId() == request.GetId() {
-			return &samplepb.GetUserResponse{User: proto.Clone(user).(*samplepb.User)}, nil
+		if user.GetId() == request.Msg.GetId() {
+			return connect.NewResponse(&samplepb.GetUserResponse{User: proto.Clone(user).(*samplepb.User)}), nil
 		}
 	}
-	return nil, errors.Wrap(status.Error(codes.NotFound, "user not found"), "get user")
+	return nil, connect.NewError(connect.CodeNotFound, errors.New("user not found"))
 }
 
 // ListUsers filters by IDs and optional role, preserving fixture order and its fixed timestamp.
-func (s *Service) ListUsers(ctx context.Context, request *samplepb.ListUsersRequest) (*samplepb.ListUsersResponse, error) {
+func (s *Service) ListUsers(ctx context.Context, request *connect.Request[samplepb.ListUsersRequest]) (*connect.Response[samplepb.ListUsersResponse], error) {
 	if err := ctx.Err(); err != nil {
-		return nil, errors.Wrap(status.FromContextError(err).Err(), "list users")
+		code := connect.CodeCanceled
+		if errors.Is(err, context.DeadlineExceeded) {
+			code = connect.CodeDeadlineExceeded
+		}
+		return nil, connect.NewError(code, errors.Wrap(err, "list users"))
 	}
 	response := proto.Clone(s.snapshot).(*samplepb.ListUsersResponse)
 	users := response.GetUsers()
 	response.Users = nil
 	for _, user := range users {
-		if len(request.GetIds()) > 0 && !slices.Contains(request.GetIds(), user.GetId()) {
+		if len(request.Msg.GetIds()) > 0 && !slices.Contains(request.Msg.GetIds(), user.GetId()) {
 			continue
 		}
-		if request.Role != nil && !slices.Contains(user.GetRoles(), request.GetRole()) {
+		if request.Msg.Role != nil && !slices.Contains(user.GetRoles(), request.Msg.GetRole()) {
 			continue
 		}
 		response.Users = append(response.GetUsers(), user)
 	}
 	response.TotalCount = int64(len(response.GetUsers()))
-	return response, nil
+	return connect.NewResponse(response), nil
 }

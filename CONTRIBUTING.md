@@ -22,7 +22,7 @@ docker run --rm --network=host spectre-ingress:dev \
 Releases are published for Linux AMD64 and ARM64 as `ghcr.io/block/spectre`
 and `docker.io/blockossreleases/spectre`.
 
-## Sample gRPC service
+## Sample Connect service
 
 From the repository root with Hermit activated, build and run the sample:
 
@@ -45,7 +45,8 @@ for a plaintext HTTP/2 backend. Candidate backends must use a literal loopback I
 If candidate buffering or concurrency reaches its limit, the proxy cancels all
 candidate requests and stops mirroring until the process restarts.
 
-The sample serves plaintext gRPC on `127.0.0.1:50051` with reflection enabled.
+The sample serves Connect, gRPC, and gRPC-Web on `127.0.0.1:50051` with
+reflection enabled.
 Use `--listen=127.0.0.1:50052` to run a second instance and `--data=path/to/users.json`
 to load a different ProtoJSON `ListUsersResponse` at startup. With `grpcurl` installed:
 
@@ -63,5 +64,5 @@ comparisons. `GetUser` returns `InvalidArgument` for an empty ID and `NotFound` 
 an unknown ID. `ListUsers` filters by IDs and an optional role.
 
 Edit the [protobuf definitions](internal/sample/proto/service.proto) and run
-`bit sample` to regenerate the Go bindings and descriptor set. `bit test` and
-`bit lint` also generate them before running their checks.
+`bit sample` to regenerate the Go and Connect bindings and descriptor set with
+Buf. `bit test` and `bit lint` also generate them before running their checks.

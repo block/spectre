@@ -12,53 +12,50 @@ import (
 	"testing"
 	"time"
 
+	"connectrpc.com/connect"
 	"github.com/alecthomas/assert/v2"
-	"github.com/alecthomas/errors"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/grpc/status"
-	"google.golang.org/grpc/test/bufconn"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/dynamicpb"
 
 	"github.com/block/spectre/internal/sample"
 	samplepb "github.com/block/spectre/internal/sample/pb"
+	"github.com/block/spectre/internal/sample/pb/samplepbconnect"
 	"github.com/block/spectre/internal/schema"
 )
 
 func TestUserRPCs(t *testing.T) {
 	service, expected := newTestService(t)
 	client := newTestClient(t, service)
-	response, err := client.ListUsers(t.Context(), &samplepb.ListUsersRequest{})
+	response, err := client.ListUsers(t.Context(), connect.NewRequest(&samplepb.ListUsersRequest{}))
 	assert.NoError(t, err)
-	assert.True(t, proto.Equal(expected, response))
-	user, err := client.GetUser(t.Context(), &samplepb.GetUserRequest{Id: "user-2"})
+	assert.True(t, proto.Equal(expected, response.Msg))
+	user, err := client.GetUser(t.Context(), connect.NewRequest(&samplepb.GetUserRequest{Id: "user-2"}))
 	assert.NoError(t, err)
-	assert.True(t, proto.Equal(&samplepb.GetUserResponse{User: expected.GetUsers()[1]}, user))
+	assert.True(t, proto.Equal(&samplepb.GetUserResponse{User: expected.GetUsers()[1]}, user.Msg))
 
 	for _, test := range []struct {
 		name string
 		id   string
-		code codes.Code
+		code connect.Code
 	}{
-		{name: "MissingID", code: codes.InvalidArgument},
-		{name: "UnknownID", id: "missing", code: codes.NotFound},
+		{name: "MissingID", code: connect.CodeInvalidArgument},
+		{name: "UnknownID", id: "missing", code: connect.CodeNotFound},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			_, err := client.GetUser(t.Context(), &samplepb.GetUserRequest{Id: test.id})
-			assert.Equal(t, test.code, status.Code(err))
+			_, err := client.GetUser(t.Context(), connect.NewRequest(&samplepb.GetUserRequest{Id: test.id}))
+			assert.Equal(t, test.code, connect.CodeOf(err))
 		})
 	}
 }
 
 func TestServerHealthAndGRPC(t *testing.T) {
 	service, expected := newTestService(t)
-	grpcServer := grpc.NewServer()
-	samplepb.RegisterUserServiceServer(grpcServer, service)
+	mux := http.NewServeMux()
+	path, handler := samplepbconnect.NewUserServiceHandler(service)
+	mux.Handle(path, handler)
 	var logs bytes.Buffer
-	server := sample.NewServer(grpcServer, slog.New(slog.NewJSONHandler(&logs, nil)))
+	server := sample.NewServer(mux, slog.New(slog.NewJSONHandler(&logs, nil)))
 	assertHealthStatus(t, server, "/livez", http.StatusNoContent)
 	assertHealthStatus(t, server, "/readyz", http.StatusServiceUnavailable)
 	assert.Equal(t, "", logs.String())
@@ -76,12 +73,18 @@ func TestServerHealthAndGRPC(t *testing.T) {
 		assert.NoError(t, response.Body.Close())
 	}
 	assert.Equal(t, "", logs.String())
-	connection, err := grpc.NewClient(listener.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	protocols := new(http.Protocols)
+	protocols.SetUnencryptedHTTP2(true)
+	transport := &http.Transport{Protocols: protocols}
+	t.Cleanup(transport.CloseIdleConnections)
+	client := samplepbconnect.NewUserServiceClient(
+		&http.Client{Transport: transport},
+		"http://"+listener.Addr().String(),
+		connect.WithGRPC(),
+	)
+	response, err := client.ListUsers(t.Context(), connect.NewRequest(&samplepb.ListUsersRequest{}))
 	assert.NoError(t, err)
-	t.Cleanup(func() { assert.NoError(t, connection.Close()) })
-	response, err := samplepb.NewUserServiceClient(connection).ListUsers(t.Context(), &samplepb.ListUsersRequest{})
-	assert.NoError(t, err)
-	assert.True(t, proto.Equal(expected, response))
+	assert.True(t, proto.Equal(expected, response.Msg))
 
 	cancel()
 	select {
@@ -112,32 +115,32 @@ func TestListFilters(t *testing.T) {
 		{name: "ExplicitUnspecifiedRole", request: &samplepb.ListUsersRequest{Role: samplepb.Role_ROLE_UNSPECIFIED.Enum()}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			response, err := client.ListUsers(t.Context(), test.request)
+			response, err := client.ListUsers(t.Context(), connect.NewRequest(test.request))
 			assert.NoError(t, err)
 			expected := &samplepb.ListUsersResponse{
 				Users:       test.users,
 				GeneratedAt: fixture.GetGeneratedAt(),
 				TotalCount:  int64(len(test.users)),
 			}
-			assert.True(t, proto.Equal(expected, response))
+			assert.True(t, proto.Equal(expected, response.Msg))
 		})
 	}
 }
 
 func TestResponseIsolation(t *testing.T) {
 	service, expected := newTestService(t)
-	response, err := service.ListUsers(t.Context(), &samplepb.ListUsersRequest{})
+	response, err := service.ListUsers(t.Context(), connect.NewRequest(&samplepb.ListUsersRequest{}))
 	assert.NoError(t, err)
-	response.GetUsers()[0].GetLabels()["team"] = "changed"
-	response.GetUsers()[0].GetProfile().GetAddresses()[0].City = "changed"
-	response.GetGeneratedAt().Seconds = 0
-	user, err := service.GetUser(t.Context(), &samplepb.GetUserRequest{Id: "user-1"})
+	response.Msg.GetUsers()[0].GetLabels()["team"] = "changed"
+	response.Msg.GetUsers()[0].GetProfile().GetAddresses()[0].City = "changed"
+	response.Msg.GetGeneratedAt().Seconds = 0
+	user, err := service.GetUser(t.Context(), connect.NewRequest(&samplepb.GetUserRequest{Id: "user-1"}))
 	assert.NoError(t, err)
-	user.GetUser().GetAvatar()[0] = 255
-	user.GetUser().Name = "changed"
-	unchanged, err := service.ListUsers(t.Context(), &samplepb.ListUsersRequest{})
+	user.Msg.GetUser().GetAvatar()[0] = 255
+	user.Msg.GetUser().Name = "changed"
+	unchanged, err := service.ListUsers(t.Context(), connect.NewRequest(&samplepb.ListUsersRequest{}))
 	assert.NoError(t, err)
-	assert.True(t, proto.Equal(expected, unchanged))
+	assert.True(t, proto.Equal(expected, unchanged.Msg))
 }
 
 func TestRejectInvalidFixture(t *testing.T) {
@@ -163,24 +166,24 @@ func TestCancelledRequests(t *testing.T) {
 	for _, test := range []struct {
 		name string
 		ctx  func() (context.Context, context.CancelFunc)
-		code codes.Code
+		code connect.Code
 	}{
 		{name: "Cancelled", ctx: func() (context.Context, context.CancelFunc) {
 			ctx, cancel := context.WithCancel(t.Context())
 			cancel()
 			return ctx, cancel
-		}, code: codes.Canceled},
+		}, code: connect.CodeCanceled},
 		{name: "Expired", ctx: func() (context.Context, context.CancelFunc) {
 			return context.WithDeadline(t.Context(), time.Unix(0, 0))
-		}, code: codes.DeadlineExceeded},
+		}, code: connect.CodeDeadlineExceeded},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			ctx, cancel := test.ctx()
 			defer cancel()
-			_, err := service.GetUser(ctx, &samplepb.GetUserRequest{Id: "user-1"})
-			assert.Equal(t, test.code, status.Code(err))
-			_, err = service.ListUsers(ctx, &samplepb.ListUsersRequest{})
-			assert.Equal(t, test.code, status.Code(err))
+			_, err := service.GetUser(ctx, connect.NewRequest(&samplepb.GetUserRequest{Id: "user-1"}))
+			assert.Equal(t, test.code, connect.CodeOf(err))
+			_, err = service.ListUsers(ctx, connect.NewRequest(&samplepb.ListUsersRequest{}))
+			assert.Equal(t, test.code, connect.CodeOf(err))
 		})
 	}
 }
@@ -197,17 +200,17 @@ func TestSampleDescriptorAndEncodings(t *testing.T) {
 	assert.NoError(t, err)
 	service, _ := newTestService(t)
 	client := newTestClient(t, service)
-	response, err := client.ListUsers(t.Context(), &samplepb.ListUsersRequest{})
+	response, err := client.ListUsers(t.Context(), connect.NewRequest(&samplepb.ListUsersRequest{}))
 	assert.NoError(t, err)
-	assert.Equal(t, uint64(9007199254740993), response.GetUsers()[0].GetRevision())
-	assert.Equal(t, uint64(18446744073709551615), response.GetUsers()[1].GetRevision())
-	assert.True(t, response.GetUsers()[0].Nickname != nil)
-	assert.True(t, response.GetUsers()[1].Nickname == nil)
-	assert.True(t, response.GetUsers()[0].GetProfile().MarketingConsent != nil)
-	assert.True(t, response.GetUsers()[1].GetProfile().MarketingConsent == nil)
-	assert.Equal(t, []byte{0, 1, 2, 3, 255}, response.GetUsers()[0].GetAvatar())
+	assert.Equal(t, uint64(9007199254740993), response.Msg.GetUsers()[0].GetRevision())
+	assert.Equal(t, uint64(18446744073709551615), response.Msg.GetUsers()[1].GetRevision())
+	assert.True(t, response.Msg.GetUsers()[0].Nickname != nil)
+	assert.True(t, response.Msg.GetUsers()[1].Nickname == nil)
+	assert.True(t, response.Msg.GetUsers()[0].GetProfile().MarketingConsent != nil)
+	assert.True(t, response.Msg.GetUsers()[1].GetProfile().MarketingConsent == nil)
+	assert.Equal(t, []byte{0, 1, 2, 3, 255}, response.Msg.GetUsers()[0].GetAvatar())
 
-	wire, err := proto.Marshal(response)
+	wire, err := proto.Marshal(response.Msg)
 	assert.NoError(t, err)
 	binaryMessage := dynamicpb.NewMessage(listUsers.Output())
 	assert.NoError(t, proto.Unmarshal(wire, binaryMessage))
@@ -236,26 +239,10 @@ func assertHealthStatus(t *testing.T, handler http.Handler, path string, expecte
 	assert.Equal(t, expected, response.Code)
 }
 
-func newTestClient(t *testing.T, service *sample.Service) samplepb.UserServiceClient {
+func newTestClient(t *testing.T, service *sample.Service) samplepbconnect.UserServiceClient {
 	t.Helper()
-	listener := bufconn.Listen(1024 * 1024)
-	server := grpc.NewServer()
-	samplepb.RegisterUserServiceServer(server, service)
-	// Join the serving goroutine during cleanup so tests cannot leak active RPC work.
-	done := make(chan error, 1)
-	go func() { done <- server.Serve(listener) }()
-	t.Cleanup(func() {
-		server.Stop()
-		assert.NoError(t, <-done)
-	})
-	connection, err := grpc.NewClient("passthrough:///sample",
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) {
-			conn, err := listener.DialContext(ctx)
-			return conn, errors.Wrap(err, "dial sample server")
-		}),
-	)
-	assert.NoError(t, err)
-	t.Cleanup(func() { assert.NoError(t, connection.Close()) })
-	return samplepb.NewUserServiceClient(connection)
+	_, handler := samplepbconnect.NewUserServiceHandler(service)
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+	return samplepbconnect.NewUserServiceClient(server.Client(), server.URL)
 }

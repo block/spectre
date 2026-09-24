@@ -13,6 +13,9 @@ status=0
 
 for file do
   [ -f "$file" ] || continue
+  if grep -q '^// Code generated .* DO NOT EDIT\.$' "$file"; then
+    continue
+  fi
 
   awk '
     function reject(start) {

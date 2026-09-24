@@ -1,0 +1,12 @@
+version: v2
+modules:
+  - path: internal/sample/proto
+lint:
+  use:
+    - STANDARD
+  # Preserve the existing flat sample layout and generated import path.
+  except:
+    - PACKAGE_DIRECTORY_MATCH
+breaking:
+  use:
+    - FILE
