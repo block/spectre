@@ -2,6 +2,10 @@
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
+# Hooks export repository-local Git variables; clear them for the nested repository.
+while IFS= read -r variable; do
+  unset "$variable"
+done < <(git rev-parse --local-env-vars)
 testdir="$(mktemp -d)"
 trap 'rm -rf "$testdir"' EXIT
 
