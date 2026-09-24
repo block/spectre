@@ -32,3 +32,16 @@
 - Define and use constructor functions for all public types.
 - Keep every comment to at most two lines.
 - Document every public symbol.
+
+# Go testing
+
+- Use `github.com/alecthomas/assert/v2` for assertions. Remember that
+  `assert.Equal()` performs a deep comparison.
+- Compare whole objects rather than individual fields. Exclude dynamic values
+  with `assert.Equal(t, expected, actual, assert.Exclude[T]())`.
+- Use table-driven tests when cases can be parameterized on data. Otherwise,
+  create distinct test functions.
+- Name Go test functions and subtests in UpperCamelCase. Never use underscores
+  in test function names.
+- Update an existing Go test when appropriate instead of creating a new one.
+- Run necessary tests with `go test -timeout 30s`. Do not generally use `-v`.
