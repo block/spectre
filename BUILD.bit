@@ -12,7 +12,20 @@ test-go = go.test {
   depends_on = [sample-proto]
 }
 fmt-go = go.fmt {}
+fmt-check-go = go.fmt-l {}
+fmt-action-pins = exec {
+  command = "ratchet pin .github/workflows/*.yml"
+  inputs = [".github/workflows/*.yml", "bin/.ratchet-0.12.0.pkg"]
+}
 lint-go = go.lint { depends_on = [sample-proto] }
+lint-actions = exec {
+  command = "actionlint"
+  inputs = [".github/workflows/*.yml", "bin/.actionlint-1.7.12.pkg"]
+}
+lint-action-pins = exec {
+  command = "ratchet lint .github/workflows/*.yml"
+  inputs = [".github/workflows/*.yml", "bin/.ratchet-0.12.0.pkg"]
+}
 
 explicit sample-bin = go.exe {
   package = "./cmd/spectre-sample"
@@ -27,7 +40,7 @@ target sample = [sample-bin]
 target test = [test-go]
 
 # Lint everything
-target lint = [lint-go]
+target lint = [lint-go, lint-actions, lint-action-pins, fmt-check-go]
 
 # Format everything
-target fmt = [fmt-go]
+target fmt = [fmt-go, fmt-action-pins]
