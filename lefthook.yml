@@ -12,7 +12,7 @@ pre-commit:
 commit-msg:
   commands:
     conventional-commit:
-      run: bin/git-sv validate-commit-message --path . --file "{1}" --source message
+      run: bin/git-sv validate-commit-message --path / --file "$(realpath "{1}")" --source message
 
 pre-push:
   commands:

@@ -21,12 +21,15 @@ Run a second sample on port 50052, then start the ingress proxy:
 
 ```sh
 ./scripts/spectre-ingress serve \
-  --reference=http://127.0.0.1:50051 \
-  --candidate=http://127.0.0.1:50052
+  --reference=h2c://127.0.0.1:50051 \
+  --candidate=h2c://127.0.0.1:50052
 ```
 
 The proxy listens on `127.0.0.1:50050` by default. It accepts HTTP/1 and unencrypted
-HTTP/2 so the sample can be called through the proxy with `grpcurl`.
+HTTP/2 so the sample can be called through the proxy with `grpcurl`. Use `h2c://`
+for a plaintext HTTP/2 backend. Candidate backends must use a literal loopback IP.
+If candidate buffering or concurrency reaches its limit, the proxy cancels all
+candidate requests and stops mirroring until the process restarts.
 
 The sample serves plaintext gRPC on `127.0.0.1:50051` with reflection enabled.
 Use `--listen=127.0.0.1:50052` to run a second instance and `--data=path/to/users.json`

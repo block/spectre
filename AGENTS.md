@@ -6,6 +6,11 @@
 - Do not put application logic in main entry points.
 - Do not use global state outside main entry points.
 - Read environment variables only in main entry points, then pass configuration explicitly.
+- Each package that exposes command-line options owns its Kong-tagged `Config` type.
+- Embed package configs in CLI commands with `embed:""`; do not pre-initialise CLI defaults because Kong resets them.
+- Pass the complete parsed config to the package constructor instead of unpacking individual fields.
+- Use `kong.ApplyDefaults()` in config constructors so Kong tags remain the single source of default values.
+- Define config validation as a `Validate()` method on the package-owned `Config` type.
 - Put all other code in the top-level `internal` directory unless it is explicitly part of a public API.
 
 # Automation
