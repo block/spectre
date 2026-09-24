@@ -40,14 +40,17 @@ jobs:
           echo "should_release=true" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
       - name: Log in to GitHub Container Registry
+        if: steps.release.outputs.should_release == 'true'
         env:
           GHCR_TOKEN: ${{ github.token }}
         run: echo "$GHCR_TOKEN" | docker login ghcr.io --username "${{ github.actor }}" --password-stdin
       - name: Log in to Docker Hub
+        if: steps.release.outputs.should_release == 'true'
         env:
           DOCKER_HUB_PUSH_TOKEN: ${{ secrets.DOCKER_HUB_PUSH_TOKEN }}
         run: echo "$DOCKER_HUB_PUSH_TOKEN" | docker login --username blockossreleases --password-stdin
       - name: Publish container images
+        if: steps.release.outputs.should_release == 'true'
         env:
           VERSION: ${{ steps.release.outputs.version }}
         run: publish-container-images "$VERSION"
