@@ -119,9 +119,9 @@ func (b *streamBody) append(data []byte) {
 	}
 	for len(data) > 0 {
 		if b.tail == nil || len(b.tail.data) == cap(b.tail.data) {
-			capacity := min(bufferBlockSize, b.budget.limit)
+			capacity := min(bufferBlockSize, b.budget.capacityLimit())
 			if !b.budget.reserve(capacity) {
-				overflowError := errors.Errorf("candidate request buffer exceeded %d bytes", b.budget.limit)
+				overflowError := errors.Errorf("candidate request buffer exceeded %d bytes", b.budget.capacityLimit())
 				b.writerClosed = true
 				b.writerError = overflowError
 				b.clearBuffer()
@@ -193,6 +193,10 @@ type bufferBudget struct {
 
 func newBufferBudget(limit int) *bufferBudget {
 	return &bufferBudget{limit: limit}
+}
+
+func (b *bufferBudget) capacityLimit() int {
+	return b.limit
 }
 
 func (b *bufferBudget) reserve(size int) bool {

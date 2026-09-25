@@ -23,9 +23,9 @@ func New(next http.Handler, log *slog.Logger) *Handler {
 // ServeHTTP logs the method, path, response status, and elapsed time.
 func (h *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	start := time.Now()
-	response := &responseWriter{ResponseWriter: writer}
+	response := newResponseWriter(writer)
 	h.next.ServeHTTP(response, request)
-	status := response.status
+	status := response.statusCode()
 	if status == 0 {
 		status = http.StatusOK
 	}
@@ -40,6 +40,14 @@ func (h *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 type responseWriter struct {
 	http.ResponseWriter
 	status int
+}
+
+func newResponseWriter(writer http.ResponseWriter) *responseWriter {
+	return &responseWriter{ResponseWriter: writer}
+}
+
+func (w *responseWriter) statusCode() int {
+	return w.status
 }
 
 func (w *responseWriter) WriteHeader(status int) {

@@ -226,11 +226,11 @@ func (h *Handler) quarantine(ctx context.Context, reason error) {
 
 func newReverseProxy(target *backendURL, transport http.RoundTripper, log *slog.Logger, discard bool) *httputil.ReverseProxy {
 	if configured, ok := transport.(*Transport); ok {
-		transport = configured.forBackend(target.h2c)
+		transport = configured.forBackend(target.usesH2C())
 	}
 	return &httputil.ReverseProxy{
 		Rewrite: func(request *httputil.ProxyRequest) {
-			request.SetURL(target.url)
+			request.SetURL(target.target())
 			for name := range request.Out.Header {
 				if strings.HasPrefix(http.CanonicalHeaderKey(name), "X-Forwarded-") {
 					request.Out.Header.Del(name)
@@ -298,6 +298,14 @@ func parseBackendURL(value string) (*backendURL, error) {
 		port = uint16(portNumber)
 	}
 	return &backendURL{url: parsed, h2c: h2c, port: port}, nil
+}
+
+func (u *backendURL) target() *url.URL {
+	return u.url
+}
+
+func (u *backendURL) usesH2C() bool {
+	return u.h2c
 }
 
 func (u *backendURL) identity() string {

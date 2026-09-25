@@ -271,7 +271,7 @@ func TestDescriptorMismatchKeepsServerUnreadyAndLogs(t *testing.T) {
 		return &descriptorpb.FileDescriptorSet{File: []*descriptorpb.FileDescriptorProto{{Name: &endpoint}}}, nil
 	})
 	messages := make(chan string, 2)
-	handler, err := ingress.New(config, http.DefaultTransport, descriptors, slog.New(&observedLogHandler{messages: messages}))
+	handler, err := ingress.New(config, http.DefaultTransport, descriptors, slog.New(newObservedLogHandler(messages)))
 	assert.NoError(t, err)
 	listener, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
 	assert.NoError(t, err)
@@ -353,7 +353,7 @@ func TestServeDrainsReferenceAfterContextCancellation(t *testing.T) {
 	}
 	cancel()
 	select {
-	case <-observedListener.closed:
+	case <-observedListener.closedSignal():
 	case <-time.After(time.Second):
 		t.Fatal("ingress listener did not close during shutdown")
 	}
@@ -804,6 +804,10 @@ type observedLogHandler struct {
 	messages chan<- string
 }
 
+func newObservedLogHandler(messages chan<- string) *observedLogHandler {
+	return &observedLogHandler{messages: messages}
+}
+
 func (h *observedLogHandler) Enabled(ctx context.Context, level slog.Level) (enabled bool) {
 	_, _ = ctx, level
 	return true
@@ -839,6 +843,10 @@ type closeObservedListener struct {
 
 func newCloseObservedListener(listener net.Listener) *closeObservedListener {
 	return &closeObservedListener{Listener: listener, closed: make(chan struct{})}
+}
+
+func (l *closeObservedListener) closedSignal() <-chan struct{} {
+	return l.closed
 }
 
 func (l *closeObservedListener) Close() error {

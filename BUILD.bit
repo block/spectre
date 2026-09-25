@@ -42,6 +42,11 @@ fmt-action-pins = exec {
   inputs = [".github/workflows/*.yml", "bin/.ratchet-0.12.0.pkg"]
 }
 lint-go = go.lint { depends_on = [sample-proto] }
+lint-encapsulation = exec.test {
+  command = "encapsulation ./..."
+  inputs = ["cmd/encapsulation/*.go", "internal/**/*.go", "go.mod", "go.sum"]
+  depends_on = [sample-proto]
+}
 lint-proto = exec.test {
   command = "buf lint"
   inputs = ["buf.yaml", "internal/sample/proto/*.proto", "bin/.buf-1.73.0.pkg"]
@@ -91,7 +96,7 @@ target publish-container = [publish-release-image]
 target test = [test-go, test-comment-length, test-launcher, test-release-version, test-container-publisher]
 
 # Lint everything
-target lint = [lint-go, lint-proto, lint-actions, lint-action-pins, lint-dockerfile, lint-scripts, fmt-check-go]
+target lint = [lint-go, lint-encapsulation, lint-proto, lint-actions, lint-action-pins, lint-dockerfile, lint-scripts, fmt-check-go]
 
 # Format everything
 target fmt = [fmt-go, fmt-action-pins]
