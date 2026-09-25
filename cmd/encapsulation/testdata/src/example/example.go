@@ -29,6 +29,10 @@ func newWidget(value int) Widget {
 	return Widget{value: value}
 }
 
+func Widgetf(value int) Widget {
+	return Widget{value: value}
+}
+
 func parseWidget(value int) Widget {
 	widget := Widget{}
 	widget.value = value
@@ -48,10 +52,19 @@ func readWidget(widget *Widget) int {
 }
 
 func buildValue() *Widget {
-	return &Widget{} // want "Widget may only be constructed by New or a constructor ending in Widget"
+	return &Widget{} // want "Widget may only be constructed by New, Widgetf, or a constructor ending in Widget"
 }
 
-var allocatedWidget = new(Widget) // want "Widget may only be constructed by New or a constructor ending in Widget"
+var allocatedWidget = new(Widget) // want "Widget may only be constructed by New, Widgetf, or a constructor ending in Widget"
+
+type FormatValue struct {
+	value int
+}
+
+func FormatValuef() int {
+	_ = FormatValue{} // want "FormatValue may only be constructed by New, FormatValuef, or a constructor ending in FormatValue"
+	return 0
+}
 
 type Other struct {
 	value int
@@ -86,7 +99,7 @@ func (b Box[T]) Value() T {
 }
 
 func buildGeneric() Box[int] {
-	return Box[int]{} // want "Box may only be constructed by New or a constructor ending in Box"
+	return Box[int]{} // want "Box may only be constructed by New, Boxf, or a constructor ending in Box"
 }
 
 type secret struct {
@@ -122,5 +135,5 @@ func readPrivateCounter(counter privateCounter) int {
 }
 
 func buildCounter() privateCounter {
-	return privateCounter{} // want "privateCounter may only be constructed by New or a constructor ending in PrivateCounter"
+	return privateCounter{} // want "privateCounter may only be constructed by New, privateCounterf, or a constructor ending in PrivateCounter"
 }

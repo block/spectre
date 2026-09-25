@@ -13,6 +13,7 @@ import (
 
 // Serve accepts ingress traffic until the context is cancelled or the server fails.
 func (h *Handler) Serve(ctx context.Context, listener net.Listener) error {
+	// Explicit shutdown owns request lifetime after the signal starts shutdown ordering.
 	serverContext := context.WithoutCancel(ctx)
 	protocols := new(http.Protocols)
 	protocols.SetHTTP1(true)
@@ -77,6 +78,7 @@ func (h *Handler) Serve(ctx context.Context, listener net.Listener) error {
 	}
 }
 
+// compareDescriptors makes readiness contingent on one schema shared by both backends.
 func (h *Handler) compareDescriptors(ctx context.Context) {
 	reflectionContext, cancel := context.WithTimeout(ctx, h.config.ReflectionTimeout)
 	defer cancel()
@@ -87,6 +89,10 @@ func (h *Handler) compareDescriptors(ctx context.Context) {
 	}
 	if !proto.Equal(reference, candidate) {
 		h.log.ErrorContext(ctx, "Backend descriptors differ")
+		return
+	}
+	if err := h.comparator.Configure(reflectionContext, reference); err != nil {
+		h.log.ErrorContext(ctx, "Response comparison setup failed", "error", err)
 		return
 	}
 	h.health.SetReady(true)

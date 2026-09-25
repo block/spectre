@@ -1,0 +1,4 @@
+reference ready=http:55151/readyz=204 timeout=30s: spectre-sample --listen=127.0.0.1:55151 --log-json
+candidate ready=http:55152/readyz=204 timeout=30s: spectre-sample --listen=127.0.0.1:55152 --data="${SPECTRE_CANDIDATE_DATA:-internal/sample/testdata/users.json}" --log-json
+ingress after=reference,candidate ready=http:55150/readyz=204 timeout=30s: spectre-ingress --listen=127.0.0.1:55150 --reference=h2c://127.0.0.1:55151 --candidate=h2c://127.0.0.1:55152 --comparison-script="${SPECTRE_COMPARISON_SCRIPT:-internal/sample/comparison.js}" --log-level=debug --log-json
+verify! after=ingress: if [ -n "${SPECTRE_PROCTOR_LOG:-}" ]; then response-comparison.integration.test.sh verify; fi

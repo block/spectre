@@ -35,6 +35,7 @@ func (s *Server) Serve(ctx context.Context, listener net.Listener) error {
 		Protocols:         protocols,
 		ReadHeaderTimeout: 10 * time.Second,
 		BaseContext: func(net.Listener) context.Context {
+			// Server closure, after readiness withdrawal, owns request cancellation.
 			return context.WithoutCancel(ctx)
 		},
 	}

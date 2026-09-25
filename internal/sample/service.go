@@ -1,4 +1,4 @@
-// Package sample provides a deterministic Connect service for ingress experiments.
+// Package sample provides a Connect service for ingress experiments.
 package sample
 
 import (
@@ -9,6 +9,7 @@ import (
 	"github.com/alecthomas/errors"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	samplepb "github.com/block/spectre/internal/sample/pb"
 )
@@ -58,7 +59,7 @@ func (s *Service) GetUser(ctx context.Context, request *connect.Request[samplepb
 	return nil, connect.NewError(connect.CodeNotFound, errors.New("user not found"))
 }
 
-// ListUsers filters by IDs and optional role, preserving fixture order and its fixed timestamp.
+// ListUsers filters by IDs and optional role, preserving fixture order.
 func (s *Service) ListUsers(ctx context.Context, request *connect.Request[samplepb.ListUsersRequest]) (*connect.Response[samplepb.ListUsersResponse], error) {
 	if err := ctx.Err(); err != nil {
 		code := connect.CodeCanceled
@@ -68,6 +69,8 @@ func (s *Service) ListUsers(ctx context.Context, request *connect.Request[sample
 		return nil, connect.NewError(code, errors.Wrap(err, "list users"))
 	}
 	response := proto.Clone(s.snapshot).(*samplepb.ListUsersResponse)
+	// A per-call timestamp ensures integration tests exercise ignored-field comparison.
+	response.GeneratedAt = timestamppb.Now()
 	users := response.GetUsers()
 	response.Users = nil
 	for _, user := range users {

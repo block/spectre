@@ -37,6 +37,7 @@ func (h *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	)
 }
 
+// responseWriter records the first committed status while preserving optional HTTP APIs.
 type responseWriter struct {
 	http.ResponseWriter
 	status int

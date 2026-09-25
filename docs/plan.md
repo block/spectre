@@ -9,14 +9,12 @@ separate prerequisites for safe mirroring.
 ## Host
 
 - Go loads local protobuf descriptor sets and resolves gRPC methods and types.
-- Go decodes binary protobuf and ProtoJSON into consistent JS objects. Preserve
+- Go decodes unary binary gRPC and Connect ProtoJSON into consistent JS objects. Preserve
   protobuf presence, JSON field names, string-encoded 64-bit integers, and base64
   bytes. Unsupported or unknown data must not silently disappear.
-- Generate TypeScript declarations matching those objects. Scripts never handle
-  descriptors.
-- Embed [esbuild](https://esbuild.github.io/api/#go) to compile TypeScript at load
-  time. Run the JavaScript in [Sobek](https://github.com/grafana/sobek). Use TS7 for
-  type-checking during development and CI; esbuild only transpiles.
+- Initially load one plain JavaScript module and resolve its `spectre` import in
+  [Sobek](https://github.com/grafana/sobek). TypeScript declarations, other imports,
+  and esbuild compilation are deferred. Scripts never handle descriptors.
 - Validate registrations before activation. Use synchronous callbacks, a fresh runtime
   per comparison, bounded workers, payload limits, and execution deadlines.
 - Keep bootstrap in `cmd/<command>` and application logic under `internal`, with
@@ -48,14 +46,14 @@ booleans. There are no comparator objects, argument wrappers, normalisation hook
 or delegation callbacks. Functions can normalise temporary copies internally.
 
 The host runs custom comparators from leaves upward, with the optional RPC function
-last. Payloads remain intact and protected from mutation. Go tracks handled fields
-and subtrees by concrete path, then structurally compares everything unhandled.
-Default comparison waits until custom dispatch finishes.
+last. Comparator arguments are protected from mutation. When a comparator succeeds,
+the host deletes its field or subtree from temporary copies of both payloads, then
+structurally compares everything remaining.
 
-Parents receive complete objects. A parent returning true cannot override a child
-failure. Type and RPC comparators cover their scopes, including anything descendants
-have not checked. Without an RPC comparator, structural comparison handles the
-remainder. Equivalence requires every callback to return true and all unhandled
+Parents receive objects with successful child scopes removed. A parent returning true
+cannot override a recorded child failure. Type and RPC comparators delete their scopes
+when they succeed. Without an RPC comparator, structural comparison handles the
+remainder. Equivalence requires every callback to return true and all remaining
 structure to match. Errors and non-boolean returns mean unable to compare.
 
 For example, field comparators can compare user roles without regard to order and
@@ -66,12 +64,11 @@ user IDs, names, and user ordering. Neither comparator deletes fields.
 
 ### 1. Resolve comparison and transport decisions
 
-- [ ] Define missing-value arguments, including how missing values differ from
-  present default values.
+- [x] Pass missing field values as JavaScript `undefined`, distinct from present
+  protobuf default values.
 - [ ] Define unordered-array pairing before child comparisons so positional
   failures cannot later be erased by a parent comparator.
-- [ ] Decide unary-first scope and exact JSON transport support. Define
-  stream-message pairing if streaming is included in the initial scope.
+- [x] Start with unary binary gRPC and Connect JSON. Defer gRPC-Web and streaming.
 - [ ] Define the policy for unable-to-compare outcomes, quarantine recovery,
   application metadata, and capture delivery failures.
 
@@ -81,9 +78,9 @@ user IDs, names, and user ordering. Neither comparator deletes fields.
   methods without relying on process-global registrations.
 - [x] Reject malformed or empty descriptor sets, missing imports, duplicate
   definitions, and unresolved types; test loading and lookup failures.
-- [ ] Decode binary protobuf and ProtoJSON into consistent JS objects, preserving
+- [x] Decode binary protobuf and ProtoJSON into consistent JS objects, preserving
   presence, JSON field names, string-encoded 64-bit integers, and base64 bytes.
-- [ ] Handle unsupported and unknown data explicitly without silently dropping it.
+- [x] Handle unsupported and unknown data explicitly without silently dropping it.
 - [ ] Generate TypeScript declarations matching the decoded objects and directly
   typed comparator arguments, without exposing descriptors to scripts.
 - [ ] Test the host's binary/JSON decoding equivalence, presence, precision,
@@ -93,16 +90,16 @@ user IDs, names, and user ordering. Neither comparator deletes fields.
 
 - [ ] Embed esbuild to compile a TypeScript entry file and optional helper imports
   at load time.
-- [ ] Run the compiled JavaScript in Sobek and provide the `spectre` module's
-  `field`, `message`, and `rpc` registration functions during module evaluation.
+- [x] Run plain JavaScript modules in Sobek and provide `field`, `message`, and
+  `rpc` registration functions from the imported `spectre` module.
 - [ ] Validate targets against the schema and reject unresolved targets and
   duplicate registrations before activation.
 - [ ] Support registering the same ordinary function for multiple targets without
   requiring exports or filename conventions.
-- [ ] Enforce synchronous callbacks with two direct arguments and boolean results.
+- [x] Enforce synchronous callbacks with two direct arguments and boolean results.
   Treat errors and non-boolean results as unable to compare.
-- [ ] Use a fresh runtime for each comparison and protect payloads from mutation.
-- [ ] Bound comparison workers and payload sizes, and enforce execution deadlines.
+- [x] Use a fresh runtime for each comparison and protect payloads from mutation.
+- [x] Bound comparison work and payload sizes, and enforce execution deadlines.
 - [ ] Add TS7 type-checking to development and CI through `bit`; keep esbuild
   responsible only for transpilation.
 - [ ] Test script loading, invalid registrations, runtime isolation, immutable
@@ -110,15 +107,14 @@ user IDs, names, and user ordering. Neither comparator deletes fields.
 
 ### 4. Dispatch comparators and compare remaining structure
 
-- [ ] Traverse payloads from leaves upward, using the agreed missing-value and
+- [x] Traverse payloads from leaves upward, using the agreed missing-value and
   array-pairing rules independently of registration order.
-- [ ] Give field comparators precedence over message comparators at the same
+- [x] Give field comparators precedence over message comparators at the same
   location, and run response-message comparators before the final RPC comparator.
-- [ ] Pass complete objects to parents and preserve every child failure regardless
+- [x] Pass pruned objects to parents and preserve every child failure regardless
   of parent or RPC results.
-- [ ] Track handled fields and subtrees by concrete occurrence paths in Go.
-  Message and RPC comparators cover their full scopes.
-- [ ] Structurally compare all unhandled data after custom dispatch finishes.
+- [x] Delete successful fields and subtrees from temporary payload copies.
+- [x] Structurally compare all remaining data after custom dispatch finishes.
 - [ ] Report equivalence only when every callback returns true and all unhandled
   structure matches; keep divergence distinct from unable-to-compare outcomes.
 - [ ] Test precedence, callback ordering, repeated-message occurrences, parent
@@ -152,8 +148,8 @@ user IDs, names, and user ordering. Neither comparator deletes fields.
 
 ## Open decisions
 
-- Missing-value arguments and unordered-array pairing before child comparisons.
-  Positional child failures cannot later be erased by an unordered parent rule.
-- Unary-first scope, exact JSON transport support, and stream-message pairing.
-- Policy for unable-to-compare outcomes, quarantine recovery, application metadata,
+- Unordered-array pairing before child comparisons. Positional child failures
+  cannot later be erased by an unordered parent rule.
+- Stream-message pairing when streaming comparison is added.
+- Quarantine recovery, application metadata,
   and capture delivery failures.

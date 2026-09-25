@@ -12,15 +12,17 @@ import (
 	"github.com/alecthomas/kong"
 
 	"github.com/block/spectre/internal"
+	"github.com/block/spectre/internal/comparison"
 	"github.com/block/spectre/internal/ingress"
 	"github.com/block/spectre/internal/logger"
 	"github.com/block/spectre/internal/schema"
 )
 
 type cli struct {
-	Log            logger.Config    `embed:""`
-	Version        kong.VersionFlag `help:"Print the version and exit."`
-	ingress.Config `embed:""`
+	Log        logger.Config     `embed:""`
+	Version    kong.VersionFlag  `help:"Print the version and exit."`
+	Ingress    ingress.Config    `embed:""`
+	Comparison comparison.Config `embed:""`
 }
 
 type commandContext struct {
@@ -39,13 +41,17 @@ func main() {
 }
 
 func (c *cli) Run(runtime *commandContext) error {
-	transport := ingress.NewTransport(c.Config)
+	transport := ingress.NewTransport(c.Ingress)
 	defer transport.CloseIdleConnections()
-	handler, err := ingress.New(c.Config, transport, schema.NewReflectionLoader(), runtime.log)
+	comparator, err := comparison.New(runtime.ctx, c.Comparison, runtime.log)
+	if err != nil {
+		return errors.Wrap(err, "configure response comparison")
+	}
+	handler, err := ingress.New(c.Ingress, transport, schema.NewReflectionLoader(), comparator, runtime.log)
 	if err != nil {
 		return errors.Wrap(err, "configure ingress")
 	}
-	listener, err := (&net.ListenConfig{}).Listen(runtime.ctx, "tcp", c.Listen)
+	listener, err := (&net.ListenConfig{}).Listen(runtime.ctx, "tcp", c.Ingress.Listen)
 	if err != nil {
 		return errors.Wrap(err, "listen for HTTP requests")
 	}

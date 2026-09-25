@@ -17,11 +17,13 @@ import (
 	"github.com/alecthomas/errors"
 	"google.golang.org/protobuf/types/descriptorpb"
 
+	"github.com/block/spectre/internal/comparison"
 	"github.com/block/spectre/internal/middleware/health"
 	"github.com/block/spectre/internal/middleware/logging"
 )
 
-// Handler forwards requests to both backends and returns only the reference response.
+// Handler returns reference responses without waiting for candidate comparison.
+// It tracks every candidate run so quarantine and shutdown can cancel all owned work.
 type Handler struct {
 	reference   *httputil.ReverseProxy
 	candidate   *httputil.ReverseProxy
@@ -31,7 +33,9 @@ type Handler struct {
 	requests    chan struct{}
 	health      *health.Handler
 	descriptors DescriptorLoader
+	comparator  ResponseComparator
 
+	// mu serializes candidate admission with process-lifetime quarantine and shutdown.
 	mu            sync.Mutex
 	closing       bool
 	quarantined   bool
@@ -44,12 +48,40 @@ type DescriptorLoader interface {
 	Load(ctx context.Context, endpoint string) (*descriptorpb.FileDescriptorSet, error)
 }
 
+// ResponseComparator compares paired backend responses against a shared schema.
+type ResponseComparator interface {
+	MaxResponseBytes() int
+	Configure(ctx context.Context, set *descriptorpb.FileDescriptorSet) error
+	Compare(
+		ctx context.Context,
+		requestPath string,
+		requestContentType string,
+		reference comparison.Response,
+		candidate comparison.Response,
+	) comparison.Result
+}
+
+// candidateRun gives each non-comparable cancellation function stable map identity.
 type candidateRun struct {
-	cancel context.CancelFunc
+	cancelContext context.CancelFunc
+}
+
+func newCandidateRun(cancel context.CancelFunc) *candidateRun {
+	return &candidateRun{cancelContext: cancel}
+}
+
+func (r *candidateRun) cancel() {
+	r.cancelContext()
 }
 
 // New constructs an ingress handler from its parsed configuration.
-func New(config Config, transport http.RoundTripper, descriptors DescriptorLoader, log *slog.Logger) (*Handler, error) {
+func New(
+	config Config,
+	transport http.RoundTripper,
+	descriptors DescriptorLoader,
+	comparator ResponseComparator,
+	log *slog.Logger,
+) (*Handler, error) {
 	if err := config.Validate(); err != nil {
 		return nil, err
 	}
@@ -58,6 +90,9 @@ func New(config Config, transport http.RoundTripper, descriptors DescriptorLoade
 	}
 	if descriptors == nil {
 		return nil, errors.New("descriptor loader is required")
+	}
+	if comparator == nil {
+		return nil, errors.New("response comparator is required")
 	}
 	if log == nil {
 		return nil, errors.New("logger is required")
@@ -92,6 +127,7 @@ func New(config Config, transport http.RoundTripper, descriptors DescriptorLoade
 		buffer:        newBufferBudget(config.CandidateBufferBytes),
 		requests:      make(chan struct{}, config.MaxInFlightRequests),
 		descriptors:   descriptors,
+		comparator:    comparator,
 		candidateRuns: make(map[*candidateRun]struct{}),
 		idle:          idle,
 	}
@@ -114,6 +150,7 @@ func (h *Handler) serveProxy(writer http.ResponseWriter, request *http.Request) 
 		return
 	}
 
+	// Candidate work may outlive reference delivery, but its own timeout bounds its lifetime.
 	candidateContext := context.WithoutCancel(request.Context())
 	candidateContext, cancel := context.WithTimeout(candidateContext, h.config.CandidateTimeout)
 	candidateRun, capacityExceeded := h.startCandidate(cancel)
@@ -121,6 +158,8 @@ func (h *Handler) serveProxy(writer http.ResponseWriter, request *http.Request) 
 		h.quarantine(candidateContext, errors.New("candidate concurrency limit exceeded"))
 	}
 	var candidateBody *streamBody
+	// A buffered handoff keeps candidate timeout from blocking the reference path.
+	referenceResponse := make(chan comparison.Response, 1)
 	if candidateRun != nil {
 		candidateBody = newStreamBody(h.buffer, func(err error) {
 			h.quarantine(candidateContext, err)
@@ -135,7 +174,22 @@ func (h *Handler) serveProxy(writer http.ResponseWriter, request *http.Request) 
 			defer cancel()
 			defer h.finishCandidate(candidateRun)
 			defer candidateBody.closeReader()
-			h.candidate.ServeHTTP(newDiscardResponseWriter(), candidateRequest)
+			candidateWriter := newCaptureResponseWriter(newDiscardResponseWriter(), h.comparator.MaxResponseBytes())
+			h.candidate.ServeHTTP(candidateWriter, candidateRequest)
+			// The candidate run owns comparison so its existing limits also bound this work.
+			select {
+			case reference := <-referenceResponse:
+				result := h.comparator.Compare(
+					candidateContext,
+					request.URL.Path,
+					request.Header.Get("Content-Type"),
+					reference,
+					candidateWriter.Response(),
+				)
+				h.handleComparison(candidateContext, result)
+			case <-candidateContext.Done():
+				h.log.WarnContext(context.WithoutCancel(candidateContext), "Response comparison did not finish", "error", candidateContext.Err())
+			}
 		}()
 	} else {
 		cancel()
@@ -146,7 +200,28 @@ func (h *Handler) serveProxy(writer http.ResponseWriter, request *http.Request) 
 		referenceRequest.Body = newMirrorBody(request.Body, candidateBody, cancel)
 	}
 	referenceRequest.GetBody = nil
-	h.reference.ServeHTTP(writer, referenceRequest)
+	if candidateRun == nil {
+		h.reference.ServeHTTP(writer, referenceRequest)
+		return
+	}
+	referenceWriter := newCaptureResponseWriter(writer, h.comparator.MaxResponseBytes())
+	h.reference.ServeHTTP(referenceWriter, referenceRequest)
+	referenceResponse <- referenceWriter.Response()
+}
+
+// handleComparison applies the fail-closed policy for divergence and comparison failure.
+func (h *Handler) handleComparison(ctx context.Context, result comparison.Result) {
+	switch result.Outcome() {
+	case comparison.Equivalent:
+	case comparison.Skipped:
+		h.log.DebugContext(ctx, "Response comparison skipped", "reason", result.Reason())
+	case comparison.Divergent:
+		h.quarantine(ctx, errors.Errorf("response differences: %s", strings.Join(result.Differences(), ", ")))
+	case comparison.Unable:
+		h.quarantine(ctx, errors.Errorf("response comparison failed: %s", result.Reason()))
+	default:
+		h.quarantine(ctx, errors.Errorf("response comparison returned unknown outcome %q", result.Outcome()))
+	}
 }
 
 // Shutdown stops accepting candidate work and waits for active mirrors to finish.
@@ -185,7 +260,7 @@ func (h *Handler) startCandidate(cancel context.CancelFunc) (*candidateRun, bool
 	if len(h.candidateRuns) == 0 {
 		h.idle = make(chan struct{})
 	}
-	run := &candidateRun{cancel: cancel}
+	run := newCandidateRun(cancel)
 	h.candidateRuns[run] = struct{}{}
 	return run, false
 }
@@ -254,6 +329,7 @@ func newReverseProxy(target *backendURL, transport http.RoundTripper, log *slog.
 	}
 }
 
+// backendURL retains the canonical endpoint facts used by routing safety checks.
 type backendURL struct {
 	url  *url.URL
 	h2c  bool
@@ -353,6 +429,7 @@ func (u *backendURL) targetsListener(listener string) bool {
 	return listenAddress.IsUnspecified() || listenAddress.Unmap() == target.Unmap()
 }
 
+// discardResponseWriter provides the candidate proxy sink beneath bounded capture.
 type discardResponseWriter struct {
 	header http.Header
 }

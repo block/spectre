@@ -23,6 +23,11 @@ test-launcher = exec.test {
   command = "scripts/spectre-ingress.test.sh"
   inputs = ["scripts/spectre-ingress", "scripts/spectre-ingress.test.sh"]
 }
+test-response-comparison-integration = exec.test {
+  command = "response-comparison.integration.test.sh"
+  inputs = ["Procfile.integration", "spectre.js", "scripts/response-comparison.integration.test.sh", "scripts/spectre-ingress", "internal/**/*.js"]
+  depends_on = [ingress-bin, sample-bin]
+}
 test-release-version = exec.test {
   command = "scripts/release-version.test.sh"
   inputs = [".gitsv/config.yml", "scripts/release-version.test.sh", "bin/.git-sv-3.0.2.pkg"]
@@ -73,6 +78,10 @@ explicit sample-bin = go.exe {
   output = "dist/spectre-sample"
   depends_on = [sample-proto]
 }
+explicit ingress-bin = go.exe {
+  package = "./cmd/spectre-ingress"
+  output = "dist/spectre-ingress"
+}
 explicit local-image = docker.image {
   tag = "spectre-ingress:#{version}"
   build_args = { VERSION = version }
@@ -93,7 +102,7 @@ target container = [local-image]
 target publish-container = [publish-release-image]
 
 # Run all tests
-target test = [test-go, test-comment-length, test-launcher, test-release-version, test-container-publisher]
+target test = [test-go, test-comment-length, test-launcher, test-response-comparison-integration, test-release-version, test-container-publisher]
 
 # Lint everything
 target lint = [lint-go, lint-encapsulation, lint-proto, lint-actions, lint-action-pins, lint-dockerfile, lint-scripts, fmt-check-go]

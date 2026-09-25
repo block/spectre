@@ -11,6 +11,8 @@ import (
 
 const bufferBlockSize = 4 * 1024
 
+// mirrorBody makes the reference read path the sole producer of candidate body data.
+// Closing before EOF aborts the candidate because its request would be incomplete.
 type mirrorBody struct {
 	source io.ReadCloser
 	mirror *streamBody
@@ -52,6 +54,8 @@ func (b *mirrorBody) Close() error {
 	return errors.Wrap(err, "close source request body")
 }
 
+// streamBody is a one-producer, one-consumer queue that never blocks its producer.
+// Its allocation is charged to the shared budget until read or discarded.
 type streamBody struct {
 	mu           sync.Mutex
 	ready        *sync.Cond
@@ -66,6 +70,7 @@ type streamBody struct {
 	readerClosed bool
 }
 
+// bufferChunk keeps queue allocation in bounded blocks for exact budget accounting.
 type bufferChunk struct {
 	data []byte
 	next *bufferChunk
@@ -127,6 +132,7 @@ func (b *streamBody) append(data []byte) {
 				b.clearBuffer()
 				b.ready.Broadcast()
 				b.mu.Unlock()
+				// Quarantine may cancel this reader, so invoke it after releasing the body lock.
 				b.overflow(overflowError)
 				return
 			}
@@ -178,6 +184,7 @@ func (b *streamBody) closeWriter(err error) {
 }
 
 func (b *streamBody) clearBuffer() {
+	// Callers hold b.mu so chunks cannot be consumed while their budget is released.
 	b.budget.release(b.allocated)
 	b.head = nil
 	b.tail = nil
@@ -185,6 +192,7 @@ func (b *streamBody) clearBuffer() {
 	b.allocated = 0
 }
 
+// bufferBudget caps queued candidate body memory across every in-flight request.
 type bufferBudget struct {
 	mu    sync.Mutex
 	limit int

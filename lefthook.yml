@@ -7,7 +7,7 @@ pre-commit:
     comment-length:
       glob: "*.go"
       exclude: "**/*.pb.go"
-      run: check-comment-length {staged_files}
+      run: eval "$(bin/hermit env --activate)" && check-comment-length {staged_files}
 
 commit-msg:
   commands:
@@ -17,6 +17,6 @@ commit-msg:
 pre-push:
   commands:
     lint:
-      run: bit lint
+      run: eval "$(bin/hermit env --activate)" && bit lint
     test:
-      run: bit test
+      run: eval "$(bin/hermit env --activate)" && bit test

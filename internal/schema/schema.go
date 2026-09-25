@@ -8,11 +8,13 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/reflect/protoregistry"
 	"google.golang.org/protobuf/types/descriptorpb"
+	"google.golang.org/protobuf/types/dynamicpb"
 )
 
 // Schema resolves messages and RPC methods from a local descriptor set.
 type Schema struct {
 	files *protoregistry.Files
+	types *dynamicpb.Types
 }
 
 // New loads a binary FileDescriptorSet containing all of its imported files.
@@ -20,6 +22,14 @@ func New(data []byte) (*Schema, error) {
 	set := &descriptorpb.FileDescriptorSet{}
 	if err := proto.Unmarshal(data, set); err != nil {
 		return nil, errors.Wrap(err, "decode descriptor set")
+	}
+	return NewFromFileDescriptorSet(set)
+}
+
+// NewFromFileDescriptorSet loads a descriptor set containing all imported files.
+func NewFromFileDescriptorSet(set *descriptorpb.FileDescriptorSet) (*Schema, error) {
+	if set == nil {
+		return nil, errors.New("descriptor set is nil")
 	}
 	if len(set.GetFile()) == 0 {
 		return nil, errors.New("descriptor set contains no files")
@@ -29,7 +39,16 @@ func New(data []byte) (*Schema, error) {
 	if err != nil {
 		return nil, errors.Wrap(err, "resolve descriptor set")
 	}
-	return &Schema{files: files}, nil
+	return newSchema(files), nil
+}
+
+func newSchema(files *protoregistry.Files) *Schema {
+	return &Schema{files: files, types: dynamicpb.NewTypes(files)}
+}
+
+// Types returns the dynamic types resolved from this schema.
+func (s *Schema) Types() *dynamicpb.Types {
+	return s.types
 }
 
 // Message resolves a fully qualified protobuf message name, including nested messages.

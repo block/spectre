@@ -12,6 +12,7 @@ const (
 )
 
 // Handler serves health endpoints and delegates all other requests.
+// Readiness is atomic because startup and shutdown race with request handling.
 type Handler struct {
 	next  http.Handler
 	ready atomic.Bool

@@ -19,6 +19,7 @@ func newAnalyzer() *analysis.Analyzer {
 }
 
 func run(pass *analysis.Pass) (any, error) {
+	// Fields are keyed by go/types identity so promoted and generic uses resolve correctly.
 	fieldOwners := map[*types.Var]*types.Named{}
 	for _, object := range pass.TypesInfo.Defs {
 		typeName, ok := object.(*types.TypeName)
@@ -99,7 +100,13 @@ func (v *visitor) checkConstruction(node ast.Node, objectType types.Type) {
 		return
 	}
 	suffix := constructorSuffix(named.Obj().Name())
-	v.pass.Reportf(node.Pos(), "%s may only be constructed by New or a constructor ending in %s", named.Obj().Name(), suffix)
+	v.pass.Reportf(
+		node.Pos(),
+		"%s may only be constructed by New, %sf, or a constructor ending in %s",
+		named.Obj().Name(),
+		named.Obj().Name(),
+		suffix,
+	)
 }
 
 func (v *visitor) checkNewCall(call *ast.CallExpr) {
@@ -162,7 +169,8 @@ func isConstructor(pass *analysis.Pass, function *ast.FuncDecl, named *types.Nam
 		return false
 	}
 	suffix := constructorSuffix(named.Obj().Name())
-	if function.Name.Name != "New" && !strings.HasSuffix(function.Name.Name, suffix) {
+	formatted := named.Obj().Name() + "f"
+	if function.Name.Name != "New" && function.Name.Name != formatted && !strings.HasSuffix(function.Name.Name, suffix) {
 		return false
 	}
 	object, ok := pass.TypesInfo.Defs[function.Name].(*types.Func)

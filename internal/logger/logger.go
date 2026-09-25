@@ -27,7 +27,16 @@ func New(config Config, output io.Writer) *slog.Logger {
 	if config.JSON {
 		return slog.New(slog.NewJSONHandler(output, &slog.HandlerOptions{Level: config.Level}))
 	}
-	return slog.New(tint.NewTextHandler(output, &tint.Options{Level: config.Level}))
+	return slog.New(tint.NewTextHandler(output, &tint.Options{
+		Level: config.Level,
+		ReplaceAttr: func(groups []string, attribute slog.Attr) slog.Attr {
+			// Process supervisors add a timestamp to text logs; omit a competing one here.
+			if len(groups) == 0 && attribute.Key == slog.TimeKey {
+				return slog.Attr{}
+			}
+			return attribute
+		},
+	}))
 }
 
 // WithLogger returns a child context carrying log without changing the parent context.

@@ -27,9 +27,13 @@ import (
 func TestUserRPCs(t *testing.T) {
 	service, expected := newTestService(t)
 	client := newTestClient(t, service)
+	startedAt := time.Now()
 	response, err := client.ListUsers(t.Context(), connect.NewRequest(&samplepb.ListUsersRequest{}))
+	completedAt := time.Now()
 	assert.NoError(t, err)
-	assert.True(t, proto.Equal(expected, response.Msg))
+	assertListUsersResponse(t, expected, response.Msg)
+	assert.False(t, response.Msg.GetGeneratedAt().AsTime().Before(startedAt))
+	assert.False(t, response.Msg.GetGeneratedAt().AsTime().After(completedAt))
 	user, err := client.GetUser(t.Context(), connect.NewRequest(&samplepb.GetUserRequest{Id: "user-2"}))
 	assert.NoError(t, err)
 	assert.True(t, proto.Equal(&samplepb.GetUserResponse{User: expected.GetUsers()[1]}, user.Msg))
@@ -84,7 +88,7 @@ func TestServerHealthAndGRPC(t *testing.T) {
 	)
 	response, err := client.ListUsers(t.Context(), connect.NewRequest(&samplepb.ListUsersRequest{}))
 	assert.NoError(t, err)
-	assert.True(t, proto.Equal(expected, response.Msg))
+	assertListUsersResponse(t, expected, response.Msg)
 
 	cancel()
 	select {
@@ -118,11 +122,10 @@ func TestListFilters(t *testing.T) {
 			response, err := client.ListUsers(t.Context(), connect.NewRequest(test.request))
 			assert.NoError(t, err)
 			expected := &samplepb.ListUsersResponse{
-				Users:       test.users,
-				GeneratedAt: fixture.GetGeneratedAt(),
-				TotalCount:  int64(len(test.users)),
+				Users:      test.users,
+				TotalCount: int64(len(test.users)),
 			}
-			assert.True(t, proto.Equal(expected, response.Msg))
+			assertListUsersResponse(t, expected, response.Msg)
 		})
 	}
 }
@@ -140,7 +143,7 @@ func TestResponseIsolation(t *testing.T) {
 	user.Msg.GetUser().Name = "changed"
 	unchanged, err := service.ListUsers(t.Context(), connect.NewRequest(&samplepb.ListUsersRequest{}))
 	assert.NoError(t, err)
-	assert.True(t, proto.Equal(expected, unchanged.Msg))
+	assertListUsersResponse(t, expected, unchanged.Msg)
 }
 
 func TestRejectInvalidFixture(t *testing.T) {
@@ -198,7 +201,7 @@ func TestSampleDescriptorAndEncodings(t *testing.T) {
 	assert.Equal(t, "spectre.sample.v1.GetUserResponse", string(getUser.Output().FullName()))
 	listUsers, err := loaded.Method("spectre.sample.v1.UserService.ListUsers")
 	assert.NoError(t, err)
-	service, _ := newTestService(t)
+	service, fixture := newTestService(t)
 	client := newTestClient(t, service)
 	response, err := client.ListUsers(t.Context(), connect.NewRequest(&samplepb.ListUsersRequest{}))
 	assert.NoError(t, err)
@@ -210,7 +213,9 @@ func TestSampleDescriptorAndEncodings(t *testing.T) {
 	assert.True(t, response.Msg.GetUsers()[1].GetProfile().MarketingConsent == nil)
 	assert.Equal(t, []byte{0, 1, 2, 3, 255}, response.Msg.GetUsers()[0].GetAvatar())
 
-	wire, err := proto.Marshal(response.Msg)
+	encoded := proto.Clone(response.Msg).(*samplepb.ListUsersResponse)
+	encoded.GeneratedAt = fixture.GetGeneratedAt()
+	wire, err := proto.Marshal(encoded)
 	assert.NoError(t, err)
 	binaryMessage := dynamicpb.NewMessage(listUsers.Output())
 	assert.NoError(t, proto.Unmarshal(wire, binaryMessage))
@@ -230,6 +235,14 @@ func newTestService(t *testing.T) (*sample.Service, *samplepb.ListUsersResponse)
 	fixture := &samplepb.ListUsersResponse{}
 	assert.NoError(t, protojson.Unmarshal(data, fixture))
 	return service, fixture
+}
+
+func assertListUsersResponse(t *testing.T, expected, actual *samplepb.ListUsersResponse) {
+	t.Helper()
+	assert.NoError(t, actual.GetGeneratedAt().CheckValid())
+	expected = proto.Clone(expected).(*samplepb.ListUsersResponse)
+	expected.GeneratedAt = actual.GetGeneratedAt()
+	assert.True(t, proto.Equal(expected, actual))
 }
 
 func assertHealthStatus(t *testing.T, handler http.Handler, path string, expected int) {

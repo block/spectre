@@ -69,7 +69,7 @@ func TestOutput(t *testing.T) {
 			assert.Equal(t, "", output.String())
 			log.InfoContext(t.Context(), "visible", "count", 3)
 			if !test.json {
-				assert.Contains(t, output.String(), "\x1b[92mINF\x1b[0m visible \x1b[2mcount=\x1b[0m3")
+				assert.Equal(t, "\x1b[92mINF\x1b[0m visible \x1b[2mcount=\x1b[0m3\n", output.String())
 				return
 			}
 			var record map[string]any

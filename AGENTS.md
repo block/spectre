@@ -35,6 +35,10 @@
 # Go conventions
 
 - Use `log/slog` for logging.
+- Keep a type and all of its methods in the same file. Do not split a type's
+  methods across multiple files.
+- Respect a type's encapsulation even within the same package. Access its state
+  through methods rather than reaching into its fields.
 - Wrap errors with `github.com/alecthomas/errors/v2`.
 - Define and use constructor functions for all public types.
 - Name every input parameter in function, method, and interface signatures.

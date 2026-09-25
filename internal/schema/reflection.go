@@ -48,6 +48,7 @@ func (loader *ReflectionLoader) Load(ctx context.Context, endpoint string) (*des
 
 	serviceNames := make([]protoreflect.FullName, 0, len(services))
 	for _, service := range services {
+		// Reflection services are control-plane endpoints, not application schema.
 		if !strings.HasPrefix(string(service), "grpc.reflection.") {
 			serviceNames = append(serviceNames, service)
 		}
@@ -62,6 +63,7 @@ func (loader *ReflectionLoader) Load(ctx context.Context, endpoint string) (*des
 	for name := range files {
 		fileNames = append(fileNames, name)
 	}
+	// Stable ordering makes schema equality independent of reflection response order.
 	slices.Sort(fileNames)
 	set := &descriptorpb.FileDescriptorSet{File: make([]*descriptorpb.FileDescriptorProto, 0, len(files))}
 	for _, name := range fileNames {
@@ -84,6 +86,7 @@ func loadServiceFiles(
 			if file.GetName() == "" {
 				return nil, errors.Errorf("reflected descriptor for service %q has no file name", serviceName)
 			}
+			// Dependencies may recur, but one file identity must never have two definitions.
 			if previous, ok := files[file.GetName()]; ok && !proto.Equal(previous, file) {
 				return nil, errors.Errorf("reflection returned conflicting descriptors for file %q", file.GetName())
 			}
