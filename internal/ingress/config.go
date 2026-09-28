@@ -1,6 +1,7 @@
 package ingress
 
 import (
+	"strings"
 	"time"
 
 	"github.com/alecthomas/errors"
@@ -9,12 +10,15 @@ import (
 
 // Config contains the command-line configuration for an ingress proxy.
 type Config struct {
-	// Listen is the address for the ingress HTTP server.
-	Listen string `default:"127.0.0.1:50050" help:"Address for the ingress HTTP server."`
-	// Reference is the authoritative backend URL.
-	Reference string `required:"" help:"Reference backend URL using http, https, or h2c."`
-	// Candidate is the mirrored backend URL.
-	Candidate string `required:"" help:"Candidate backend URL using a literal loopback IP and http, https, or h2c."`
+	// Listen is the address for the ingress HTTP server. A "unix:" prefix binds a
+	// unix socket, either an absolute path or an abstract name beginning with "@".
+	Listen string `default:"127.0.0.1:50050" help:"Ingress server address: host:port, or unix:<path|@abstract> for a unix socket."`
+	// Reference is the authoritative backend URL, using http, https, or h2c over
+	// TCP, or http+unix/h2c+unix over a unix socket.
+	Reference string `required:"" help:"Reference backend URL: http, https, h2c, or http+unix:<socket> / h2c+unix:<socket>."`
+	// Candidate is the mirrored backend URL. It must stay local: a loopback IP or
+	// a unix socket, using http, https, or h2c.
+	Candidate string `required:"" help:"Candidate backend URL on a loopback IP or unix socket: http, https, h2c, http+unix, or h2c+unix."`
 	// CandidateTimeout limits the duration of a candidate request.
 	CandidateTimeout time.Duration `default:"30s" help:"Maximum duration of a candidate request."`
 	// ReflectionTimeout limits the startup descriptor comparison.
@@ -47,6 +51,20 @@ func NewConfig() Config {
 	config.Reference = ""
 	config.Candidate = ""
 	return config
+}
+
+// ListenNetworkAddress reports the network and address for the ingress listener.
+func (c Config) ListenNetworkAddress() (network string, address string) {
+	return listenNetworkAddress(c.Listen)
+}
+
+// listenNetworkAddress splits a listen value into a network and address. A
+// "unix:" prefix selects a unix socket; anything else is a TCP address.
+func listenNetworkAddress(value string) (network string, address string) {
+	if socket, ok := strings.CutPrefix(value, networkUnix+":"); ok {
+		return networkUnix, socket
+	}
+	return networkTCP, value
 }
 
 // Validate checks that the ingress resource limits are usable.

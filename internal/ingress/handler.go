@@ -22,6 +22,16 @@ import (
 	"github.com/block/spectre/internal/middleware/logging"
 )
 
+// Backend URL schemes, listener networks, and the synthetic backend host.
+const (
+	schemeHTTP    = "http"
+	schemeHTTPS   = "https"
+	schemeH2C     = "h2c"
+	networkUnix   = "unix"
+	networkTCP    = "tcp"
+	hostLocalhost = "localhost"
+)
+
 // Handler returns reference responses without waiting for candidate comparison.
 // It tracks every candidate run so quarantine and shutdown can cancel all owned work.
 type Handler struct {
@@ -105,8 +115,8 @@ func New(
 	if err != nil {
 		return nil, errors.Wrap(err, "parse candidate backend")
 	}
-	if !candidate.isLoopback() {
-		return nil, errors.New("candidate backend must use a literal loopback IP address")
+	if !candidate.isLocal() {
+		return nil, errors.New("candidate backend must use a loopback IP address or a unix socket")
 	}
 	if reference.identity() == candidate.identity() {
 		return nil, errors.New("reference and candidate backends must be different")
@@ -301,7 +311,7 @@ func (h *Handler) quarantine(ctx context.Context, reason error) {
 
 func newReverseProxy(target *backendURL, transport http.RoundTripper, log *slog.Logger, discard bool) *httputil.ReverseProxy {
 	if configured, ok := transport.(*Transport); ok {
-		transport = configured.forBackend(target.usesH2C())
+		transport = configured.forBackend(target)
 	}
 	return &httputil.ReverseProxy{
 		Rewrite: func(request *httputil.ProxyRequest) {
@@ -330,19 +340,24 @@ func newReverseProxy(target *backendURL, transport http.RoundTripper, log *slog.
 }
 
 // backendURL retains the canonical endpoint facts used by routing safety checks.
+// socket is non-empty when the backend is reached over a unix domain socket.
 type backendURL struct {
-	url  *url.URL
-	h2c  bool
-	port uint16
+	url    *url.URL
+	h2c    bool
+	port   uint16
+	socket string
 }
 
 func parseBackendURL(value string) (*backendURL, error) {
+	if protocol, socket, ok := splitUnixBackend(value); ok {
+		return parseUnixBackendURL(protocol, socket, value)
+	}
 	parsed, err := url.Parse(value)
 	if err != nil {
 		return nil, errors.Wrap(err, "parse backend URL")
 	}
-	h2c := parsed.Scheme == "h2c"
-	if (parsed.Scheme != "http" && parsed.Scheme != "https" && !h2c) || parsed.Host == "" {
+	h2c := parsed.Scheme == schemeH2C
+	if (parsed.Scheme != schemeHTTP && parsed.Scheme != schemeHTTPS && !h2c) || parsed.Host == "" {
 		return nil, errors.Errorf("backend URL must be an absolute HTTP, HTTPS, or h2c URL: %q", value)
 	}
 	if parsed.User != nil || parsed.Fragment != "" || parsed.RawFragment != "" || parsed.RawQuery != "" || parsed.ForceQuery {
@@ -353,7 +368,7 @@ func parseBackendURL(value string) (*backendURL, error) {
 	}
 	parsed.Path = ""
 	if h2c {
-		parsed.Scheme = "http"
+		parsed.Scheme = schemeHTTP
 	}
 	var port uint16
 	portText := parsed.Port()
@@ -361,7 +376,7 @@ func parseBackendURL(value string) (*backendURL, error) {
 		if strings.HasSuffix(parsed.Host, ":") {
 			return nil, errors.Errorf("backend URL has an invalid port: %q", value)
 		}
-		if parsed.Scheme == "https" {
+		if parsed.Scheme == schemeHTTPS {
 			port = 443
 		} else {
 			port = 80
@@ -376,6 +391,26 @@ func parseBackendURL(value string) (*backendURL, error) {
 	return &backendURL{url: parsed, h2c: h2c, port: port}, nil
 }
 
+// splitUnixBackend detects the "<protocol>+unix:" backend forms and returns the
+// protocol and socket. ok is false when value uses no unix scheme.
+func splitUnixBackend(value string) (protocol string, socket string, ok bool) {
+	for _, scheme := range []string{schemeHTTP, schemeH2C} {
+		if trimmed, found := strings.CutPrefix(value, scheme+"+unix:"); found {
+			return scheme, trimmed, true
+		}
+	}
+	return "", "", false
+}
+
+// parseUnixBackendURL builds a backend reached over a unix socket. The socket
+// must be an absolute path or an abstract name beginning with "@".
+func parseUnixBackendURL(protocol string, socket string, value string) (*backendURL, error) {
+	if !strings.HasPrefix(socket, "/") && !strings.HasPrefix(socket, "@") {
+		return nil, errors.Errorf("unix backend socket must be an absolute path or an abstract name beginning with @: %q", value)
+	}
+	return &backendURL{url: &url.URL{Scheme: schemeHTTP, Host: hostLocalhost}, h2c: protocol == schemeH2C, socket: socket}, nil
+}
+
 func (u *backendURL) target() *url.URL {
 	return u.url
 }
@@ -384,12 +419,29 @@ func (u *backendURL) usesH2C() bool {
 	return u.h2c
 }
 
+func (u *backendURL) isUnix() bool {
+	return u.socket != ""
+}
+
+func (u *backendURL) unixSocket() string {
+	return u.socket
+}
+
 func (u *backendURL) identity() string {
+	if u.isUnix() {
+		return "unix://" + u.socket
+	}
 	host := strings.ToLower(u.url.Hostname())
 	if address, err := netip.ParseAddr(host); err == nil {
 		host = address.Unmap().String()
 	}
 	return strings.ToLower(u.url.Scheme) + "://" + net.JoinHostPort(host, strconv.Itoa(int(u.port)))
+}
+
+// isLocal reports whether the backend stays within the pod: a unix socket or a
+// loopback IP address.
+func (u *backendURL) isLocal() bool {
+	return u.isUnix() || u.isLoopback()
 }
 
 func (u *backendURL) isLoopback() bool {
@@ -398,21 +450,25 @@ func (u *backendURL) isLoopback() bool {
 }
 
 func (u *backendURL) targetsListener(listener string) bool {
-	host, port, err := net.SplitHostPort(listener)
+	network, address := listenNetworkAddress(listener)
+	if network == networkUnix || u.isUnix() {
+		return network == networkUnix && u.isUnix() && u.socket == address
+	}
+	host, port, err := net.SplitHostPort(address)
 	if err != nil {
 		return false
 	}
 	var portNumber uint16
 	if number, err := strconv.ParseUint(port, 10, 16); err == nil {
 		portNumber = uint16(number)
-	} else if number, err := net.DefaultResolver.LookupPort(context.Background(), "tcp", port); err == nil && number >= 0 && number <= 65535 {
+	} else if number, err := net.DefaultResolver.LookupPort(context.Background(), networkTCP, port); err == nil && number >= 0 && number <= 65535 {
 		portNumber = uint16(number)
 	}
 	if portNumber != u.port {
 		return false
 	}
 	target, targetError := netip.ParseAddr(u.url.Hostname())
-	targetIsLocalhost := strings.EqualFold(u.url.Hostname(), "localhost")
+	targetIsLocalhost := strings.EqualFold(u.url.Hostname(), hostLocalhost)
 	if targetError != nil && !targetIsLocalhost {
 		return false
 	}
@@ -421,7 +477,7 @@ func (u *backendURL) targetsListener(listener string) bool {
 	}
 	listenAddress, err := netip.ParseAddr(host)
 	if err != nil {
-		return strings.EqualFold(host, "localhost") && (targetIsLocalhost || target.Unmap().IsLoopback())
+		return strings.EqualFold(host, hostLocalhost) && (targetIsLocalhost || target.Unmap().IsLoopback())
 	}
 	if targetIsLocalhost {
 		return listenAddress.IsUnspecified() || listenAddress.Unmap().IsLoopback()
