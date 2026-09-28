@@ -3,7 +3,7 @@
 set -eu
 
 service=spectre.sample.v1.UserService
-ingress_address=127.0.0.1:55150
+ingress_address=$(pwd)/dist/sockets/ingress.sock
 
 wait_for_log() {
 	process=$1
@@ -38,7 +38,7 @@ wait_for_log_count() {
 }
 
 verify() {
-	equal_response=$(grpcurl -plaintext -connect-timeout 2 -max-time 5 \
+	equal_response=$(grpcurl -plaintext -unix -connect-timeout 2 -max-time 5 \
 		-d '{"ids":["user-1"]}' "$ingress_address" "$service/ListUsers")
 	if ! printf '%s\n' "$equal_response" | grep -Fq 'Alex Example'; then
 		printf 'equivalent request did not return the reference response\n' >&2
@@ -51,11 +51,11 @@ verify() {
 	# The comparison timeout has elapsed before this probe, so a second mirror proves
 	# the reordered roles did not quarantine the candidate.
 	sleep 1.1
-	grpcurl -plaintext -connect-timeout 2 -max-time 5 \
+	grpcurl -plaintext -unix -connect-timeout 2 -max-time 5 \
 		-d '{"ids":["user-1"]}' "$ingress_address" "$service/ListUsers" >/dev/null
 	wait_for_log_count candidate '"path":"/spectre.sample.v1.UserService/ListUsers"' 2
 
-	different_response=$(grpcurl -plaintext -connect-timeout 2 -max-time 5 \
+	different_response=$(grpcurl -plaintext -unix -connect-timeout 2 -max-time 5 \
 		-d '{"id":"user-2"}' "$ingress_address" "$service/GetUser")
 	if ! printf '%s\n' "$different_response" | grep -Fq 'Sam Sample'; then
 		printf 'divergent request did not return the reference response\n' >&2
@@ -67,7 +67,7 @@ verify() {
 
 	candidate_list_calls=$(grep -F candidate "$SPECTRE_PROCTOR_LOG" | \
 		grep -Fc '"path":"/spectre.sample.v1.UserService/ListUsers"')
-	grpcurl -plaintext -connect-timeout 2 -max-time 5 \
+	grpcurl -plaintext -unix -connect-timeout 2 -max-time 5 \
 		-d '{"ids":["user-1"]}' "$ingress_address" "$service/ListUsers" >/dev/null
 	sleep 0.2
 	candidate_list_calls_after=$(grep -F candidate "$SPECTRE_PROCTOR_LOG" | \
