@@ -75,7 +75,7 @@ func TestPublicSpectreModuleStub(t *testing.T) {
 	complete := module.GetExportedNames(func(names []string) { exports = names })
 
 	assert.True(t, complete)
-	assert.Equal(t, []string{"field", "message", "rpc"}, exports)
+	assert.Equal(t, []string{"field", "message", "rpc", "deepEqual"}, exports)
 }
 
 func TestResultfFormatsReason(t *testing.T) {
@@ -99,7 +99,7 @@ func TestConnectComparatorsDeleteSuccessfulFields(t *testing.T) {
 	comparator := newComparator(t, `
 		spectre.field("test.v1.Response.ignored", () => true);
 		spectre.field("test.v1.Response.roles", (reference, candidate) =>
-			reference.slice().sort().join("\0") === candidate.slice().sort().join("\0"));
+			spectre.deepEqual(reference.sort(), candidate.sort()));
 	`)
 	reference := connectResponse(`{"stable":"same","ignored":"first","roles":["reader","writer"]}`)
 	candidate := connectResponse(`{"roles":["writer","reader"],"ignored":"second","stable":"same"}`)
