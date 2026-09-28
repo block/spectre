@@ -135,6 +135,95 @@ func TestUsesConfiguredH2CProtocol(t *testing.T) {
 	assert.NoError(t, handler.Shutdown(t.Context()))
 }
 
+func TestForwardsToUnixSocketBackends(t *testing.T) {
+	dir := shortSocketDir(t)
+	referenceSocket := filepath.Join(dir, "reference.sock")
+	candidateSocket := filepath.Join(dir, "candidate.sock")
+	candidateReceived := make(chan requestView, 1)
+	serveUnix(t, candidateSocket, http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		candidateReceived <- readRequest(t, request)
+		writer.Header().Set("X-Backend", "candidate")
+		writer.WriteHeader(http.StatusTeapot)
+		_, err := writer.Write([]byte("candidate response"))
+		assert.NoError(t, err)
+	}))
+	serveUnix(t, referenceSocket, http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.Header().Set("X-Backend", "reference")
+		writer.WriteHeader(http.StatusCreated)
+		_, err := writer.Write([]byte("reference response"))
+		assert.NoError(t, err)
+	}))
+
+	config := newTestConfig("http+unix:"+referenceSocket, "http+unix:"+candidateSocket)
+	transport := ingress.NewTransport(config)
+	t.Cleanup(transport.CloseIdleConnections)
+	handler, err := ingress.New(config, transport, matchingDescriptorLoader(), newTestComparator(t), slog.New(slog.DiscardHandler))
+	assert.NoError(t, err)
+	proxy := httptest.NewServer(handler)
+	t.Cleanup(proxy.Close)
+
+	request, err := http.NewRequest(http.MethodPost, proxy.URL+"/v1/items?mode=full", strings.NewReader("request body"))
+	assert.NoError(t, err)
+	request.Header.Set("X-Test", "mirror-me")
+	response, err := http.DefaultClient.Do(request)
+	assert.NoError(t, err)
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	assert.NoError(t, err)
+
+	assert.Equal(t, http.StatusCreated, response.StatusCode)
+	assert.Equal(t, "reference", response.Header.Get("X-Backend"))
+	assert.Equal(t, "reference response", string(body))
+	expected := requestView{Method: http.MethodPost, Path: "/v1/items", Query: "mode=full", Header: "mirror-me", Body: "request body"}
+	select {
+	case got := <-candidateReceived:
+		assert.Equal(t, expected, got)
+	case <-time.After(time.Second):
+		t.Fatal("candidate did not receive mirrored request")
+	}
+	assert.NoError(t, handler.Shutdown(t.Context()))
+}
+
+func TestServesOverUnixSocketListener(t *testing.T) {
+	ingressSocket := filepath.Join(shortSocketDir(t), "ingress.sock")
+	reference := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(reference.Close)
+	candidate := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(candidate.Close)
+
+	config := newTestConfig(reference.URL, candidate.URL)
+	config.Listen = "unix:" + ingressSocket
+	network, address := config.ListenNetworkAddress()
+	assert.Equal(t, "unix", network)
+	assert.Equal(t, ingressSocket, address)
+
+	handler := newTestHandler(t, reference.URL, candidate.URL)
+	listener, err := (&net.ListenConfig{}).Listen(t.Context(), network, address)
+	assert.NoError(t, err)
+	server := &http.Server{Handler: handler}
+	go func() {
+		if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			t.Errorf("serve ingress over unix: %v", err)
+		}
+	}()
+	t.Cleanup(func() { assert.NoError(t, server.Close()) })
+
+	client := &http.Client{Transport: &http.Transport{
+		DialContext: func(ctx context.Context, network string, address string) (net.Conn, error) {
+			_, _ = network, address
+			return (&net.Dialer{}).DialContext(ctx, "unix", ingressSocket)
+		},
+	}}
+	response, err := client.Get("http://ingress/proxy-check")
+	assert.NoError(t, err)
+	assert.Equal(t, http.StatusNoContent, response.StatusCode)
+	assert.NoError(t, response.Body.Close())
+}
+
 func TestCandidateDoesNotDelayReferenceResponse(t *testing.T) {
 	candidateStarted := make(chan struct{})
 	releaseCandidate := make(chan struct{})
@@ -760,7 +849,25 @@ func TestRejectsUnsafeConfiguration(t *testing.T) {
 	}{
 		"CandidateMustBeLoopback": {
 			update:  func(config *ingress.Config) { config.Candidate = "http://candidate.example" },
-			message: "literal loopback IP",
+			message: "loopback IP address or a unix socket",
+		},
+		"UnixBackendSocketMustBeAbsolute": {
+			update:  func(config *ingress.Config) { config.Reference = "http+unix:relative.sock" },
+			message: "absolute path or an abstract name",
+		},
+		"UnixBackendsMustDiffer": {
+			update: func(config *ingress.Config) {
+				config.Reference = "http+unix:/tmp/spectre-reference.sock"
+				config.Candidate = "http+unix:/tmp/spectre-reference.sock"
+			},
+			message: "must be different",
+		},
+		"UnixCandidateTargetsIngress": {
+			update: func(config *ingress.Config) {
+				config.Listen = "unix:/tmp/spectre-ingress.sock"
+				config.Candidate = "http+unix:/tmp/spectre-ingress.sock"
+			},
+			message: "must not target the ingress listener",
 		},
 		"BackendsMustDiffer": {
 			update:  func(config *ingress.Config) { config.Candidate = config.Reference },
@@ -912,6 +1019,31 @@ func (c *responseComparator) Compare(
 	candidate comparison.Response,
 ) comparison.Result {
 	return c.compare(ctx, requestPath, requestContentType, reference, candidate)
+}
+
+// shortSocketDir returns a temporary directory with a short path so unix socket
+// names stay within the operating system's limit.
+func shortSocketDir(t *testing.T) string {
+	t.Helper()
+	// A short base path keeps unix socket names within the 104-byte OS limit.
+	dir, err := os.MkdirTemp("/tmp", "spectre") //nolint:usetesting // t.TempDir's base path is too long for unix sockets.
+	assert.NoError(t, err)
+	t.Cleanup(func() { assert.NoError(t, os.RemoveAll(dir)) })
+	return dir
+}
+
+// serveUnix runs handler on a unix socket listener and stops it when the test ends.
+func serveUnix(t *testing.T, socket string, handler http.Handler) {
+	t.Helper()
+	listener, err := (&net.ListenConfig{}).Listen(t.Context(), "unix", socket)
+	assert.NoError(t, err)
+	server := &http.Server{Handler: handler}
+	go func() {
+		if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			t.Errorf("serve unix backend: %v", err)
+		}
+	}()
+	t.Cleanup(func() { assert.NoError(t, server.Close()) })
 }
 
 func matchingDescriptorLoader() descriptorLoaderFunc {
