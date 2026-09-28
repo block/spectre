@@ -11,15 +11,13 @@ import (
 )
 
 // occurrence binds a resolved target to one concrete payload path.
-// present records discovery before earlier normalisers mutate the document.
 type occurrence struct {
-	target  normalisationTarget
-	path    documentPath
-	present bool
+	target normalisationTarget
+	path   documentPath
 }
 
-func newOccurrence(target normalisationTarget, path documentPath, present bool) occurrence {
-	return occurrence{target: target, path: path, present: present}
+func newOccurrence(target normalisationTarget, path documentPath) occurrence {
+	return occurrence{target: target, path: path}
 }
 
 func (o occurrence) kind() targetKind {
@@ -32,11 +30,6 @@ func (o occurrence) location() string {
 
 func (o occurrence) value(payload *document) documentValue {
 	return payload.Value(o.path)
-}
-
-func (o occurrence) shouldSkip(value documentValue) bool {
-	// A normaliser may remove a value that made a later occurrence reachable.
-	return o.present && !value.isPresent()
 }
 
 func (o occurrence) normalise(evaluator *javascript.Evaluator, value documentValue) (documentValue, error) {

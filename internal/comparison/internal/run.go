@@ -40,10 +40,9 @@ func newNormalisationRun(
 
 func (r *normalisationRun) normalise(ctx context.Context) error {
 	for _, occurrence := range collectOccurrences(r.method, r.targets, r.payload) {
+		// A removed value still reaches later normalisers at its path as undefined, so
+		// the RPC normaliser runs on both sides after a message normaliser removes a root.
 		value := occurrence.value(r.payload)
-		if occurrence.shouldSkip(value) {
-			continue
-		}
 		normalised, err := occurrence.normalise(r.evaluator, value)
 		if err != nil {
 			r.logResult(ctx, occurrence, err.Error())

@@ -63,7 +63,7 @@ func (t *fieldTarget) occurrences(method protoreflect.MethodDescriptor, payload 
 			paths = descendField(payload, paths, step, index == len(t.steps)-1)
 		}
 		for _, path := range paths {
-			occurrences = append(occurrences, newOccurrence(t, path.path(), path.isPresent()))
+			occurrences = append(occurrences, newOccurrence(t, path.path()))
 		}
 	}
 	return occurrences
@@ -101,7 +101,7 @@ func (t *messageTarget) occurrences(method protoreflect.MethodDescriptor, payloa
 	paths := findMessages(method.Output(), t.descriptor.FullName(), payload)
 	occurrences := make([]occurrence, 0, len(paths))
 	for _, path := range paths {
-		occurrences = append(occurrences, newOccurrence(t, path.path(), path.isPresent()))
+		occurrences = append(occurrences, newOccurrence(t, path.path()))
 	}
 	return occurrences
 }
@@ -138,7 +138,7 @@ func (t *methodTarget) occurrences(method protoreflect.MethodDescriptor, _ *docu
 	if t.descriptor.FullName() != method.FullName() {
 		return nil
 	}
-	return []occurrence{newOccurrence(t, newDocumentPath(nil), true)}
+	return []occurrence{newOccurrence(t, newDocumentPath(nil))}
 }
 
 func (t *methodTarget) normalise(evaluator *javascript.Evaluator, value documentValue) (documentValue, error) {

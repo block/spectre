@@ -211,6 +211,25 @@ func TestRPCNormaliserRunsAfterResponseMessageNormaliser(t *testing.T) {
 	assert.Equal(t, comparison.Resultf(comparison.Equivalent, ""), result)
 }
 
+func TestRPCNormaliserReceivesUndefinedAfterMessageRemovesRoot(t *testing.T) {
+	comparator := newComparator(t, `
+		spectre.message("test.v1.Response", (response) => response.stable === "drop" ? undefined : response);
+		spectre.rpc("test.v1.Service.Get", () => null);
+	`)
+	reference := connectResponse(`{"stable":"drop"}`)
+	candidate := connectResponse(`{"stable":"kept"}`)
+
+	result := comparator.Compare(
+		t.Context(),
+		"/test.v1.Service/Get",
+		"application/json",
+		reference,
+		candidate,
+	)
+
+	assert.Equal(t, comparison.Resultf(comparison.Equivalent, ""), result)
+}
+
 func TestFieldNormaliserReplacesMessageNormaliserAtSameLocation(t *testing.T) {
 	comparator := newComparator(t, `
 		spectre.message("test.v1.User", () => { throw new Error("message normaliser ran"); });
