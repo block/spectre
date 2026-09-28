@@ -9,7 +9,7 @@ import (
 // maxDifferences bounds both result size and work after divergence is established.
 const maxDifferences = 100
 
-// diffValues compares the structure left after successful custom comparisons are pruned.
+// diffValues structurally compares two payloads after normalisation.
 func diffValues(reference, candidate any, path documentPath, differences []string) []string {
 	if len(differences) >= maxDifferences || reflect.DeepEqual(reference, candidate) {
 		return differences

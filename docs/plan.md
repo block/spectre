@@ -20,45 +20,43 @@ separate prerequisites for safe mirroring.
 - Keep bootstrap in `cmd/<command>` and application logic under `internal`, with
   explicit dependencies and no global state.
 
-## Comparators
+## Normalisers
 
 One TypeScript file defines comparison behaviour, with optional helper imports.
 The host supplies a `spectre` module with three registration functions:
 
-| Function | Example target | Comparator receives |
+| Function | Example target | Normaliser receives |
 | --- | --- | --- |
-| `field(target, comparator)` | `example.users.v1.ListUsersResponse.users[].name` | Two field values |
-| `message(target, comparator)` | `example.users.v1.User` | Two message values |
-| `rpc(target, comparator)` | `example.users.v1.UserService.ListUsers` | Two response bodies |
+| `field(target, normaliser)` | `example.users.v1.ListUsersResponse.users[].name` | One field value |
+| `message(target, normaliser)` | `example.users.v1.User` | One message value |
+| `rpc(target, normaliser)` | `example.users.v1.UserService.ListUsers` | One response body |
 
 Register ordinary functions during module evaluation; the host validates targets
 against its schema. No exports or filename conventions are required. The same
 function can be registered for multiple targets. Registration order does not affect
 execution order.
 
-Reject unresolved targets and duplicate registrations at startup. A field comparator
-takes precedence over a message comparator at the same location. When both a
-response-message comparator and an RPC comparator apply, run the message comparator
-first and the RPC comparator last. Preserve failures from both.
+Reject unresolved targets and duplicate registrations at startup. A field normaliser
+replaces a message normaliser at the same location. When both a response-message
+normaliser and an RPC normaliser apply, run the message normaliser first and the RPC
+normaliser last.
 
-Comparators take two directly typed parameters, reference and candidate, and return
-booleans. There are no comparator objects, argument wrappers, normalisation hooks,
-or delegation callbacks. Functions can normalise temporary copies internally.
+A normaliser takes one directly typed value and returns its normalised form. A
+missing value arrives as `undefined`. Returning a value replaces the node, returning
+a constant ignores it, and returning `undefined` removes it. Results must be
+representable as JSON.
 
-The host runs custom comparators from leaves upward, with the optional RPC function
-last. Comparator arguments are protected from mutation. When a comparator succeeds,
-the host deletes its field or subtree from temporary copies of both payloads, then
-structurally compares everything remaining.
+The host normalises each payload independently, from leaves upward, with the
+optional RPC normaliser last. Each payload gets a fresh runtime, so its normalised
+form depends only on its content. Arguments are protected from mutation. Parents
+receive children that are already normalised.
 
-Parents receive objects with successful child scopes removed. A parent returning true
-cannot override a recorded child failure. Type and RPC comparators delete their scopes
-when they succeed. Without an RPC comparator, structural comparison handles the
-remainder. Equivalence requires every callback to return true and all remaining
-structure to match. Errors and non-boolean returns mean unable to compare.
+Two payloads are equivalent when their normalised forms are structurally equal.
+Differences are reported as paths without values. Errors and results that are not
+representable as JSON mean unable to compare.
 
-For example, field comparators can compare user roles without regard to order and
-explicitly ignore a response-generation timestamp. Default comparison still checks
-user IDs, names, and user ordering. Neither comparator deletes fields.
+For example, field normalisers can sort user roles and remove a response-generation
+timestamp. Default comparison still checks user IDs, names, and user ordering.
 
 ## Implementation checklist
 
@@ -66,8 +64,7 @@ user IDs, names, and user ordering. Neither comparator deletes fields.
 
 - [x] Pass missing field values as JavaScript `undefined`, distinct from present
   protobuf default values.
-- [ ] Define unordered-array pairing before child comparisons so positional
-  failures cannot later be erased by a parent comparator.
+- [x] Normalise each payload independently so unordered arrays need no pairing.
 - [x] Start with unary binary gRPC and Connect JSON. Defer gRPC-Web and streaming.
 - [ ] Define the policy for unable-to-compare outcomes, quarantine recovery,
   application metadata, and capture delivery failures.
@@ -82,11 +79,11 @@ user IDs, names, and user ordering. Neither comparator deletes fields.
   presence, JSON field names, string-encoded 64-bit integers, and base64 bytes.
 - [x] Handle unsupported and unknown data explicitly without silently dropping it.
 - [ ] Generate TypeScript declarations matching the decoded objects and directly
-  typed comparator arguments, without exposing descriptors to scripts.
+  typed normaliser arguments, without exposing descriptors to scripts.
 - [ ] Test the host's binary/JSON decoding equivalence, presence, precision,
   nested collections, and unsupported or unknown data handling.
 
-### 3. Load and execute comparator scripts
+### 3. Load and execute normaliser scripts
 
 - [ ] Embed esbuild to compile a TypeScript entry file and optional helper imports
   at load time.
@@ -96,29 +93,28 @@ user IDs, names, and user ordering. Neither comparator deletes fields.
   duplicate registrations before activation.
 - [ ] Support registering the same ordinary function for multiple targets without
   requiring exports or filename conventions.
-- [x] Enforce synchronous callbacks with two direct arguments and boolean results.
-  Treat errors and non-boolean results as unable to compare.
-- [x] Use a fresh runtime for each comparison and protect payloads from mutation.
+- [x] Enforce synchronous callbacks with one direct argument and JSON results.
+  Treat errors and results that are not JSON as unable to compare.
+- [x] Use a fresh runtime for each payload and protect payloads from mutation.
 - [x] Bound comparison work and payload sizes, and enforce execution deadlines.
 - [ ] Add TS7 type-checking to development and CI through `bit`; keep esbuild
   responsible only for transpilation.
 - [ ] Test script loading, invalid registrations, runtime isolation, immutable
   inputs, callback failures, deadlines, and capacity limits.
 
-### 4. Dispatch comparators and compare remaining structure
+### 4. Dispatch normalisers and compare normalised structure
 
-- [x] Traverse payloads from leaves upward, using the agreed missing-value and
-  array-pairing rules independently of registration order.
-- [x] Give field comparators precedence over message comparators at the same
-  location, and run response-message comparators before the final RPC comparator.
-- [x] Pass pruned objects to parents and preserve every child failure regardless
-  of parent or RPC results.
-- [x] Delete successful fields and subtrees from temporary payload copies.
-- [x] Structurally compare all remaining data after custom dispatch finishes.
-- [ ] Report equivalence only when every callback returns true and all unhandled
-  structure matches; keep divergence distinct from unable-to-compare outcomes.
-- [ ] Test precedence, callback ordering, repeated-message occurrences, parent
-  coverage, preserved failures, and structural comparison of the remainder.
+- [x] Traverse payloads from leaves upward, using the agreed missing-value rules
+  independently of registration order.
+- [x] Let field normalisers replace message normalisers at the same location, and
+  run response-message normalisers before the final RPC normaliser.
+- [x] Pass normalised children to parents.
+- [x] Replace or remove normalised fields and subtrees in temporary payload copies.
+- [x] Structurally compare the normalised payloads.
+- [ ] Report equivalence only when the normalised payloads match; keep divergence
+  distinct from unable-to-compare outcomes.
+- [ ] Test precedence, normaliser ordering, repeated-message occurrences, parent
+  inputs, and structural comparison of normalised payloads.
 - [ ] Test unordered role comparison and ignored timestamps while still checking
   user IDs, names, and user ordering.
 

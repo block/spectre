@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/alecthomas/errors"
+	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/descriptorpb"
 
 	comparisoninternal "github.com/block/spectre/internal/comparison/internal"
@@ -17,7 +18,7 @@ import (
 )
 
 // Comparator shares one immutable script program across response comparisons.
-// Only schema-plan replacement is synchronized; each comparison owns its evaluator.
+// Only schema-plan replacement is synchronized; each payload owns its evaluator.
 type Comparator struct {
 	log              *slog.Logger
 	program          *javascript.Program
@@ -131,28 +132,39 @@ func (c *Comparator) Compare(
 		return Resultf(Unable, "normalised response exceeds the comparison size limit")
 	}
 	// Connect errors are protocol envelopes, not instances of the RPC output message.
-	runComparators := protocol != protocolConnectJSON || reference.StatusCode == http.StatusOK
+	runNormalisers := protocol != protocolConnectJSON || reference.StatusCode == http.StatusOK
 	comparisonContext, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
-	evaluator, err := c.program.NewEvaluator(comparisonContext)
+	normalisedReference, err := c.normalise(comparisonContext, configured, method, runNormalisers, "reference", referenceJSON)
 	if err != nil {
-		return Resultf(Unable, "initialise JavaScript evaluator: %v", err)
+		return Resultf(Unable, "normalise reference response: %v", err)
 	}
-	defer evaluator.Close()
-	differences, err := configured.Compare(
-		comparisonContext,
-		c.log,
-		evaluator,
-		method,
-		runComparators,
-		referenceJSON,
-		candidateJSON,
-	)
+	normalisedCandidate, err := c.normalise(comparisonContext, configured, method, runNormalisers, "candidate", candidateJSON)
 	if err != nil {
-		return Resultf(Unable, "compare responses: %v", err)
+		return Resultf(Unable, "normalise candidate response: %v", err)
 	}
+	differences := comparisoninternal.Diff(normalisedReference, normalisedCandidate)
 	if len(differences) > 0 {
 		return NewDifferenceResult(differences...)
 	}
 	return Resultf(Equivalent, "")
+}
+
+// normalise gives each payload a fresh evaluator, so script state cannot carry
+// between payloads and a payload's normalised form depends only on its content.
+func (c *Comparator) normalise(
+	ctx context.Context,
+	configured *comparisoninternal.Plan,
+	method protoreflect.MethodDescriptor,
+	runNormalisers bool,
+	side string,
+	payloadJSON []byte,
+) (*comparisoninternal.Normalised, error) {
+	evaluator, err := c.program.NewEvaluator(ctx)
+	if err != nil {
+		return nil, errors.Wrap(err, "initialise JavaScript evaluator")
+	}
+	defer evaluator.Close()
+	normalised, err := configured.Normalise(ctx, c.log, evaluator, method, runNormalisers, side, payloadJSON)
+	return normalised, errors.Wrap(err, "normalise payload")
 }

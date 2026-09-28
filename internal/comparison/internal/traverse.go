@@ -1,6 +1,7 @@
 package comparisoninternal
 
 import (
+	"slices"
 	"sort"
 
 	"github.com/alecthomas/errors"
@@ -9,52 +10,51 @@ import (
 	"github.com/block/spectre/internal/comparison/javascript"
 )
 
-// occurrence binds a resolved target to one concrete response path.
-// present records discovery before earlier comparisons mutate the documents.
+// occurrence binds a resolved target to one concrete payload path.
+// present records discovery before earlier normalisers mutate the document.
 type occurrence struct {
-	target  comparisonTarget
+	target  normalisationTarget
 	path    documentPath
 	present bool
 }
 
-func newOccurrence(target comparisonTarget, path documentPath, present bool) occurrence {
+func newOccurrence(target normalisationTarget, path documentPath, present bool) occurrence {
 	return occurrence{target: target, path: path, present: present}
 }
 
-func (o occurrence) values(reference, candidate *document) (documentValue, documentValue) {
-	return reference.Value(o.path), candidate.Value(o.path)
+func (o occurrence) kind() targetKind {
+	return o.target.kind()
 }
 
-func (o occurrence) shouldSkip(reference, candidate documentValue) bool {
-	// A successful child may remove the only value that made this occurrence reachable.
-	return o.present && !reference.isPresent() && !candidate.isPresent()
-}
-
-func (o occurrence) compare(
-	evaluator *javascript.Evaluator,
-	reference, candidate documentValue,
-) (matched bool, err error) {
-	return o.target.compare(evaluator, reference, candidate)
-}
-
-func (o occurrence) delete(reference, candidate *document) error {
-	if err := reference.Delete(o.path); err != nil {
-		return errors.Wrap(err, "delete matched reference value")
-	}
-	if err := candidate.Delete(o.path); err != nil {
-		return errors.Wrap(err, "delete matched candidate value")
-	}
-	return nil
-}
-
-func (o occurrence) difference() string {
+func (o occurrence) location() string {
 	return o.path.String()
 }
 
-func (o occurrence) logAttributes() []any {
+func (o occurrence) value(payload *document) documentValue {
+	return payload.Value(o.path)
+}
+
+func (o occurrence) shouldSkip(value documentValue) bool {
+	// A normaliser may remove a value that made a later occurrence reachable.
+	return o.present && !value.isPresent()
+}
+
+func (o occurrence) normalise(evaluator *javascript.Evaluator, value documentValue) (documentValue, error) {
+	return o.target.normalise(evaluator, value)
+}
+
+func (o occurrence) apply(payload *document, normalised documentValue) error {
+	if value, present := normalised.normaliserArgument(); present {
+		return errors.Wrap(payload.Set(o.path, value), "replace normalised value")
+	}
+	return errors.Wrap(payload.Delete(o.path), "remove normalised value")
+}
+
+func (o occurrence) logAttributes(side string) []any {
 	return []any{
 		"kind", o.target.kind(),
 		"target", o.target.name(),
+		"side", side,
 		"response_path", o.path.String(),
 	}
 }
@@ -76,17 +76,28 @@ func (o occurrence) before(other occurrence) bool {
 	return o.target.key() < other.target.key()
 }
 
-// collectOccurrences freezes traversal before comparison starts mutating documents.
+// collectOccurrences freezes traversal before normalisation starts mutating the document.
 // Its ordering is independent of registration order.
 func collectOccurrences(
 	method protoreflect.MethodDescriptor,
-	targets []comparisonTarget,
-	reference, candidate *document,
+	targets []normalisationTarget,
+	payload *document,
 ) []occurrence {
 	occurrences := []occurrence{}
 	for _, target := range targets {
-		occurrences = append(occurrences, target.occurrences(method, reference, candidate)...)
+		occurrences = append(occurrences, target.occurrences(method, payload)...)
 	}
+	// A field normaliser replaces any message normaliser at the same location.
+	fieldPaths := map[string]struct{}{}
+	for _, occurrence := range occurrences {
+		if occurrence.kind() == targetField {
+			fieldPaths[occurrence.location()] = struct{}{}
+		}
+	}
+	occurrences = slices.DeleteFunc(occurrences, func(occurrence occurrence) bool {
+		_, replaced := fieldPaths[occurrence.location()]
+		return replaced && occurrence.kind() == targetMessage
+	})
 	sort.SliceStable(occurrences, func(left, right int) bool {
 		return occurrences[left].before(occurrences[right])
 	})
@@ -111,22 +122,21 @@ func (p pathWithPresence) isPresent() bool {
 	return p.present
 }
 
-// findMessages walks the descriptor and the union of paths present in either response.
+// findMessages also reports absent singular message fields of present parents, so
+// normalisers see a missing message as undefined, as they do a missing field.
 func findMessages(
 	descriptor protoreflect.MessageDescriptor,
 	target protoreflect.FullName,
-	reference, candidate *document,
+	payload *document,
 ) []pathWithPresence {
 	paths := []pathWithPresence{}
-	var walk func(protoreflect.MessageDescriptor, documentPath)
-	walk = func(current protoreflect.MessageDescriptor, path documentPath) {
-		referenceValue := reference.Value(path)
-		candidateValue := candidate.Value(path)
-		if !referenceValue.isPresent() && !candidateValue.isPresent() {
-			return
-		}
+	var walk func(protoreflect.MessageDescriptor, documentPath, bool)
+	walk = func(current protoreflect.MessageDescriptor, path documentPath, present bool) {
 		if current.FullName() == target {
-			paths = append(paths, newPathWithPresence(path, true))
+			paths = append(paths, newPathWithPresence(path, present))
+		}
+		if !present {
+			return
 		}
 		fields := current.Fields()
 		for index := range fields.Len() {
@@ -136,8 +146,8 @@ func findMessages(
 					continue
 				}
 				fieldPath := path.appendField(field.JSONName())
-				for _, key := range objectKeys(reference, candidate, fieldPath) {
-					walk(field.MapValue().Message(), fieldPath.appendField(key))
+				for _, key := range objectKeys(payload, fieldPath) {
+					walk(field.MapValue().Message(), fieldPath.appendField(key), true)
 				}
 				continue
 			}
@@ -146,20 +156,22 @@ func findMessages(
 			}
 			fieldPath := path.appendField(field.JSONName())
 			if field.IsList() {
-				for item := range arrayLength(reference, candidate, fieldPath) {
-					walk(field.Message(), fieldPath.appendIndex(item))
+				for item := range arrayLength(payload, fieldPath) {
+					walk(field.Message(), fieldPath.appendIndex(item), true)
 				}
 				continue
 			}
-			walk(field.Message(), fieldPath)
+			walk(field.Message(), fieldPath, payload.Value(fieldPath).isPresent())
 		}
 	}
-	walk(descriptor, newDocumentPath(nil))
+	root := newDocumentPath(nil)
+	walk(descriptor, root, payload.Value(root).isPresent())
 	return paths
 }
 
+// descendField yields the final field of every present parent, present or not.
 func descendField(
-	reference, candidate *document,
+	payload *document,
 	paths []pathWithPresence,
 	step fieldStep,
 	last bool,
@@ -167,59 +179,36 @@ func descendField(
 	descended := []pathWithPresence{}
 	for _, base := range paths {
 		fieldPath := base.path().appendField(step.jsonName())
-		referenceValue := reference.Value(fieldPath)
-		candidateValue := candidate.Value(fieldPath)
-		present := referenceValue.isPresent() || candidateValue.isPresent()
+		present := payload.Value(fieldPath).isPresent()
 		if last {
 			descended = append(descended, newPathWithPresence(fieldPath, present))
 			continue
 		}
+		if !present {
+			continue
+		}
 		if step.expandsElements() {
-			for index := range arrayLength(reference, candidate, fieldPath) {
-				itemPath := fieldPath.appendIndex(index)
-				referenceItem := reference.Value(itemPath)
-				candidateItem := candidate.Value(itemPath)
-				descended = append(descended, newPathWithPresence(
-					itemPath,
-					referenceItem.isPresent() || candidateItem.isPresent(),
-				))
+			for index := range arrayLength(payload, fieldPath) {
+				descended = append(descended, newPathWithPresence(fieldPath.appendIndex(index), true))
 			}
 			continue
 		}
-		descended = append(descended, newPathWithPresence(fieldPath, present))
+		descended = append(descended, newPathWithPresence(fieldPath, true))
 	}
 	return descended
 }
 
-func arrayLength(reference, candidate *document, path documentPath) int {
-	length := 0
-	for _, root := range []*document{reference, candidate} {
-		array, ok := root.Value(path).array()
-		if !ok {
-			continue
-		}
-		if len(array) > length {
-			length = len(array)
-		}
-	}
-	return length
+func arrayLength(payload *document, path documentPath) int {
+	array, _ := payload.Value(path).array()
+	return len(array)
 }
 
-func objectKeys(reference, candidate *document, path documentPath) []string {
-	keys := map[string]struct{}{}
-	for _, root := range []*document{reference, candidate} {
-		object, ok := root.Value(path).object()
-		if !ok {
-			continue
-		}
-		for key := range object {
-			keys[key] = struct{}{}
-		}
+func objectKeys(payload *document, path documentPath) []string {
+	object, _ := payload.Value(path).object()
+	keys := make([]string, 0, len(object))
+	for key := range object {
+		keys = append(keys, key)
 	}
-	ordered := make([]string, 0, len(keys))
-	for key := range keys {
-		ordered = append(ordered, key)
-	}
-	sort.Strings(ordered)
-	return ordered
+	sort.Strings(keys)
+	return keys
 }

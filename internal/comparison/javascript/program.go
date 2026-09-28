@@ -1,4 +1,4 @@
-// Package javascript evaluates Spectre response comparator scripts.
+// Package javascript evaluates Spectre payload normaliser scripts.
 package javascript
 
 import (
@@ -11,7 +11,7 @@ import (
 
 const spectreModuleName = "spectre"
 
-// Program is an immutable script shared by all response comparisons.
+// Program is an immutable script shared by all payload normalisations.
 // It retains no runtime-local callback state.
 type Program struct {
 	entry    *sobek.SourceTextModuleRecord
@@ -66,7 +66,7 @@ func (p *Program) RPCs() []string {
 	return append([]string(nil), p.rpcs...)
 }
 
-// NewEvaluator creates an isolated evaluator for one response comparison.
+// NewEvaluator creates an isolated evaluator for one payload normalisation.
 // Re-evaluation must reproduce the registrations used to build the schema plan.
 func (p *Program) NewEvaluator(ctx context.Context) (*Evaluator, error) {
 	evaluator, fields, messages, rpcs, err := newEvaluator(ctx, p.entry, p.spectre)
