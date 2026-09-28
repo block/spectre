@@ -48,8 +48,8 @@ fmt-action-pins = exec {
 }
 lint-go = go.lint { depends_on = [sample-proto] }
 lint-encapsulation = exec.test {
-  command = "encapsulation ./..."
-  inputs = ["cmd/encapsulation/*.go", "internal/**/*.go", "go.mod", "go.sum"]
+  command = "encapsulation-linter -allow-generated-construction ./..."
+  inputs = ["cmd/**/*.go", "internal/**/*.go", "go.mod", "go.sum", "bin/.encapsulation-linter-0.2.0.pkg"]
   depends_on = [sample-proto]
 }
 lint-proto = exec.test {
