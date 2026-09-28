@@ -1,11 +1,12 @@
 package ingress
 
 import (
-	"strings"
 	"time"
 
 	"github.com/alecthomas/errors"
 	"github.com/alecthomas/kong"
+
+	"github.com/block/spectre/internal/netaddr"
 )
 
 // Config contains the command-line configuration for an ingress proxy.
@@ -55,16 +56,8 @@ func NewConfig() Config {
 
 // ListenNetworkAddress reports the network and address for the ingress listener.
 func (c Config) ListenNetworkAddress() (network string, address string) {
-	return listenNetworkAddress(c.Listen)
-}
-
-// listenNetworkAddress splits a listen value into a network and address. A
-// "unix:" prefix selects a unix socket; anything else is a TCP address.
-func listenNetworkAddress(value string) (network string, address string) {
-	if socket, ok := strings.CutPrefix(value, networkUnix+":"); ok {
-		return networkUnix, socket
-	}
-	return networkTCP, value
+	endpoint := netaddr.ParseListen(c.Listen)
+	return endpoint.Network(), endpoint.Address()
 }
 
 // Validate checks that the ingress resource limits are usable.

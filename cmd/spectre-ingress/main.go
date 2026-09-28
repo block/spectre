@@ -13,8 +13,8 @@ import (
 	"github.com/block/spectre/internal"
 	"github.com/block/spectre/internal/comparison"
 	"github.com/block/spectre/internal/ingress"
-	"github.com/block/spectre/internal/listen"
 	"github.com/block/spectre/internal/logger"
+	"github.com/block/spectre/internal/netaddr"
 	"github.com/block/spectre/internal/schema"
 )
 
@@ -51,7 +51,7 @@ func (c *cli) Run(runtime *commandContext) error {
 	if err != nil {
 		return errors.Wrap(err, "configure ingress")
 	}
-	listener, err := listen.Listen(runtime.ctx, c.Ingress.Listen)
+	listener, err := netaddr.ParseListen(c.Ingress.Listen).Listen(runtime.ctx)
 	if err != nil {
 		return errors.Wrap(err, "listen for HTTP requests")
 	}

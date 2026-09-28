@@ -12,8 +12,8 @@ import (
 	"github.com/alecthomas/kong"
 
 	"github.com/block/spectre/internal"
-	"github.com/block/spectre/internal/listen"
 	"github.com/block/spectre/internal/logger"
+	"github.com/block/spectre/internal/netaddr"
 	"github.com/block/spectre/internal/sample"
 	"github.com/block/spectre/internal/sample/pb/samplepbconnect"
 )
@@ -35,7 +35,7 @@ func main() {
 	kctx.FatalIfErrorf(errors.Wrap(err, "read sample users"))
 	service, err := sample.New(data)
 	kctx.FatalIfErrorf(err)
-	listener, err := listen.Listen(ctx, cli.Listen)
+	listener, err := netaddr.ParseListen(cli.Listen).Listen(ctx)
 	kctx.FatalIfErrorf(errors.Wrap(err, "listen for Connect requests"))
 	mux := http.NewServeMux()
 	path, handler := samplepbconnect.NewUserServiceHandler(service)
