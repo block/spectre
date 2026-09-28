@@ -3,10 +3,8 @@ package main
 import (
 	"context"
 	"log/slog"
-	"net"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 
 	"github.com/alecthomas/errors"
@@ -15,6 +13,7 @@ import (
 	"github.com/block/spectre/internal"
 	"github.com/block/spectre/internal/comparison"
 	"github.com/block/spectre/internal/ingress"
+	"github.com/block/spectre/internal/listen"
 	"github.com/block/spectre/internal/logger"
 	"github.com/block/spectre/internal/schema"
 )
@@ -52,34 +51,9 @@ func (c *cli) Run(runtime *commandContext) error {
 	if err != nil {
 		return errors.Wrap(err, "configure ingress")
 	}
-	network, address := c.Ingress.ListenNetworkAddress()
-	if network == "unix" {
-		if err := removeStaleSocket(address); err != nil {
-			return errors.Wrap(err, "prepare ingress socket")
-		}
-	}
-	listener, err := (&net.ListenConfig{}).Listen(runtime.ctx, network, address)
+	listener, err := listen.Listen(runtime.ctx, c.Ingress.Listen)
 	if err != nil {
 		return errors.Wrap(err, "listen for HTTP requests")
 	}
 	return errors.Wrap(handler.Serve(runtime.ctx, listener), "run ingress")
-}
-
-// removeStaleSocket clears a leftover path socket so a restart can bind it.
-// Abstract sockets begin with "@" and need no filesystem cleanup.
-func removeStaleSocket(address string) error {
-	if strings.HasPrefix(address, "@") {
-		return nil
-	}
-	info, err := os.Lstat(address)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return errors.Wrap(err, "inspect socket path")
-	}
-	if info.Mode()&os.ModeSocket == 0 {
-		return errors.Errorf("refusing to remove non-socket file %q", address)
-	}
-	return errors.Wrap(os.Remove(address), "remove stale socket")
 }

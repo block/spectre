@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -13,6 +12,7 @@ import (
 	"github.com/alecthomas/kong"
 
 	"github.com/block/spectre/internal"
+	"github.com/block/spectre/internal/listen"
 	"github.com/block/spectre/internal/logger"
 	"github.com/block/spectre/internal/sample"
 	"github.com/block/spectre/internal/sample/pb/samplepbconnect"
@@ -22,7 +22,7 @@ func main() {
 	var cli struct {
 		Log     logger.Config    `embed:""`
 		Version kong.VersionFlag `help:"Print the version and exit."`
-		Listen  string           `default:"127.0.0.1:50051" help:"Address for the plaintext Connect server."`
+		Listen  string           `default:"127.0.0.1:50051" help:"Address for the plaintext Connect server: host:port, or unix:<path|@abstract>."`
 		Data    string           `default:"internal/sample/testdata/users.json" type:"existingfile" help:"ProtoJSON sample users."`
 	}
 	cli.Log = logger.NewConfig()
@@ -35,7 +35,7 @@ func main() {
 	kctx.FatalIfErrorf(errors.Wrap(err, "read sample users"))
 	service, err := sample.New(data)
 	kctx.FatalIfErrorf(err)
-	listener, err := (&net.ListenConfig{}).Listen(ctx, "tcp", cli.Listen)
+	listener, err := listen.Listen(ctx, cli.Listen)
 	kctx.FatalIfErrorf(errors.Wrap(err, "listen for Connect requests"))
 	mux := http.NewServeMux()
 	path, handler := samplepbconnect.NewUserServiceHandler(service)

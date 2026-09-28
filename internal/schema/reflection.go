@@ -3,6 +3,7 @@ package schema
 import (
 	"context"
 	"crypto/tls"
+	"net"
 	"net/http"
 	"net/url"
 	"slices"
@@ -16,6 +17,12 @@ import (
 	"google.golang.org/protobuf/types/descriptorpb"
 )
 
+const (
+	schemeHTTP  = "http"
+	schemeH2C   = "h2c"
+	networkUnix = "unix"
+)
+
 // ReflectionLoader loads service descriptors from a gRPC reflection endpoint.
 type ReflectionLoader struct{}
 
@@ -26,14 +33,7 @@ func NewReflectionLoader() *ReflectionLoader {
 
 // Load returns the descriptor set exposed by the endpoint's application services.
 func (loader *ReflectionLoader) Load(ctx context.Context, endpoint string) (*descriptorpb.FileDescriptorSet, error) {
-	parsed, err := url.Parse(endpoint)
-	if err != nil {
-		return nil, errors.Wrap(err, "parse reflection endpoint")
-	}
-	if parsed.Host == "" {
-		return nil, errors.Errorf("reflection endpoint must be absolute: %q", endpoint)
-	}
-	client, closeClient, err := reflectionClient(parsed)
+	client, closeClient, err := reflectionClient(endpoint)
 	if err != nil {
 		return nil, errors.Wrap(err, "configure reflection client")
 	}
@@ -96,21 +96,56 @@ func loadServiceFiles(
 	return files, nil
 }
 
-func reflectionClient(endpoint *url.URL) (*grpcreflect.Client, func(), error) {
-	baseURL := *endpoint
+func reflectionClient(endpoint string) (*grpcreflect.Client, func(), error) {
 	protocols := new(http.Protocols)
 	protocols.SetHTTP2(true)
 	transport := &http.Transport{Protocols: protocols}
-	switch baseURL.Scheme {
-	case "http", "h2c":
-		baseURL.Scheme = "http"
+
+	if scheme, socket, ok := splitUnixEndpoint(endpoint); ok {
+		if !strings.HasPrefix(socket, "/") && !strings.HasPrefix(socket, "@") {
+			return nil, nil, errors.Errorf("unix reflection socket must be an absolute path or an abstract name beginning with @: %q", endpoint)
+		}
+		if scheme == schemeH2C {
+			protocols.SetUnencryptedHTTP2(true)
+		}
+		dialer := &net.Dialer{}
+		transport.DialContext = func(ctx context.Context, _ string, _ string) (net.Conn, error) {
+			return dialer.DialContext(ctx, networkUnix, socket)
+		}
+		return newReflectionClient(transport, "http://localhost"), transport.CloseIdleConnections, nil
+	}
+
+	parsed, err := url.Parse(endpoint)
+	if err != nil {
+		return nil, nil, errors.Wrap(err, "parse reflection endpoint")
+	}
+	if parsed.Host == "" {
+		return nil, nil, errors.Errorf("reflection endpoint must be absolute: %q", endpoint)
+	}
+	switch parsed.Scheme {
+	case schemeHTTP, schemeH2C:
+		parsed.Scheme = schemeHTTP
 		protocols.SetUnencryptedHTTP2(true)
 	case "https":
 		transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12}
 	default:
-		return nil, nil, errors.Errorf("reflection endpoint must use http, https, or h2c: %q", endpoint.String())
+		return nil, nil, errors.Errorf("reflection endpoint must use http, https, or h2c: %q", endpoint)
 	}
+	return newReflectionClient(transport, parsed.String()), transport.CloseIdleConnections, nil
+}
+
+// splitUnixEndpoint reports the scheme and socket for the "<scheme>+unix:" forms.
+// ok is false when endpoint uses no unix scheme.
+func splitUnixEndpoint(endpoint string) (scheme string, socket string, ok bool) {
+	for _, candidate := range []string{schemeHTTP, schemeH2C} {
+		if trimmed, found := strings.CutPrefix(endpoint, candidate+"+unix:"); found {
+			return candidate, trimmed, true
+		}
+	}
+	return "", "", false
+}
+
+func newReflectionClient(transport *http.Transport, baseURL string) *grpcreflect.Client {
 	httpClient := &http.Client{Transport: transport}
-	client := grpcreflect.NewClient(httpClient, baseURL.String(), connect.WithGRPC())
-	return client, transport.CloseIdleConnections, nil
+	return grpcreflect.NewClient(httpClient, baseURL, connect.WithGRPC())
 }
