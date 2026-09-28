@@ -40,6 +40,84 @@ func TestEvaluatorPreservesMissingAndNullArguments(t *testing.T) {
 	assert.True(t, matched)
 }
 
+func TestDeepEqualComparesNestedValues(t *testing.T) {
+	program, err := javascript.NewProgram(t.Context(), "comparison.js", `
+		import * as spectre from "spectre";
+		spectre.field("test.v1.Response.value", spectre.deepEqual);
+	`)
+	assert.NoError(t, err)
+	evaluator, err := program.NewEvaluator(t.Context())
+	assert.NoError(t, err)
+	defer evaluator.Close()
+	tests := map[string]struct {
+		reference any
+		candidate any
+		matched   bool
+	}{
+		"EqualObjects": {
+			reference: map[string]any{"nested": []any{"one", float64(2)}},
+			candidate: map[string]any{"nested": []any{"one", float64(2)}},
+			matched:   true,
+		},
+		"DifferentObjects": {
+			reference: map[string]any{"nested": []any{"one", float64(2)}},
+			candidate: map[string]any{"nested": []any{"one", float64(3)}},
+		},
+		"ArrayOrderMatters": {
+			reference: []any{"one", "two"},
+			candidate: []any{"two", "one"},
+		},
+	}
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			matched, err := evaluator.CompareField(
+				"test.v1.Response.value",
+				test.reference,
+				true,
+				test.candidate,
+				true,
+			)
+
+			assert.NoError(t, err)
+			assert.Equal(t, test.matched, matched)
+		})
+	}
+}
+
+func TestDeepEqualRequiresTwoArguments(t *testing.T) {
+	tests := map[string]string{
+		"Missing": `spectre.deepEqual();`,
+		"One":     `spectre.deepEqual("one");`,
+		"Three":   `spectre.deepEqual("one", "two", "three");`,
+	}
+	for name, call := range tests {
+		t.Run(name, func(t *testing.T) {
+			_, err := javascript.NewProgram(t.Context(), "comparison.js", `
+				import * as spectre from "spectre";
+			`+call)
+
+			assert.Error(t, err)
+		})
+	}
+}
+
+func TestRegistrationsRequireTwoArguments(t *testing.T) {
+	tests := map[string]string{
+		"FieldMissing": `spectre.field();`,
+		"MessageOne":   `spectre.message("test.v1.Response");`,
+		"RPCThree":     `spectre.rpc("test.v1.Service.Get", () => true, "extra");`,
+	}
+	for name, call := range tests {
+		t.Run(name, func(t *testing.T) {
+			_, err := javascript.NewProgram(t.Context(), "comparison.js", `
+				import * as spectre from "spectre";
+			`+call)
+
+			assert.Error(t, err)
+		})
+	}
+}
+
 func TestEvaluatorProtectsArgumentsFromMutation(t *testing.T) {
 	program, err := javascript.NewProgram(t.Context(), "comparison.js", `
 		import * as spectre from "spectre";

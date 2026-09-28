@@ -39,3 +39,13 @@ export function message(target, comparator) {
 export function rpc(target, comparator) {
   unavailable();
 }
+
+/**
+ * Compare two values using deep structural equality.
+ * @param {*} reference
+ * @param {*} candidate
+ * @returns {boolean}
+ */
+export function deepEqual(reference, candidate) {
+  unavailable();
+}
