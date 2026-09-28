@@ -1,1 +1,1 @@
-default_workflow = "github-trunk"
+default_workflow = "github"
