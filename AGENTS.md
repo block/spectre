@@ -24,7 +24,8 @@
 # Documentation
 
 - Do not modify `README.md` unless the user explicitly requests it.
-- Put all developer documentation in `CONTRIBUTING.md`.
+- Put developer workflow documentation, such as building, testing, and running locally, in `CONTRIBUTING.md`.
+- Put design documents, implementation plans, and other documents that fit neither `README.md` nor `CONTRIBUTING.md` in `docs/`.
 
 # Commits and pull requests
 
