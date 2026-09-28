@@ -1,12 +1,12 @@
 package ingress
 
 import (
-	"context"
-	"net"
 	"net/http"
 	"sync"
 
 	"github.com/alecthomas/errors"
+
+	"github.com/block/spectre/internal/netaddr"
 )
 
 // Transport forwards HTTP/1, encrypted HTTP/2, and unencrypted HTTP/2 requests.
@@ -50,16 +50,16 @@ func (t *Transport) RoundTrip(request *http.Request) (*http.Response, error) {
 
 // forBackend selects the transport for a backend, dialing its unix socket when
 // the backend uses one.
-func (t *Transport) forBackend(target *backendURL) http.RoundTripper {
+func (t *Transport) forBackend(target *netaddr.Endpoint) http.RoundTripper {
 	base := t.standard
 	wrap := "forward HTTP request"
-	if target.usesH2C() {
+	if target.IsH2C() {
 		base = t.h2c
 		wrap = "forward unencrypted HTTP/2 request"
 	}
 	roundTripper := http.RoundTripper(base)
-	if target.isUnix() {
-		roundTripper = t.unixTransport(base, target.unixSocket())
+	if target.IsUnix() {
+		roundTripper = t.unixTransport(base, target)
 	}
 	return roundTripperFunc(func(request *http.Request) (*http.Response, error) {
 		response, err := roundTripper.RoundTrip(request)
@@ -67,15 +67,11 @@ func (t *Transport) forBackend(target *backendURL) http.RoundTripper {
 	})
 }
 
-// unixTransport clones base to dial a fixed unix socket and tracks it so idle
-// connections close with the parent transport.
-func (t *Transport) unixTransport(base *http.Transport, socket string) *http.Transport {
+// unixTransport clones base to dial the backend's unix socket and tracks it so
+// idle connections close with the parent transport.
+func (t *Transport) unixTransport(base *http.Transport, target *netaddr.Endpoint) *http.Transport {
 	clone := base.Clone()
-	dialer := &net.Dialer{}
-	clone.DialContext = func(ctx context.Context, network string, address string) (net.Conn, error) {
-		_, _ = network, address
-		return dialer.DialContext(ctx, networkUnix, socket)
-	}
+	clone.DialContext = target.DialContext
 	t.mu.Lock()
 	t.unix = append(t.unix, clone)
 	t.mu.Unlock()

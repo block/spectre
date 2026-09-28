@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/tls"
 	"net/http"
-	"net/url"
 	"slices"
 	"strings"
 
@@ -14,7 +13,11 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/descriptorpb"
+
+	"github.com/block/spectre/internal/netaddr"
 )
+
+const schemeHTTPS = "https"
 
 // ReflectionLoader loads service descriptors from a gRPC reflection endpoint.
 type ReflectionLoader struct{}
@@ -26,14 +29,7 @@ func NewReflectionLoader() *ReflectionLoader {
 
 // Load returns the descriptor set exposed by the endpoint's application services.
 func (loader *ReflectionLoader) Load(ctx context.Context, endpoint string) (*descriptorpb.FileDescriptorSet, error) {
-	parsed, err := url.Parse(endpoint)
-	if err != nil {
-		return nil, errors.Wrap(err, "parse reflection endpoint")
-	}
-	if parsed.Host == "" {
-		return nil, errors.Errorf("reflection endpoint must be absolute: %q", endpoint)
-	}
-	client, closeClient, err := reflectionClient(parsed)
+	client, closeClient, err := reflectionClient(endpoint)
 	if err != nil {
 		return nil, errors.Wrap(err, "configure reflection client")
 	}
@@ -96,21 +92,29 @@ func loadServiceFiles(
 	return files, nil
 }
 
-func reflectionClient(endpoint *url.URL) (*grpcreflect.Client, func(), error) {
-	baseURL := *endpoint
+func reflectionClient(endpoint string) (*grpcreflect.Client, func(), error) {
+	backend, err := netaddr.ParseBackend(endpoint)
+	if err != nil {
+		return nil, nil, errors.Wrap(err, "parse reflection endpoint")
+	}
 	protocols := new(http.Protocols)
 	protocols.SetHTTP2(true)
 	transport := &http.Transport{Protocols: protocols}
-	switch baseURL.Scheme {
-	case "http", "h2c":
-		baseURL.Scheme = "http"
-		protocols.SetUnencryptedHTTP2(true)
-	case "https":
+	switch {
+	case backend.IsUnix():
+		if backend.IsH2C() {
+			protocols.SetUnencryptedHTTP2(true)
+		}
+		transport.DialContext = backend.DialContext
+	case backend.URL().Scheme == schemeHTTPS:
 		transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12}
 	default:
-		return nil, nil, errors.Errorf("reflection endpoint must use http, https, or h2c: %q", endpoint.String())
+		protocols.SetUnencryptedHTTP2(true)
 	}
+	return newReflectionClient(transport, backend.URL().String()), transport.CloseIdleConnections, nil
+}
+
+func newReflectionClient(transport *http.Transport, baseURL string) *grpcreflect.Client {
 	httpClient := &http.Client{Transport: transport}
-	client := grpcreflect.NewClient(httpClient, baseURL.String(), connect.WithGRPC())
-	return client, transport.CloseIdleConnections, nil
+	return grpcreflect.NewClient(httpClient, baseURL, connect.WithGRPC())
 }

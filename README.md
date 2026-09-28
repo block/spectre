@@ -12,28 +12,24 @@ See the [design document](docs/design.md) for the proposed architecture and safe
 
 ## Try it
 
-The builtin sample service uses `internal/sample/comparison.js` as the comparator script. You can run the Spectre ingress service and two backends like so:
+The builtin sample service uses `internal/sample/comparison.js` as the comparator script. `proctor` runs the Spectre ingress and two sample backends, all over unix domain sockets under `dist/sockets/`:
 
 ```
 $ proctor
-candidate ▶ starting
-reference ▶ starting
-reference │ INF Sample Connect server listening address=127.0.0.1:50051
-candidate │ INF Sample Connect server listening address=127.0.0.1:50052
-reference ● ready
-candidate ● ready
-  ingress ▶ starting
-reference │ INF HTTP request method=POST path=/grpc.reflection.v1.ServerReflection/ServerReflectionInfo status=200 duration=1.139167ms
-  ingress │ INF Ingress proxy listening address=127.0.0.1:50050
-candidate │ INF HTTP request method=POST path=/grpc.reflection.v1.ServerReflection/ServerReflectionInfo status=200 duration=1.575958ms
-  ingress ● ready
+            setup ● ready
+        reference │ INF Sample Connect server listening address=.../dist/sockets/reference.sock
+        candidate │ INF Sample Connect server listening address=.../dist/sockets/candidate.sock
+  reference-ready ● ready
+  candidate-ready ● ready
+          ingress │ INF Ingress proxy listening address=.../dist/sockets/ingress.sock
+    ingress-ready ● ready
 
 ```
 
-In another terminal issue a gRPC request:
+In another terminal issue a gRPC request over the ingress socket. `grpcurl -unix` needs an absolute socket path:
 
 ```
-$ grpcurl -plaintext -d '{}' localhost:50050 spectre.sample.v1.UserService/ListUsers
+$ grpcurl -unix -plaintext -d '{}' "$(pwd)/dist/sockets/ingress.sock" spectre.sample.v1.UserService/ListUsers
 ...
 ```
 
