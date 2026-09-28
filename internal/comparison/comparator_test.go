@@ -75,7 +75,7 @@ func TestPublicSpectreModuleStub(t *testing.T) {
 	complete := module.GetExportedNames(func(names []string) { exports = names })
 
 	assert.True(t, complete)
-	assert.Equal(t, []string{"field", "message", "rpc", "deepEqual"}, exports)
+	assert.Equal(t, []string{"field", "message", "rpc"}, exports)
 }
 
 func TestResultfFormatsReason(t *testing.T) {
@@ -95,11 +95,10 @@ func TestDifferenceResultOwnsPaths(t *testing.T) {
 	assert.Equal(t, []string{"$.name"}, result.Differences())
 }
 
-func TestConnectComparatorsDeleteSuccessfulFields(t *testing.T) {
+func TestConnectNormalisersIgnoreAndSortFields(t *testing.T) {
 	comparator := newComparator(t, `
-		spectre.field("test.v1.Response.ignored", () => true);
-		spectre.field("test.v1.Response.roles", (reference, candidate) =>
-			spectre.deepEqual(reference.sort(), candidate.sort()));
+		spectre.field("test.v1.Response.ignored", () => undefined);
+		spectre.field("test.v1.Response.roles", (roles) => roles.sort());
 	`)
 	reference := connectResponse(`{"stable":"same","ignored":"first","roles":["reader","writer"]}`)
 	candidate := connectResponse(`{"roles":["writer","reader"],"ignored":"second","stable":"same"}`)
@@ -117,8 +116,7 @@ func TestConnectComparatorsDeleteSuccessfulFields(t *testing.T) {
 
 func TestPreservesProtoJSONInt64AsJavaScriptString(t *testing.T) {
 	comparator := newComparator(t, `
-		spectre.field("test.v1.Response.count", (reference, candidate) =>
-			typeof reference === "string" && typeof candidate === "string");
+		spectre.field("test.v1.Response.count", (count) => typeof count);
 	`)
 	reference := connectResponse(`{"count":"9007199254740993"}`)
 	candidate := connectResponse(`{"count":"9007199254740994"}`)
@@ -136,8 +134,7 @@ func TestPreservesProtoJSONInt64AsJavaScriptString(t *testing.T) {
 
 func TestPassesUndefinedForMissingField(t *testing.T) {
 	comparator := newComparator(t, `
-		spectre.field("test.v1.Response.ignored", (reference, candidate) =>
-			reference === undefined && candidate === "present");
+		spectre.field("test.v1.Response.ignored", (value) => value === undefined ? "present" : value);
 	`)
 	reference := connectResponse(`{"stable":"same"}`)
 	candidate := connectResponse(`{"stable":"same","ignored":"present"}`)
@@ -153,13 +150,11 @@ func TestPassesUndefinedForMissingField(t *testing.T) {
 	assert.Equal(t, comparison.Resultf(comparison.Equivalent, ""), result)
 }
 
-func TestChildFailureSurvivesSuccessfulParentComparator(t *testing.T) {
+func TestReportsDifferencesRemainingAfterNormalisation(t *testing.T) {
 	comparator := newComparator(t, `
-		spectre.field("test.v1.Response.ignored", () => false);
-		spectre.message("test.v1.Response", (reference, candidate) =>
-			reference.ignored !== undefined && candidate.ignored !== undefined);
+		spectre.field("test.v1.Response.ignored", (value) => value.toLowerCase());
 	`)
-	reference := connectResponse(`{"stable":"same","ignored":"first"}`)
+	reference := connectResponse(`{"stable":"same","ignored":"First"}`)
 	candidate := connectResponse(`{"stable":"same","ignored":"second"}`)
 
 	result := comparator.Compare(
@@ -173,14 +168,13 @@ func TestChildFailureSurvivesSuccessfulParentComparator(t *testing.T) {
 	assert.Equal(t, comparison.NewDifferenceResult("$.ignored"), result)
 }
 
-func TestParentComparatorReceivesPrunedChildren(t *testing.T) {
+func TestParentNormaliserReceivesNormalisedChildren(t *testing.T) {
 	comparator := newComparator(t, `
-		spectre.field("test.v1.Response.ignored", () => true);
-		spectre.message("test.v1.Response", (reference, candidate) =>
-			reference.ignored === undefined && candidate.ignored === undefined);
+		spectre.field("test.v1.Response.ignored", (value) => value.toLowerCase());
+		spectre.message("test.v1.Response", (response) => ({ignored: response.ignored}));
 	`)
-	reference := connectResponse(`{"stable":"same","ignored":"first"}`)
-	candidate := connectResponse(`{"stable":"same","ignored":"second"}`)
+	reference := connectResponse(`{"stable":"first","ignored":"SAME"}`)
+	candidate := connectResponse(`{"stable":"second","ignored":"same"}`)
 
 	result := comparator.Compare(
 		t.Context(),
@@ -193,13 +187,74 @@ func TestParentComparatorReceivesPrunedChildren(t *testing.T) {
 	assert.Equal(t, comparison.Resultf(comparison.Equivalent, ""), result)
 }
 
-func TestLogsComparisonAndIndividualComparatorResults(t *testing.T) {
+func TestRPCNormaliserRunsAfterResponseMessageNormaliser(t *testing.T) {
+	comparator := newComparator(t, `
+		spectre.message("test.v1.Response", (response) => ({stable: response.stable}));
+		spectre.rpc("test.v1.Service.Get", (response) => {
+			if (response.ignored !== undefined) {
+				throw new Error("RPC normaliser ran first");
+			}
+			return typeof response.stable;
+		});
+	`)
+	reference := connectResponse(`{"stable":"first","ignored":"first"}`)
+	candidate := connectResponse(`{"stable":"second"}`)
+
+	result := comparator.Compare(
+		t.Context(),
+		"/test.v1.Service/Get",
+		"application/json",
+		reference,
+		candidate,
+	)
+
+	assert.Equal(t, comparison.Resultf(comparison.Equivalent, ""), result)
+}
+
+func TestFieldNormaliserReplacesMessageNormaliserAtSameLocation(t *testing.T) {
+	comparator := newComparator(t, `
+		spectre.message("test.v1.User", () => { throw new Error("message normaliser ran"); });
+		spectre.field("test.v1.Response.owner", (owner) => owner === undefined ? undefined : owner.name.toLowerCase());
+	`)
+	reference := connectResponse(`{"owner":{"name":"ALICE"}}`)
+	candidate := connectResponse(`{"owner":{"name":"alice"}}`)
+
+	result := comparator.Compare(
+		t.Context(),
+		"/test.v1.Service/Get",
+		"application/json",
+		reference,
+		candidate,
+	)
+
+	assert.Equal(t, comparison.Resultf(comparison.Equivalent, ""), result)
+}
+
+func TestMessageNormaliserReceivesUndefinedForMissingMessage(t *testing.T) {
+	comparator := newComparator(t, `
+		spectre.message("test.v1.User", () => "ignored");
+	`)
+	reference := connectResponse(`{"stable":"same","owner":{"name":"alice"}}`)
+	candidate := connectResponse(`{"stable":"same"}`)
+
+	result := comparator.Compare(
+		t.Context(),
+		"/test.v1.Service/Get",
+		"application/json",
+		reference,
+		candidate,
+	)
+
+	assert.Equal(t, comparison.Resultf(comparison.Equivalent, ""), result)
+}
+
+func TestLogsComparisonAndIndividualNormaliserResults(t *testing.T) {
 	var output bytes.Buffer
 	log := slog.New(slog.NewJSONHandler(&output, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	config := comparison.NewConfig()
 	config.ComparisonScript = writeScript(t, comparisonModule(`
-		spectre.field("test.v1.Response.ignored", () => true);
-		spectre.field("test.v1.Response.stable", () => false);
+		spectre.field("test.v1.Response.ignored", () => undefined);
+		spectre.field("test.v1.Response.stable", (value) => value);
 	`))
 	comparator, err := comparison.New(t.Context(), config, log)
 	assert.NoError(t, err)
@@ -217,15 +272,14 @@ func TestLogsComparisonAndIndividualComparatorResults(t *testing.T) {
 
 	assert.Equal(t, comparison.NewDifferenceResult("$.stable"), result)
 	logs := output.String()
-	assert.Contains(t, logs, `"msg":"Response comparator completed","kind":"field","target":"test.v1.Response.ignored","response_path":"$.ignored","matched":true`)
-	assert.Contains(t, logs, `"msg":"Response comparator completed","kind":"field","target":"test.v1.Response.stable","response_path":"$.stable","matched":false`)
+	assert.Contains(t, logs, `"msg":"Response normaliser completed","kind":"field","target":"test.v1.Response.ignored","side":"reference","response_path":"$.ignored"`)
+	assert.Contains(t, logs, `"msg":"Response normaliser completed","kind":"field","target":"test.v1.Response.stable","side":"candidate","response_path":"$.stable"`)
 	assert.Contains(t, logs, `"level":"DEBUG","msg":"Response comparison completed","path":"/test.v1.Service/Get","outcome":"divergent","differences":["$.stable"]`)
 }
 
-func TestAppliesFieldComparatorToRepeatedMessageElements(t *testing.T) {
+func TestAppliesFieldNormaliserToRepeatedMessageElements(t *testing.T) {
 	comparator := newComparator(t, `
-		spectre.field("test.v1.Response.users[].name", (reference, candidate) =>
-			reference.toLowerCase() === candidate.toLowerCase());
+		spectre.field("test.v1.Response.users[].name", (name) => name.toLowerCase());
 	`)
 	reference := connectResponse(`{"stable":"same","users":[{"name":"ALICE"},{"name":"BOB"}]}`)
 	candidate := connectResponse(`{"stable":"same","users":[{"name":"alice"},{"name":"bob"}]}`)
@@ -241,12 +295,12 @@ func TestAppliesFieldComparatorToRepeatedMessageElements(t *testing.T) {
 	assert.Equal(t, comparison.Resultf(comparison.Equivalent, ""), result)
 }
 
-func TestMessageComparatorCanDeleteExtraRepeatedElement(t *testing.T) {
+func TestMessageNormaliserCanRemoveRepeatedElement(t *testing.T) {
 	comparator := newComparator(t, `
-		spectre.message("test.v1.User", (reference, candidate) =>
-			candidate === undefined || reference.name.toLowerCase() === candidate.name.toLowerCase());
+		spectre.message("test.v1.User", (user) =>
+			user === undefined || user.name === "ignored" ? undefined : {name: user.name.toLowerCase()});
 	`)
-	reference := connectResponse(`{"users":[{"name":"ALICE"},{"name":"BOB"},{"name":"ignored"}]}`)
+	reference := connectResponse(`{"users":[{"name":"ALICE"},{"name":"ignored"},{"name":"BOB"}]}`)
 	candidate := connectResponse(`{"users":[{"name":"alice"},{"name":"bob"}]}`)
 
 	result := comparator.Compare(
@@ -369,9 +423,9 @@ func TestDefersStreamingAndGRPCWeb(t *testing.T) {
 	assert.Equal(t, comparison.Skipped, grpcWeb.Outcome())
 }
 
-func TestRejectsInvalidComparatorResultsAndTargets(t *testing.T) {
+func TestRejectsInvalidNormaliserResultsAndTargets(t *testing.T) {
 	comparator := newComparator(t, `
-		spectre.rpc("test.v1.Service.Get", () => "yes");
+		spectre.rpc("test.v1.Service.Get", () => () => true);
 	`)
 	response := connectResponse(`{"stable":"same"}`)
 	result := comparator.Compare(
@@ -392,7 +446,7 @@ func TestRejectsInvalidComparatorResultsAndTargets(t *testing.T) {
 	assert.Contains(t, err.Error(), "has no field")
 }
 
-func TestInterruptsRunawayComparator(t *testing.T) {
+func TestInterruptsRunawayNormaliser(t *testing.T) {
 	config := comparison.NewConfig()
 	config.ComparisonScript = writeScript(t, comparisonModule(`spectre.rpc("test.v1.Service.Get", () => { while (true) {} });`))
 	config.ComparisonTimeout = 10 * time.Millisecond
@@ -557,6 +611,13 @@ func descriptorSet() *descriptorpb.FileDescriptorSet {
 						Number: proto.Int32(5),
 						Label:  descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(),
 						Type:   descriptorpb.FieldDescriptorProto_TYPE_INT64.Enum(),
+					},
+					{
+						Name:     new("owner"),
+						Number:   proto.Int32(7),
+						Label:    descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(),
+						Type:     descriptorpb.FieldDescriptorProto_TYPE_MESSAGE.Enum(),
+						TypeName: new(".test.v1.User"),
 					},
 					{
 						Name:     new("labels"),

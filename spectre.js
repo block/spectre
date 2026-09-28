@@ -1,12 +1,10 @@
 // Public typed stub for the virtual "spectre" module provided by Spectre's Sobek runtime.
-// Comparator scripts import this API; the functions are implemented by the host at runtime.
+// Normaliser scripts import this API; the functions are implemented by the host at runtime.
 // @ts-check
 
 /**
- * @callback Comparator
- * @param {*} reference
- * @param {*} candidate
- * @returns {boolean}
+ * Normalise one value, which is undefined when missing. Return undefined to remove it.
+ * @typedef {(value: any) => any} Normaliser
  */
 
 const unavailable = () => {
@@ -14,38 +12,28 @@ const unavailable = () => {
 };
 
 /**
- * Register a comparator for a protobuf field.
+ * Register a normaliser for a protobuf field.
  * @param {string} target
- * @param {Comparator} comparator
+ * @param {Normaliser} normaliser
  */
-export function field(target, comparator) {
+export function field(target, normaliser) {
   unavailable();
 }
 
 /**
- * Register a comparator for every occurrence of a protobuf message.
+ * Register a normaliser for every occurrence of a protobuf message.
  * @param {string} target
- * @param {Comparator} comparator
+ * @param {Normaliser} normaliser
  */
-export function message(target, comparator) {
+export function message(target, normaliser) {
   unavailable();
 }
 
 /**
- * Register a comparator for an RPC response.
+ * Register a normaliser for an RPC response.
  * @param {string} target
- * @param {Comparator} comparator
+ * @param {Normaliser} normaliser
  */
-export function rpc(target, comparator) {
-  unavailable();
-}
-
-/**
- * Compare two values using deep structural equality.
- * @param {*} reference
- * @param {*} candidate
- * @returns {boolean}
- */
-export function deepEqual(reference, candidate) {
+export function rpc(target, normaliser) {
   unavailable();
 }

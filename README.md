@@ -12,7 +12,7 @@ See the [design document](docs/design.md) for the proposed architecture and safe
 
 ## Try it
 
-The builtin sample service uses `internal/sample/comparison.js` as the comparator script. `proctor` runs the Spectre ingress and two sample backends, all over unix domain sockets under `dist/sockets/`:
+The builtin sample service uses `internal/sample/comparison.js` as the normaliser script. `proctor` runs the Spectre ingress and two sample backends, all over unix domain sockets under `dist/sockets/`:
 
 ```
 $ proctor
@@ -45,11 +45,15 @@ reference │ INF HTTP request method=POST path=/grpc.reflection.v1.ServerReflec
   ingress │ INF HTTP request method=POST path=/grpc.reflection.v1.ServerReflection/ServerReflectionInfo status=200 duration=4.005333ms
   ingress │ DBG Response comparison completed path=/grpc.reflection.v1.ServerReflection/ServerReflectionInfo outcome=skipped reason="gRPC namespace is excluded from response comparison"
   ingress │ DBG Response comparison skipped reason="gRPC namespace is excluded from response comparison"
-  ingress │ DBG Response comparator completed kind=field target=spectre.sample.v1.User.roles response_path=$.users[0].roles matched=true
-  ingress │ DBG Response comparator completed kind=field target=spectre.sample.v1.User.roles response_path=$.users[1].roles matched=true
-  ingress │ DBG Response comparator completed kind=field target=spectre.sample.v1.User.roles response_path=$.users[2].roles matched=true
-  ingress │ DBG Response comparator completed kind=field target=spectre.sample.v1.ListUsersResponse.generated_at response_path=$.generatedAt matched=true
+  ingress │ DBG Response normaliser completed kind=field target=spectre.sample.v1.User.roles side=reference response_path=$.users[0].roles
+  ingress │ DBG Response normaliser completed kind=field target=spectre.sample.v1.User.roles side=reference response_path=$.users[1].roles
+  ingress │ DBG Response normaliser completed kind=field target=spectre.sample.v1.User.roles side=reference response_path=$.users[2].roles
+  ingress │ DBG Response normaliser completed kind=field target=spectre.sample.v1.ListUsersResponse.generated_at side=reference response_path=$.generatedAt
+  ingress │ DBG Response normaliser completed kind=field target=spectre.sample.v1.User.roles side=candidate response_path=$.users[0].roles
+  ingress │ DBG Response normaliser completed kind=field target=spectre.sample.v1.User.roles side=candidate response_path=$.users[1].roles
+  ingress │ DBG Response normaliser completed kind=field target=spectre.sample.v1.User.roles side=candidate response_path=$.users[2].roles
+  ingress │ DBG Response normaliser completed kind=field target=spectre.sample.v1.ListUsersResponse.generated_at side=candidate response_path=$.generatedAt
   ingress │ DBG Response comparison completed path=/spectre.sample.v1.UserService/ListUsers outcome=equivalent
 ```
 
-This shows the various registered comparison functions applying to the responses from the two backends, then structural comparison succeeding.
+This shows the registered normalisers sorting roles and removing the generation timestamp in each backend's response, then structural comparison succeeding.

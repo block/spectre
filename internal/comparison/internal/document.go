@@ -8,7 +8,7 @@ import (
 	"github.com/alecthomas/errors"
 )
 
-// document is one mutable comparison copy; deleting from it never mutates captured data.
+// document is one mutable normalisation copy; changing it never mutates captured data.
 type document struct {
 	root    any
 	present bool
@@ -43,6 +43,19 @@ func (d *document) Delete(path documentPath) error {
 	return nil
 }
 
+// Set replaces the value at path, whose parent must already exist.
+func (d *document) Set(path documentPath, value any) error {
+	if path.empty() {
+		d.root = value
+		d.present = true
+		return nil
+	}
+	if !d.present {
+		return errors.New("normalisation path parent is absent")
+	}
+	return path.set(d.root, value)
+}
+
 func (d *document) Export() any {
 	if !d.present {
 		return nil
@@ -64,7 +77,7 @@ func (v documentValue) isPresent() bool {
 	return v.present
 }
 
-func (v documentValue) comparatorArgument() (value any, present bool) {
+func (v documentValue) normaliserArgument() (value any, present bool) {
 	return v.value, v.present
 }
 
@@ -161,6 +174,33 @@ func (p documentPath) value(root any, present bool) documentValue {
 
 func (p documentPath) delete(root any) (any, error) {
 	return deleteDocumentValue(root, p.parts)
+}
+
+func (p documentPath) set(root any, value any) error {
+	parent := p.parent().value(root, true)
+	if !parent.isPresent() {
+		return errors.New("normalisation path parent is absent")
+	}
+	last := p.parts[len(p.parts)-1]
+	if index, indexed := last.arrayIndex(); indexed {
+		array, ok := parent.array()
+		if !ok || index < 0 || index >= len(array) {
+			return errors.New("normalisation path does not identify an array element")
+		}
+		array[index] = value
+		return nil
+	}
+	name, _ := last.fieldName()
+	object, ok := parent.object()
+	if !ok {
+		return errors.New("normalisation path parent is not an object")
+	}
+	object[name] = value
+	return nil
+}
+
+func (p documentPath) parent() documentPath {
+	return newDocumentPath(p.parts[:len(p.parts)-1])
 }
 
 func (p documentPath) String() string {

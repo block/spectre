@@ -12,16 +12,16 @@ import (
 	"github.com/block/spectre/internal/schema"
 )
 
-// Plan binds JavaScript comparator declarations to one reflected schema.
-// It is immutable after construction and safe to share across comparisons.
+// Plan binds JavaScript normaliser declarations to one reflected schema.
+// It is immutable after construction and safe to share across normalisations.
 type Plan struct {
 	loaded   *schema.Schema
-	resolved []comparisonTarget
+	resolved []normalisationTarget
 }
 
-// NewPlan resolves and validates every declared comparator target before activation.
+// NewPlan resolves and validates every declared normaliser target before activation.
 func NewPlan(loaded *schema.Schema, fields, messages, rpcs []string) (*Plan, error) {
-	targets := make([]comparisonTarget, 0, len(fields)+len(messages)+len(rpcs))
+	targets := make([]normalisationTarget, 0, len(fields)+len(messages)+len(rpcs))
 	for _, declared := range []struct {
 		kind  targetKind
 		names []string
@@ -33,7 +33,7 @@ func NewPlan(loaded *schema.Schema, fields, messages, rpcs []string) (*Plan, err
 		for _, name := range declared.names {
 			resolved, err := resolveTarget(loaded, declared.kind, name)
 			if err != nil {
-				return nil, errors.Wrapf(err, "validate comparator target %q", name)
+				return nil, errors.Wrapf(err, "validate normaliser target %q", name)
 			}
 			targets = append(targets, resolved)
 		}
@@ -46,22 +46,52 @@ func (p *Plan) Schema() *schema.Schema {
 	return p.loaded
 }
 
-// Compare applies the plan to one response pair using the request's evaluator.
-func (p *Plan) Compare(
+// Normalise applies the plan to one payload using an evaluator owned by that payload.
+// side only labels log records.
+func (p *Plan) Normalise(
 	ctx context.Context,
 	log *slog.Logger,
 	evaluator *javascript.Evaluator,
 	method protoreflect.MethodDescriptor,
-	runComparators bool,
-	referenceJSON, candidateJSON []byte,
-) (differences []string, err error) {
+	runNormalisers bool,
+	side string,
+	payloadJSON []byte,
+) (*Normalised, error) {
+	payload, err := newDocument(payloadJSON)
+	if err != nil {
+		return nil, errors.Wrapf(err, "parse %s payload JSON", side)
+	}
 	targets := p.resolved
-	if !runComparators {
+	if !runNormalisers {
 		targets = nil
 	}
-	comparison, err := newComparisonRun(log, evaluator, method, slices.Clone(targets), referenceJSON, candidateJSON)
-	if err != nil {
+	run := newNormalisationRun(log, evaluator, method, slices.Clone(targets), side, payload)
+	if err := run.normalise(ctx); err != nil {
 		return nil, err
 	}
-	return comparison.compare(ctx)
+	return newNormalised(payload), nil
+}
+
+// Normalised is one payload after every applicable normaliser has run.
+type Normalised struct {
+	payload *document
+}
+
+func newNormalised(payload *document) *Normalised {
+	return &Normalised{payload: payload}
+}
+
+func (n *Normalised) document() *document {
+	return n.payload
+}
+
+// Diff returns the paths at which two normalised payloads differ, without values.
+func Diff(reference, candidate *Normalised) (differences []string) {
+	root := newDocumentPath(nil)
+	referenceRoot := reference.document().Value(root)
+	candidateRoot := candidate.document().Value(root)
+	if referenceRoot.isPresent() != candidateRoot.isPresent() {
+		return []string{root.String()}
+	}
+	return diffValues(reference.document().Export(), candidate.document().Export(), root, []string{})
 }

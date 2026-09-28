@@ -18,21 +18,15 @@ const (
 	targetRPC     targetKind = "rpc"
 )
 
-// comparisonTarget represents one of the three resolved target behaviours.
+// normalisationTarget represents one of the three resolved target behaviours.
 // Polymorphic traversal and dispatch avoid exposing a tagged union to callers.
-type comparisonTarget interface {
+type normalisationTarget interface {
 	key() string
 	kind() targetKind
 	name() string
 	priority() int
-	occurrences(
-		method protoreflect.MethodDescriptor,
-		reference, candidate *document,
-	) []occurrence
-	compare(
-		evaluator *javascript.Evaluator,
-		reference, candidate documentValue,
-	) (matched bool, err error)
+	occurrences(method protoreflect.MethodDescriptor, payload *document) []occurrence
+	normalise(evaluator *javascript.Evaluator, value documentValue) (documentValue, error)
 }
 
 // fieldTarget expands a descriptor path into one occurrence per concrete field.
@@ -58,15 +52,15 @@ func (t *fieldTarget) priority() int {
 	return 0
 }
 
-func (t *fieldTarget) occurrences(
-	method protoreflect.MethodDescriptor,
-	reference, candidate *document,
-) []occurrence {
+func (t *fieldTarget) occurrences(method protoreflect.MethodDescriptor, payload *document) []occurrence {
 	occurrences := []occurrence{}
-	for _, base := range findMessages(method.Output(), t.root.FullName(), reference, candidate) {
+	for _, base := range findMessages(method.Output(), t.root.FullName(), payload) {
+		if !base.isPresent() {
+			continue
+		}
 		paths := []pathWithPresence{base}
 		for index, step := range t.steps {
-			paths = descendField(reference, candidate, paths, step, index == len(t.steps)-1)
+			paths = descendField(payload, paths, step, index == len(t.steps)-1)
 		}
 		for _, path := range paths {
 			occurrences = append(occurrences, newOccurrence(t, path.path(), path.isPresent()))
@@ -75,17 +69,13 @@ func (t *fieldTarget) occurrences(
 	return occurrences
 }
 
-func (t *fieldTarget) compare(
-	evaluator *javascript.Evaluator,
-	reference, candidate documentValue,
-) (matched bool, err error) {
-	referenceValue, referencePresent := reference.comparatorArgument()
-	candidateValue, candidatePresent := candidate.comparatorArgument()
-	matched, err = evaluator.CompareField(t.name(), referenceValue, referencePresent, candidateValue, candidatePresent)
-	return matched, errors.Wrap(err, "invoke field comparator")
+func (t *fieldTarget) normalise(evaluator *javascript.Evaluator, value documentValue) (documentValue, error) {
+	argument, present := value.normaliserArgument()
+	normalised, normalisedPresent, err := evaluator.NormaliseField(t.name(), argument, present)
+	return newDocumentValue(normalised, normalisedPresent), errors.Wrap(err, "invoke field normaliser")
 }
 
-// messageTarget compares every nested occurrence of one protobuf message type.
+// messageTarget normalises every nested occurrence of one protobuf message type.
 type messageTarget struct {
 	targetName string
 	descriptor protoreflect.MessageDescriptor
@@ -107,11 +97,8 @@ func (t *messageTarget) priority() int {
 	return 1
 }
 
-func (t *messageTarget) occurrences(
-	method protoreflect.MethodDescriptor,
-	reference, candidate *document,
-) []occurrence {
-	paths := findMessages(method.Output(), t.descriptor.FullName(), reference, candidate)
+func (t *messageTarget) occurrences(method protoreflect.MethodDescriptor, payload *document) []occurrence {
+	paths := findMessages(method.Output(), t.descriptor.FullName(), payload)
 	occurrences := make([]occurrence, 0, len(paths))
 	for _, path := range paths {
 		occurrences = append(occurrences, newOccurrence(t, path.path(), path.isPresent()))
@@ -119,14 +106,10 @@ func (t *messageTarget) occurrences(
 	return occurrences
 }
 
-func (t *messageTarget) compare(
-	evaluator *javascript.Evaluator,
-	reference, candidate documentValue,
-) (matched bool, err error) {
-	referenceValue, referencePresent := reference.comparatorArgument()
-	candidateValue, candidatePresent := candidate.comparatorArgument()
-	matched, err = evaluator.CompareMessage(t.name(), referenceValue, referencePresent, candidateValue, candidatePresent)
-	return matched, errors.Wrap(err, "invoke message comparator")
+func (t *messageTarget) normalise(evaluator *javascript.Evaluator, value documentValue) (documentValue, error) {
+	argument, present := value.normaliserArgument()
+	normalised, normalisedPresent, err := evaluator.NormaliseMessage(t.name(), argument, present)
+	return newDocumentValue(normalised, normalisedPresent), errors.Wrap(err, "invoke message normaliser")
 }
 
 // methodTarget contributes one root occurrence only when the request method matches.
@@ -151,24 +134,17 @@ func (t *methodTarget) priority() int {
 	return 2
 }
 
-func (t *methodTarget) occurrences(
-	method protoreflect.MethodDescriptor,
-	_, _ *document,
-) []occurrence {
+func (t *methodTarget) occurrences(method protoreflect.MethodDescriptor, _ *document) []occurrence {
 	if t.descriptor.FullName() != method.FullName() {
 		return nil
 	}
 	return []occurrence{newOccurrence(t, newDocumentPath(nil), true)}
 }
 
-func (t *methodTarget) compare(
-	evaluator *javascript.Evaluator,
-	reference, candidate documentValue,
-) (matched bool, err error) {
-	referenceValue, referencePresent := reference.comparatorArgument()
-	candidateValue, candidatePresent := candidate.comparatorArgument()
-	matched, err = evaluator.CompareRPC(t.name(), referenceValue, referencePresent, candidateValue, candidatePresent)
-	return matched, errors.Wrap(err, "invoke RPC comparator")
+func (t *methodTarget) normalise(evaluator *javascript.Evaluator, value documentValue) (documentValue, error) {
+	argument, present := value.normaliserArgument()
+	normalised, normalisedPresent, err := evaluator.NormaliseRPC(t.name(), argument, present)
+	return newDocumentValue(normalised, normalisedPresent), errors.Wrap(err, "invoke RPC normaliser")
 }
 
 // fieldStep marks repeated intermediate fields that must expand into element paths.
@@ -201,7 +177,7 @@ func newMethodTarget(name string, descriptor protoreflect.MethodDescriptor) *met
 	return &methodTarget{targetName: name, descriptor: descriptor}
 }
 
-func resolveTarget(loaded *schema.Schema, kind targetKind, name string) (comparisonTarget, error) {
+func resolveTarget(loaded *schema.Schema, kind targetKind, name string) (normalisationTarget, error) {
 	switch kind {
 	case targetField:
 		root, steps, err := resolveField(loaded, name)
@@ -212,20 +188,20 @@ func resolveTarget(loaded *schema.Schema, kind targetKind, name string) (compari
 	case targetMessage:
 		message, err := loaded.Message(protoreflect.FullName(name))
 		if err != nil {
-			return nil, errors.Wrap(err, "resolve message comparator target")
+			return nil, errors.Wrap(err, "resolve message normaliser target")
 		}
 		return newMessageTarget(name, message), nil
 	case targetRPC:
 		method, err := loaded.Method(protoreflect.FullName(name))
 		if err != nil {
-			return nil, errors.Wrap(err, "resolve RPC comparator target")
+			return nil, errors.Wrap(err, "resolve RPC normaliser target")
 		}
 		if method.IsStreamingClient() || method.IsStreamingServer() {
-			return nil, errors.New("streaming RPC comparators are not supported")
+			return nil, errors.New("streaming RPC normalisers are not supported")
 		}
 		return newMethodTarget(name, method), nil
 	default:
-		return nil, errors.Errorf("unknown comparator kind %q", kind)
+		return nil, errors.Errorf("unknown normaliser kind %q", kind)
 	}
 }
 

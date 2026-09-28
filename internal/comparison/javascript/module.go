@@ -1,7 +1,6 @@
 package javascript
 
 import (
-	"reflect"
 	"sort"
 
 	"github.com/alecthomas/errors"
@@ -14,7 +13,6 @@ const (
 	targetField   targetKind = "field"
 	targetMessage targetKind = "message"
 	targetRPC     targetKind = "rpc"
-	deepEqual                = "deepEqual"
 )
 
 // spectreModule is a stateless module record shared safely across isolated runtimes.
@@ -27,13 +25,13 @@ func (m *spectreModule) Link() error {
 }
 
 func (m *spectreModule) GetExportedNames(callback func([]string), _ ...sobek.ModuleRecord) bool {
-	callback([]string{string(targetField), string(targetMessage), string(targetRPC), deepEqual})
+	callback([]string{string(targetField), string(targetMessage), string(targetRPC)})
 	return true
 }
 
 func (m *spectreModule) ResolveExport(name string, _ ...sobek.ResolveSetElement) (*sobek.ResolvedBinding, bool) {
 	kind := targetKind(name)
-	if kind != targetField && kind != targetMessage && kind != targetRPC && name != deepEqual {
+	if kind != targetField && kind != targetMessage && kind != targetRPC {
 		return nil, false
 	}
 	return &sobek.ResolvedBinding{Module: m, BindingName: name}, false
@@ -66,7 +64,6 @@ func newCallbackRegistry(runtime *sobek.Runtime) *callbackRegistry {
 		rpcs:     map[string]sobek.Callable{},
 	}
 	registry.functions = map[string]sobek.Value{
-		deepEqual:             runtime.ToValue(registry.compareDeeply),
 		string(targetField):   runtime.ToValue(registry.registration(targetField)),
 		string(targetMessage): runtime.ToValue(registry.registration(targetMessage)),
 		string(targetRPC):     runtime.ToValue(registry.registration(targetRPC)),
@@ -76,13 +73,6 @@ func newCallbackRegistry(runtime *sobek.Runtime) *callbackRegistry {
 
 func (r *callbackRegistry) GetBindingValue(name string) sobek.Value {
 	return r.functions[name]
-}
-
-func (r *callbackRegistry) compareDeeply(call sobek.FunctionCall) sobek.Value {
-	if len(call.Arguments) != 2 {
-		panic(r.runtime.NewTypeError("spectre.deepEqual requires exactly two arguments"))
-	}
-	return r.runtime.ToValue(reflect.DeepEqual(call.Argument(0).Export(), call.Argument(1).Export()))
 }
 
 func (r *callbackRegistry) registration(kind targetKind) func(sobek.FunctionCall) sobek.Value {
@@ -96,10 +86,10 @@ func (r *callbackRegistry) registration(kind targetKind) func(sobek.FunctionCall
 		}
 		callback, ok := sobek.AssertFunction(call.Argument(1))
 		if !ok {
-			panic(r.runtime.NewTypeError("spectre.%s comparator must be a function", kind))
+			panic(r.runtime.NewTypeError("spectre.%s normaliser must be a function", kind))
 		}
 		if !r.register(kind, target, callback) {
-			panic(r.runtime.NewTypeError("duplicate comparator target %q", target))
+			panic(r.runtime.NewTypeError("duplicate normaliser target %q", target))
 		}
 		return sobek.Undefined()
 	}

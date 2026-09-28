@@ -8,14 +8,34 @@ import (
 	"github.com/grafana/sobek"
 )
 
-// Evaluator owns the JavaScript runtime for one response comparison.
+// Evaluator owns the JavaScript runtime for one payload normalisation.
 // It is confined to its caller because Sobek runtime access is not synchronized.
 type Evaluator struct {
-	runtime  *sobek.Runtime
-	parse    sobek.Callable
-	registry *callbackRegistry
-	stop     func()
+	runtime   *sobek.Runtime
+	parse     sobek.Callable
+	stringify sobek.Callable
+	registry  *callbackRegistry
+	stop      func()
 }
+
+// JSON helpers are captured before the script runs so it cannot replace them. The
+// replacer rejects values JSON would silently drop or coerce.
+const jsonHelpers = `(function(parse, stringify, isArray, isFinite) {
+	const replacer = function(key, value) {
+		if (value === undefined && !isArray(this)) {
+			return value;
+		}
+		if (value === undefined || typeof value === "function" || typeof value === "symbol" ||
+			typeof value === "bigint" || (typeof value === "number" && !isFinite(value))) {
+			throw new TypeError("normalised value is not representable as JSON");
+		}
+		return value;
+	};
+	return {
+		parse: function(text) { return parse(text); },
+		stringify: function(value) { return stringify(value, replacer); },
+	};
+})(JSON.parse, JSON.stringify, Array.isArray, Number.isFinite)`
 
 // newEvaluator builds a runtime from the exact compiled values owned by Program.
 func newEvaluator(
@@ -26,17 +46,17 @@ func newEvaluator(
 	runtime := sobek.New()
 	runtime.SetMaxCallStackSize(1024)
 	evaluator = &Evaluator{runtime: runtime, stop: watchRuntime(ctx, runtime)}
-	parse, err := runtime.RunString(`(function(parse) {
-		return function(text) { return parse(text); };
-	})(JSON.parse)`)
+	helpers, err := runtime.RunString(jsonHelpers)
 	if err != nil {
 		evaluator.Close()
-		return nil, nil, nil, nil, errors.Wrap(err, "create JavaScript parse helper")
+		return nil, nil, nil, nil, errors.Wrap(err, "create JavaScript JSON helpers")
 	}
-	evaluator.parse, _ = sobek.AssertFunction(parse)
-	if evaluator.parse == nil {
+	helperObject := helpers.ToObject(runtime)
+	evaluator.parse, _ = sobek.AssertFunction(helperObject.Get("parse"))
+	evaluator.stringify, _ = sobek.AssertFunction(helperObject.Get("stringify"))
+	if evaluator.parse == nil || evaluator.stringify == nil {
 		evaluator.Close()
-		return nil, nil, nil, nil, errors.New("JavaScript parse helper is not callable")
+		return nil, nil, nil, nil, errors.New("JavaScript JSON helpers are not callable")
 	}
 	registry, err := loadSpectreModule(runtime, entry, spectre)
 	if err != nil {
@@ -60,68 +80,60 @@ func (e *Evaluator) Close() {
 	e.stop = nil
 }
 
-// CompareField invokes the comparator registered for a protobuf field.
-func (e *Evaluator) CompareField(
+// NormaliseField invokes the normaliser registered for a protobuf field.
+func (e *Evaluator) NormaliseField(
 	target string,
-	reference any,
-	referencePresent bool,
-	candidate any,
-	candidatePresent bool,
-) (matched bool, err error) {
-	return e.compare(targetField, target, reference, referencePresent, candidate, candidatePresent)
+	value any,
+	present bool,
+) (normalised any, normalisedPresent bool, err error) {
+	return e.normalise(targetField, target, value, present)
 }
 
-// CompareMessage invokes the comparator registered for a protobuf message.
-func (e *Evaluator) CompareMessage(
+// NormaliseMessage invokes the normaliser registered for a protobuf message.
+func (e *Evaluator) NormaliseMessage(
 	target string,
-	reference any,
-	referencePresent bool,
-	candidate any,
-	candidatePresent bool,
-) (matched bool, err error) {
-	return e.compare(targetMessage, target, reference, referencePresent, candidate, candidatePresent)
+	value any,
+	present bool,
+) (normalised any, normalisedPresent bool, err error) {
+	return e.normalise(targetMessage, target, value, present)
 }
 
-// CompareRPC invokes the comparator registered for an RPC method.
-func (e *Evaluator) CompareRPC(
+// NormaliseRPC invokes the normaliser registered for an RPC method.
+func (e *Evaluator) NormaliseRPC(
 	target string,
-	reference any,
-	referencePresent bool,
-	candidate any,
-	candidatePresent bool,
-) (matched bool, err error) {
-	return e.compare(targetRPC, target, reference, referencePresent, candidate, candidatePresent)
+	value any,
+	present bool,
+) (normalised any, normalisedPresent bool, err error) {
+	return e.normalise(targetRPC, target, value, present)
 }
 
-func (e *Evaluator) compare(
+// normalise returns an undefined result as absent so callers can remove the node.
+func (e *Evaluator) normalise(
 	kind targetKind,
 	target string,
-	reference any,
-	referencePresent bool,
-	candidate any,
-	candidatePresent bool,
-) (matched bool, err error) {
+	value any,
+	present bool,
+) (normalised any, normalisedPresent bool, err error) {
 	callback, ok := e.registry.lookup(kind, target)
 	if !ok {
-		return false, errors.Errorf("JavaScript comparator %q is unavailable", target)
+		return nil, false, errors.Errorf("JavaScript normaliser %q is unavailable", target)
 	}
-	referenceArgument, err := e.argument(reference, referencePresent)
+	argument, err := e.argument(value, present)
 	if err != nil {
-		return false, errors.Wrap(err, "clone reference comparator argument")
+		return nil, false, errors.Wrap(err, "clone normaliser argument")
 	}
-	candidateArgument, err := e.argument(candidate, candidatePresent)
+	result, err := callback(sobek.Undefined(), argument)
 	if err != nil {
-		return false, errors.Wrap(err, "clone candidate comparator argument")
+		return nil, false, errors.New("JavaScript normaliser threw an exception")
 	}
-	result, err := callback(sobek.Undefined(), referenceArgument, candidateArgument)
+	if sobek.IsUndefined(result) {
+		return nil, false, nil
+	}
+	normalised, err = e.result(result)
 	if err != nil {
-		return false, errors.New("JavaScript comparator threw an exception")
+		return nil, false, err
 	}
-	matched, ok = result.Export().(bool)
-	if !ok {
-		return false, errors.New("JavaScript comparator returned a non-boolean value")
-	}
-	return matched, nil
+	return normalised, true, nil
 }
 
 func (e *Evaluator) argument(value any, present bool) (sobek.Value, error) {
@@ -131,10 +143,27 @@ func (e *Evaluator) argument(value any, present bool) (sobek.Value, error) {
 	// A JSON round trip prevents JavaScript mutation from reaching Go-owned documents.
 	data, err := json.Marshal(value)
 	if err != nil {
-		return nil, errors.Wrap(err, "encode comparator argument")
+		return nil, errors.Wrap(err, "encode normaliser argument")
 	}
 	parsed, err := e.parse(sobek.Undefined(), e.runtime.ToValue(string(data)))
-	return parsed, errors.Wrap(err, "parse comparator argument")
+	return parsed, errors.Wrap(err, "parse normaliser argument")
+}
+
+// result detaches a normalised value from the runtime through the JSON helper.
+func (e *Evaluator) result(value sobek.Value) (any, error) {
+	encoded, err := e.stringify(sobek.Undefined(), value)
+	if err != nil {
+		return nil, errors.New("JavaScript normaliser returned a value that is not representable as JSON")
+	}
+	text, ok := encoded.Export().(string)
+	if !ok {
+		return nil, errors.New("JavaScript normaliser returned a value that is not representable as JSON")
+	}
+	var normalised any
+	if err := json.Unmarshal([]byte(text), &normalised); err != nil {
+		return nil, errors.Wrap(err, "decode normalised value")
+	}
+	return normalised, nil
 }
 
 func watchRuntime(ctx context.Context, runtime *sobek.Runtime) func() {

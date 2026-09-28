@@ -45,8 +45,8 @@ verify() {
 		exit 1
 	fi
 	wait_for_log candidate '"path":"/spectre.sample.v1.UserService/ListUsers"'
-	wait_for_log ingress '"msg":"Response comparator completed","kind":"field","target":"spectre.sample.v1.User.roles"'
-	wait_for_log ingress '"target":"spectre.sample.v1.ListUsersResponse.generated_at","response_path":"$.generatedAt","matched":true'
+	wait_for_log ingress '"msg":"Response normaliser completed","kind":"field","target":"spectre.sample.v1.User.roles"'
+	wait_for_log ingress '"target":"spectre.sample.v1.ListUsersResponse.generated_at","side":"candidate","response_path":"$.generatedAt"'
 	wait_for_log ingress '"msg":"Response comparison completed","path":"/spectre.sample.v1.UserService/ListUsers","outcome":"equivalent"'
 	# The comparison timeout has elapsed before this probe, so a second mirror proves
 	# the reordered roles did not quarantine the candidate.
