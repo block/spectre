@@ -18,7 +18,11 @@ func TestLoadsAndMergesDescriptorSetFiles(t *testing.T) {
 	// The second file repeats an identical import, as separate protoc runs would.
 	messages := &descriptorpb.FileDescriptorSet{File: full.GetFile()[1:]}
 	config := schema.NewConfig()
-	config.DescriptorSets = []string{writeDescriptorSet(t, service), writeDescriptorSet(t, messages)}
+	config.DescriptorsDir = writeDescriptorSets(t, map[string][]byte{
+		"service.pb":         marshal(t, service),
+		"nested/messages.pb": marshal(t, messages),
+		"notes.txt":          []byte("not a descriptor set"),
+	})
 
 	loaded, err := schema.LoadDescriptorSets(config)
 	assert.NoError(t, err)
@@ -53,41 +57,21 @@ func TestRejectsInvalidDescriptorSetFiles(t *testing.T) {
 	conflicting := newDescriptorSet()
 	conflicting.File[1].MessageType[0].Name = new("OtherRequest")
 	for name, test := range map[string]struct {
-		files   func(t *testing.T) []string
+		files   map[string][]byte
 		message string
 	}{
-		"Missing": {
-			files:   func(t *testing.T) []string { return []string{filepath.Join(t.TempDir(), "missing.binpb")} },
-			message: "read descriptor set",
-		},
-		"Malformed": {
-			files: func(t *testing.T) []string {
-				path := filepath.Join(t.TempDir(), "malformed.binpb")
-				assert.NoError(t, os.WriteFile(path, []byte{0xff}, 0o600))
-				return []string{path}
-			},
-			message: "decode descriptor set",
-		},
-		"Empty": {
-			files:   func(t *testing.T) []string { return []string{writeDescriptorSet(t, &descriptorpb.FileDescriptorSet{})} },
-			message: "contains no files",
-		},
-		"MissingImport": {
-			files: func(t *testing.T) []string {
-				return []string{writeDescriptorSet(t, &descriptorpb.FileDescriptorSet{File: newDescriptorSet().GetFile()[:1]})}
-			},
-			message: "load descriptor sets",
-		},
+		"NoFiles":       {files: map[string][]byte{"notes.txt": nil}, message: "contains no .pb files"},
+		"Malformed":     {files: map[string][]byte{"malformed.pb": {0xff}}, message: `decode descriptor set "malformed.pb"`},
+		"Empty":         {files: map[string][]byte{"empty.pb": marshal(t, &descriptorpb.FileDescriptorSet{})}, message: `descriptor set "empty.pb" contains no files`},
+		"MissingImport": {files: map[string][]byte{"service.pb": marshal(t, &descriptorpb.FileDescriptorSet{File: newDescriptorSet().GetFile()[:1]})}, message: "load descriptor sets"},
 		"Conflict": {
-			files: func(t *testing.T) []string {
-				return []string{writeDescriptorSet(t, newDescriptorSet()), writeDescriptorSet(t, conflicting)}
-			},
+			files:   map[string][]byte{"a.pb": marshal(t, newDescriptorSet()), "b.pb": marshal(t, conflicting)},
 			message: `conflicting descriptors for file "messages.proto"`,
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			config := schema.NewConfig()
-			config.DescriptorSets = test.files(t)
+			config.DescriptorsDir = writeDescriptorSets(t, test.files)
 			_, err := schema.LoadDescriptorSets(config)
 			assert.Error(t, err)
 			assert.Contains(t, err.Error(), test.message)
@@ -95,11 +79,28 @@ func TestRejectsInvalidDescriptorSetFiles(t *testing.T) {
 	}
 }
 
-func writeDescriptorSet(t *testing.T, set *descriptorpb.FileDescriptorSet) string {
+func TestRejectsMissingDescriptorsDir(t *testing.T) {
+	config := schema.NewConfig()
+	config.DescriptorsDir = filepath.Join(t.TempDir(), "missing")
+	_, err := schema.LoadDescriptorSets(config)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "read descriptors directory")
+}
+
+func writeDescriptorSets(t *testing.T, files map[string][]byte) string {
+	t.Helper()
+	dir := t.TempDir()
+	for name, data := range files {
+		path := filepath.Join(dir, filepath.FromSlash(name))
+		assert.NoError(t, os.MkdirAll(filepath.Dir(path), 0o700))
+		assert.NoError(t, os.WriteFile(path, data, 0o600))
+	}
+	return dir
+}
+
+func marshal(t *testing.T, set *descriptorpb.FileDescriptorSet) []byte {
 	t.Helper()
 	data, err := proto.Marshal(set)
 	assert.NoError(t, err)
-	path := filepath.Join(t.TempDir(), "descriptors.binpb")
-	assert.NoError(t, os.WriteFile(path, data, 0o600))
-	return path
+	return data
 }

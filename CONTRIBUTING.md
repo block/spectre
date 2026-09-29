@@ -15,13 +15,13 @@ backends in the same network namespace:
 ```sh
 docker run --rm --network=host \
   -v "$PWD/internal/sample/scripts:/scripts:ro" \
-  -v "$PWD/dist/sample.pb:/sample.pb:ro" \
+  -v "$PWD/dist/descriptors:/descriptors:ro" \
   spectre-ingress:dev \
   --listen=0.0.0.0:50050 \
   --reference=h2c://127.0.0.1:50051 \
   --candidate=h2c://127.0.0.1:50052 \
   --scripts-dir=/scripts \
-  --descriptor-set=/sample.pb
+  --descriptors-dir=/descriptors
 ```
 
 Releases are published for Linux AMD64 and ARM64 as `ghcr.io/block/spectre`
@@ -43,7 +43,7 @@ spectre-ingress \
   --reference=h2c://127.0.0.1:50051 \
   --candidate=h2c://127.0.0.1:50052 \
   --scripts-dir=internal/sample/scripts \
-  --descriptor-set=dist/sample.pb
+  --descriptors-dir=dist/descriptors
 ```
 
 The proxy listens on `127.0.0.1:50050` by default. It accepts HTTP/1 and unencrypted
@@ -74,7 +74,7 @@ filters by IDs and an optional role.
 The sample also serves raw HTTP JSON endpoints modelled on a legacy weather service.
 They are not exposed through reflection, so the proxy types them with the synthetic
 `WeatherService` in [weather.proto](internal/sample/proto/weather.proto), loaded
-from `dist/sample.pb`. Use `--weather=path/to/weather.json` to load different
+from `dist/descriptors/`. Use `--weather=path/to/weather.json` to load different
 [weather](internal/sample/testdata/weather.json) and `--revision` to set the status revision:
 
 ```sh

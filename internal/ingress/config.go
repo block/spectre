@@ -67,8 +67,8 @@ func (c Config) ListenNetworkAddress() (network string, address string) {
 
 // Validate checks that the ingress has a schema source and usable resource limits.
 func (c Config) Validate() error {
-	if !c.Reflection && len(c.Schema.DescriptorSets) == 0 {
-		return errors.New("a schema source is required: enable reflection or add a descriptor set")
+	if !c.Reflection && c.Schema.DescriptorsDir == "" {
+		return errors.New("a schema source is required: enable reflection or set a descriptors directory")
 	}
 	positiveDurations := []struct {
 		name  string

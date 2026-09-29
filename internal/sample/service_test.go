@@ -192,7 +192,7 @@ func TestCancelledRequests(t *testing.T) {
 }
 
 func TestSampleDescriptorAndEncodings(t *testing.T) {
-	data, err := os.ReadFile("../../dist/sample.pb")
+	data, err := os.ReadFile("../../dist/descriptors/sample.pb")
 	assert.NoError(t, err)
 	loaded, err := schema.New(data)
 	assert.NoError(t, err)

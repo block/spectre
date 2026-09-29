@@ -444,7 +444,7 @@ func TestDescriptorMismatchKeepsServerUnreadyAndLogs(t *testing.T) {
 	}}}
 	for name, test := range map[string]struct {
 		descriptors descriptorLoaderFunc
-		static      []string
+		static      string
 		message     string
 	}{
 		"BackendsDiffer": {
@@ -456,13 +456,13 @@ func TestDescriptorMismatchKeepsServerUnreadyAndLogs(t *testing.T) {
 		},
 		"StaticConflicts": {
 			descriptors: matchingDescriptorLoader(),
-			static:      []string{writeDescriptorSet(t, conflictingStatic)},
+			static:      writeDescriptorsDir(t, conflictingStatic),
 			message:     "Backend descriptors conflict with static descriptors",
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			config := newTestConfig("http://127.0.0.1:50051", "http://127.0.0.1:50052")
-			config.Schema.DescriptorSets = test.static
+			config.Schema.DescriptorsDir = test.static
 			messages := make(chan string, 2)
 			handler, err := ingress.New(config, http.DefaultTransport, test.descriptors, newTestComparator(t), slog.New(newObservedLogHandler(messages)))
 			assert.NoError(t, err)
@@ -518,7 +518,7 @@ func TestConfiguresComparatorWithStaticAndReflectedSchemas(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			config := newTestConfig("http://127.0.0.1:50051", "http://127.0.0.1:50052")
 			config.Reflection = test.reflection
-			config.Schema.DescriptorSets = []string{writeDescriptorSet(t, static)}
+			config.Schema.DescriptorsDir = writeDescriptorsDir(t, static)
 			descriptors := descriptorLoaderFunc(func(ctx context.Context, endpoint string) (*descriptorpb.FileDescriptorSet, error) {
 				if !test.reflection {
 					t.Errorf("reflection loaded descriptors from %s while disabled", endpoint)
@@ -1146,13 +1146,13 @@ func serveUnix(t *testing.T, socket string, handler http.Handler) {
 	t.Cleanup(func() { assert.NoError(t, server.Close()) })
 }
 
-func writeDescriptorSet(t *testing.T, set *descriptorpb.FileDescriptorSet) string {
+func writeDescriptorsDir(t *testing.T, set *descriptorpb.FileDescriptorSet) string {
 	t.Helper()
 	data, err := proto.Marshal(set)
 	assert.NoError(t, err)
-	path := filepath.Join(t.TempDir(), "descriptors.binpb")
-	assert.NoError(t, os.WriteFile(path, data, 0o600))
-	return path
+	dir := t.TempDir()
+	assert.NoError(t, os.WriteFile(filepath.Join(dir, "descriptors.pb"), data, 0o600))
+	return dir
 }
 
 func matchingDescriptorLoader() descriptorLoaderFunc {

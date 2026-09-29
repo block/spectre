@@ -1,7 +1,9 @@
 package schema
 
 import (
+	"io/fs"
 	"os"
+	"path"
 	"slices"
 
 	"github.com/alecthomas/errors"
@@ -12,8 +14,8 @@ import (
 
 // Config selects static schema sources.
 type Config struct {
-	// DescriptorSets are binary FileDescriptorSet files, each including its imports.
-	DescriptorSets []string `name:"descriptor-set" type:"existingfile" sep:"none" placeholder:"FILE" help:"Binary protobuf FileDescriptorSet file, including imports. Repeatable."`
+	// DescriptorsDir holds binary FileDescriptorSet files, each including its imports.
+	DescriptorsDir string `type:"existingdir" placeholder:"DIR" help:"Directory of binary protobuf FileDescriptorSet files, each including its imports. Every .pb file in it, including subdirectories, is loaded."`
 }
 
 // NewConfig returns the default schema configuration.
@@ -25,35 +27,59 @@ func NewConfig() Config {
 	return config
 }
 
-// LoadDescriptorSets merges the configured descriptor set files into one set.
-// The result is empty when no files are configured.
+// LoadDescriptorSets merges every .pb file in the configured directory into one set.
+// The result is empty when no directory is configured.
 func LoadDescriptorSets(config Config) (*descriptorpb.FileDescriptorSet, error) {
-	sets := make([]*descriptorpb.FileDescriptorSet, 0, len(config.DescriptorSets))
-	for _, path := range config.DescriptorSets {
-		data, err := os.ReadFile(path)
+	if config.DescriptorsDir == "" {
+		return &descriptorpb.FileDescriptorSet{}, nil
+	}
+	descriptors := os.DirFS(config.DescriptorsDir)
+	sets := []*descriptorpb.FileDescriptorSet{}
+	// WalkDir visits files in lexical order, so merging is deterministic.
+	err := fs.WalkDir(descriptors, ".", func(name string, entry fs.DirEntry, err error) error {
 		if err != nil {
-			return nil, errors.Wrapf(err, "read descriptor set %q", path)
+			return errors.Wrap(err, "read descriptors directory")
 		}
-		set := &descriptorpb.FileDescriptorSet{}
-		if err := proto.Unmarshal(data, set); err != nil {
-			return nil, errors.Wrapf(err, "decode descriptor set %q", path)
+		if entry.IsDir() || path.Ext(name) != ".pb" {
+			return nil
 		}
-		if len(set.GetFile()) == 0 {
-			return nil, errors.Errorf("descriptor set %q contains no files", path)
+		set, err := loadDescriptorSet(descriptors, name)
+		if err != nil {
+			return err
 		}
 		sets = append(sets, set)
+		return nil
+	})
+	if err != nil {
+		return nil, errors.WithStack(err)
+	}
+	if len(sets) == 0 {
+		return nil, errors.Errorf("descriptors directory %q contains no .pb files", config.DescriptorsDir)
 	}
 	merged, err := Merge(sets...)
 	if err != nil {
 		return nil, errors.Wrap(err, "merge descriptor sets")
 	}
-	if len(merged.GetFile()) > 0 {
-		// Resolve now so a missing import fails at startup rather than at readiness.
-		if _, err := NewFromFileDescriptorSet(merged); err != nil {
-			return nil, errors.Wrap(err, "load descriptor sets")
-		}
+	// Resolve now so a missing import fails at startup rather than at readiness.
+	if _, err := NewFromFileDescriptorSet(merged); err != nil {
+		return nil, errors.Wrap(err, "load descriptor sets")
 	}
 	return merged, nil
+}
+
+func loadDescriptorSet(descriptors fs.FS, name string) (*descriptorpb.FileDescriptorSet, error) {
+	data, err := fs.ReadFile(descriptors, name)
+	if err != nil {
+		return nil, errors.Wrapf(err, "read descriptor set %q", name)
+	}
+	set := &descriptorpb.FileDescriptorSet{}
+	if err := proto.Unmarshal(data, set); err != nil {
+		return nil, errors.Wrapf(err, "decode descriptor set %q", name)
+	}
+	if len(set.GetFile()) == 0 {
+		return nil, errors.Errorf("descriptor set %q contains no files", name)
+	}
+	return set, nil
 }
 
 // Merge combines descriptor sets, sorted by file name. A file may appear in several
