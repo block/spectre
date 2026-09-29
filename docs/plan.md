@@ -35,8 +35,8 @@ relative path to share helpers, and each script runs once. The host supplies a
 Normalisers are global. Each applies wherever its target appears, and a response
 message normaliser covers the whole response body. gRPC and Connect requests name
 their method in the path. A raw HTTP request is typed by an RPC method declared with
-`endpoint(pattern, method)`, such as
-`endpoint("GET /v2/forecast", "spectre.sample.v1.WeatherService.GetForecastV2")`.
+`ingress(pattern, method)`, such as
+`ingress("GET /v2/forecast", "spectre.sample.v1.WeatherService.GetForecastV2")`.
 
 Register ordinary functions during module evaluation; the host validates targets
 against its schema. No exports or filename conventions are required. The same
@@ -94,7 +94,7 @@ timestamp. Default comparison still checks user IDs, names, and user ordering.
 - [ ] Embed esbuild to compile a TypeScript entry file and optional helper imports
   at load time.
 - [x] Run plain JavaScript modules in Sobek and provide `field`, `message`, and
-  `endpoint` registration functions from the imported `spectre` module.
+  `ingress` registration functions from the imported `spectre` module.
 - [ ] Validate targets against the schema and reject unresolved targets and
   duplicate registrations before activation.
 - [ ] Support registering the same ordinary function for multiple targets without

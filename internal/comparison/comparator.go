@@ -46,7 +46,7 @@ func New(ctx context.Context, config Config, log *slog.Logger) (*Comparator, err
 		return nil, errors.Wrap(err, "compile comparison scripts")
 	}
 	routes := route.New[protoreflect.FullName]()
-	for _, endpoint := range program.Endpoints() {
+	for _, endpoint := range program.Endpoints(javascript.Ingress) {
 		method := protoreflect.FullName(endpoint.Method())
 		if !method.IsValid() {
 			return nil, errors.Errorf("endpoint %q has an invalid method name %q", endpoint.Pattern(), endpoint.Method())
@@ -78,7 +78,7 @@ func (c *Comparator) Configure(ctx context.Context, set *descriptorpb.FileDescri
 	if err != nil {
 		return errors.Wrap(err, "load comparison schema")
 	}
-	for _, endpoint := range c.program.Endpoints() {
+	for _, endpoint := range c.program.Endpoints(javascript.Ingress) {
 		if _, err := endpointMethod(loaded, protoreflect.FullName(endpoint.Method())); err != nil {
 			return errors.Wrapf(err, "resolve endpoint %q", endpoint.Pattern())
 		}

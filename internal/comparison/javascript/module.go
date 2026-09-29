@@ -3,6 +3,7 @@ package javascript
 import (
 	"slices"
 	"sort"
+	"strings"
 
 	"github.com/alecthomas/errors"
 	"github.com/grafana/sobek"
@@ -15,16 +16,30 @@ const (
 	targetMessage targetKind = "message"
 )
 
-const exportEndpoint = "endpoint"
+// Direction names the proxy that decodes an endpoint's traffic.
+type Direction string
+
+const (
+	// Ingress endpoints type responses from the proxied service. Patterns omit the host.
+	Ingress Direction = "ingress"
+	// Egress endpoints type requests to a dependency. Patterns include its host.
+	Egress Direction = "egress"
+)
 
 // Endpoint maps a raw HTTP request pattern to the RPC method that types it.
 type Endpoint struct {
-	pattern string
-	method  string
+	direction Direction
+	pattern   string
+	method    string
 }
 
-func newEndpoint(pattern, method string) Endpoint {
-	return Endpoint{pattern: pattern, method: method}
+func newEndpoint(direction Direction, pattern, method string) Endpoint {
+	return Endpoint{direction: direction, pattern: pattern, method: method}
+}
+
+// Direction returns the proxy that uses the endpoint.
+func (e Endpoint) Direction() Direction {
+	return e.direction
 }
 
 // Pattern returns the net/http.ServeMux pattern the endpoint matches.
@@ -54,13 +69,14 @@ func (m *spectreModule) Link() error {
 }
 
 func (m *spectreModule) GetExportedNames(callback func([]string), _ ...sobek.ModuleRecord) bool {
-	callback([]string{exportEndpoint, string(targetField), string(targetMessage)})
+	callback([]string{string(Ingress), string(Egress), string(targetField), string(targetMessage)})
 	return true
 }
 
 func (m *spectreModule) ResolveExport(name string, _ ...sobek.ResolveSetElement) (*sobek.ResolvedBinding, bool) {
 	kind := targetKind(name)
-	if name != exportEndpoint && kind != targetField && kind != targetMessage {
+	direction := Direction(name)
+	if direction != Ingress && direction != Egress && kind != targetField && kind != targetMessage {
 		return nil, false
 	}
 	return &sobek.ResolvedBinding{Module: m, BindingName: name}, false
@@ -97,30 +113,43 @@ func newCallbackRegistry(runtime *sobek.Runtime) *callbackRegistry {
 		messages: map[string]sobek.Callable{},
 	}
 	registry.functions = map[string]sobek.Value{
-		exportEndpoint:        runtime.ToValue(registry.registerEndpoint),
+		string(Ingress):       runtime.ToValue(registry.endpointRegistration(Ingress)),
+		string(Egress):        runtime.ToValue(registry.endpointRegistration(Egress)),
 		string(targetField):   runtime.ToValue(registry.registration(targetField)),
 		string(targetMessage): runtime.ToValue(registry.registration(targetMessage)),
 	}
 	return registry
 }
 
-func (r *callbackRegistry) registerEndpoint(call sobek.FunctionCall) sobek.Value {
-	if len(call.Arguments) != 2 {
-		panic(r.runtime.NewTypeError("spectre.endpoint requires a pattern and an RPC method"))
+func (r *callbackRegistry) endpointRegistration(direction Direction) func(sobek.FunctionCall) sobek.Value {
+	return func(call sobek.FunctionCall) sobek.Value {
+		if len(call.Arguments) != 2 {
+			panic(r.runtime.NewTypeError("spectre.%s requires a pattern and an RPC method", direction))
+		}
+		pattern, ok := call.Argument(0).Export().(string)
+		if !ok || pattern == "" {
+			panic(r.runtime.NewTypeError("spectre.%s pattern must be a non-empty string", direction))
+		}
+		if direction == Egress && !hasHost(pattern) {
+			panic(r.runtime.NewTypeError("spectre.egress pattern %q must have the form \"<METHOD> <host>/<path>\"", pattern))
+		}
+		method, ok := call.Argument(1).Export().(string)
+		if !ok || method == "" {
+			panic(r.runtime.NewTypeError("spectre.%s method must be a non-empty string", direction))
+		}
+		if slices.ContainsFunc(r.endpoints, func(endpoint Endpoint) bool { return endpoint.Pattern() == pattern }) {
+			panic(r.runtime.NewTypeError("duplicate endpoint %q", pattern))
+		}
+		r.endpoints = append(r.endpoints, newEndpoint(direction, pattern, method))
+		return sobek.Undefined()
 	}
-	pattern, ok := call.Argument(0).Export().(string)
-	if !ok || pattern == "" {
-		panic(r.runtime.NewTypeError("spectre.endpoint pattern must be a non-empty string"))
-	}
-	method, ok := call.Argument(1).Export().(string)
-	if !ok || method == "" {
-		panic(r.runtime.NewTypeError("spectre.endpoint method must be a non-empty string"))
-	}
-	if slices.ContainsFunc(r.endpoints, func(endpoint Endpoint) bool { return endpoint.Pattern() == pattern }) {
-		panic(r.runtime.NewTypeError("duplicate endpoint %q", pattern))
-	}
-	r.endpoints = append(r.endpoints, newEndpoint(pattern, method))
-	return sobek.Undefined()
+}
+
+// hasHost reports whether a "<METHOD> <host>/<path>" pattern names a host. Ingress
+// routing rejects hosts itself, so only egress registration needs this check.
+func hasHost(pattern string) bool {
+	fields := strings.Fields(pattern)
+	return len(fields) == 2 && !strings.HasPrefix(fields[1], "/")
 }
 
 func (r *callbackRegistry) GetBindingValue(name string) sobek.Value {

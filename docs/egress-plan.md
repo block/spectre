@@ -50,13 +50,16 @@ Normalisers are keyed by protobuf type, not by direction, so ingress applies the
 to responses and egress applies them to requests.
 
 Scripts type raw HTTP requests by mapping them to RPC methods with
-`spectre.endpoint(pattern, method)`. The pattern uses `net/http.ServeMux` syntax,
-so matching is reused rather than reinvented. A method supplies both sides:
-ingress decodes responses as its output, and egress decodes requests as its input.
+`spectre.ingress(pattern, method)` or `spectre.egress(pattern, method)`. The pattern
+uses `net/http.ServeMux` syntax, so matching is reused rather than reinvented. Each
+proxy uses only its own endpoints, so one path can map to different methods on each
+side. Ingress decodes responses as the method's output, and egress decodes requests
+as its input.
 
 - Ingress patterns omit the host, for example
-  `spectre.endpoint("GET /v2/forecast", "spectre.sample.v1.WeatherService.GetForecastV2")`.
-- Egress patterns include the destination host.
+  `spectre.ingress("GET /v2/forecast", "spectre.sample.v1.WeatherService.GetForecastV2")`.
+- Egress patterns must include the destination host, for example
+  `spectre.egress("GET api.weather.example/v2/forecast", "weather.v1.Api.GetForecast")`.
 - gRPC and Connect requests name their method in the path, so they need no
   endpoint.
 - Startup fails if endpoint patterns are invalid or conflict. An endpoint whose

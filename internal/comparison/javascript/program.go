@@ -56,9 +56,15 @@ func NewProgram(ctx context.Context, scripts fs.FS) (*Program, error) {
 	}, nil
 }
 
-// Endpoints returns the declared raw HTTP endpoints, in declaration order.
-func (p *Program) Endpoints() []Endpoint {
-	return slices.Clone(p.endpoints)
+// Endpoints returns the raw HTTP endpoints declared for a direction, in declaration order.
+func (p *Program) Endpoints(direction Direction) []Endpoint {
+	endpoints := []Endpoint{}
+	for _, endpoint := range p.endpoints {
+		if endpoint.Direction() == direction {
+			endpoints = append(endpoints, endpoint)
+		}
+	}
+	return endpoints
 }
 
 // Fields returns the protobuf fields declared by the scripts.
