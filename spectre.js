@@ -11,11 +11,13 @@ const unavailable = () => {
   throw new Error("the spectre module is provided by the Spectre runtime");
 };
 
-/**
- * Type raw HTTP requests matching pattern with an RPC method's messages.
- * pattern is a "<METHOD> /<path>" pattern in [http.ServeMux](https://pkg.go.dev/net/http#hdr-Patterns) syntax.
- */
-export function endpoint(/** @type {string} */ pattern, /** @type {string} */ method) {
+/** Type responses to "<METHOD> /<path>" [ServeMux patterns](https://pkg.go.dev/net/http#hdr-Patterns) with an RPC method's output. */
+export function ingress(/** @type {string} */ pattern, /** @type {string} */ method) {
+  unavailable();
+}
+
+/** Type dependency requests matching "<METHOD> <host>/<path>" ServeMux patterns with an RPC method's input. */
+export function egress(/** @type {string} */ pattern, /** @type {string} */ method) {
   unavailable();
 }
 

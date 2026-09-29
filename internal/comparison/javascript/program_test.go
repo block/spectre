@@ -13,15 +13,17 @@ import (
 func TestProgramOwnsDeclarations(t *testing.T) {
 	program, err := compile(t, fstest.MapFS{
 		"weather.js": script(`
-			spectre.endpoint("GET /v1/forecast", "test.v1.Weather.Get");
-			spectre.endpoint("GET /v2/forecast", "test.v1.Weather.GetV2");
+			spectre.ingress("GET /v1/forecast", "test.v1.Weather.Get");
+			spectre.ingress("GET /v2/forecast", "test.v1.Weather.GetV2");
+			spectre.egress("GET weather.example/v1/forecast", "test.v1.Upstream.Get");
 			spectre.field("test.v1.Response.value", () => true);
 		`),
 		"users/user.js": script(`spectre.message("test.v1.User", () => true);`),
 	})
 	assert.NoError(t, err)
 
-	assert.Equal(t, []endpoint{{"GET /v1/forecast", "test.v1.Weather.Get"}, {"GET /v2/forecast", "test.v1.Weather.GetV2"}}, endpoints(program))
+	assert.Equal(t, []endpoint{{"GET /v1/forecast", "test.v1.Weather.Get"}, {"GET /v2/forecast", "test.v1.Weather.GetV2"}}, endpoints(program, javascript.Ingress))
+	assert.Equal(t, []endpoint{{"GET weather.example/v1/forecast", "test.v1.Upstream.Get"}}, endpoints(program, javascript.Egress))
 	assert.Equal(t, []string{"test.v1.Response.value"}, program.Fields())
 	assert.Equal(t, []string{"test.v1.User"}, program.Messages())
 }
@@ -30,7 +32,8 @@ func TestLoadsEmptyScriptsDirectory(t *testing.T) {
 	program, err := compile(t, fstest.MapFS{"README.md": {Data: []byte("Not a script.")}})
 	assert.NoError(t, err)
 
-	assert.Equal(t, []endpoint{}, endpoints(program))
+	assert.Equal(t, []endpoint{}, endpoints(program, javascript.Ingress))
+	assert.Equal(t, []endpoint{}, endpoints(program, javascript.Egress))
 	assert.Equal(t, []string{}, program.Fields())
 	assert.Equal(t, []string{}, program.Messages())
 	evaluator, err := program.NewEvaluator(t.Context())
@@ -43,16 +46,25 @@ func TestRejectsInvalidEndpointDeclarations(t *testing.T) {
 		body    string
 		message string
 	}{
-		"NoArguments":      {body: `spectre.endpoint();`, message: "requires a pattern and an RPC method"},
-		"OneArgument":      {body: `spectre.endpoint("GET /v1/forecast");`, message: "requires a pattern and an RPC method"},
-		"ThreeArguments":   {body: `spectre.endpoint("GET /v1/forecast", "test.v1.Weather.Get", 1);`, message: "requires a pattern and an RPC method"},
-		"EmptyPattern":     {body: `spectre.endpoint("", "test.v1.Weather.Get");`, message: "pattern must be a non-empty string"},
-		"NonStringPattern": {body: `spectre.endpoint(1, "test.v1.Weather.Get");`, message: "pattern must be a non-empty string"},
-		"EmptyMethod":      {body: `spectre.endpoint("GET /v1/forecast", "");`, message: "method must be a non-empty string"},
-		"NonStringMethod":  {body: `spectre.endpoint("GET /v1/forecast", {});`, message: "method must be a non-empty string"},
+		"NoArguments":      {body: `spectre.ingress();`, message: "requires a pattern and an RPC method"},
+		"OneArgument":      {body: `spectre.ingress("GET /v1/forecast");`, message: "requires a pattern and an RPC method"},
+		"ThreeArguments":   {body: `spectre.ingress("GET /v1/forecast", "test.v1.Weather.Get", 1);`, message: "requires a pattern and an RPC method"},
+		"EmptyPattern":     {body: `spectre.ingress("", "test.v1.Weather.Get");`, message: "pattern must be a non-empty string"},
+		"NonStringPattern": {body: `spectre.ingress(1, "test.v1.Weather.Get");`, message: "pattern must be a non-empty string"},
+		"EmptyMethod":      {body: `spectre.ingress("GET /v1/forecast", "");`, message: "method must be a non-empty string"},
+		"NonStringMethod":  {body: `spectre.ingress("GET /v1/forecast", {});`, message: "method must be a non-empty string"},
 		"Duplicate": {
-			body:    `spectre.endpoint("GET /v1/forecast", "test.v1.Weather.Get"); spectre.endpoint("GET /v1/forecast", "test.v1.Weather.Get");`,
+			body:    `spectre.ingress("GET /v1/forecast", "test.v1.Weather.Get"); spectre.ingress("GET /v1/forecast", "test.v1.Weather.Get");`,
 			message: `duplicate endpoint "GET /v1/forecast"`,
+		},
+		"EgressNoArguments": {body: `spectre.egress();`, message: "spectre.egress requires a pattern and an RPC method"},
+		"EgressWithoutHost": {
+			body:    `spectre.egress("GET /v1/forecast", "test.v1.Weather.Get");`,
+			message: `spectre.egress pattern "GET /v1/forecast" must have the form "<METHOD> <host>/<path>"`,
+		},
+		"EgressWithoutMethod": {
+			body:    `spectre.egress("weather.example/v1/forecast", "test.v1.Weather.Get");`,
+			message: `must have the form "<METHOD> <host>/<path>"`,
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -293,9 +305,9 @@ type endpoint struct {
 	method  string
 }
 
-func endpoints(program *javascript.Program) []endpoint {
+func endpoints(program *javascript.Program, direction javascript.Direction) []endpoint {
 	declared := []endpoint{}
-	for _, value := range program.Endpoints() {
+	for _, value := range program.Endpoints(direction) {
 		declared = append(declared, endpoint{value.Pattern(), value.Method()})
 	}
 	return declared

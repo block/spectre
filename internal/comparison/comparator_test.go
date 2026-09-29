@@ -75,7 +75,7 @@ func TestPublicSpectreModuleStub(t *testing.T) {
 	complete := module.GetExportedNames(func(names []string) { exports = names })
 
 	assert.True(t, complete)
-	assert.Equal(t, []string{"endpoint", "field", "message"}, exports)
+	assert.Equal(t, []string{"ingress", "egress", "field", "message"}, exports)
 }
 
 func TestResultfFormatsReason(t *testing.T) {
@@ -571,7 +571,7 @@ func TestUndeclaredRequestsFallBackToRPCPaths(t *testing.T) {
 
 func TestComparesDeclaredHeadEndpoints(t *testing.T) {
 	comparator := newScriptsComparator(t, map[string]string{
-		"weather.js": forecastScript(`spectre.endpoint("HEAD /v1/forecast", "test.v1.Service.Get");`),
+		"weather.js": forecastScript(`spectre.ingress("HEAD /v1/forecast", "test.v1.Service.Get");`),
 	})
 	response := httpJSONResponse(http.StatusOK, "application/json", "")
 
@@ -580,9 +580,22 @@ func TestComparesDeclaredHeadEndpoints(t *testing.T) {
 	assert.Equal(t, comparison.Resultf(comparison.Equivalent, ""), result)
 }
 
+func TestIgnoresEgressEndpoints(t *testing.T) {
+	// An egress method absent from the schema would fail Configure if ingress used it.
+	comparator := newScriptsComparator(t, map[string]string{
+		"weather.js": module(`spectre.egress("GET weather.example/v1/forecast", "test.v1.Service.Missing");`),
+	})
+	response := httpJSONResponse(http.StatusOK, "application/json", `{"stable":"same"}`)
+
+	result := comparator.Compare(t.Context(), http.MethodGet, "/v1/forecast", "application/json", response, response)
+
+	assert.Equal(t, comparison.Unable, result.Outcome())
+	assert.Contains(t, result.Reason(), `resolve method "v1.forecast"`)
+}
+
 func TestDeclaredEndpointsDecodeGRPCRequestsAsGRPC(t *testing.T) {
 	comparator := newScriptsComparator(t, map[string]string{
-		"weather.js": module(`spectre.endpoint("POST /v1/forecast", "test.v1.Service.Get");`),
+		"weather.js": module(`spectre.ingress("POST /v1/forecast", "test.v1.Service.Get");`),
 	})
 	reference := grpcResponse(t, responseProto("first", "", nil), false)
 	candidate := grpcResponse(t, responseProto("second", "", nil), false)
@@ -600,7 +613,7 @@ func TestLoadsEveryScriptAsOneSet(t *testing.T) {
 		`),
 		"weather.js": module(`
 			import {lower} from "./helpers/strings.js";
-			spectre.endpoint("GET /v1/forecast", "test.v1.Service.Get");
+			spectre.ingress("GET /v1/forecast", "test.v1.Service.Get");
 			spectre.field("test.v1.Response.stable", (stable) => stable === undefined ? undefined : lower(stable));
 		`),
 		"helpers/strings.js": `export const lower = (value) => value.toLowerCase();`,
@@ -639,28 +652,28 @@ func TestRejectsInvalidEndpointDeclarations(t *testing.T) {
 		message string
 	}{
 		"Host": {
-			scripts: map[string]string{"weather.js": module(`spectre.endpoint("GET weather.example/v1/forecast", "test.v1.Service.Get");`)},
+			scripts: map[string]string{"weather.js": module(`spectre.ingress("GET weather.example/v1/forecast", "test.v1.Service.Get");`)},
 			message: "must not include a host",
 		},
 		"NoMethod": {
-			scripts: map[string]string{"weather.js": module(`spectre.endpoint("/v1/forecast", "test.v1.Service.Get");`)},
+			scripts: map[string]string{"weather.js": module(`spectre.ingress("/v1/forecast", "test.v1.Service.Get");`)},
 			message: `must have the form "<METHOD> /<path>"`,
 		},
 		"InvalidMethodName": {
-			scripts: map[string]string{"weather.js": module(`spectre.endpoint("GET /v1/forecast", "not a name");`)},
+			scripts: map[string]string{"weather.js": module(`spectre.ingress("GET /v1/forecast", "not a name");`)},
 			message: `endpoint "GET /v1/forecast" has an invalid method name "not a name"`,
 		},
 		"Conflict": {
 			scripts: map[string]string{
-				"a.js": module(`spectre.endpoint("GET /v1/{location}/forecast", "test.v1.Service.Get");`),
-				"b.js": module(`spectre.endpoint("GET /v1/units/{fee}", "test.v1.Service.Get");`),
+				"a.js": module(`spectre.ingress("GET /v1/{location}/forecast", "test.v1.Service.Get");`),
+				"b.js": module(`spectre.ingress("GET /v1/units/{fee}", "test.v1.Service.Get");`),
 			},
 			message: `route endpoint "GET /v1/units/{fee}": invalid route pattern`,
 		},
 		"DuplicateAcrossScripts": {
 			scripts: map[string]string{
-				"a.js": module(`spectre.endpoint("GET /v1/forecast", "test.v1.Service.Get");`),
-				"b.js": module(`spectre.endpoint("GET /v1/forecast", "test.v1.Service.Get");`),
+				"a.js": module(`spectre.ingress("GET /v1/forecast", "test.v1.Service.Get");`),
+				"b.js": module(`spectre.ingress("GET /v1/forecast", "test.v1.Service.Get");`),
 			},
 			message: `duplicate endpoint "GET /v1/forecast"`,
 		},
@@ -694,7 +707,7 @@ func TestRejectsEndpointsAbsentFromSchema(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			config := comparison.NewConfig()
 			config.ScriptsDir = writeScripts(t, map[string]string{
-				"weather.js": module(`spectre.endpoint("GET /v1/forecast", "` + test.method + `");`),
+				"weather.js": module(`spectre.ingress("GET /v1/forecast", "` + test.method + `");`),
 			})
 			comparator, err := comparison.New(t.Context(), config, slog.New(slog.DiscardHandler))
 			assert.NoError(t, err)
@@ -731,7 +744,7 @@ func newComparator(t *testing.T, script string) *comparison.Comparator {
 
 // forecastScript declares GET /v1/forecast as a raw HTTP endpoint typed by test.v1.Service.Get.
 func forecastScript(body string) string {
-	return module(`spectre.endpoint("GET /v1/forecast", "test.v1.Service.Get");` + body)
+	return module(`spectre.ingress("GET /v1/forecast", "test.v1.Service.Get");` + body)
 }
 
 func module(body string) string {
