@@ -13,6 +13,10 @@
 - Define config validation as a `Validate()` method on the package-owned `Config` type.
 - Put all other code in the top-level `internal` directory unless it is explicitly part of a public API.
 
+# Compatibility
+
+- While the version is 0.x.y, make breaking changes freely. Do not add backwards-compatibility shims, deprecation paths, or migration code.
+
 # Automation
 
 - Use `bit` and define tasks in `BUILD.bit` for all automation that would normally go in a Makefile, Justfile, or other build file.
