@@ -72,13 +72,13 @@ func (o occurrence) before(other occurrence) bool {
 // collectOccurrences freezes traversal before normalisation starts mutating the document.
 // Its ordering is independent of registration order.
 func collectOccurrences(
-	method protoreflect.MethodDescriptor,
+	root protoreflect.MessageDescriptor,
 	targets []normalisationTarget,
 	payload *document,
 ) []occurrence {
 	occurrences := []occurrence{}
 	for _, target := range targets {
-		occurrences = append(occurrences, target.occurrences(method, payload)...)
+		occurrences = append(occurrences, target.occurrences(root, payload)...)
 	}
 	// A field normaliser replaces any message normaliser at the same location.
 	fieldPaths := map[string]struct{}{}

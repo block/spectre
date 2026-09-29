@@ -12,9 +12,10 @@ See the [design document](docs/design.md) for the proposed architecture and safe
 
 ## Try it
 
-The builtin sample service uses `internal/sample/comparison.js` as the normaliser script. `proctor` runs the Spectre ingress and two sample backends, all over unix domain sockets under `dist/sockets/`:
+The builtin sample service uses the normaliser scripts in `internal/sample/scripts/`. `bit sample` generates the sample's descriptor set, then `proctor` runs the Spectre ingress and two sample backends, all over unix domain sockets under `dist/sockets/`:
 
 ```
+$ bit sample
 $ proctor
             setup ● ready
         reference │ INF Sample Connect server listening address=.../dist/sockets/reference.sock
@@ -57,3 +58,23 @@ reference │ INF HTTP request method=POST path=/grpc.reflection.v1.ServerReflec
 ```
 
 This shows the registered normalisers sorting roles and removing the generation timestamp in each backend's response, then structural comparison succeeding.
+
+The sample also serves raw HTTP JSON endpoints modelled on a legacy weather service. They have no RPC paths, so `internal/sample/scripts/weather.js` maps each one to a method of the synthetic `WeatherService` in `internal/sample/proto/weather.proto`. Issue one with `curl`:
+
+```
+$ curl --unix-socket dist/sockets/ingress.sock 'http://localhost/v2/forecast?location=london'
+{"forecast":{"location":"london", ...}, "alerts":[{"id":"alert-1", ...}, ...]}
+```
+
+The first terminal should then show the alerts being sorted before comparison:
+
+```
+reference │ INF HTTP request method=GET path=/v2/forecast status=200 duration=111.334µs
+candidate │ INF HTTP request method=GET path=/v2/forecast status=200 duration=107.625µs
+  ingress │ INF HTTP request method=GET path=/v2/forecast status=200 duration=425.125µs
+  ingress │ DBG Response normaliser completed kind=field target=spectre.sample.v1.GetForecastV2Response.alerts side=reference response_path=$.alerts
+  ingress │ DBG Response normaliser completed kind=field target=spectre.sample.v1.GetForecastV2Response.alerts side=candidate response_path=$.alerts
+  ingress │ DBG Response comparison completed path=/v2/forecast outcome=equivalent
+```
+
+`/api/v1/forecast?location=sydney` and `/_status` are also available.

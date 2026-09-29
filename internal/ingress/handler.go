@@ -20,6 +20,7 @@ import (
 	"github.com/block/spectre/internal/middleware/health"
 	"github.com/block/spectre/internal/middleware/logging"
 	"github.com/block/spectre/internal/netaddr"
+	"github.com/block/spectre/internal/schema"
 )
 
 // Listener network and the synthetic unix backend host used by routing checks.
@@ -39,6 +40,7 @@ type Handler struct {
 	requests    chan struct{}
 	health      *health.Handler
 	descriptors DescriptorLoader
+	static      *descriptorpb.FileDescriptorSet
 	comparator  ResponseComparator
 
 	// mu serializes candidate admission with process-lifetime quarantine and shutdown.
@@ -60,6 +62,7 @@ type ResponseComparator interface {
 	Configure(ctx context.Context, set *descriptorpb.FileDescriptorSet) error
 	Compare(
 		ctx context.Context,
+		requestMethod string,
 		requestPath string,
 		requestContentType string,
 		reference comparison.Response,
@@ -123,6 +126,10 @@ func New(
 	if backendTargetsListener(reference, config.Listen) {
 		return nil, errors.New("reference backend must not target the ingress listener")
 	}
+	static, err := schema.LoadDescriptorSets(config.Schema)
+	if err != nil {
+		return nil, errors.Wrap(err, "load static schemas")
+	}
 	idle := make(chan struct{})
 	close(idle)
 	handler := &Handler{
@@ -133,6 +140,7 @@ func New(
 		buffer:        newBufferBudget(config.CandidateBufferBytes),
 		requests:      make(chan struct{}, config.MaxInFlightRequests),
 		descriptors:   descriptors,
+		static:        static,
 		comparator:    comparator,
 		candidateRuns: make(map[*candidateRun]struct{}),
 		idle:          idle,
@@ -187,7 +195,8 @@ func (h *Handler) serveProxy(writer http.ResponseWriter, request *http.Request) 
 			case reference := <-referenceResponse:
 				result := h.comparator.Compare(
 					candidateContext,
-					request.URL.Path,
+					request.Method,
+					request.URL.EscapedPath(),
 					request.Header.Get("Content-Type"),
 					reference,
 					candidateWriter.Response(),

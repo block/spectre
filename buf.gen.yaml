@@ -6,5 +6,8 @@ plugins:
       - paths=source_relative
   - local: protoc-gen-connect-go
     out: internal/sample/pb
+    # The sample serves WeatherService only as raw HTTP JSON.
+    exclude_types:
+      - spectre.sample.v1.WeatherService
     opt:
       - paths=source_relative

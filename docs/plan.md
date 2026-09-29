@@ -22,32 +22,38 @@ separate prerequisites for safe mirroring.
 
 ## Normalisers
 
-One TypeScript file defines comparison behaviour, with optional helper imports.
-The host supplies a `spectre` module with three registration functions:
+A scripts directory defines comparison behaviour. The host loads every `.js` file
+in it, including subdirectories, as one set. Scripts can import each other by
+relative path to share helpers, and each script runs once. The host supplies a
+`spectre` module with two registration functions:
 
 | Function | Example target | Normaliser receives |
 | --- | --- | --- |
 | `field(target, normaliser)` | `example.users.v1.ListUsersResponse.users[].name` | One field value |
 | `message(target, normaliser)` | `example.users.v1.User` | One message value |
-| `rpc(target, normaliser)` | `example.users.v1.UserService.ListUsers` | One response body |
+
+Normalisers are global. Each applies wherever its target appears, and a response
+message normaliser covers the whole response body. gRPC and Connect requests name
+their method in the path. A raw HTTP request is typed by an RPC method declared with
+`endpoint(pattern, method)`, such as
+`endpoint("GET /v2/forecast", "spectre.sample.v1.WeatherService.GetForecastV2")`.
 
 Register ordinary functions during module evaluation; the host validates targets
 against its schema. No exports or filename conventions are required. The same
 function can be registered for multiple targets. Registration order does not affect
 execution order.
 
-Reject unresolved targets and duplicate registrations at startup. A field normaliser
-replaces a message normaliser at the same location. When both a response-message
-normaliser and an RPC normaliser apply, run the message normaliser first and the RPC
-normaliser last.
+Reject invalid or conflicting endpoints and duplicate registrations at startup.
+Unresolved targets and endpoint methods fail when the schema loads, so the proxy
+never becomes ready. A field normaliser replaces a message normaliser at the same
+location.
 
 A normaliser takes one directly typed value and returns its normalised form. A
 missing value arrives as `undefined`. Returning a value replaces the node, returning
 a constant ignores it, and returning `undefined` removes it. Results must be
 representable as JSON.
 
-The host normalises each payload independently, from leaves upward, with the
-optional RPC normaliser last. Each payload gets a fresh runtime, so its normalised
+The host normalises each payload independently, from leaves upward. Each payload gets a fresh runtime, so its normalised
 form depends only on its content. Arguments are protected from mutation. Parents
 receive children that are already normalised.
 
@@ -88,7 +94,7 @@ timestamp. Default comparison still checks user IDs, names, and user ordering.
 - [ ] Embed esbuild to compile a TypeScript entry file and optional helper imports
   at load time.
 - [x] Run plain JavaScript modules in Sobek and provide `field`, `message`, and
-  `rpc` registration functions from the imported `spectre` module.
+  `endpoint` registration functions from the imported `spectre` module.
 - [ ] Validate targets against the schema and reject unresolved targets and
   duplicate registrations before activation.
 - [ ] Support registering the same ordinary function for multiple targets without
@@ -106,8 +112,7 @@ timestamp. Default comparison still checks user IDs, names, and user ordering.
 
 - [x] Traverse payloads from leaves upward, using the agreed missing-value rules
   independently of registration order.
-- [x] Let field normalisers replace message normalisers at the same location, and
-  run response-message normalisers before the final RPC normaliser.
+- [x] Let field normalisers replace message normalisers at the same location.
 - [x] Pass normalised children to parents.
 - [x] Replace or remove normalised fields and subtrees in temporary payload copies.
 - [x] Structurally compare the normalised payloads.

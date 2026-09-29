@@ -7,6 +7,7 @@ import (
 	"github.com/alecthomas/kong"
 
 	"github.com/block/spectre/internal/netaddr"
+	"github.com/block/spectre/internal/schema"
 )
 
 // Config contains the command-line configuration for an ingress proxy.
@@ -22,8 +23,12 @@ type Config struct {
 	Candidate string `required:"" help:"Candidate backend URL on a loopback IP or unix socket: http, https, h2c, http+unix, or h2c+unix."`
 	// CandidateTimeout limits the duration of a candidate request.
 	CandidateTimeout time.Duration `default:"30s" help:"Maximum duration of a candidate request."`
+	// Reflection loads and compares both backends' schemas at startup.
+	Reflection bool `default:"true" negatable:"" help:"Load backend schemas with gRPC reflection and require them to match."`
 	// ReflectionTimeout limits the startup descriptor comparison.
 	ReflectionTimeout time.Duration `default:"10s" help:"Maximum duration of the startup gRPC reflection check."`
+	// Schema adds static schemas to any reflected ones.
+	Schema schema.Config `embed:""`
 	// CandidateMaxInFlight limits concurrent candidate requests.
 	CandidateMaxInFlight int `default:"64" help:"Maximum concurrent candidate requests before quarantine."`
 	// CandidateBufferBytes limits queued request data across all candidates.
@@ -60,8 +65,11 @@ func (c Config) ListenNetworkAddress() (network string, address string) {
 	return endpoint.Network(), endpoint.Address()
 }
 
-// Validate checks that the ingress resource limits are usable.
+// Validate checks that the ingress has a schema source and usable resource limits.
 func (c Config) Validate() error {
+	if !c.Reflection && c.Schema.DescriptorsDir == "" {
+		return errors.New("a schema source is required: enable reflection or set a descriptors directory")
+	}
 	positiveDurations := []struct {
 		name  string
 		value time.Duration

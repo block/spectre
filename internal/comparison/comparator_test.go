@@ -23,14 +23,14 @@ import (
 
 func TestRejectsInvalidConfiguration(t *testing.T) {
 	tests := map[string]func(*comparison.Config){
-		"Script":    func(config *comparison.Config) { config.ComparisonScript = "" },
-		"Timeout":   func(config *comparison.Config) { config.ComparisonTimeout = 0 },
-		"BodyLimit": func(config *comparison.Config) { config.ComparisonMaxResponseBytes = 0 },
+		"ScriptsDir": func(config *comparison.Config) { config.ScriptsDir = "" },
+		"Timeout":    func(config *comparison.Config) { config.ComparisonTimeout = 0 },
+		"BodyLimit":  func(config *comparison.Config) { config.ComparisonMaxResponseBytes = 0 },
 	}
 	for name, update := range tests {
 		t.Run(name, func(t *testing.T) {
 			config := comparison.NewConfig()
-			config.ComparisonScript = writeScript(t, comparisonModule(""))
+			config.ScriptsDir = writeScripts(t, map[string]string{"test.js": module("")})
 			update(&config)
 			comparator, err := comparison.New(t.Context(), config, slog.New(slog.DiscardHandler))
 			assert.Error(t, err)
@@ -41,7 +41,7 @@ func TestRejectsInvalidConfiguration(t *testing.T) {
 
 func TestRequiresLogger(t *testing.T) {
 	config := comparison.NewConfig()
-	config.ComparisonScript = writeScript(t, comparisonModule(""))
+	config.ScriptsDir = writeScripts(t, map[string]string{"test.js": module("")})
 	comparator, err := comparison.New(t.Context(), config, nil)
 
 	assert.Error(t, err)
@@ -50,7 +50,7 @@ func TestRequiresLogger(t *testing.T) {
 
 func TestRequiresSpectreModuleImport(t *testing.T) {
 	config := comparison.NewConfig()
-	config.ComparisonScript = writeScript(t, `spectre.field("test.v1.Response.ignored", () => true);`)
+	config.ScriptsDir = writeScripts(t, map[string]string{"test.js": `spectre.field("test.v1.Response.ignored", () => true);`})
 	comparator, err := comparison.New(t.Context(), config, slog.New(slog.DiscardHandler))
 	assert.Error(t, err)
 	assert.Equal(t, (*comparison.Comparator)(nil), comparator)
@@ -58,7 +58,7 @@ func TestRequiresSpectreModuleImport(t *testing.T) {
 
 func TestRejectsUnsupportedModuleImport(t *testing.T) {
 	config := comparison.NewConfig()
-	config.ComparisonScript = writeScript(t, `import "unsupported";`)
+	config.ScriptsDir = writeScripts(t, map[string]string{"test.js": `import "unsupported";`})
 
 	comparator, err := comparison.New(t.Context(), config, slog.New(slog.DiscardHandler))
 
@@ -75,7 +75,7 @@ func TestPublicSpectreModuleStub(t *testing.T) {
 	complete := module.GetExportedNames(func(names []string) { exports = names })
 
 	assert.True(t, complete)
-	assert.Equal(t, []string{"field", "message", "rpc"}, exports)
+	assert.Equal(t, []string{"endpoint", "field", "message"}, exports)
 }
 
 func TestResultfFormatsReason(t *testing.T) {
@@ -105,6 +105,7 @@ func TestConnectNormalisersIgnoreAndSortFields(t *testing.T) {
 
 	result := comparator.Compare(
 		t.Context(),
+		http.MethodPost,
 		"/test.v1.Service/Get",
 		"application/json",
 		reference,
@@ -123,6 +124,7 @@ func TestPreservesProtoJSONInt64AsJavaScriptString(t *testing.T) {
 
 	result := comparator.Compare(
 		t.Context(),
+		http.MethodPost,
 		"/test.v1.Service/Get",
 		"application/json",
 		reference,
@@ -141,6 +143,7 @@ func TestPassesUndefinedForMissingField(t *testing.T) {
 
 	result := comparator.Compare(
 		t.Context(),
+		http.MethodPost,
 		"/test.v1.Service/Get",
 		"application/json",
 		reference,
@@ -159,6 +162,7 @@ func TestReportsDifferencesRemainingAfterNormalisation(t *testing.T) {
 
 	result := comparator.Compare(
 		t.Context(),
+		http.MethodPost,
 		"/test.v1.Service/Get",
 		"application/json",
 		reference,
@@ -178,6 +182,7 @@ func TestParentNormaliserReceivesNormalisedChildren(t *testing.T) {
 
 	result := comparator.Compare(
 		t.Context(),
+		http.MethodPost,
 		"/test.v1.Service/Get",
 		"application/json",
 		reference,
@@ -187,40 +192,16 @@ func TestParentNormaliserReceivesNormalisedChildren(t *testing.T) {
 	assert.Equal(t, comparison.Resultf(comparison.Equivalent, ""), result)
 }
 
-func TestRPCNormaliserRunsAfterResponseMessageNormaliser(t *testing.T) {
+func TestMessageNormaliserCanRemoveRoot(t *testing.T) {
 	comparator := newComparator(t, `
-		spectre.message("test.v1.Response", (response) => ({stable: response.stable}));
-		spectre.rpc("test.v1.Service.Get", (response) => {
-			if (response.ignored !== undefined) {
-				throw new Error("RPC normaliser ran first");
-			}
-			return typeof response.stable;
-		});
+		spectre.message("test.v1.Response", () => undefined);
 	`)
-	reference := connectResponse(`{"stable":"first","ignored":"first"}`)
+	reference := connectResponse(`{"stable":"first"}`)
 	candidate := connectResponse(`{"stable":"second"}`)
 
 	result := comparator.Compare(
 		t.Context(),
-		"/test.v1.Service/Get",
-		"application/json",
-		reference,
-		candidate,
-	)
-
-	assert.Equal(t, comparison.Resultf(comparison.Equivalent, ""), result)
-}
-
-func TestRPCNormaliserReceivesUndefinedAfterMessageRemovesRoot(t *testing.T) {
-	comparator := newComparator(t, `
-		spectre.message("test.v1.Response", (response) => response.stable === "drop" ? undefined : response);
-		spectre.rpc("test.v1.Service.Get", () => null);
-	`)
-	reference := connectResponse(`{"stable":"drop"}`)
-	candidate := connectResponse(`{"stable":"kept"}`)
-
-	result := comparator.Compare(
-		t.Context(),
+		http.MethodPost,
 		"/test.v1.Service/Get",
 		"application/json",
 		reference,
@@ -240,6 +221,7 @@ func TestFieldNormaliserReplacesMessageNormaliserAtSameLocation(t *testing.T) {
 
 	result := comparator.Compare(
 		t.Context(),
+		http.MethodPost,
 		"/test.v1.Service/Get",
 		"application/json",
 		reference,
@@ -258,6 +240,7 @@ func TestMessageNormaliserReceivesUndefinedForMissingMessage(t *testing.T) {
 
 	result := comparator.Compare(
 		t.Context(),
+		http.MethodPost,
 		"/test.v1.Service/Get",
 		"application/json",
 		reference,
@@ -271,10 +254,10 @@ func TestLogsComparisonAndIndividualNormaliserResults(t *testing.T) {
 	var output bytes.Buffer
 	log := slog.New(slog.NewJSONHandler(&output, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	config := comparison.NewConfig()
-	config.ComparisonScript = writeScript(t, comparisonModule(`
+	config.ScriptsDir = writeScripts(t, map[string]string{"test.js": module(`
 		spectre.field("test.v1.Response.ignored", () => undefined);
 		spectre.field("test.v1.Response.stable", (value) => value);
-	`))
+	`)})
 	comparator, err := comparison.New(t.Context(), config, log)
 	assert.NoError(t, err)
 	assert.NoError(t, comparator.Configure(t.Context(), descriptorSet()))
@@ -283,6 +266,7 @@ func TestLogsComparisonAndIndividualNormaliserResults(t *testing.T) {
 
 	result := comparator.Compare(
 		t.Context(),
+		http.MethodPost,
 		"/test.v1.Service/Get",
 		"application/json",
 		reference,
@@ -305,6 +289,7 @@ func TestAppliesFieldNormaliserToRepeatedMessageElements(t *testing.T) {
 
 	result := comparator.Compare(
 		t.Context(),
+		http.MethodPost,
 		"/test.v1.Service/Get",
 		"application/json",
 		reference,
@@ -324,6 +309,7 @@ func TestMessageNormaliserCanRemoveRepeatedElement(t *testing.T) {
 
 	result := comparator.Compare(
 		t.Context(),
+		http.MethodPost,
 		"/test.v1.Service/Get",
 		"application/json",
 		reference,
@@ -344,6 +330,7 @@ func TestComparesBinaryGRPCThroughProtoJSON(t *testing.T) {
 
 	result := comparator.Compare(
 		t.Context(),
+		http.MethodPost,
 		"/test.v1.Service/Get",
 		"application/grpc",
 		reference,
@@ -360,6 +347,7 @@ func TestComparesBinaryGRPCWithScalarMap(t *testing.T) {
 
 	result := comparator.Compare(
 		t.Context(),
+		http.MethodPost,
 		"/test.v1.Service/Get",
 		"application/grpc",
 		reference,
@@ -376,6 +364,7 @@ func TestReportsBinaryGRPCStatusAndBodyDifferences(t *testing.T) {
 
 	bodyResult := comparator.Compare(
 		t.Context(),
+		http.MethodPost,
 		"/test.v1.Service/Get",
 		"application/grpc+proto",
 		reference,
@@ -386,6 +375,7 @@ func TestReportsBinaryGRPCStatusAndBodyDifferences(t *testing.T) {
 	candidate.Header.Set("Grpc-Status", "7")
 	statusResult := comparator.Compare(
 		t.Context(),
+		http.MethodPost,
 		"/test.v1.Service/Get",
 		"application/grpc",
 		reference,
@@ -396,6 +386,7 @@ func TestReportsBinaryGRPCStatusAndBodyDifferences(t *testing.T) {
 	reference.Header.Set("Grpc-Status", "invalid")
 	invalidStatusResult := comparator.Compare(
 		t.Context(),
+		http.MethodPost,
 		"/test.v1.Service/Get",
 		"application/grpc",
 		reference,
@@ -413,6 +404,7 @@ func TestDefersStreamingAndGRPCWeb(t *testing.T) {
 	excludedResponse.Overflow = true
 	grpcNamespace := comparator.Compare(
 		t.Context(),
+		http.MethodPost,
 		"/grpc.reflection.v1.ServerReflection/ServerReflectionInfo",
 		"application/grpc",
 		excludedResponse,
@@ -425,6 +417,7 @@ func TestDefersStreamingAndGRPCWeb(t *testing.T) {
 
 	streaming := comparator.Compare(
 		t.Context(),
+		http.MethodPost,
 		"/test.v1.Service/Watch",
 		"application/grpc",
 		response,
@@ -434,6 +427,7 @@ func TestDefersStreamingAndGRPCWeb(t *testing.T) {
 
 	grpcWeb := comparator.Compare(
 		t.Context(),
+		http.MethodPost,
 		"/test.v1.Service/Get",
 		"application/grpc-web+proto",
 		response,
@@ -444,11 +438,12 @@ func TestDefersStreamingAndGRPCWeb(t *testing.T) {
 
 func TestRejectsInvalidNormaliserResultsAndTargets(t *testing.T) {
 	comparator := newComparator(t, `
-		spectre.rpc("test.v1.Service.Get", () => () => true);
+		spectre.message("test.v1.Response", () => () => true);
 	`)
 	response := connectResponse(`{"stable":"same"}`)
 	result := comparator.Compare(
 		t.Context(),
+		http.MethodPost,
 		"/test.v1.Service/Get",
 		"application/json",
 		response,
@@ -457,17 +452,22 @@ func TestRejectsInvalidNormaliserResultsAndTargets(t *testing.T) {
 	assert.Equal(t, comparison.Unable, result.Outcome())
 
 	config := comparison.NewConfig()
-	config.ComparisonScript = writeScript(t, comparisonModule(`spectre.field("test.v1.Response.unknown", () => true);`))
+	config.ScriptsDir = writeScripts(t, map[string]string{
+		"test.js": module(`spectre.field("test.v1.Response.unknown", () => true);`),
+	})
 	invalid, err := comparison.New(t.Context(), config, slog.New(slog.DiscardHandler))
 	assert.NoError(t, err)
 	err = invalid.Configure(t.Context(), descriptorSet())
 	assert.Error(t, err)
+	assert.Contains(t, err.Error(), `prepare comparison plan`)
 	assert.Contains(t, err.Error(), "has no field")
 }
 
 func TestInterruptsRunawayNormaliser(t *testing.T) {
 	config := comparison.NewConfig()
-	config.ComparisonScript = writeScript(t, comparisonModule(`spectre.rpc("test.v1.Service.Get", () => { while (true) {} });`))
+	config.ScriptsDir = writeScripts(t, map[string]string{
+		"test.js": module(`spectre.message("test.v1.Response", () => { while (true) {} });`),
+	})
 	config.ComparisonTimeout = 10 * time.Millisecond
 	comparator, err := comparison.New(t.Context(), config, slog.New(slog.DiscardHandler))
 	assert.NoError(t, err)
@@ -476,6 +476,7 @@ func TestInterruptsRunawayNormaliser(t *testing.T) {
 
 	result := comparator.Compare(
 		t.Context(),
+		http.MethodPost,
 		"/test.v1.Service/Get",
 		"application/json",
 		response,
@@ -485,25 +486,267 @@ func TestInterruptsRunawayNormaliser(t *testing.T) {
 	assert.Equal(t, comparison.Unable, result.Outcome())
 }
 
-func newComparator(t *testing.T, script string) *comparison.Comparator {
+func TestComparesHTTPJSONAsMethodOutput(t *testing.T) {
+	comparator := newScriptsComparator(t, map[string]string{"weather.js": forecastScript(`
+		spectre.field("test.v1.Response.ignored", () => undefined);
+		spectre.field("test.v1.Response.roles", (roles) => roles === undefined ? undefined : roles.sort());
+	`)})
+	for name, test := range map[string]struct {
+		reference comparison.Response
+		candidate comparison.Response
+		expected  comparison.Result
+	}{
+		"Normalised": {
+			reference: httpJSONResponse(http.StatusOK, "application/json; charset=utf-8", `{"stable":"same","ignored":"first","roles":["a","b"]}`),
+			candidate: httpJSONResponse(http.StatusOK, "application/json", `{"roles":["b","a"],"ignored":"second","stable":"same"}`),
+			expected:  comparison.Resultf(comparison.Equivalent, ""),
+		},
+		"ErrorStatusUsesMethodOutput": {
+			reference: httpJSONResponse(http.StatusUnauthorized, "application/json", `{"stable":"denied","ignored":"first"}`),
+			candidate: httpJSONResponse(http.StatusUnauthorized, "application/json", `{"stable":"denied","ignored":"second"}`),
+			expected:  comparison.Resultf(comparison.Equivalent, ""),
+		},
+		"FieldDifference": {
+			reference: httpJSONResponse(http.StatusOK, "application/json", `{"stable":"first"}`),
+			candidate: httpJSONResponse(http.StatusOK, "application/json", `{"stable":"second"}`),
+			expected:  comparison.NewDifferenceResult("$.stable"),
+		},
+		"StatusDifference": {
+			reference: httpJSONResponse(http.StatusOK, "application/json", `{}`),
+			candidate: httpJSONResponse(http.StatusForbidden, "application/json", `{}`),
+			expected:  comparison.NewDifferenceResult("$status"),
+		},
+		"EmptyBodies": {
+			reference: httpJSONResponse(http.StatusNoContent, "", ""),
+			candidate: httpJSONResponse(http.StatusNoContent, "", ""),
+			expected:  comparison.Resultf(comparison.Equivalent, ""),
+		},
+		"OneEmptyBody": {
+			reference: httpJSONResponse(http.StatusOK, "application/json", `{}`),
+			candidate: httpJSONResponse(http.StatusOK, "", ""),
+			expected:  comparison.NewDifferenceResult("$"),
+		},
+		"NotJSON": {
+			reference: httpJSONResponse(http.StatusInternalServerError, "text/html", `<html></html>`),
+			candidate: httpJSONResponse(http.StatusInternalServerError, "text/html", `<html></html>`),
+			expected:  comparison.Resultf(comparison.Unable, `HTTP response is not JSON: reference="text/html" candidate="text/html"`),
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			result := comparator.Compare(t.Context(), http.MethodGet, "/v1/forecast", "", test.reference, test.candidate)
+			assert.Equal(t, test.expected, result)
+		})
+	}
+}
+
+func TestRejectsHTTPJSONWithUnknownFields(t *testing.T) {
+	comparator := newScriptsComparator(t, map[string]string{"weather.js": forecastScript("")})
+	reference := httpJSONResponse(http.StatusOK, "application/json", `{"stable":"same"}`)
+	candidate := httpJSONResponse(http.StatusOK, "application/json", `{"stable":"same","added":true}`)
+
+	result := comparator.Compare(t.Context(), http.MethodGet, "/v1/forecast", "", reference, candidate)
+
+	assert.Equal(t, comparison.Unable, result.Outcome())
+	assert.Contains(t, result.Reason(), "candidate response does not match test.v1.Response")
+	assert.Contains(t, result.Reason(), "unknown field")
+}
+
+func TestUndeclaredRequestsFallBackToRPCPaths(t *testing.T) {
+	comparator := newScriptsComparator(t, map[string]string{
+		"weather.js": forecastScript(`spectre.field("test.v1.Response.ignored", () => undefined);`),
+	})
+	reference := httpJSONResponse(http.StatusOK, "application/json", `{"stable":"same","ignored":"first"}`)
+	candidate := httpJSONResponse(http.StatusOK, "application/json", `{"stable":"same","ignored":"second"}`)
+
+	rpc := comparator.Compare(t.Context(), http.MethodPost, "/test.v1.Service/Get", "application/json", reference, candidate)
+	assert.Equal(t, comparison.Resultf(comparison.Equivalent, ""), rpc)
+
+	// Only the declared method matches, so HEAD is not compared as GET.
+	for _, method := range []string{http.MethodPost, http.MethodHead} {
+		undeclared := comparator.Compare(t.Context(), method, "/v1/forecast", "", reference, candidate)
+		assert.Equal(t, comparison.Unable, undeclared.Outcome())
+		assert.Contains(t, undeclared.Reason(), `RPC method is absent from the comparison schema: resolve method "v1.forecast"`)
+	}
+}
+
+func TestComparesDeclaredHeadEndpoints(t *testing.T) {
+	comparator := newScriptsComparator(t, map[string]string{
+		"weather.js": forecastScript(`spectre.endpoint("HEAD /v1/forecast", "test.v1.Service.Get");`),
+	})
+	response := httpJSONResponse(http.StatusOK, "application/json", "")
+
+	result := comparator.Compare(t.Context(), http.MethodHead, "/v1/forecast", "", response, response)
+
+	assert.Equal(t, comparison.Resultf(comparison.Equivalent, ""), result)
+}
+
+func TestDeclaredEndpointsDecodeGRPCRequestsAsGRPC(t *testing.T) {
+	comparator := newScriptsComparator(t, map[string]string{
+		"weather.js": module(`spectre.endpoint("POST /v1/forecast", "test.v1.Service.Get");`),
+	})
+	reference := grpcResponse(t, responseProto("first", "", nil), false)
+	candidate := grpcResponse(t, responseProto("second", "", nil), false)
+
+	result := comparator.Compare(t.Context(), http.MethodPost, "/v1/forecast", "application/grpc", reference, candidate)
+
+	assert.Equal(t, comparison.NewDifferenceResult("$.stable"), result)
+}
+
+func TestLoadsEveryScriptAsOneSet(t *testing.T) {
+	comparator := newScriptsComparator(t, map[string]string{
+		"users/user.js": module(`
+			import {lower} from "../helpers/strings.js";
+			spectre.message("test.v1.User", (user) => user === undefined ? undefined : {name: lower(user.name)});
+		`),
+		"weather.js": module(`
+			import {lower} from "./helpers/strings.js";
+			spectre.endpoint("GET /v1/forecast", "test.v1.Service.Get");
+			spectre.field("test.v1.Response.stable", (stable) => stable === undefined ? undefined : lower(stable));
+		`),
+		"helpers/strings.js": `export const lower = (value) => value.toLowerCase();`,
+		"README.md":          "Not a script.",
+	})
+	reference := connectResponse(`{"stable":"SAME","owner":{"name":"ALICE"}}`)
+	candidate := connectResponse(`{"stable":"same","owner":{"name":"alice"}}`)
+
+	for name, test := range map[string]struct {
+		method string
+		path   string
+	}{
+		"RPC":  {http.MethodPost, "/test.v1.Service/Get"},
+		"HTTP": {http.MethodGet, "/v1/forecast"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			result := comparator.Compare(t.Context(), test.method, test.path, "application/json", reference, candidate)
+			assert.Equal(t, comparison.Resultf(comparison.Equivalent, ""), result)
+		})
+	}
+}
+
+func TestComparesRPCsWithoutScripts(t *testing.T) {
+	comparator := newScriptsComparator(t, nil)
+	reference := connectResponse(`{"stable":"first"}`)
+	candidate := connectResponse(`{"stable":"second"}`)
+
+	result := comparator.Compare(t.Context(), http.MethodPost, "/test.v1.Service/Get", "application/json", reference, candidate)
+
+	assert.Equal(t, comparison.NewDifferenceResult("$.stable"), result)
+}
+
+func TestRejectsInvalidEndpointDeclarations(t *testing.T) {
+	for name, test := range map[string]struct {
+		scripts map[string]string
+		message string
+	}{
+		"Host": {
+			scripts: map[string]string{"weather.js": module(`spectre.endpoint("GET weather.example/v1/forecast", "test.v1.Service.Get");`)},
+			message: "must not include a host",
+		},
+		"NoMethod": {
+			scripts: map[string]string{"weather.js": module(`spectre.endpoint("/v1/forecast", "test.v1.Service.Get");`)},
+			message: `must have the form "<METHOD> /<path>"`,
+		},
+		"InvalidMethodName": {
+			scripts: map[string]string{"weather.js": module(`spectre.endpoint("GET /v1/forecast", "not a name");`)},
+			message: `endpoint "GET /v1/forecast" has an invalid method name "not a name"`,
+		},
+		"Conflict": {
+			scripts: map[string]string{
+				"a.js": module(`spectre.endpoint("GET /v1/{location}/forecast", "test.v1.Service.Get");`),
+				"b.js": module(`spectre.endpoint("GET /v1/units/{fee}", "test.v1.Service.Get");`),
+			},
+			message: `route endpoint "GET /v1/units/{fee}": invalid route pattern`,
+		},
+		"DuplicateAcrossScripts": {
+			scripts: map[string]string{
+				"a.js": module(`spectre.endpoint("GET /v1/forecast", "test.v1.Service.Get");`),
+				"b.js": module(`spectre.endpoint("GET /v1/forecast", "test.v1.Service.Get");`),
+			},
+			message: `duplicate endpoint "GET /v1/forecast"`,
+		},
+		"DuplicateTargetAcrossScripts": {
+			scripts: map[string]string{
+				"a.js": module(`spectre.message("test.v1.User", (user) => user);`),
+				"b.js": module(`spectre.message("test.v1.User", (user) => user);`),
+			},
+			message: `duplicate normaliser target "test.v1.User"`,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			config := comparison.NewConfig()
+			config.ScriptsDir = writeScripts(t, test.scripts)
+			_, err := comparison.New(t.Context(), config, slog.New(slog.DiscardHandler))
+			assert.Error(t, err)
+			assert.Contains(t, err.Error(), test.message)
+		})
+	}
+}
+
+func TestRejectsEndpointsAbsentFromSchema(t *testing.T) {
+	for name, test := range map[string]struct {
+		method  string
+		message string
+	}{
+		"Streaming": {method: "test.v1.Service.Watch", message: `endpoint method "test.v1.Service.Watch" must be unary`},
+		"Unknown":   {method: "test.v1.Service.Missing", message: `resolve method "test.v1.Service.Missing"`},
+		"Message":   {method: "test.v1.Response", message: "is not a method"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			config := comparison.NewConfig()
+			config.ScriptsDir = writeScripts(t, map[string]string{
+				"weather.js": module(`spectre.endpoint("GET /v1/forecast", "` + test.method + `");`),
+			})
+			comparator, err := comparison.New(t.Context(), config, slog.New(slog.DiscardHandler))
+			assert.NoError(t, err)
+			err = comparator.Configure(t.Context(), descriptorSet())
+			assert.Error(t, err)
+			assert.Contains(t, err.Error(), `resolve endpoint "GET /v1/forecast"`)
+			assert.Contains(t, err.Error(), test.message)
+		})
+	}
+}
+
+func newScriptsComparator(t *testing.T, scripts map[string]string) *comparison.Comparator {
 	t.Helper()
 	config := comparison.NewConfig()
-	config.ComparisonScript = writeScript(t, comparisonModule(script))
+	config.ScriptsDir = writeScripts(t, scripts)
 	comparator, err := comparison.New(t.Context(), config, slog.New(slog.DiscardHandler))
 	assert.NoError(t, err)
 	assert.NoError(t, comparator.Configure(t.Context(), descriptorSet()))
 	return comparator
 }
 
-func comparisonModule(body string) string {
+func httpJSONResponse(status int, contentType, body string) comparison.Response {
+	return comparison.Response{
+		StatusCode: status,
+		Header:     http.Header{"Content-Type": []string{contentType}},
+		Body:       []byte(body),
+	}
+}
+
+func newComparator(t *testing.T, script string) *comparison.Comparator {
+	t.Helper()
+	return newScriptsComparator(t, map[string]string{"test.js": module(script)})
+}
+
+// forecastScript declares GET /v1/forecast as a raw HTTP endpoint typed by test.v1.Service.Get.
+func forecastScript(body string) string {
+	return module(`spectre.endpoint("GET /v1/forecast", "test.v1.Service.Get");` + body)
+}
+
+func module(body string) string {
 	return `import * as spectre from "spectre";` + body
 }
 
-func writeScript(t *testing.T, source string) string {
+func writeScripts(t *testing.T, scripts map[string]string) string {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "comparison.js")
-	assert.NoError(t, os.WriteFile(path, []byte(source), 0o600))
-	return path
+	dir := t.TempDir()
+	for name, source := range scripts {
+		path := filepath.Join(dir, filepath.FromSlash(name))
+		assert.NoError(t, os.MkdirAll(filepath.Dir(path), 0o700))
+		assert.NoError(t, os.WriteFile(path, []byte(source), 0o600))
+	}
+	return dir
 }
 
 func connectResponse(body string) comparison.Response {

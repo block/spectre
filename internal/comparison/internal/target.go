@@ -15,17 +15,16 @@ type targetKind string
 const (
 	targetField   targetKind = "field"
 	targetMessage targetKind = "message"
-	targetRPC     targetKind = "rpc"
 )
 
-// normalisationTarget represents one of the three resolved target behaviours.
+// normalisationTarget represents one of the resolved target behaviours.
 // Polymorphic traversal and dispatch avoid exposing a tagged union to callers.
 type normalisationTarget interface {
 	key() string
 	kind() targetKind
 	name() string
 	priority() int
-	occurrences(method protoreflect.MethodDescriptor, payload *document) []occurrence
+	occurrences(root protoreflect.MessageDescriptor, payload *document) []occurrence
 	normalise(evaluator *javascript.Evaluator, value documentValue) (documentValue, error)
 }
 
@@ -52,9 +51,9 @@ func (t *fieldTarget) priority() int {
 	return 0
 }
 
-func (t *fieldTarget) occurrences(method protoreflect.MethodDescriptor, payload *document) []occurrence {
+func (t *fieldTarget) occurrences(root protoreflect.MessageDescriptor, payload *document) []occurrence {
 	occurrences := []occurrence{}
-	for _, base := range findMessages(method.Output(), t.root.FullName(), payload) {
+	for _, base := range findMessages(root, t.root.FullName(), payload) {
 		if !base.isPresent() {
 			continue
 		}
@@ -97,8 +96,8 @@ func (t *messageTarget) priority() int {
 	return 1
 }
 
-func (t *messageTarget) occurrences(method protoreflect.MethodDescriptor, payload *document) []occurrence {
-	paths := findMessages(method.Output(), t.descriptor.FullName(), payload)
+func (t *messageTarget) occurrences(root protoreflect.MessageDescriptor, payload *document) []occurrence {
+	paths := findMessages(root, t.descriptor.FullName(), payload)
 	occurrences := make([]occurrence, 0, len(paths))
 	for _, path := range paths {
 		occurrences = append(occurrences, newOccurrence(t, path.path()))
@@ -110,41 +109,6 @@ func (t *messageTarget) normalise(evaluator *javascript.Evaluator, value documen
 	argument, present := value.normaliserArgument()
 	normalised, normalisedPresent, err := evaluator.NormaliseMessage(t.name(), argument, present)
 	return newDocumentValue(normalised, normalisedPresent), errors.Wrap(err, "invoke message normaliser")
-}
-
-// methodTarget contributes one root occurrence only when the request method matches.
-type methodTarget struct {
-	targetName string
-	descriptor protoreflect.MethodDescriptor
-}
-
-func (t *methodTarget) key() string {
-	return string(t.kind()) + ":" + t.name()
-}
-
-func (t *methodTarget) kind() targetKind {
-	return targetRPC
-}
-
-func (t *methodTarget) name() string {
-	return t.targetName
-}
-
-func (t *methodTarget) priority() int {
-	return 2
-}
-
-func (t *methodTarget) occurrences(method protoreflect.MethodDescriptor, _ *document) []occurrence {
-	if t.descriptor.FullName() != method.FullName() {
-		return nil
-	}
-	return []occurrence{newOccurrence(t, newDocumentPath(nil))}
-}
-
-func (t *methodTarget) normalise(evaluator *javascript.Evaluator, value documentValue) (documentValue, error) {
-	argument, present := value.normaliserArgument()
-	normalised, normalisedPresent, err := evaluator.NormaliseRPC(t.name(), argument, present)
-	return newDocumentValue(normalised, normalisedPresent), errors.Wrap(err, "invoke RPC normaliser")
 }
 
 // fieldStep marks repeated intermediate fields that must expand into element paths.
@@ -173,10 +137,6 @@ func newMessageTarget(name string, descriptor protoreflect.MessageDescriptor) *m
 	return &messageTarget{targetName: name, descriptor: descriptor}
 }
 
-func newMethodTarget(name string, descriptor protoreflect.MethodDescriptor) *methodTarget {
-	return &methodTarget{targetName: name, descriptor: descriptor}
-}
-
 func resolveTarget(loaded *schema.Schema, kind targetKind, name string) (normalisationTarget, error) {
 	switch kind {
 	case targetField:
@@ -191,15 +151,6 @@ func resolveTarget(loaded *schema.Schema, kind targetKind, name string) (normali
 			return nil, errors.Wrap(err, "resolve message normaliser target")
 		}
 		return newMessageTarget(name, message), nil
-	case targetRPC:
-		method, err := loaded.Method(protoreflect.FullName(name))
-		if err != nil {
-			return nil, errors.Wrap(err, "resolve RPC normaliser target")
-		}
-		if method.IsStreamingClient() || method.IsStreamingServer() {
-			return nil, errors.New("streaming RPC normalisers are not supported")
-		}
-		return newMethodTarget(name, method), nil
 	default:
 		return nil, errors.Errorf("unknown normaliser kind %q", kind)
 	}

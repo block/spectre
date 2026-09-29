@@ -17,6 +17,7 @@ import (
 
 	"github.com/alecthomas/assert/v2"
 	"github.com/alecthomas/errors"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/descriptorpb"
 
 	"github.com/block/spectre/internal/comparison"
@@ -265,17 +266,25 @@ func TestCandidateDoesNotDelayReferenceResponse(t *testing.T) {
 }
 
 func TestComparisonDoesNotDelayReferenceAndDivergenceQuarantines(t *testing.T) {
+	type comparedRequest struct {
+		method      string
+		path        string
+		contentType string
+	}
+	var compared comparedRequest
 	comparisonStarted := make(chan struct{})
 	releaseComparison := make(chan struct{})
 	comparator := newResponseComparator(
 		func(
 			ctx context.Context,
+			requestMethod string,
 			requestPath string,
 			requestContentType string,
 			reference comparison.Response,
 			candidate comparison.Response,
 		) comparison.Result {
-			_, _, _, _, _ = ctx, requestPath, requestContentType, reference, candidate
+			_, _, _ = ctx, reference, candidate
+			compared = comparedRequest{method: requestMethod, path: requestPath, contentType: requestContentType}
 			close(comparisonStarted)
 			<-releaseComparison
 			return comparison.NewDifferenceResult("$.name")
@@ -297,7 +306,9 @@ func TestComparisonDoesNotDelayReferenceAndDivergenceQuarantines(t *testing.T) {
 	assert.NoError(t, err)
 	firstDone := make(chan struct{})
 	go func() {
-		handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "http://proxy.example/first", nil))
+		request := httptest.NewRequest(http.MethodPost, "http://proxy.example/first/a%2Fb?query=ignored", nil)
+		request.Header.Set("Content-Type", "application/json")
+		handler.ServeHTTP(httptest.NewRecorder(), request)
 		close(firstDone)
 	}()
 
@@ -306,6 +317,7 @@ func TestComparisonDoesNotDelayReferenceAndDivergenceQuarantines(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("response comparison did not start")
 	}
+	assert.Equal(t, comparedRequest{method: http.MethodPost, path: "/first/a%2Fb", contentType: "application/json"}, compared)
 	select {
 	case <-firstDone:
 	case <-time.After(time.Second):
@@ -425,41 +437,119 @@ func TestHealthEndpointsAreLocalAndTrackReadiness(t *testing.T) {
 }
 
 func TestDescriptorMismatchKeepsServerUnreadyAndLogs(t *testing.T) {
-	config := newTestConfig("http://127.0.0.1:50051", "http://127.0.0.1:50052")
-	descriptors := descriptorLoaderFunc(func(ctx context.Context, endpoint string) (*descriptorpb.FileDescriptorSet, error) {
-		_ = ctx
-		return &descriptorpb.FileDescriptorSet{File: []*descriptorpb.FileDescriptorProto{{Name: &endpoint}}}, nil
-	})
-	messages := make(chan string, 2)
-	handler, err := ingress.New(config, http.DefaultTransport, descriptors, newTestComparator(t), slog.New(newObservedLogHandler(messages)))
-	assert.NoError(t, err)
-	listener, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
-	assert.NoError(t, err)
-	ctx, cancel := context.WithCancel(t.Context())
-	serveDone := make(chan error, 1)
-	go func() { serveDone <- handler.Serve(ctx, listener) }()
+	conflictingStatic := &descriptorpb.FileDescriptorSet{File: []*descriptorpb.FileDescriptorProto{{
+		Name:    new("test.proto"),
+		Syntax:  new("proto3"),
+		Package: new("conflict.v1"),
+	}}}
+	for name, test := range map[string]struct {
+		descriptors descriptorLoaderFunc
+		static      string
+		message     string
+	}{
+		"BackendsDiffer": {
+			descriptors: func(ctx context.Context, endpoint string) (*descriptorpb.FileDescriptorSet, error) {
+				_ = ctx
+				return &descriptorpb.FileDescriptorSet{File: []*descriptorpb.FileDescriptorProto{{Name: &endpoint}}}, nil
+			},
+			message: "Backend descriptors differ",
+		},
+		"StaticConflicts": {
+			descriptors: matchingDescriptorLoader(),
+			static:      writeDescriptorsDir(t, conflictingStatic),
+			message:     "Backend descriptors conflict with static descriptors",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			config := newTestConfig("http://127.0.0.1:50051", "http://127.0.0.1:50052")
+			config.Schema.DescriptorsDir = test.static
+			messages := make(chan string, 2)
+			handler, err := ingress.New(config, http.DefaultTransport, test.descriptors, newTestComparator(t), slog.New(newObservedLogHandler(messages)))
+			assert.NoError(t, err)
+			listener, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
+			assert.NoError(t, err)
+			ctx, cancel := context.WithCancel(t.Context())
+			serveDone := make(chan error, 1)
+			go func() { serveDone <- handler.Serve(ctx, listener) }()
 
-comparison:
-	for {
-		select {
-		case message := <-messages:
-			if message == "Backend descriptors differ" {
-				break comparison
+		comparison:
+			for {
+				select {
+				case message := <-messages:
+					if message == test.message {
+						break comparison
+					}
+				case <-time.After(time.Second):
+					t.Fatal("descriptor mismatch was not logged")
+				}
 			}
-		case <-time.After(time.Second):
-			t.Fatal("descriptor mismatch was not logged")
-		}
+			response, err := http.Get("http://" + listener.Addr().String() + "/readyz")
+			assert.NoError(t, err)
+			assert.Equal(t, http.StatusServiceUnavailable, response.StatusCode)
+			assert.NoError(t, response.Body.Close())
+			cancel()
+			select {
+			case err := <-serveDone:
+				assert.NoError(t, err)
+			case <-time.After(time.Second):
+				t.Fatal("ingress server did not stop after cancellation")
+			}
+		})
 	}
-	response, err := http.Get("http://" + listener.Addr().String() + "/readyz")
+}
+
+func TestConfiguresComparatorWithStaticAndReflectedSchemas(t *testing.T) {
+	static := &descriptorpb.FileDescriptorSet{File: []*descriptorpb.FileDescriptorProto{{
+		Name:   new("static.proto"),
+		Syntax: new("proto3"),
+	}}}
+	reflected, err := matchingDescriptorLoader().Load(t.Context(), "")
 	assert.NoError(t, err)
-	assert.Equal(t, http.StatusServiceUnavailable, response.StatusCode)
-	assert.NoError(t, response.Body.Close())
-	cancel()
-	select {
-	case err := <-serveDone:
-		assert.NoError(t, err)
-	case <-time.After(time.Second):
-		t.Fatal("ingress server did not stop after cancellation")
+	for name, test := range map[string]struct {
+		reflection bool
+		expected   *descriptorpb.FileDescriptorSet
+	}{
+		"StaticOnly": {expected: static},
+		"ReflectedAndStatic": {
+			reflection: true,
+			expected:   &descriptorpb.FileDescriptorSet{File: []*descriptorpb.FileDescriptorProto{static.GetFile()[0], reflected.GetFile()[0]}},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			config := newTestConfig("http://127.0.0.1:50051", "http://127.0.0.1:50052")
+			config.Reflection = test.reflection
+			config.Schema.DescriptorsDir = writeDescriptorsDir(t, static)
+			descriptors := descriptorLoaderFunc(func(ctx context.Context, endpoint string) (*descriptorpb.FileDescriptorSet, error) {
+				if !test.reflection {
+					t.Errorf("reflection loaded descriptors from %s while disabled", endpoint)
+				}
+				return matchingDescriptorLoader()(ctx, endpoint)
+			})
+			configured := make(chan *descriptorpb.FileDescriptorSet, 1)
+			comparator := newResponseComparator(nil)
+			comparator.configure = func(set *descriptorpb.FileDescriptorSet) { configured <- set }
+			handler, err := ingress.New(config, http.DefaultTransport, descriptors, comparator, slog.New(slog.DiscardHandler))
+			assert.NoError(t, err)
+			listener, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
+			assert.NoError(t, err)
+			ctx, cancel := context.WithCancel(t.Context())
+			serveDone := make(chan error, 1)
+			go func() { serveDone <- handler.Serve(ctx, listener) }()
+
+			select {
+			case set := <-configured:
+				assert.True(t, proto.Equal(test.expected, set), "configured %v", set)
+			case <-time.After(time.Second):
+				t.Fatal("comparator was not configured")
+			}
+			cancel()
+			select {
+			case err := <-serveDone:
+				assert.NoError(t, err)
+			case <-time.After(time.Second):
+				t.Fatal("ingress server did not stop after cancellation")
+			}
+		})
 	}
 }
 
@@ -889,6 +979,10 @@ func TestRejectsUnsafeConfiguration(t *testing.T) {
 			update:  func(config *ingress.Config) { config.ReflectionTimeout = 0 },
 			message: "reflection timeout must be positive",
 		},
+		"SchemaSource": {
+			update:  func(config *ingress.Config) { config.Reflection = false },
+			message: "a schema source is required",
+		},
 		"CandidateTargetsIngress": {
 			update: func(config *ingress.Config) {
 				config.Listen = "127.0.0.1:50050"
@@ -939,10 +1033,9 @@ func newTestConfig(reference, candidate string) ingress.Config {
 
 func newTestComparator(t *testing.T) *comparison.Comparator {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "comparison.js")
-	assert.NoError(t, os.WriteFile(path, []byte(`import * as spectre from "spectre";`), 0o600))
 	config := comparison.NewConfig()
-	config.ComparisonScript = path
+	// With no scripts, RPCs are compared without normalisers.
+	config.ScriptsDir = t.TempDir()
 	comparator, err := comparison.New(t.Context(), config, slog.New(slog.DiscardHandler))
 	assert.NoError(t, err)
 	return comparator
@@ -987,13 +1080,16 @@ type responseComparator struct {
 		context.Context,
 		string,
 		string,
+		string,
 		comparison.Response,
 		comparison.Response,
 	) comparison.Result
+	configure func(*descriptorpb.FileDescriptorSet)
 }
 
 func newResponseComparator(compare func(
 	context.Context,
+	string,
 	string,
 	string,
 	comparison.Response,
@@ -1007,18 +1103,22 @@ func (c *responseComparator) MaxResponseBytes() int {
 }
 
 func (c *responseComparator) Configure(ctx context.Context, set *descriptorpb.FileDescriptorSet) error {
-	_, _ = ctx, set
+	_ = ctx
+	if c.configure != nil {
+		c.configure(set)
+	}
 	return nil
 }
 
 func (c *responseComparator) Compare(
 	ctx context.Context,
+	requestMethod string,
 	requestPath string,
 	requestContentType string,
 	reference comparison.Response,
 	candidate comparison.Response,
 ) comparison.Result {
-	return c.compare(ctx, requestPath, requestContentType, reference, candidate)
+	return c.compare(ctx, requestMethod, requestPath, requestContentType, reference, candidate)
 }
 
 // shortSocketDir returns a temporary directory with a short path so unix socket
@@ -1044,6 +1144,15 @@ func serveUnix(t *testing.T, socket string, handler http.Handler) {
 		}
 	}()
 	t.Cleanup(func() { assert.NoError(t, server.Close()) })
+}
+
+func writeDescriptorsDir(t *testing.T, set *descriptorpb.FileDescriptorSet) string {
+	t.Helper()
+	data, err := proto.Marshal(set)
+	assert.NoError(t, err)
+	dir := t.TempDir()
+	assert.NoError(t, os.WriteFile(filepath.Join(dir, "descriptors.pb"), data, 0o600))
+	return dir
 }
 
 func matchingDescriptorLoader() descriptorLoaderFunc {

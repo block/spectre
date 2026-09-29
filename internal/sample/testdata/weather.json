@@ -1,0 +1,24 @@
+{
+  "london": {
+    "forecast": {
+      "location": "london",
+      "days": [
+        {"date": "2026-10-01", "high": {"degrees": 17.5, "unit": "C"}, "low": {"degrees": 9, "unit": "C"}, "precipitation_percent": 80, "wind": {"speed_kph": 32, "direction": "SW"}},
+        {"date": "2026-10-02", "high": {"degrees": 15, "unit": "C"}, "low": {"degrees": 8.5, "unit": "C"}, "precipitation_percent": 40, "wind": {"speed_kph": 18, "direction": "W"}}
+      ]
+    },
+    "alerts": [
+      {"id": "alert-1", "severity": "moderate", "headline": "Heavy rain"},
+      {"id": "alert-2", "severity": "minor", "headline": "Strong wind"},
+      {"id": "alert-3", "severity": "minor", "headline": "Fog"}
+    ]
+  },
+  "sydney": {
+    "forecast": {
+      "location": "sydney",
+      "days": [
+        {"date": "2026-10-01", "high": {"degrees": 24, "unit": "C"}, "low": {"degrees": 14, "unit": "C"}, "wind": {"speed_kph": 12, "direction": "NE"}}
+      ]
+    }
+  }
+}
