@@ -38,6 +38,9 @@ func LoadDescriptorSets(config Config) (*descriptorpb.FileDescriptorSet, error) 
 		if err := proto.Unmarshal(data, set); err != nil {
 			return nil, errors.Wrapf(err, "decode descriptor set %q", path)
 		}
+		if len(set.GetFile()) == 0 {
+			return nil, errors.Errorf("descriptor set %q contains no files", path)
+		}
 		sets = append(sets, set)
 	}
 	merged, err := Merge(sets...)

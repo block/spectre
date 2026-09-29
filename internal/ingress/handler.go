@@ -196,7 +196,7 @@ func (h *Handler) serveProxy(writer http.ResponseWriter, request *http.Request) 
 				result := h.comparator.Compare(
 					candidateContext,
 					request.Method,
-					request.URL.Path,
+					request.URL.EscapedPath(),
 					request.Header.Get("Content-Type"),
 					reference,
 					candidateWriter.Response(),

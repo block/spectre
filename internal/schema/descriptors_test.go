@@ -68,6 +68,10 @@ func TestRejectsInvalidDescriptorSetFiles(t *testing.T) {
 			},
 			message: "decode descriptor set",
 		},
+		"Empty": {
+			files:   func(t *testing.T) []string { return []string{writeDescriptorSet(t, &descriptorpb.FileDescriptorSet{})} },
+			message: "contains no files",
+		},
 		"MissingImport": {
 			files: func(t *testing.T) []string {
 				return []string{writeDescriptorSet(t, &descriptorpb.FileDescriptorSet{File: newDescriptorSet().GetFile()[:1]})}

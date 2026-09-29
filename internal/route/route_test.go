@@ -25,6 +25,8 @@ func TestMatchesRequestsToValues(t *testing.T) {
 		"Head":          {method: http.MethodHead, path: "/v1/status", expected: "status", matched: true},
 		"GetIsNotHead":  {method: http.MethodHead, path: "/v2/forecast"},
 		"Wildcard":      {method: http.MethodPost, path: "/v1/locations/london/alerts", expected: "update", matched: true},
+		"EscapedSlash":  {method: http.MethodPost, path: "/v1/locations/a%2Fb/alerts", expected: "update", matched: true},
+		"InvalidEscape": {method: http.MethodGet, path: "/v2/forecast%zz"},
 		"RPCPath":       {method: http.MethodPost, path: "/test.v1.Weather/Get", expected: "rpc", matched: true},
 		"WrongMethod":   {method: http.MethodPost, path: "/v2/forecast"},
 		"UnknownPath":   {method: http.MethodGet, path: "/v3/forecast"},

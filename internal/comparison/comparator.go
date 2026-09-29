@@ -94,6 +94,7 @@ func (c *Comparator) Configure(ctx context.Context, set *descriptorpb.FileDescri
 }
 
 // Compare compares one response pair without exposing response values in its result.
+// requestPath must be escaped, as endpoints match it the way ServeMux does.
 func (c *Comparator) Compare(
 	ctx context.Context,
 	requestMethod string,

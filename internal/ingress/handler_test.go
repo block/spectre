@@ -306,7 +306,7 @@ func TestComparisonDoesNotDelayReferenceAndDivergenceQuarantines(t *testing.T) {
 	assert.NoError(t, err)
 	firstDone := make(chan struct{})
 	go func() {
-		request := httptest.NewRequest(http.MethodPost, "http://proxy.example/first?query=ignored", nil)
+		request := httptest.NewRequest(http.MethodPost, "http://proxy.example/first/a%2Fb?query=ignored", nil)
 		request.Header.Set("Content-Type", "application/json")
 		handler.ServeHTTP(httptest.NewRecorder(), request)
 		close(firstDone)
@@ -317,7 +317,7 @@ func TestComparisonDoesNotDelayReferenceAndDivergenceQuarantines(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("response comparison did not start")
 	}
-	assert.Equal(t, comparedRequest{method: http.MethodPost, path: "/first", contentType: "application/json"}, compared)
+	assert.Equal(t, comparedRequest{method: http.MethodPost, path: "/first/a%2Fb", contentType: "application/json"}, compared)
 	select {
 	case <-firstDone:
 	case <-time.After(time.Second):

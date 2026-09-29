@@ -62,15 +62,20 @@ func register(mux *http.ServeMux, pattern string, handler http.Handler) (err err
 	return nil
 }
 
-// Match returns the value assigned to a request method and path. Unlike ServeMux,
+// Match returns the value assigned to a request method and escaped path. Unlike ServeMux,
 // a GET pattern does not match HEAD, whose empty responses need their own pattern.
 func (m *Map[T]) Match(requestMethod, requestPath string) (value T, matched bool) {
-	request := &http.Request{Method: requestMethod, URL: &url.URL{Path: requestPath}}
+	var unmatched T
+	path, err := url.PathUnescape(requestPath)
+	if err != nil {
+		return unmatched, false
+	}
+	// ServeMux matches the escaped path, so an escaped slash stays within one segment.
+	request := &http.Request{Method: requestMethod, URL: &url.URL{Path: path, RawPath: requestPath}}
 	// Unmatched, redirected, and wrong-method requests get ServeMux's own handlers.
 	handler, pattern := m.mux.Handler(request)
 	route, matched := handler.(valueHandler[T])
 	if !matched || strings.Fields(pattern)[0] != requestMethod {
-		var unmatched T
 		return unmatched, false
 	}
 	return route.assigned(), true
