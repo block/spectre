@@ -22,6 +22,7 @@ import (
 
 	"github.com/block/spectre/internal/comparison"
 	"github.com/block/spectre/internal/ingress"
+	"github.com/block/spectre/internal/proxy"
 )
 
 type requestView struct {
@@ -116,7 +117,7 @@ func TestUsesConfiguredH2CProtocol(t *testing.T) {
 	}))
 	t.Cleanup(candidate.Close)
 	config := newTestConfig("h2c://"+listener.Addr().String(), candidate.URL)
-	transport := ingress.NewTransport(config)
+	transport := proxy.NewTransport(config.Config)
 	t.Cleanup(transport.CloseIdleConnections)
 	handler, err := ingress.New(config, transport, matchingDescriptorLoader(), newTestComparator(t), slog.New(slog.DiscardHandler))
 	assert.NoError(t, err)
@@ -156,7 +157,7 @@ func TestForwardsToUnixSocketBackends(t *testing.T) {
 	}))
 
 	config := newTestConfig("http+unix:"+referenceSocket, "http+unix:"+candidateSocket)
-	transport := ingress.NewTransport(config)
+	transport := proxy.NewTransport(config.Config)
 	t.Cleanup(transport.CloseIdleConnections)
 	handler, err := ingress.New(config, transport, matchingDescriptorLoader(), newTestComparator(t), slog.New(slog.DiscardHandler))
 	assert.NoError(t, err)

@@ -15,6 +15,7 @@ import (
 	"github.com/block/spectre/internal/ingress"
 	"github.com/block/spectre/internal/logger"
 	"github.com/block/spectre/internal/netaddr"
+	"github.com/block/spectre/internal/proxy"
 	"github.com/block/spectre/internal/schema"
 )
 
@@ -41,7 +42,7 @@ func main() {
 }
 
 func (c *cli) Run(runtime *commandContext) error {
-	transport := ingress.NewTransport(c.Ingress)
+	transport := proxy.NewTransport(c.Ingress.Config)
 	defer transport.CloseIdleConnections()
 	comparator, err := comparison.New(runtime.ctx, c.Comparison, runtime.log)
 	if err != nil {

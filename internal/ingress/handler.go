@@ -5,13 +5,9 @@ import (
 	"context"
 	"io"
 	"log/slog"
-	"net"
 	"net/http"
 	"net/http/httputil"
-	"net/netip"
-	"strconv"
 	"strings"
-	"sync"
 
 	"github.com/alecthomas/errors"
 	"google.golang.org/protobuf/types/descriptorpb"
@@ -20,35 +16,24 @@ import (
 	"github.com/block/spectre/internal/middleware/health"
 	"github.com/block/spectre/internal/middleware/logging"
 	"github.com/block/spectre/internal/netaddr"
+	"github.com/block/spectre/internal/proxy"
 	"github.com/block/spectre/internal/schema"
 )
 
-// Listener network and the synthetic unix backend host used by routing checks.
-const (
-	networkTCP    = "tcp"
-	hostLocalhost = "localhost"
-)
-
 // Handler returns reference responses without waiting for candidate comparison.
-// It tracks every candidate run so quarantine and shutdown can cancel all owned work.
+// Every candidate run is tracked so quarantine and shutdown can cancel it.
 type Handler struct {
 	reference   *httputil.ReverseProxy
 	candidate   *httputil.ReverseProxy
 	config      Config
 	log         *slog.Logger
-	buffer      *bufferBudget
+	buffer      *proxy.Budget
 	requests    chan struct{}
 	health      *health.Handler
 	descriptors DescriptorLoader
 	static      *descriptorpb.FileDescriptorSet
 	comparator  ResponseComparator
-
-	// mu serializes candidate admission with process-lifetime quarantine and shutdown.
-	mu            sync.Mutex
-	closing       bool
-	quarantined   bool
-	candidateRuns map[*candidateRun]struct{}
-	idle          chan struct{}
+	candidates  *proxy.Candidates
 }
 
 // DescriptorLoader loads a backend's protobuf descriptor set.
@@ -68,19 +53,6 @@ type ResponseComparator interface {
 		reference comparison.Response,
 		candidate comparison.Response,
 	) comparison.Result
-}
-
-// candidateRun gives each non-comparable cancellation function stable map identity.
-type candidateRun struct {
-	cancelContext context.CancelFunc
-}
-
-func newCandidateRun(cancel context.CancelFunc) *candidateRun {
-	return &candidateRun{cancelContext: cancel}
-}
-
-func (r *candidateRun) cancel() {
-	r.cancelContext()
 }
 
 // New constructs an ingress handler from its parsed configuration.
@@ -117,33 +89,31 @@ func New(
 	if !candidate.IsUnix() && !candidate.IsLoopback() {
 		return nil, errors.New("candidate backend must use a loopback IP address or a unix socket")
 	}
-	if backendIdentity(reference) == backendIdentity(candidate) {
+	if reference.SameDestination(candidate) {
 		return nil, errors.New("reference and candidate backends must be different")
 	}
-	if backendTargetsListener(candidate, config.Listen) {
+	listen := netaddr.ParseListen(config.Listen)
+	if candidate.TargetsListener(listen) {
 		return nil, errors.New("candidate backend must not target the ingress listener")
 	}
-	if backendTargetsListener(reference, config.Listen) {
+	if reference.TargetsListener(listen) {
 		return nil, errors.New("reference backend must not target the ingress listener")
 	}
 	static, err := schema.LoadDescriptorSets(config.Schema)
 	if err != nil {
 		return nil, errors.Wrap(err, "load static schemas")
 	}
-	idle := make(chan struct{})
-	close(idle)
 	handler := &Handler{
-		reference:     newReverseProxy(reference, transport, log, false),
-		candidate:     newReverseProxy(candidate, transport, log, true),
-		config:        config,
-		log:           log,
-		buffer:        newBufferBudget(config.CandidateBufferBytes),
-		requests:      make(chan struct{}, config.MaxInFlightRequests),
-		descriptors:   descriptors,
-		static:        static,
-		comparator:    comparator,
-		candidateRuns: make(map[*candidateRun]struct{}),
-		idle:          idle,
+		reference:   proxy.NewReverseProxy(reference, transport, log, false),
+		candidate:   proxy.NewReverseProxy(candidate, transport, log, true),
+		config:      config,
+		log:         log,
+		buffer:      proxy.NewBudget(config.CandidateBufferBytes),
+		requests:    make(chan struct{}, config.MaxInFlightRequests),
+		descriptors: descriptors,
+		static:      static,
+		comparator:  comparator,
+		candidates:  proxy.NewCandidates(config.CandidateMaxInFlight, log),
 	}
 	requestHandler := logging.New(http.HandlerFunc(handler.serveProxy), log)
 	handler.health = health.New(requestHandler)
@@ -167,16 +137,13 @@ func (h *Handler) serveProxy(writer http.ResponseWriter, request *http.Request) 
 	// Candidate work may outlive reference delivery, but its own timeout bounds its lifetime.
 	candidateContext := context.WithoutCancel(request.Context())
 	candidateContext, cancel := context.WithTimeout(candidateContext, h.config.CandidateTimeout)
-	candidateRun, capacityExceeded := h.startCandidate(cancel)
-	if capacityExceeded {
-		h.quarantine(candidateContext, errors.New("candidate concurrency limit exceeded"))
-	}
+	candidateRun := h.candidates.Start(candidateContext, cancel)
 	var candidateBody *streamBody
 	// A buffered handoff keeps candidate timeout from blocking the reference path.
 	referenceResponse := make(chan comparison.Response, 1)
 	if candidateRun != nil {
 		candidateBody = newStreamBody(h.buffer, func(err error) {
-			h.quarantine(candidateContext, err)
+			h.candidates.Quarantine(candidateContext, err)
 		})
 		candidateRequest := request.Clone(candidateContext)
 		candidateRequest.Body = candidateBody
@@ -186,7 +153,7 @@ func (h *Handler) serveProxy(writer http.ResponseWriter, request *http.Request) 
 		}
 		go func() {
 			defer cancel()
-			defer h.finishCandidate(candidateRun)
+			defer h.candidates.Finish(candidateRun)
 			defer candidateBody.closeReader()
 			candidateWriter := newCaptureResponseWriter(newDiscardResponseWriter(), h.comparator.MaxResponseBytes())
 			h.candidate.ServeHTTP(candidateWriter, candidateRequest)
@@ -231,168 +198,17 @@ func (h *Handler) handleComparison(ctx context.Context, result comparison.Result
 	case comparison.Skipped:
 		h.log.DebugContext(ctx, "Response comparison skipped", "reason", result.Reason())
 	case comparison.Divergent:
-		h.quarantine(ctx, errors.Errorf("response differences: %s", strings.Join(result.Differences(), ", ")))
+		h.candidates.Quarantine(ctx, errors.Errorf("response differences: %s", strings.Join(result.Differences(), ", ")))
 	case comparison.Unable:
-		h.quarantine(ctx, errors.Errorf("response comparison failed: %s", result.Reason()))
+		h.candidates.Quarantine(ctx, errors.Errorf("response comparison failed: %s", result.Reason()))
 	default:
-		h.quarantine(ctx, errors.Errorf("response comparison returned unknown outcome %q", result.Outcome()))
+		h.candidates.Quarantine(ctx, errors.Errorf("response comparison returned unknown outcome %q", result.Outcome()))
 	}
 }
 
 // Shutdown stops accepting candidate work and waits for active mirrors to finish.
 func (h *Handler) Shutdown(ctx context.Context) error {
-	h.mu.Lock()
-	h.closing = true
-	idle := h.idle
-	runs := make([]*candidateRun, 0, len(h.candidateRuns))
-	for run := range h.candidateRuns {
-		runs = append(runs, run)
-	}
-	h.mu.Unlock()
-	// Candidate work is non-critical and must not extend server shutdown.
-	for _, run := range runs {
-		run.cancel()
-	}
-
-	select {
-	case <-idle:
-		return nil
-	case <-ctx.Done():
-		return errors.Wrap(ctx.Err(), "wait for candidate requests")
-	}
-}
-
-func (h *Handler) startCandidate(cancel context.CancelFunc) (*candidateRun, bool) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	if h.closing || h.quarantined {
-		return nil, false
-	}
-	if len(h.candidateRuns) >= h.config.CandidateMaxInFlight {
-		return nil, true
-	}
-	// Replacing the closed channel before registration keeps Shutdown's snapshot valid.
-	if len(h.candidateRuns) == 0 {
-		h.idle = make(chan struct{})
-	}
-	run := newCandidateRun(cancel)
-	h.candidateRuns[run] = struct{}{}
-	return run, false
-}
-
-func (h *Handler) finishCandidate(run *candidateRun) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	delete(h.candidateRuns, run)
-	if len(h.candidateRuns) == 0 {
-		close(h.idle)
-	}
-}
-
-func (h *Handler) quarantine(ctx context.Context, reason error) {
-	// Quarantine is process-lifetime state. Publish it before cancelling active
-	// requests so concurrent admission cannot send more traffic to the candidate.
-	h.mu.Lock()
-	if h.quarantined {
-		h.mu.Unlock()
-		return
-	}
-	h.quarantined = true
-	runs := make([]*candidateRun, 0, len(h.candidateRuns))
-	for run := range h.candidateRuns {
-		runs = append(runs, run)
-	}
-	h.mu.Unlock()
-
-	// Cancellation and logging may acquire transport or output locks, so keep
-	// them off the reference request path that detected the quarantine.
-	go func() {
-		for _, run := range runs {
-			run.cancel()
-		}
-		h.log.ErrorContext(context.WithoutCancel(ctx), "Candidate quarantined", "reason", reason)
-	}()
-}
-
-func newReverseProxy(target *netaddr.Endpoint, transport http.RoundTripper, log *slog.Logger, discard bool) *httputil.ReverseProxy {
-	if configured, ok := transport.(*Transport); ok {
-		transport = configured.forBackend(target)
-	}
-	return &httputil.ReverseProxy{
-		Rewrite: func(request *httputil.ProxyRequest) {
-			request.SetURL(target.URL())
-			for name := range request.Out.Header {
-				if strings.HasPrefix(http.CanonicalHeaderKey(name), "X-Forwarded-") {
-					request.Out.Header.Del(name)
-				}
-			}
-			request.Out.Header.Del("X-Real-IP")
-			request.SetXForwarded()
-			// The inbound Host is untrusted and must not become backend routing input.
-			request.Out.Header.Del("X-Forwarded-Host")
-		},
-		Transport: transport,
-		ErrorLog:  slog.NewLogLogger(log.Handler(), slog.LevelError),
-		ErrorHandler: func(writer http.ResponseWriter, request *http.Request, err error) {
-			if discard {
-				log.WarnContext(request.Context(), "Candidate request failed", "error", err)
-				return
-			}
-			log.ErrorContext(request.Context(), "Reference request failed", "error", err)
-			writer.WriteHeader(http.StatusBadGateway)
-		},
-	}
-}
-
-// backendIdentity returns a canonical string that is equal for two backends
-// reaching the same destination, used to reject identical reference and candidate.
-func backendIdentity(backend *netaddr.Endpoint) string {
-	if backend.IsUnix() {
-		return "unix://" + backend.Socket()
-	}
-	host := strings.ToLower(backend.URL().Hostname())
-	if address, err := netip.ParseAddr(host); err == nil {
-		host = address.Unmap().String()
-	}
-	return strings.ToLower(backend.URL().Scheme) + "://" + net.JoinHostPort(host, strconv.Itoa(int(backend.Port())))
-}
-
-// backendTargetsListener reports whether the backend would loop traffic back to
-// the ingress listener, matching unix sockets exactly and TCP by host and port.
-func backendTargetsListener(backend *netaddr.Endpoint, listener string) bool {
-	listen := netaddr.ParseListen(listener)
-	if listen.IsUnix() || backend.IsUnix() {
-		return listen.IsUnix() && backend.IsUnix() && backend.Socket() == listen.Address()
-	}
-	host, port, err := net.SplitHostPort(listen.Address())
-	if err != nil {
-		return false
-	}
-	var portNumber uint16
-	if number, err := strconv.ParseUint(port, 10, 16); err == nil {
-		portNumber = uint16(number)
-	} else if number, err := net.DefaultResolver.LookupPort(context.Background(), networkTCP, port); err == nil && number >= 0 && number <= 65535 {
-		portNumber = uint16(number)
-	}
-	if portNumber != backend.Port() {
-		return false
-	}
-	target, targetError := netip.ParseAddr(backend.URL().Hostname())
-	targetIsLocalhost := strings.EqualFold(backend.URL().Hostname(), hostLocalhost)
-	if targetError != nil && !targetIsLocalhost {
-		return false
-	}
-	if host == "" {
-		return true
-	}
-	listenAddress, err := netip.ParseAddr(host)
-	if err != nil {
-		return strings.EqualFold(host, hostLocalhost) && (targetIsLocalhost || target.Unmap().IsLoopback())
-	}
-	if targetIsLocalhost {
-		return listenAddress.IsUnspecified() || listenAddress.Unmap().IsLoopback()
-	}
-	return listenAddress.IsUnspecified() || listenAddress.Unmap() == target.Unmap()
+	return errors.WithStack(h.candidates.Shutdown(ctx))
 }
 
 // discardResponseWriter provides the candidate proxy sink beneath bounded capture.

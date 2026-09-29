@@ -1,4 +1,4 @@
-package ingress
+package proxy
 
 import (
 	"net/http"
@@ -48,9 +48,9 @@ func (t *Transport) RoundTrip(request *http.Request) (*http.Response, error) {
 	return response, errors.Wrap(err, "forward HTTP request")
 }
 
-// forBackend selects the transport for a backend, dialing its unix socket when
+// ForBackend selects the transport for a backend, dialing its unix socket when
 // the backend uses one.
-func (t *Transport) forBackend(target *netaddr.Endpoint) http.RoundTripper {
+func (t *Transport) ForBackend(target *netaddr.Endpoint) http.RoundTripper {
 	base := t.standard
 	wrap := "forward HTTP request"
 	if target.IsH2C() {
