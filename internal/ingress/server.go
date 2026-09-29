@@ -3,81 +3,25 @@ package ingress
 import (
 	"context"
 	"net"
-	"net/http"
 
 	"github.com/alecthomas/errors"
-	"golang.org/x/net/netutil"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/descriptorpb"
 
+	"github.com/block/spectre/internal/proxy"
 	"github.com/block/spectre/internal/schema"
 )
 
 // Serve accepts ingress traffic until the context is cancelled or the server fails.
+// Readiness remains false until the comparison schema is configured.
 func (h *Handler) Serve(ctx context.Context, listener net.Listener) error {
-	// Explicit shutdown owns request lifetime after the signal starts shutdown ordering.
-	serverContext := context.WithoutCancel(ctx)
-	protocols := new(http.Protocols)
-	protocols.SetHTTP1(true)
-	protocols.SetHTTP2(true)
-	protocols.SetUnencryptedHTTP2(true)
-	server := &http.Server{
-		Handler:           h,
-		Protocols:         protocols,
-		ReadHeaderTimeout: h.config.ReadHeaderTimeout,
-		IdleTimeout:       h.config.IdleTimeout,
-		MaxHeaderBytes:    h.config.MaxHeaderBytes,
-		BaseContext: func(net.Listener) context.Context {
-			return serverContext
-		},
-	}
-	limitedListener := netutil.LimitListener(listener, h.config.MaxConnections)
-	serveDone := make(chan error, 1)
-	// Readiness remains false until the comparison schema is configured.
-	defer h.health.SetReady(false)
-	go func() { serveDone <- server.Serve(limitedListener) }()
-	h.log.InfoContext(ctx, "Ingress proxy listening", "address", listener.Addr().String())
-	h.configureSchema(ctx)
+	bindings := []proxy.Binding{proxy.NewBinding(listener, h)}
+	lifecycle := proxy.NewLifecycle(h.configureSchema, h.markUnready, h.Shutdown)
+	return errors.Wrap(proxy.Serve(ctx, h.config.Config, h.log, bindings, lifecycle), "serve ingress")
+}
 
-	select {
-	case err := <-serveDone:
-		h.health.SetReady(false)
-		shutdownContext, cancel := context.WithTimeout(serverContext, h.config.ShutdownTimeout)
-		defer cancel()
-		shutdownErrors := make([]error, 0, 4)
-		if err != nil && !errors.Is(err, http.ErrServerClosed) {
-			shutdownErrors = append(shutdownErrors, errors.Wrap(err, "serve ingress HTTP"))
-		}
-		if err := server.Shutdown(shutdownContext); err != nil {
-			shutdownErrors = append(shutdownErrors, errors.Wrap(err, "shut down HTTP server"))
-			if closeErr := server.Close(); closeErr != nil {
-				shutdownErrors = append(shutdownErrors, errors.Wrap(closeErr, "close HTTP server"))
-			}
-		}
-		if err := h.Shutdown(shutdownContext); err != nil {
-			shutdownErrors = append(shutdownErrors, err)
-		}
-		return errors.Join(shutdownErrors...)
-	case <-ctx.Done():
-		h.health.SetReady(false)
-		shutdownContext, cancel := context.WithTimeout(serverContext, h.config.ShutdownTimeout)
-		defer cancel()
-		shutdownErrors := make([]error, 0, 4)
-		// Stop inbound handlers first so candidate admission cannot race with shutdown.
-		if err := server.Shutdown(shutdownContext); err != nil {
-			shutdownErrors = append(shutdownErrors, errors.Wrap(err, "shut down HTTP server"))
-			if closeErr := server.Close(); closeErr != nil {
-				shutdownErrors = append(shutdownErrors, errors.Wrap(closeErr, "close HTTP server"))
-			}
-		}
-		if err := h.Shutdown(shutdownContext); err != nil {
-			shutdownErrors = append(shutdownErrors, err)
-		}
-		if err := <-serveDone; err != nil && !errors.Is(err, http.ErrServerClosed) {
-			shutdownErrors = append(shutdownErrors, errors.Wrap(err, "serve ingress HTTP"))
-		}
-		return errors.Join(shutdownErrors...)
-	}
+func (h *Handler) markUnready() {
+	h.health.SetReady(false)
 }
 
 // configureSchema makes readiness contingent on one schema shared by both backends.

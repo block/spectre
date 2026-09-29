@@ -7,6 +7,8 @@ import (
 	"sync/atomic"
 
 	"github.com/alecthomas/errors"
+
+	"github.com/block/spectre/internal/proxy"
 )
 
 const bufferBlockSize = 4 * 1024
@@ -63,7 +65,7 @@ type streamBody struct {
 	tail         *bufferChunk
 	offset       int
 	allocated    int
-	budget       *bufferBudget
+	budget       *proxy.Budget
 	overflow     func(error)
 	writerError  error
 	writerClosed bool
@@ -76,7 +78,7 @@ type bufferChunk struct {
 	next *bufferChunk
 }
 
-func newStreamBody(budget *bufferBudget, overflow func(error)) *streamBody {
+func newStreamBody(budget *proxy.Budget, overflow func(error)) *streamBody {
 	body := &streamBody{budget: budget, overflow: overflow}
 	body.ready = sync.NewCond(&body.mu)
 	return body
@@ -103,7 +105,7 @@ func (b *streamBody) Read(data []byte) (int, error) {
 			}
 			b.offset = 0
 			b.allocated -= cap(chunk.data)
-			b.budget.release(cap(chunk.data))
+			b.budget.Release(cap(chunk.data))
 		}
 		return n, nil
 	}
@@ -124,9 +126,9 @@ func (b *streamBody) append(data []byte) {
 	}
 	for len(data) > 0 {
 		if b.tail == nil || len(b.tail.data) == cap(b.tail.data) {
-			capacity := min(bufferBlockSize, b.budget.capacityLimit())
-			if !b.budget.reserve(capacity) {
-				overflowError := errors.Errorf("candidate request buffer exceeded %d bytes", b.budget.capacityLimit())
+			capacity := min(bufferBlockSize, b.budget.Limit())
+			if !b.budget.Reserve(capacity) {
+				overflowError := errors.Errorf("candidate request buffer exceeded %d bytes", b.budget.Limit())
 				b.writerClosed = true
 				b.writerError = overflowError
 				b.clearBuffer()
@@ -185,40 +187,9 @@ func (b *streamBody) closeWriter(err error) {
 
 func (b *streamBody) clearBuffer() {
 	// Callers hold b.mu so chunks cannot be consumed while their budget is released.
-	b.budget.release(b.allocated)
+	b.budget.Release(b.allocated)
 	b.head = nil
 	b.tail = nil
 	b.offset = 0
 	b.allocated = 0
-}
-
-// bufferBudget caps queued candidate body memory across every in-flight request.
-type bufferBudget struct {
-	mu    sync.Mutex
-	limit int
-	used  int
-}
-
-func newBufferBudget(limit int) *bufferBudget {
-	return &bufferBudget{limit: limit}
-}
-
-func (b *bufferBudget) capacityLimit() int {
-	return b.limit
-}
-
-func (b *bufferBudget) reserve(size int) bool {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	if size > b.limit-b.used {
-		return false
-	}
-	b.used += size
-	return true
-}
-
-func (b *bufferBudget) release(size int) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	b.used -= size
 }

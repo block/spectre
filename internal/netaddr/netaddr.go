@@ -183,6 +183,60 @@ func (e *Endpoint) IsLoopback() bool {
 	return err == nil && address.Unmap().IsLoopback()
 }
 
+// SameDestination reports whether two backends reach the same destination,
+// comparing unix sockets exactly and TCP by scheme, canonical host, and port.
+func (e *Endpoint) SameDestination(other *Endpoint) bool {
+	return e.identity() == other.identity()
+}
+
+func (e *Endpoint) identity() string {
+	if e.IsUnix() {
+		return "unix://" + e.Socket()
+	}
+	host := strings.ToLower(e.URL().Hostname())
+	if address, err := netip.ParseAddr(host); err == nil {
+		host = address.Unmap().String()
+	}
+	return strings.ToLower(e.URL().Scheme) + "://" + net.JoinHostPort(host, strconv.Itoa(int(e.Port())))
+}
+
+// TargetsListener reports whether the backend would loop traffic back to the
+// listener, matching unix sockets exactly and TCP by host and port.
+func (e *Endpoint) TargetsListener(listener *Endpoint) bool {
+	if listener.IsUnix() || e.IsUnix() {
+		return listener.IsUnix() && e.IsUnix() && e.Socket() == listener.Address()
+	}
+	host, port, err := net.SplitHostPort(listener.Address())
+	if err != nil {
+		return false
+	}
+	var portNumber uint16
+	if number, err := strconv.ParseUint(port, 10, 16); err == nil {
+		portNumber = uint16(number)
+	} else if number, err := net.DefaultResolver.LookupPort(context.Background(), networkTCP, port); err == nil && number >= 0 && number <= 65535 {
+		portNumber = uint16(number)
+	}
+	if portNumber != e.Port() {
+		return false
+	}
+	target, targetError := netip.ParseAddr(e.URL().Hostname())
+	targetIsLocalhost := strings.EqualFold(e.URL().Hostname(), hostLocalhost)
+	if targetError != nil && !targetIsLocalhost {
+		return false
+	}
+	if host == "" {
+		return true
+	}
+	listenAddress, err := netip.ParseAddr(host)
+	if err != nil {
+		return strings.EqualFold(host, hostLocalhost) && (targetIsLocalhost || target.Unmap().IsLoopback())
+	}
+	if targetIsLocalhost {
+		return listenAddress.IsUnspecified() || listenAddress.Unmap().IsLoopback()
+	}
+	return listenAddress.IsUnspecified() || listenAddress.Unmap() == target.Unmap()
+}
+
 // removeStaleSocket clears a leftover path socket so a restart can bind it.
 // Abstract sockets begin with "@" and need no filesystem cleanup.
 func removeStaleSocket(address string) error {

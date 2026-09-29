@@ -139,15 +139,15 @@ candidate. Every raw HTTP path served through ingress therefore needs an endpoin
 ## Reuse
 
 - Move these from ingress into a shared proxy package:
-  - the transport, taking explicit limits instead of `ingress.Config`
+  - the transport, taking the shared `proxy.Config` limits instead of `ingress.Config`
   - reverse proxy setup and forwarding-header cleanup
-  - backend identity and listener loop checks
   - candidate admission, quarantine, and shutdown tracking
   - the serve lifecycle, extended to more than one listener
   - the buffer budget
 - Record responses at the transport layer. Replay then goes through the standard
   reverse proxy, which already handles trailers.
-- Use `netaddr`, the health and logging middleware, and the logger unchanged.
+- Move backend identity and listener loop checks into `netaddr` as endpoint methods.
+- Use the health and logging middleware and the logger unchanged.
 
 ## Implementation checklist
 
@@ -173,11 +173,12 @@ candidate. Every raw HTTP path served through ingress therefore needs an endpoin
   declare raw HTTP endpoints typed by RPC methods.
 - [x] Add the plain JSON protocol for raw HTTP endpoints.
 - [x] Add a sample raw HTTP JSON service with a synthetic protobuf service.
-- [ ] Write the first target's synthetic service.
+- [x] Write the first target's synthetic service. The sample weather service
+  fills this role.
 
 ### 3. Extract shared proxy code
 
-- [ ] Move the shared pieces out of ingress without changing behaviour. The
+- [x] Move the shared pieces out of ingress without changing behaviour. The
   existing ingress tests cover this.
 
 ### 4. Normalise and hash requests

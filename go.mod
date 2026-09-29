@@ -11,6 +11,7 @@ require (
 	github.com/grafana/sobek v0.0.0-20260915160442-8a431c44cd7b
 	github.com/lmittmann/tint v1.2.0
 	golang.org/x/net v0.58.0
+	golang.org/x/sync v0.23.0
 	google.golang.org/protobuf v1.36.12
 )
 
