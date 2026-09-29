@@ -9,6 +9,8 @@ import (
 	"golang.org/x/net/netutil"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/descriptorpb"
+
+	"github.com/block/spectre/internal/schema"
 )
 
 // Serve accepts ingress traffic until the context is cancelled or the server fails.
@@ -31,11 +33,11 @@ func (h *Handler) Serve(ctx context.Context, listener net.Listener) error {
 	}
 	limitedListener := netutil.LimitListener(listener, h.config.MaxConnections)
 	serveDone := make(chan error, 1)
-	// Readiness remains false until both backends expose the same descriptors.
+	// Readiness remains false until the comparison schema is configured.
 	defer h.health.SetReady(false)
 	go func() { serveDone <- server.Serve(limitedListener) }()
 	h.log.InfoContext(ctx, "Ingress proxy listening", "address", listener.Addr().String())
-	h.compareDescriptors(ctx)
+	h.configureSchema(ctx)
 
 	select {
 	case err := <-serveDone:
@@ -78,20 +80,29 @@ func (h *Handler) Serve(ctx context.Context, listener net.Listener) error {
 	}
 }
 
-// compareDescriptors makes readiness contingent on one schema shared by both backends.
-func (h *Handler) compareDescriptors(ctx context.Context) {
+// configureSchema makes readiness contingent on one schema shared by both backends.
+// Static descriptors are identical for both, so only reflected ones are compared.
+func (h *Handler) configureSchema(ctx context.Context) {
 	reflectionContext, cancel := context.WithTimeout(ctx, h.config.ReflectionTimeout)
 	defer cancel()
-	reference, candidate, err := h.loadDescriptors(reflectionContext)
-	if err != nil {
-		h.log.ErrorContext(ctx, "Backend descriptor loading failed", "error", err)
-		return
+	set := h.static
+	if h.config.Reflection {
+		reference, candidate, err := h.loadDescriptors(reflectionContext)
+		if err != nil {
+			h.log.ErrorContext(ctx, "Backend descriptor loading failed", "error", err)
+			return
+		}
+		if !proto.Equal(reference, candidate) {
+			h.log.ErrorContext(ctx, "Backend descriptors differ")
+			return
+		}
+		set, err = schema.Merge(reference, h.static)
+		if err != nil {
+			h.log.ErrorContext(ctx, "Backend descriptors conflict with static descriptors", "error", err)
+			return
+		}
 	}
-	if !proto.Equal(reference, candidate) {
-		h.log.ErrorContext(ctx, "Backend descriptors differ")
-		return
-	}
-	if err := h.comparator.Configure(reflectionContext, reference); err != nil {
+	if err := h.comparator.Configure(reflectionContext, set); err != nil {
 		h.log.ErrorContext(ctx, "Response comparison setup failed", "error", err)
 		return
 	}

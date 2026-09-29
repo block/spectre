@@ -20,6 +20,10 @@ wait_for_log() {
 	exit 1
 }
 
+fetch() {
+	curl --unix-socket "$ingress_address" --fail --silent --show-error --max-time 5 "http://ingress$1"
+}
+
 wait_for_log_count() {
 	process=$1
 	message=$2
@@ -54,6 +58,18 @@ verify() {
 	grpcurl -plaintext -unix -connect-timeout 2 -max-time 5 \
 		-d '{"ids":["user-1"]}' "$ingress_address" "$service/ListUsers" >/dev/null
 	wait_for_log_count candidate '"path":"/spectre.sample.v1.UserService/ListUsers"' 2
+
+	# Raw HTTP responses are typed by the endpoints that weather.js declares.
+	if ! fetch '/v2/forecast?location=london' | grep -Fq '"alerts"'; then
+		printf 'raw HTTP request did not return the reference response\n' >&2
+		exit 1
+	fi
+	wait_for_log ingress '"target":"spectre.sample.v1.GetForecastV2Response.alerts"'
+	wait_for_log ingress '"msg":"Response comparison completed","path":"/v2/forecast","outcome":"equivalent"'
+	fetch '/api/v1/forecast?location=sydney' >/dev/null
+	wait_for_log ingress '"msg":"Response comparison completed","path":"/api/v1/forecast","outcome":"equivalent"'
+	fetch /_status >/dev/null
+	wait_for_log ingress '"msg":"Response comparison completed","path":"/_status","outcome":"equivalent"'
 
 	different_response=$(grpcurl -plaintext -unix -connect-timeout 2 -max-time 5 \
 		-d '{"id":"user-2"}' "$ingress_address" "$service/GetUser")
@@ -101,8 +117,13 @@ trap cleanup EXIT HUP INT TERM
 sed -e 's/"ROLE_ADMIN", "ROLE_EDITOR"/"ROLE_EDITOR", "ROLE_ADMIN"/' \
 	-e 's/"team": "platform"/"team": "candidate"/' \
 	"$source_root/internal/sample/testdata/users.json" > "$test_root/candidate.json"
+first_alert='"id": "alert-1", "severity": "moderate", "headline": "Heavy rain"'
+last_alert='"id": "alert-3", "severity": "minor", "headline": "Fog"'
+sed -e "s/$first_alert/SWAPPED/" -e "s/$last_alert/$first_alert/" -e "s/SWAPPED/$last_alert/" \
+	"$source_root/internal/sample/testdata/weather.json" > "$test_root/candidate-weather.json"
 export SPECTRE_CANDIDATE_DATA="$test_root/candidate.json"
-export SPECTRE_COMPARISON_SCRIPT="$source_root/internal/sample/comparison.js"
+export SPECTRE_CANDIDATE_WEATHER="$test_root/candidate-weather.json"
+export SPECTRE_SCRIPTS_DIR="$source_root/internal/sample/scripts"
 export SPECTRE_PROCTOR_LOG="$test_root/proctor.log"
 export SPECTRE_PROCTOR_RESULT="$test_root/passed"
 

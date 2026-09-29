@@ -42,33 +42,29 @@ func newEvaluator(
 	ctx context.Context,
 	entry *sobek.SourceTextModuleRecord,
 	spectre *spectreModule,
-) (evaluator *Evaluator, fields, messages, rpcs []string, err error) {
+) (*Evaluator, registrations, error) {
 	runtime := sobek.New()
 	runtime.SetMaxCallStackSize(1024)
-	evaluator = &Evaluator{runtime: runtime, stop: watchRuntime(ctx, runtime)}
+	evaluator := &Evaluator{runtime: runtime, stop: watchRuntime(ctx, runtime)}
 	helpers, err := runtime.RunString(jsonHelpers)
 	if err != nil {
 		evaluator.Close()
-		return nil, nil, nil, nil, errors.Wrap(err, "create JavaScript JSON helpers")
+		return nil, registrations{}, errors.Wrap(err, "create JavaScript JSON helpers")
 	}
 	helperObject := helpers.ToObject(runtime)
 	evaluator.parse, _ = sobek.AssertFunction(helperObject.Get("parse"))
 	evaluator.stringify, _ = sobek.AssertFunction(helperObject.Get("stringify"))
 	if evaluator.parse == nil || evaluator.stringify == nil {
 		evaluator.Close()
-		return nil, nil, nil, nil, errors.New("JavaScript JSON helpers are not callable")
+		return nil, registrations{}, errors.New("JavaScript JSON helpers are not callable")
 	}
 	registry, err := loadSpectreModule(runtime, entry, spectre)
 	if err != nil {
 		evaluator.Close()
-		return nil, nil, nil, nil, err
+		return nil, registrations{}, err
 	}
 	evaluator.registry = registry
-	return evaluator,
-		registry.targets(targetField),
-		registry.targets(targetMessage),
-		registry.targets(targetRPC),
-		nil
+	return evaluator, registry.registrations(), nil
 }
 
 // Close releases the evaluator's context watcher.
@@ -96,15 +92,6 @@ func (e *Evaluator) NormaliseMessage(
 	present bool,
 ) (normalised any, normalisedPresent bool, err error) {
 	return e.normalise(targetMessage, target, value, present)
-}
-
-// NormaliseRPC invokes the normaliser registered for an RPC method.
-func (e *Evaluator) NormaliseRPC(
-	target string,
-	value any,
-	present bool,
-) (normalised any, normalisedPresent bool, err error) {
-	return e.normalise(targetRPC, target, value, present)
 }
 
 // normalise returns an undefined result as absent so callers can remove the node.

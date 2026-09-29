@@ -12,6 +12,14 @@ const unavailable = () => {
 };
 
 /**
+ * Type raw HTTP requests matching pattern with an RPC method's messages.
+ * pattern is a "<METHOD> /<path>" pattern in [http.ServeMux](https://pkg.go.dev/net/http#hdr-Patterns) syntax.
+ */
+export function endpoint(/** @type {string} */ pattern, /** @type {string} */ method) {
+  unavailable();
+}
+
+/**
  * Register a normaliser for a protobuf field.
  * @param {string} target
  * @param {Normaliser} normaliser
@@ -26,14 +34,5 @@ export function field(target, normaliser) {
  * @param {Normaliser} normaliser
  */
 export function message(target, normaliser) {
-  unavailable();
-}
-
-/**
- * Register a normaliser for an RPC response.
- * @param {string} target
- * @param {Normaliser} normaliser
- */
-export function rpc(target, normaliser) {
   unavailable();
 }

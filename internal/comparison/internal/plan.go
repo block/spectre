@@ -20,15 +20,14 @@ type Plan struct {
 }
 
 // NewPlan resolves and validates every declared normaliser target before activation.
-func NewPlan(loaded *schema.Schema, fields, messages, rpcs []string) (*Plan, error) {
-	targets := make([]normalisationTarget, 0, len(fields)+len(messages)+len(rpcs))
+func NewPlan(loaded *schema.Schema, fields, messages []string) (*Plan, error) {
+	targets := make([]normalisationTarget, 0, len(fields)+len(messages))
 	for _, declared := range []struct {
 		kind  targetKind
 		names []string
 	}{
 		{kind: targetField, names: fields},
 		{kind: targetMessage, names: messages},
-		{kind: targetRPC, names: rpcs},
 	} {
 		for _, name := range declared.names {
 			resolved, err := resolveTarget(loaded, declared.kind, name)
@@ -46,13 +45,13 @@ func (p *Plan) Schema() *schema.Schema {
 	return p.loaded
 }
 
-// Normalise applies the plan to one payload using an evaluator owned by that payload.
-// side only labels log records.
+// Normalise applies the plan to one payload of type root, using an evaluator owned
+// by that payload. side only labels log records.
 func (p *Plan) Normalise(
 	ctx context.Context,
 	log *slog.Logger,
 	evaluator *javascript.Evaluator,
-	method protoreflect.MethodDescriptor,
+	root protoreflect.MessageDescriptor,
 	runNormalisers bool,
 	side string,
 	payloadJSON []byte,
@@ -65,7 +64,7 @@ func (p *Plan) Normalise(
 	if !runNormalisers {
 		targets = nil
 	}
-	run := newNormalisationRun(log, evaluator, method, slices.Clone(targets), side, payload)
+	run := newNormalisationRun(log, evaluator, root, slices.Clone(targets), side, payload)
 	if err := run.normalise(ctx); err != nil {
 		return nil, err
 	}

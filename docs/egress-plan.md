@@ -9,8 +9,9 @@ no match is quarantined.
 Requests are matched by the hash of their normalised form, not by trace ID.
 Trace propagation is deferred.
 
-The first target is `squareup/feeplans-fe`, a Ruby service using raw HTTP. Schema
-loading must therefore support more than gRPC.
+The first target is a Ruby service with a raw HTTP JSON
+API. Its API is modelled as a synthetic protobuf service, so JSON Schema support
+is deferred.
 
 ## Script contract
 
@@ -18,7 +19,7 @@ Comparator functions become normalisers. Hashing a request requires the
 normalised form of a single payload, and pairwise boolean comparators can't
 produce one.
 
-- `field`, `message`, and `rpc` register a function that takes one value and
+- `field` and `message` register a function that takes one value and
   returns its normalised form. A missing value is passed as `undefined`.
 - A normaliser can sort values, drop parts of a value, or return a constant to
   ignore a node. Returning `undefined` removes the node.
@@ -29,31 +30,77 @@ produce one.
   equal. Differences are reported as paths without values.
 - A thrown error, or a result that can't be represented as JSON, means the host
   is unable to compare.
-- The hash is SHA-256 over the route and the canonical JSON of the normalised
+- The hash is SHA-256 over the method name and the canonical JSON of the normalised
   document. Canonical JSON uses sorted keys.
 - `deepEqual` is removed, because equality is now the host's job.
 
 ## Schemas
 
-Ingress and egress share the schema registry code: schema loading, route
-matching, and decoding. Ingress and egress each have their own route map.
-Entries use `net/http.ServeMux` pattern syntax, `<method> <host>/<path>`, so
-matching is reused rather than reinvented.
+All schemas are protobuf. A raw HTTP JSON API is modelled as a synthetic protobuf
+service, so decoding, target resolution, and traversal work unchanged. JSON
+Schema is deferred until an API can't be modelled this way.
 
-- Ingress entries omit the host, for example `POST /v1/fees => fees.schema.json`.
-- Egress uses a single map. Every entry includes the destination host, for
-  example `POST fees.example/v1/fees => fees.schema.json`.
+Schemas come from either or both of these sources:
 
-Supported sources:
-
-- gRPC reflection from a backend, which is the current ingress behaviour.
+- gRPC reflection from a backend, which is the current ingress default.
 - Protobuf descriptor set files.
-- JSON Schema files for raw HTTP. A request's normalised document contains its
-  method, path, query, and decoded JSON body. A response's contains its status and
-  decoded JSON body.
 
-An egress request that no schema covers, or that fails to decode, causes a
-quarantine. Ingress keeps its current policy of skipping it.
+Each proxy takes a `--scripts-dir` and loads every script in it as one set.
+Normalisers are keyed by protobuf type, not by direction, so ingress applies them
+to responses and egress applies them to requests.
+
+Scripts type raw HTTP requests by mapping them to RPC methods with
+`spectre.endpoint(pattern, method)`. The pattern uses `net/http.ServeMux` syntax,
+so matching is reused rather than reinvented. A method supplies both sides:
+ingress decodes responses as its output, and egress decodes requests as its input.
+
+- Ingress patterns omit the host, for example
+  `spectre.endpoint("GET /v2/forecast", "spectre.sample.v1.WeatherService.GetForecastV2")`.
+- Egress patterns include the destination host.
+- gRPC and Connect requests name their method in the path, so they need no
+  endpoint.
+- Startup fails if endpoint patterns are invalid or conflict. An endpoint whose
+  method is missing or streaming fails when the schema loads, so the proxy never
+  becomes ready.
+- A request matches only patterns for its own method. Unlike `net/http.ServeMux`,
+  a `GET` pattern doesn't match `HEAD`.
+- The method name is part of the hash.
+
+Raw HTTP endpoints use a plain JSON protocol, unless the request is gRPC. The body
+is decoded as ProtoJSON for the method's output message, and unknown fields are
+rejected. Two empty bodies, such as `HEAD` or `204` responses, are equal. The status is
+compared as an HTTP status rather than a Connect error. Ingress never decodes
+requests, so synthetic methods can take `google.protobuf.Empty`.
+
+Egress decodes raw HTTP requests as the method's input message. It uses the
+`google.api.http` binding rules, but takes them from the endpoint rather than from
+annotations.
+
+- ServeMux path wildcards bind to fields of the same name.
+- `GET` has no body, and other methods bind the body to the whole message.
+  Binding the body to one field is deferred until an API needs it.
+- Query parameters bind to the remaining fields by name. Nested fields use dotted
+  names, and repeated keys fill repeated fields. Values are parsed for the
+  field's type, so enums accept names.
+- A query parameter with no matching field fails decoding, like an unknown JSON
+  field.
+
+Synthetic services follow these rules:
+
+- Fields are proto3 `optional`, so an explicit zero differs from a missing key.
+- A method has one output message. Error body fields that don't overlap the success
+  fields go in the same message.
+
+Known limitations:
+
+- ProtoJSON treats `null` like a missing field, so switching between the two goes
+  unnoticed.
+- Bodies that aren't JSON, such as Rails HTML error pages, can't be decoded.
+
+An egress request that no endpoint or method covers, or that fails to decode,
+causes a quarantine. Ingress keeps its current policy. It skips unsupported content
+types, but a JSON request that resolves to no endpoint or method quarantines the
+candidate. Every raw HTTP path served through ingress therefore needs an endpoint.
 
 ## Egress behaviour
 
@@ -115,14 +162,15 @@ quarantine. Ingress keeps its current policy of skipping it.
 - [x] Update the comparison, JavaScript, and integration tests for the new
   contract.
 
-### 2. Add the schema registry
+### 2. Load static schemas and route raw HTTP
 
-- [ ] Define the registry, plus separate route maps for ingress and egress.
-- [ ] Load schemas from gRPC reflection, descriptor set files, and JSON Schema
-  files.
-- [ ] Resolve script targets against JSON Schema definitions.
-- [ ] Decode raw HTTP JSON requests and responses into normalised documents.
-- [ ] Move ingress onto the registry. Keep reflection as its default.
+- [x] Load descriptor set files as well as reflection. Keep reflection as the
+  ingress default.
+- [x] Replace the comparison script with a scripts directory, and let scripts
+  declare raw HTTP endpoints typed by RPC methods.
+- [x] Add the plain JSON protocol for raw HTTP endpoints.
+- [x] Add a sample raw HTTP JSON service with a synthetic protobuf service.
+- [ ] Write the first target's synthetic service.
 
 ### 3. Extract shared proxy code
 
@@ -131,9 +179,9 @@ quarantine. Ingress keeps its current policy of skipping it.
 
 ### 4. Normalise and hash requests
 
-- [ ] Decode request payloads for gRPC and Connect using the method's input
-  message, and for raw HTTP using its JSON Schema.
-- [ ] Hash the canonical normalised document together with the route.
+- [ ] Decode request payloads as the method's input message. Bind raw
+  HTTP path wildcards, query parameters, and body by the rules above.
+- [ ] Hash the canonical normalised document together with the method name.
 - [ ] Test hash stability across field order, ignored fields, and sorted
   collections.
 
@@ -161,10 +209,9 @@ quarantine. Ingress keeps its current policy of skipping it.
 
 ## Open decisions
 
-- How script targets name JSON Schema locations, since protobuf full names don't
-  apply.
 - Whether a quarantine on a miss also logs differences against the closest unused
-  reference request for the same route.
-- Which protocols `feeplans-fe` uses for its dependencies. Anything other than
-  HTTP, such as MySQL or Redis, needs its own egress support.- How services address egress: a proxy setting such as `HTTP_PROXY`, or
+  reference request for the same method.
+- Which protocols the first target uses for its dependencies. Anything other than
+  HTTP, such as MySQL or Redis, needs its own egress support.
+- How services address egress: a proxy setting such as `HTTP_PROXY`, or
   rewriting dependency URLs to point at egress with the original host preserved.

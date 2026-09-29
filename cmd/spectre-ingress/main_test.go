@@ -13,27 +13,32 @@ import (
 )
 
 func TestCLIEmbedsIngressConfig(t *testing.T) {
-	script := filepath.Join(t.TempDir(), "comparison.js")
-	assert.NoError(t, os.WriteFile(script, nil, 0o600))
+	scripts := t.TempDir()
+	descriptors := filepath.Join(t.TempDir(), "descriptors.binpb")
+	assert.NoError(t, os.WriteFile(descriptors, nil, 0o600))
 	command := &cli{}
 	parser, err := kong.New(command)
 	assert.NoError(t, err)
 	_, err = parser.Parse([]string{
 		"--reference=http://reference.example",
 		"--candidate=http://candidate.example",
-		"--comparison-script=" + script,
+		"--scripts-dir=" + scripts,
+		"--no-reflection",
+		"--descriptor-set=" + descriptors,
 	})
 	assert.NoError(t, err)
 	expected := ingress.NewConfig()
 	expected.Reference = "http://reference.example"
 	expected.Candidate = "http://candidate.example"
+	expected.Reflection = false
+	expected.Schema.DescriptorSets = []string{descriptors}
 	expectedComparison := comparison.NewConfig()
-	expectedComparison.ComparisonScript = script
+	expectedComparison.ScriptsDir = scripts
 	assert.Equal(t, expected, command.Ingress)
 	assert.Equal(t, expectedComparison, command.Comparison)
 }
 
-func TestCLIRequiresComparisonScript(t *testing.T) {
+func TestCLIRequiresScriptsDir(t *testing.T) {
 	parser, err := kong.New(&cli{})
 	assert.NoError(t, err)
 

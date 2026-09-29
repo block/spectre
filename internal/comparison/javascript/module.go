@@ -1,6 +1,7 @@
 package javascript
 
 import (
+	"slices"
 	"sort"
 
 	"github.com/alecthomas/errors"
@@ -12,8 +13,36 @@ type targetKind string
 const (
 	targetField   targetKind = "field"
 	targetMessage targetKind = "message"
-	targetRPC     targetKind = "rpc"
 )
+
+const exportEndpoint = "endpoint"
+
+// Endpoint maps a raw HTTP request pattern to the RPC method that types it.
+type Endpoint struct {
+	pattern string
+	method  string
+}
+
+func newEndpoint(pattern, method string) Endpoint {
+	return Endpoint{pattern: pattern, method: method}
+}
+
+// Pattern returns the net/http.ServeMux pattern the endpoint matches.
+func (e Endpoint) Pattern() string {
+	return e.pattern
+}
+
+// Method returns the full name of the RPC method that types the endpoint.
+func (e Endpoint) Method() string {
+	return e.method
+}
+
+// registrations are the declarations one evaluation of a program produced.
+type registrations struct {
+	endpoints []Endpoint
+	fields    []string
+	messages  []string
+}
 
 // spectreModule is a stateless module record shared safely across isolated runtimes.
 type spectreModule struct{}
@@ -25,13 +54,13 @@ func (m *spectreModule) Link() error {
 }
 
 func (m *spectreModule) GetExportedNames(callback func([]string), _ ...sobek.ModuleRecord) bool {
-	callback([]string{string(targetField), string(targetMessage), string(targetRPC)})
+	callback([]string{exportEndpoint, string(targetField), string(targetMessage)})
 	return true
 }
 
 func (m *spectreModule) ResolveExport(name string, _ ...sobek.ResolveSetElement) (*sobek.ResolvedBinding, bool) {
 	kind := targetKind(name)
-	if kind != targetField && kind != targetMessage && kind != targetRPC {
+	if name != exportEndpoint && kind != targetField && kind != targetMessage {
 		return nil, false
 	}
 	return &sobek.ResolvedBinding{Module: m, BindingName: name}, false
@@ -39,7 +68,12 @@ func (m *spectreModule) ResolveExport(name string, _ ...sobek.ResolveSetElement)
 
 func (m *spectreModule) Evaluate(runtime *sobek.Runtime) *sobek.Promise {
 	promise, resolve, _ := runtime.NewPromise()
-	instance := newCallbackRegistry(runtime)
+	// Sobek re-evaluates non-cyclic modules at every import and keeps the last
+	// instance, so reuse it or earlier importers' registrations would be lost.
+	instance, ok := runtime.GetModuleInstance(m).(*callbackRegistry)
+	if !ok {
+		instance = newCallbackRegistry(runtime)
+	}
 	if err := resolve(instance); err != nil {
 		panic(errors.Wrap(err, "resolve spectre module evaluation"))
 	}
@@ -51,9 +85,9 @@ func (m *spectreModule) Evaluate(runtime *sobek.Runtime) *sobek.Promise {
 type callbackRegistry struct {
 	runtime   *sobek.Runtime
 	functions map[string]sobek.Value
+	endpoints []Endpoint
 	fields    map[string]sobek.Callable
 	messages  map[string]sobek.Callable
-	rpcs      map[string]sobek.Callable
 }
 
 func newCallbackRegistry(runtime *sobek.Runtime) *callbackRegistry {
@@ -61,14 +95,32 @@ func newCallbackRegistry(runtime *sobek.Runtime) *callbackRegistry {
 		runtime:  runtime,
 		fields:   map[string]sobek.Callable{},
 		messages: map[string]sobek.Callable{},
-		rpcs:     map[string]sobek.Callable{},
 	}
 	registry.functions = map[string]sobek.Value{
+		exportEndpoint:        runtime.ToValue(registry.registerEndpoint),
 		string(targetField):   runtime.ToValue(registry.registration(targetField)),
 		string(targetMessage): runtime.ToValue(registry.registration(targetMessage)),
-		string(targetRPC):     runtime.ToValue(registry.registration(targetRPC)),
 	}
 	return registry
+}
+
+func (r *callbackRegistry) registerEndpoint(call sobek.FunctionCall) sobek.Value {
+	if len(call.Arguments) != 2 {
+		panic(r.runtime.NewTypeError("spectre.endpoint requires a pattern and an RPC method"))
+	}
+	pattern, ok := call.Argument(0).Export().(string)
+	if !ok || pattern == "" {
+		panic(r.runtime.NewTypeError("spectre.endpoint pattern must be a non-empty string"))
+	}
+	method, ok := call.Argument(1).Export().(string)
+	if !ok || method == "" {
+		panic(r.runtime.NewTypeError("spectre.endpoint method must be a non-empty string"))
+	}
+	if slices.ContainsFunc(r.endpoints, func(endpoint Endpoint) bool { return endpoint.Pattern() == pattern }) {
+		panic(r.runtime.NewTypeError("duplicate endpoint %q", pattern))
+	}
+	r.endpoints = append(r.endpoints, newEndpoint(pattern, method))
+	return sobek.Undefined()
 }
 
 func (r *callbackRegistry) GetBindingValue(name string) sobek.Value {
@@ -109,6 +161,14 @@ func (r *callbackRegistry) lookup(kind targetKind, target string) (sobek.Callabl
 	return callback, ok
 }
 
+func (r *callbackRegistry) registrations() registrations {
+	return registrations{
+		endpoints: slices.Clone(r.endpoints),
+		fields:    r.targets(targetField),
+		messages:  r.targets(targetMessage),
+	}
+}
+
 func (r *callbackRegistry) targets(kind targetKind) []string {
 	callbacks := r.callbacks(kind)
 	targets := make([]string, 0, len(callbacks))
@@ -125,8 +185,6 @@ func (r *callbackRegistry) callbacks(kind targetKind) map[string]sobek.Callable 
 		return r.fields
 	case targetMessage:
 		return r.messages
-	case targetRPC:
-		return r.rpcs
 	default:
 		return nil
 	}

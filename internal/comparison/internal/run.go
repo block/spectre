@@ -14,7 +14,7 @@ import (
 type normalisationRun struct {
 	log       *slog.Logger
 	evaluator *javascript.Evaluator
-	method    protoreflect.MethodDescriptor
+	root      protoreflect.MessageDescriptor
 	targets   []normalisationTarget
 	side      string
 	payload   *document
@@ -23,7 +23,7 @@ type normalisationRun struct {
 func newNormalisationRun(
 	log *slog.Logger,
 	evaluator *javascript.Evaluator,
-	method protoreflect.MethodDescriptor,
+	root protoreflect.MessageDescriptor,
 	targets []normalisationTarget,
 	side string,
 	payload *document,
@@ -31,7 +31,7 @@ func newNormalisationRun(
 	return &normalisationRun{
 		log:       log,
 		evaluator: evaluator,
-		method:    method,
+		root:      root,
 		targets:   targets,
 		side:      side,
 		payload:   payload,
@@ -39,9 +39,8 @@ func newNormalisationRun(
 }
 
 func (r *normalisationRun) normalise(ctx context.Context) error {
-	for _, occurrence := range collectOccurrences(r.method, r.targets, r.payload) {
-		// A removed value still reaches later normalisers at its path as undefined, so
-		// the RPC normaliser runs on both sides after a message normaliser removes a root.
+	for _, occurrence := range collectOccurrences(r.root, r.targets, r.payload) {
+		// A removed value still reaches later normalisers at its path as undefined.
 		value := occurrence.value(r.payload)
 		normalised, err := occurrence.normalise(r.evaluator, value)
 		if err != nil {

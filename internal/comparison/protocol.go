@@ -26,46 +26,55 @@ type protocol int
 const (
 	protocolConnectJSON protocol = iota + 1
 	protocolGRPC
+	// protocolHTTPJSON is a raw HTTP response whose JSON body is the endpoint method's output.
+	protocolHTTPJSON
 )
+
+const jsonMediaType = "application/json"
 
 func excludedRequestPath(path string) bool {
 	// Reflection and other gRPC control services are not application schema targets.
 	return strings.HasPrefix(strings.Trim(path, "/"), "grpc.")
 }
 
-func resolveMethod(loaded *schema.Schema, path, contentType string) (protoreflect.MethodDescriptor, protocol, Result) {
+// requestProtocol selects the RPC wire protocol from the request content type.
+func requestProtocol(contentType string) (protocol, Result) {
 	mediaType, _, err := mime.ParseMediaType(contentType)
 	if err != nil {
-		return nil, 0, Resultf(Skipped, "request content type is not supported: %v", err)
+		return 0, Resultf(Skipped, "request content type is not supported: %v", err)
 	}
-	var selected protocol
 	switch mediaType {
-	case "application/json":
-		selected = protocolConnectJSON
+	case jsonMediaType:
+		return protocolConnectJSON, newEmptyResult()
 	case "application/grpc", "application/grpc+proto":
-		selected = protocolGRPC
+		return protocolGRPC, newEmptyResult()
 	default:
-		return nil, 0, Resultf(Skipped, "request protocol is not supported: %q", mediaType)
+		return 0, Resultf(Skipped, "request protocol is not supported: %q", mediaType)
 	}
+}
+
+// conventionalMethod follows the gRPC and Connect convention of naming the
+// method in the last two path segments.
+func conventionalMethod(loaded *schema.Schema, path string) (protoreflect.MethodDescriptor, Result) {
 	parts := strings.Split(strings.Trim(path, "/"), "/")
 	if len(parts) < 2 {
-		return nil, 0, Resultf(Unable, "RPC path does not identify a method: %q", path)
+		return nil, Resultf(Unable, "RPC path does not identify a method: %q", path)
 	}
 	name := protoreflect.FullName(parts[len(parts)-2] + "." + parts[len(parts)-1])
 	method, err := loaded.Method(name)
 	if err != nil {
-		return nil, 0, Resultf(Unable, "RPC method is absent from the comparison schema: %v", err)
+		return nil, Resultf(Unable, "RPC method is absent from the comparison schema: %v", err)
 	}
 	if method.IsStreamingClient() || method.IsStreamingServer() {
-		return nil, 0, Resultf(Skipped, "streaming RPC comparison is not supported: %s", method.FullName())
+		return nil, Resultf(Skipped, "streaming RPC comparison is not supported: %s", method.FullName())
 	}
-	return method, selected, newEmptyResult()
+	return method, newEmptyResult()
 }
 
 // normaliseResponses creates the shared JSON representation consumed by JavaScript.
 func normaliseResponses(
 	loaded *schema.Schema,
-	method protoreflect.MethodDescriptor,
+	root protoreflect.MessageDescriptor,
 	selected protocol,
 	reference Response,
 	candidate Response,
@@ -76,9 +85,11 @@ func normaliseResponses(
 	}
 	switch selected {
 	case protocolConnectJSON:
-		return normaliseConnect(loaded, method, reference, candidate)
+		return normaliseConnect(loaded, root, reference, candidate)
 	case protocolGRPC:
-		return normaliseGRPC(loaded, method, reference, candidate, maxResponseBytes)
+		return normaliseGRPC(loaded, root, reference, candidate, maxResponseBytes)
+	case protocolHTTPJSON:
+		return normaliseHTTPJSON(loaded, root, reference, candidate)
 	default:
 		return nil, nil, Resultf(Unable, "unknown comparison protocol: %d", selected)
 	}
@@ -86,11 +97,11 @@ func normaliseResponses(
 
 func normaliseConnect(
 	loaded *schema.Schema,
-	method protoreflect.MethodDescriptor,
+	root protoreflect.MessageDescriptor,
 	reference Response,
 	candidate Response,
 ) ([]byte, []byte, Result) {
-	if !hasMediaType(reference.Header, "application/json") || !hasMediaType(candidate.Header, "application/json") {
+	if !hasJSONMediaType(reference.Header) || !hasJSONMediaType(candidate.Header) {
 		return nil, nil, Resultf(
 			Unable,
 			"Connect response is not JSON: reference=%q candidate=%q",
@@ -109,13 +120,48 @@ func normaliseConnect(
 		}
 		return referenceJSON, candidateJSON, newEmptyResult()
 	}
-	referenceJSON, err := normaliseProtoJSON(loaded, method.Output(), reference.Body)
+	referenceJSON, err := normaliseProtoJSON(loaded, root, reference.Body)
 	if err != nil {
 		return nil, nil, Resultf(Unable, "reference response is not valid ProtoJSON: %v", err)
 	}
-	candidateJSON, err := normaliseProtoJSON(loaded, method.Output(), candidate.Body)
+	candidateJSON, err := normaliseProtoJSON(loaded, root, candidate.Body)
 	if err != nil {
 		return nil, nil, Resultf(Unable, "candidate response is not valid ProtoJSON: %v", err)
+	}
+	return referenceJSON, candidateJSON, newEmptyResult()
+}
+
+// normaliseHTTPJSON decodes every non-empty body as the method output, so error
+// bodies must be modelled in the same message as successful ones.
+func normaliseHTTPJSON(
+	loaded *schema.Schema,
+	root protoreflect.MessageDescriptor,
+	reference Response,
+	candidate Response,
+) ([]byte, []byte, Result) {
+	// HEAD, 204, and 304 responses have no body to decode.
+	referenceEmpty, candidateEmpty := len(reference.Body) == 0, len(candidate.Body) == 0
+	if referenceEmpty && candidateEmpty {
+		return nil, nil, Resultf(Equivalent, "")
+	}
+	if referenceEmpty != candidateEmpty {
+		return nil, nil, NewDifferenceResult("$")
+	}
+	if !hasJSONMediaType(reference.Header) || !hasJSONMediaType(candidate.Header) {
+		return nil, nil, Resultf(
+			Unable,
+			"HTTP response is not JSON: reference=%q candidate=%q",
+			reference.Header.Get("Content-Type"),
+			candidate.Header.Get("Content-Type"),
+		)
+	}
+	referenceJSON, err := normaliseProtoJSON(loaded, root, reference.Body)
+	if err != nil {
+		return nil, nil, Resultf(Unable, "reference response does not match %s: %v", root.FullName(), err)
+	}
+	candidateJSON, err := normaliseProtoJSON(loaded, root, candidate.Body)
+	if err != nil {
+		return nil, nil, Resultf(Unable, "candidate response does not match %s: %v", root.FullName(), err)
 	}
 	return referenceJSON, candidateJSON, newEmptyResult()
 }
@@ -133,7 +179,7 @@ func connectErrorJSON(body []byte) ([]byte, error) {
 
 func normaliseGRPC(
 	loaded *schema.Schema,
-	method protoreflect.MethodDescriptor,
+	root protoreflect.MessageDescriptor,
 	reference Response,
 	candidate Response,
 	maxResponseBytes int,
@@ -171,20 +217,20 @@ func normaliseGRPC(
 	if err != nil {
 		return nil, nil, Resultf(Unable, "candidate response has invalid gRPC framing: %v", err)
 	}
-	referenceJSON, err := normaliseProtoBinary(loaded, method.Output(), referencePayload)
+	referenceJSON, err := normaliseProtoBinary(loaded, root, referencePayload)
 	if err != nil {
 		return nil, nil, Resultf(Unable, "reference response is not valid protobuf: %v", err)
 	}
-	candidateJSON, err := normaliseProtoBinary(loaded, method.Output(), candidatePayload)
+	candidateJSON, err := normaliseProtoBinary(loaded, root, candidatePayload)
 	if err != nil {
 		return nil, nil, Resultf(Unable, "candidate response is not valid protobuf: %v", err)
 	}
 	return referenceJSON, candidateJSON, newEmptyResult()
 }
 
-func hasMediaType(header http.Header, expected string) bool {
+func hasJSONMediaType(header http.Header) bool {
 	mediaType, _, err := mime.ParseMediaType(header.Get("Content-Type"))
-	return err == nil && mediaType == expected
+	return err == nil && mediaType == jsonMediaType
 }
 
 func hasGRPCMediaType(header http.Header) bool {
