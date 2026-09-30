@@ -96,6 +96,19 @@ func TestParseBackendLoopback(t *testing.T) {
 	assert.False(t, socket.IsLoopback())
 }
 
+func TestParseListenLoopback(t *testing.T) {
+	for address, loopback := range map[string]bool{
+		"127.0.0.1:50050":  true,
+		"[::1]:50050":      true,
+		"0.0.0.0:50050":    false,
+		":50050":           false,
+		"localhost:50050":  false,
+		"unix:/tmp/a.sock": false,
+	} {
+		assert.Equal(t, loopback, netaddr.ParseListen(address).IsLoopback(), address)
+	}
+}
+
 func TestParseListen(t *testing.T) {
 	tcp := netaddr.ParseListen("127.0.0.1:50050")
 	assert.Equal(t, "tcp", tcp.Network())

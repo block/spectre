@@ -191,10 +191,10 @@ candidate. Every raw HTTP path served through ingress therefore needs an endpoin
 
 ### 5. Build the egress proxy
 
-- [ ] Add the egress package and `cmd/spectre-egress`, with a symlink in `scripts`.
-- [ ] Implement recording, time-window matching, single consumption, replay, the
+- [x] Add the egress package and `cmd/spectre-egress`, with a symlink in `scripts`.
+- [x] Implement recording, time-window matching, single consumption, replay, the
   memory budget, and quarantine.
-- [ ] Test the following:
+- [x] Test the following:
   - Candidate traffic never reaches the dependency.
   - Reference traffic is forwarded for unconfigured hosts and undecodable payloads.
   - Replay preserves the response, including trailers.
