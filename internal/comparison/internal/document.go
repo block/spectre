@@ -1,7 +1,6 @@
 package comparisoninternal
 
 import (
-	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -14,12 +13,8 @@ type document struct {
 	present bool
 }
 
-func newDocument(data []byte) (*document, error) {
-	var root any
-	if err := json.Unmarshal(data, &root); err != nil {
-		return nil, errors.Wrap(err, "decode comparison JSON")
-	}
-	return &document{root: root, present: true}, nil
+func newDocument(root any) *document {
+	return &document{root: root, present: true}
 }
 
 func (d *document) Value(path documentPath) documentValue {

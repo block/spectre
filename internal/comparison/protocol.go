@@ -71,7 +71,7 @@ func conventionalMethod(loaded *schema.Schema, path string) (protoreflect.Method
 	return method, newEmptyResult()
 }
 
-// normaliseResponses creates the shared JSON representation consumed by JavaScript.
+// normaliseResponses decodes both responses to the JSON values that normalisers receive.
 func normaliseResponses(
 	loaded *schema.Schema,
 	root protoreflect.MessageDescriptor,
@@ -79,17 +79,17 @@ func normaliseResponses(
 	reference Response,
 	candidate Response,
 	maxResponseBytes int,
-) ([]byte, []byte, Result) {
+) (referencePayload, candidatePayload any, result Result) {
 	if reference.StatusCode != candidate.StatusCode {
 		return nil, nil, NewDifferenceResult("$status")
 	}
 	switch selected {
 	case protocolConnectJSON:
-		return normaliseConnect(loaded, root, reference, candidate)
+		return normaliseConnect(loaded, root, reference, candidate, maxResponseBytes)
 	case protocolGRPC:
 		return normaliseGRPC(loaded, root, reference, candidate, maxResponseBytes)
 	case protocolHTTPJSON:
-		return normaliseHTTPJSON(loaded, root, reference, candidate)
+		return normaliseHTTPJSON(loaded, root, reference, candidate, maxResponseBytes)
 	default:
 		return nil, nil, Resultf(Unable, "unknown comparison protocol: %d", selected)
 	}
@@ -100,7 +100,8 @@ func normaliseConnect(
 	root protoreflect.MessageDescriptor,
 	reference Response,
 	candidate Response,
-) ([]byte, []byte, Result) {
+	maxResponseBytes int,
+) (referencePayload, candidatePayload any, result Result) {
 	if !hasJSONMediaType(reference.Header) || !hasJSONMediaType(candidate.Header) {
 		return nil, nil, Resultf(
 			Unable,
@@ -110,25 +111,17 @@ func normaliseConnect(
 		)
 	}
 	if reference.StatusCode != http.StatusOK {
-		referenceJSON, err := connectErrorJSON(reference.Body)
+		referenceError, err := connectErrorPayload(reference.Body)
 		if err != nil {
 			return nil, nil, Resultf(Unable, "reference Connect error response contains malformed JSON: %v", err)
 		}
-		candidateJSON, err := connectErrorJSON(candidate.Body)
+		candidateError, err := connectErrorPayload(candidate.Body)
 		if err != nil {
 			return nil, nil, Resultf(Unable, "candidate Connect error response contains malformed JSON: %v", err)
 		}
-		return referenceJSON, candidateJSON, newEmptyResult()
+		return referenceError, candidateError, newEmptyResult()
 	}
-	referenceJSON, err := normaliseProtoJSON(loaded, root, reference.Body)
-	if err != nil {
-		return nil, nil, Resultf(Unable, "reference response is not valid ProtoJSON: %v", err)
-	}
-	candidateJSON, err := normaliseProtoJSON(loaded, root, candidate.Body)
-	if err != nil {
-		return nil, nil, Resultf(Unable, "candidate response is not valid ProtoJSON: %v", err)
-	}
-	return referenceJSON, candidateJSON, newEmptyResult()
+	return decodeResponses(loaded, root, protocolConnectJSON, reference, candidate, maxResponseBytes)
 }
 
 // normaliseHTTPJSON decodes every non-empty body as the method output, so error
@@ -138,7 +131,8 @@ func normaliseHTTPJSON(
 	root protoreflect.MessageDescriptor,
 	reference Response,
 	candidate Response,
-) ([]byte, []byte, Result) {
+	maxResponseBytes int,
+) (referencePayload, candidatePayload any, result Result) {
 	// HEAD, 204, and 304 responses have no body to decode.
 	referenceEmpty, candidateEmpty := len(reference.Body) == 0, len(candidate.Body) == 0
 	if referenceEmpty && candidateEmpty {
@@ -147,34 +141,18 @@ func normaliseHTTPJSON(
 	if referenceEmpty != candidateEmpty {
 		return nil, nil, NewDifferenceResult("$")
 	}
-	if !hasJSONMediaType(reference.Header) || !hasJSONMediaType(candidate.Header) {
-		return nil, nil, Resultf(
-			Unable,
-			"HTTP response is not JSON: reference=%q candidate=%q",
-			reference.Header.Get("Content-Type"),
-			candidate.Header.Get("Content-Type"),
-		)
-	}
-	referenceJSON, err := normaliseProtoJSON(loaded, root, reference.Body)
-	if err != nil {
-		return nil, nil, Resultf(Unable, "reference response does not match %s: %v", root.FullName(), err)
-	}
-	candidateJSON, err := normaliseProtoJSON(loaded, root, candidate.Body)
-	if err != nil {
-		return nil, nil, Resultf(Unable, "candidate response does not match %s: %v", root.FullName(), err)
-	}
-	return referenceJSON, candidateJSON, newEmptyResult()
+	return decodeResponses(loaded, root, protocolHTTPJSON, reference, candidate, maxResponseBytes)
 }
 
-func connectErrorJSON(body []byte) ([]byte, error) {
+func connectErrorPayload(body []byte) (any, error) {
 	if len(bytes.TrimSpace(body)) == 0 {
-		return []byte("null"), nil
+		body = []byte("null")
 	}
-	var value any
-	if err := json.Unmarshal(body, &value); err != nil {
+	var payload any
+	if err := json.Unmarshal(body, &payload); err != nil {
 		return nil, errors.Wrap(err, "decode Connect error JSON")
 	}
-	return body, nil
+	return payload, nil
 }
 
 func normaliseGRPC(
@@ -183,7 +161,7 @@ func normaliseGRPC(
 	reference Response,
 	candidate Response,
 	maxResponseBytes int,
-) ([]byte, []byte, Result) {
+) (referencePayload, candidatePayload any, result Result) {
 	if reference.StatusCode != http.StatusOK {
 		return nil, nil, Resultf(Unable, "gRPC response has HTTP status %d", reference.StatusCode)
 	}
@@ -209,23 +187,109 @@ func normaliseGRPC(
 	if referenceStatus != 0 {
 		return nil, nil, Resultf(Equivalent, "")
 	}
-	referencePayload, err := grpcPayload(reference, maxResponseBytes)
+	return decodeResponses(loaded, root, protocolGRPC, reference, candidate, maxResponseBytes)
+}
+
+// decodeResponses decodes both response bodies as root, reporting which side failed.
+func decodeResponses(
+	loaded *schema.Schema,
+	root protoreflect.MessageDescriptor,
+	selected protocol,
+	reference Response,
+	candidate Response,
+	maxResponseBytes int,
+) (referencePayload, candidatePayload any, result Result) {
+	referencePayload, err := decodeResponse(loaded, root, selected, reference, maxResponseBytes)
 	if err != nil {
-		return nil, nil, Resultf(Unable, "reference response has invalid gRPC framing: %v", err)
+		return nil, nil, Resultf(Unable, "cannot decode reference response as %s: %v", root.FullName(), err)
 	}
-	candidatePayload, err := grpcPayload(candidate, maxResponseBytes)
+	candidatePayload, err = decodeResponse(loaded, root, selected, candidate, maxResponseBytes)
 	if err != nil {
-		return nil, nil, Resultf(Unable, "candidate response has invalid gRPC framing: %v", err)
+		return nil, nil, Resultf(Unable, "cannot decode candidate response as %s: %v", root.FullName(), err)
 	}
-	referenceJSON, err := normaliseProtoBinary(loaded, root, referencePayload)
+	return referencePayload, candidatePayload, newEmptyResult()
+}
+
+// decodeResponse decodes the body as the method output.
+func decodeResponse(
+	loaded *schema.Schema,
+	output protoreflect.MessageDescriptor,
+	selected protocol,
+	response Response,
+	maxBodyBytes int,
+) (any, error) {
+	message, err := decodePayload(loaded, output, selected, response.Header, response.Body, maxBodyBytes)
 	if err != nil {
-		return nil, nil, Resultf(Unable, "reference response is not valid protobuf: %v", err)
+		return nil, err
 	}
-	candidateJSON, err := normaliseProtoBinary(loaded, root, candidatePayload)
+	return payloadValue(loaded, message, maxBodyBytes)
+}
+
+// decodeRequest decodes the body as the method input, then binds any raw HTTP path
+// wildcards and query parameters over it.
+func decodeRequest(
+	loaded *schema.Schema,
+	input protoreflect.MessageDescriptor,
+	selected protocol,
+	request Request,
+	wildcards map[string]string,
+	maxBodyBytes int,
+) (any, error) {
+	message, err := decodePayload(loaded, input, selected, request.Header, request.Body, maxBodyBytes)
 	if err != nil {
-		return nil, nil, Resultf(Unable, "candidate response is not valid protobuf: %v", err)
+		return nil, err
 	}
-	return referenceJSON, candidateJSON, newEmptyResult()
+	if selected == protocolHTTPJSON {
+		if err := bindHTTPParameters(message, request, wildcards); err != nil {
+			return nil, err
+		}
+	}
+	return payloadValue(loaded, message, maxBodyBytes)
+}
+
+// decodePayload decodes one request or response body as descriptor. Every protocol
+// rejects unknown fields, so a decoded message never drops part of its payload.
+func decodePayload(
+	loaded *schema.Schema,
+	descriptor protoreflect.MessageDescriptor,
+	selected protocol,
+	header http.Header,
+	body []byte,
+	maxBodyBytes int,
+) (*dynamicpb.Message, error) {
+	message := dynamicpb.NewMessage(descriptor)
+	switch selected {
+	case protocolConnectJSON:
+		if err := unmarshalProtoJSON(loaded, body, message); err != nil {
+			return nil, err
+		}
+	case protocolHTTPJSON:
+		// GET requests and 204 responses have no body to decode.
+		if len(body) == 0 {
+			return message, nil
+		}
+		if !hasJSONMediaType(header) {
+			return nil, errors.Errorf("body is not JSON: %q", header.Get("Content-Type"))
+		}
+		if err := unmarshalProtoJSON(loaded, body, message); err != nil {
+			return nil, err
+		}
+	case protocolGRPC:
+		payload, err := grpcPayload(header, body, maxBodyBytes)
+		if err != nil {
+			return nil, errors.Wrap(err, "read gRPC frame")
+		}
+		if err := (proto.UnmarshalOptions{Resolver: loaded.Types()}).Unmarshal(payload, message); err != nil {
+			return nil, errors.Wrap(err, "decode protobuf")
+		}
+		// ProtoJSON would silently discard unknown wire data and could hide divergence.
+		if containsUnknown(message, loaded.Types()) {
+			return nil, errors.New("protobuf payload contains unknown fields")
+		}
+	default:
+		return nil, errors.Errorf("unknown protocol: %d", selected)
+	}
+	return message, nil
 }
 
 func hasJSONMediaType(header http.Header) bool {
@@ -254,36 +318,36 @@ func grpcStatus(header http.Header) (int, error) {
 }
 
 // grpcPayload accepts exactly one unary message and applies the limit after decompression.
-func grpcPayload(response Response, maxResponseBytes int) ([]byte, error) {
-	if len(response.Body) < 5 {
+func grpcPayload(header http.Header, body []byte, maxBodyBytes int) ([]byte, error) {
+	if len(body) < 5 {
 		return nil, errors.New("missing gRPC message frame")
 	}
-	length := int(binary.BigEndian.Uint32(response.Body[1:5]))
-	if length != len(response.Body)-5 {
-		return nil, errors.New("gRPC response must contain exactly one message")
+	length := int(binary.BigEndian.Uint32(body[1:5]))
+	if length != len(body)-5 {
+		return nil, errors.New("gRPC body must contain exactly one message")
 	}
-	payload := response.Body[5:]
-	switch response.Body[0] {
+	payload := body[5:]
+	switch body[0] {
 	case 0:
 		return payload, nil
 	case 1:
-		if response.Header.Get("Grpc-Encoding") != "gzip" {
+		if header.Get("Grpc-Encoding") != "gzip" {
 			return nil, errors.New("unsupported gRPC compression")
 		}
 		reader, err := gzip.NewReader(bytes.NewReader(payload))
 		if err != nil {
-			return nil, errors.Wrap(err, "open gzip response")
+			return nil, errors.Wrap(err, "open gzip body")
 		}
-		decompressed, err := io.ReadAll(io.LimitReader(reader, int64(maxResponseBytes)+1))
+		decompressed, err := io.ReadAll(io.LimitReader(reader, int64(maxBodyBytes)+1))
 		closeErr := reader.Close()
 		if err != nil {
-			return nil, errors.Wrap(err, "decompress gRPC response")
+			return nil, errors.Wrap(err, "decompress gRPC body")
 		}
 		if closeErr != nil {
-			return nil, errors.Wrap(closeErr, "close gzip response")
+			return nil, errors.Wrap(closeErr, "close gzip body")
 		}
-		if len(decompressed) > maxResponseBytes {
-			return nil, errors.New("decompressed gRPC response exceeds the size limit")
+		if len(decompressed) > maxBodyBytes {
+			return nil, errors.New("decompressed gRPC body exceeds the size limit")
 		}
 		return decompressed, nil
 	default:
@@ -291,29 +355,25 @@ func grpcPayload(response Response, maxResponseBytes int) ([]byte, error) {
 	}
 }
 
-func normaliseProtoJSON(loaded *schema.Schema, descriptor protoreflect.MessageDescriptor, data []byte) ([]byte, error) {
-	message := dynamicpb.NewMessage(descriptor)
-	if err := (protojson.UnmarshalOptions{Resolver: loaded.Types()}).Unmarshal(data, message); err != nil {
-		return nil, errors.Wrap(err, "decode ProtoJSON")
-	}
-	return marshalProtoJSON(loaded, message)
+func unmarshalProtoJSON(loaded *schema.Schema, data []byte, message proto.Message) error {
+	err := (protojson.UnmarshalOptions{Resolver: loaded.Types()}).Unmarshal(data, message)
+	return errors.Wrap(err, "decode ProtoJSON")
 }
 
-func normaliseProtoBinary(loaded *schema.Schema, descriptor protoreflect.MessageDescriptor, data []byte) ([]byte, error) {
-	message := dynamicpb.NewMessage(descriptor)
-	if err := (proto.UnmarshalOptions{Resolver: loaded.Types()}).Unmarshal(data, message); err != nil {
-		return nil, errors.Wrap(err, "decode protobuf")
-	}
-	// ProtoJSON would silently discard unknown wire data and could hide divergence.
-	if containsUnknown(message.ProtoReflect(), loaded.Types()) {
-		return nil, errors.New("protobuf response contains unknown fields")
-	}
-	return marshalProtoJSON(loaded, message)
-}
-
-func marshalProtoJSON(loaded *schema.Schema, message proto.Message) ([]byte, error) {
+// payloadValue converts a decoded message to the ProtoJSON value normalisers receive.
+func payloadValue(loaded *schema.Schema, message proto.Message, maxBodyBytes int) (any, error) {
 	data, err := (protojson.MarshalOptions{Resolver: loaded.Types()}).Marshal(message)
-	return data, errors.Wrap(err, "encode ProtoJSON")
+	if err != nil {
+		return nil, errors.Wrap(err, "encode ProtoJSON")
+	}
+	if len(data) > maxBodyBytes {
+		return nil, errors.New("decoded payload exceeds the comparison size limit")
+	}
+	var payload any
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return nil, errors.Wrap(err, "decode ProtoJSON value")
+	}
+	return payload, nil
 }
 
 func containsUnknown(message protoreflect.Message, types *dynamicpb.Types) bool {

@@ -16,21 +16,63 @@ type Map[T any] struct {
 	mux *http.ServeMux
 }
 
-// valueHandler lets ServeMux perform matching; it is never served.
+// valueHandler lets ServeMux perform matching. It only serves matchWriter.
 type valueHandler[T any] struct {
-	value T
+	value     T
+	wildcards []string
 }
 
-func newValueHandler[T any](value T) valueHandler[T] {
-	return valueHandler[T]{value: value}
-}
-
-func (h valueHandler[T]) assigned() T {
-	return h.value
+func newValueHandler[T any](value T, wildcards []string) valueHandler[T] {
+	return valueHandler[T]{value: value, wildcards: wildcards}
 }
 
 func (h valueHandler[T]) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
-	_, _ = writer, request
+	if match, ok := writer.(*matchWriter[T]); ok {
+		match.record(h.value, h.wildcards, request)
+	}
+}
+
+// matchWriter receives the matched value, because only ServeMux.ServeHTTP binds
+// wildcards. ServeMux's own handlers write their redirect or error responses to it.
+type matchWriter[T any] struct {
+	header    http.Header
+	value     T
+	wildcards map[string]string
+	pattern   string
+}
+
+func newMatchWriter[T any]() *matchWriter[T] {
+	return &matchWriter[T]{header: http.Header{}}
+}
+
+func (w *matchWriter[T]) record(value T, wildcards []string, request *http.Request) {
+	w.value = value
+	w.pattern = request.Pattern
+	w.wildcards = make(map[string]string, len(wildcards))
+	for _, name := range wildcards {
+		w.wildcards[name] = request.PathValue(name)
+	}
+}
+
+// matched returns the recorded value and wildcards, if a pattern for the method matched.
+func (w *matchWriter[T]) matched(requestMethod string) (value T, wildcards map[string]string, matched bool) {
+	if w.pattern == "" || strings.Fields(w.pattern)[0] != requestMethod {
+		var unmatched T
+		return unmatched, nil, false
+	}
+	return w.value, w.wildcards, true
+}
+
+func (w *matchWriter[T]) Header() http.Header {
+	return w.header
+}
+
+func (w *matchWriter[T]) Write(data []byte) (int, error) {
+	return len(data), nil
+}
+
+func (w *matchWriter[T]) WriteHeader(statusCode int) {
+	_ = statusCode
 }
 
 // New returns an empty map.
@@ -38,17 +80,13 @@ func New[T any]() *Map[T] {
 	return &Map[T]{mux: http.NewServeMux()}
 }
 
-// Add assigns a value to a "<METHOD> /<path>" pattern. Patterns must name an
-// HTTP method and must not include a host.
+// Add assigns a value to a "<METHOD> [<host>]/<path>" pattern, which must name an
+// HTTP method. A pattern without a host matches every host.
 func (m *Map[T]) Add(pattern string, value T) error {
-	fields := strings.Fields(pattern)
-	if len(fields) != 2 {
-		return errors.Errorf("route pattern %q must have the form \"<METHOD> /<path>\"", pattern)
+	if len(strings.Fields(pattern)) != 2 {
+		return errors.Errorf("route pattern %q must have the form \"<METHOD> [<host>]/<path>\"", pattern)
 	}
-	if !strings.HasPrefix(fields[1], "/") {
-		return errors.Errorf("route pattern %q must not include a host", pattern)
-	}
-	return register(m.mux, pattern, newValueHandler(value))
+	return register(m.mux, pattern, newValueHandler(value, Wildcards(pattern)))
 }
 
 // register converts ServeMux's panics for invalid or conflicting patterns into errors.
@@ -62,21 +100,33 @@ func register(mux *http.ServeMux, pattern string, handler http.Handler) (err err
 	return nil
 }
 
-// Match returns the value assigned to a request method and escaped path. Unlike ServeMux,
-// a GET pattern does not match HEAD, whose empty responses need their own pattern.
-func (m *Map[T]) Match(requestMethod, requestPath string) (value T, matched bool) {
+// Match returns a request's value and wildcards; requestPath must be escaped.
+// Unlike ServeMux, a GET pattern does not match HEAD, whose empty responses need their own pattern.
+func (m *Map[T]) Match(requestMethod, requestHost, requestPath string) (value T, wildcards map[string]string, matched bool) {
 	var unmatched T
 	path, err := url.PathUnescape(requestPath)
 	if err != nil {
-		return unmatched, false
+		return unmatched, nil, false
 	}
 	// ServeMux matches the escaped path, so an escaped slash stays within one segment.
-	request := &http.Request{Method: requestMethod, URL: &url.URL{Path: path, RawPath: requestPath}}
-	// Unmatched, redirected, and wrong-method requests get ServeMux's own handlers.
-	handler, pattern := m.mux.Handler(request)
-	route, matched := handler.(valueHandler[T])
-	if !matched || strings.Fields(pattern)[0] != requestMethod {
-		return unmatched, false
+	request := &http.Request{Method: requestMethod, Host: requestHost, URL: &url.URL{Path: path, RawPath: requestPath}}
+	match := newMatchWriter[T]()
+	m.mux.ServeHTTP(match, request)
+	return match.matched(requestMethod)
+}
+
+// Wildcards returns the names of a valid pattern's path wildcards in order.
+func Wildcards(pattern string) []string {
+	fields := strings.Fields(pattern)
+	target := fields[len(fields)-1]
+	names := []string{}
+	for segment := range strings.SplitSeq(target[strings.Index(target, "/")+1:], "/") {
+		inner, isWildcard := strings.CutPrefix(segment, "{")
+		inner, closed := strings.CutSuffix(inner, "}")
+		if !isWildcard || !closed || inner == "$" {
+			continue
+		}
+		names = append(names, strings.TrimSuffix(inner, "..."))
 	}
-	return route.assigned(), true
+	return names
 }

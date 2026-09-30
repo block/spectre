@@ -48,7 +48,7 @@ func (o occurrence) logAttributes(side string) []any {
 		"kind", o.target.kind(),
 		"target", o.target.name(),
 		"side", side,
-		"response_path", o.path.String(),
+		"payload_path", o.path.String(),
 	}
 }
 

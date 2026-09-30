@@ -130,7 +130,10 @@ func (r *callbackRegistry) endpointRegistration(direction Direction) func(sobek.
 		if !ok || pattern == "" {
 			panic(r.runtime.NewTypeError("spectre.%s pattern must be a non-empty string", direction))
 		}
-		if direction == Egress && !hasHost(pattern) {
+		if direction == Ingress && !hasForm(pattern, false) {
+			panic(r.runtime.NewTypeError("spectre.ingress pattern %q must have the form \"<METHOD> /<path>\"", pattern))
+		}
+		if direction == Egress && !hasForm(pattern, true) {
 			panic(r.runtime.NewTypeError("spectre.egress pattern %q must have the form \"<METHOD> <host>/<path>\"", pattern))
 		}
 		method, ok := call.Argument(1).Export().(string)
@@ -145,11 +148,11 @@ func (r *callbackRegistry) endpointRegistration(direction Direction) func(sobek.
 	}
 }
 
-// hasHost reports whether a "<METHOD> <host>/<path>" pattern names a host. Ingress
-// routing rejects hosts itself, so only egress registration needs this check.
-func hasHost(pattern string) bool {
+// hasForm reports whether a pattern names a method, and names a host exactly when
+// host is set. Ingress receives requests for its own service, so it never routes by host.
+func hasForm(pattern string, host bool) bool {
 	fields := strings.Fields(pattern)
-	return len(fields) == 2 && !strings.HasPrefix(fields[1], "/")
+	return len(fields) == 2 && strings.HasPrefix(fields[1], "/") != host
 }
 
 func (r *callbackRegistry) GetBindingValue(name string) sobek.Value {

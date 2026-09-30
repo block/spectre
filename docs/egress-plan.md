@@ -183,10 +183,10 @@ candidate. Every raw HTTP path served through ingress therefore needs an endpoin
 
 ### 4. Normalise and hash requests
 
-- [ ] Decode request payloads as the method's input message. Bind raw
+- [x] Decode request payloads as the method's input message. Bind raw
   HTTP path wildcards, query parameters, and body by the rules above.
-- [ ] Hash the canonical normalised document together with the method name.
-- [ ] Test hash stability across field order, ignored fields, and sorted
+- [x] Hash the canonical normalised document together with the method name.
+- [x] Test hash stability across field order, ignored fields, and sorted
   collections.
 
 ### 5. Build the egress proxy

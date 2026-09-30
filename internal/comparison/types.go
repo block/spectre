@@ -1,7 +1,8 @@
-// Package comparison compares paired unary RPC responses.
+// Package comparison compares paired unary RPC responses and hashes RPC requests.
 package comparison
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"net/http"
 	"slices"
@@ -68,3 +69,25 @@ func (r Result) Differences() []string {
 func (r Result) Reason() string {
 	return r.reason
 }
+
+// Request is one captured request to a dependency.
+type Request struct {
+	// Method is the HTTP request method.
+	Method string
+	// Host selects the destination's endpoints. Any port is ignored.
+	Host string
+	// Path is escaped, as endpoints match it the way ServeMux does.
+	Path string
+	// RawQuery is the encoded query string without the leading "?".
+	RawQuery string
+	// Header holds the request headers.
+	Header http.Header
+	// Body contains at most the configured capture limit.
+	Body []byte
+	// Overflow reports that Body is truncated and must not be hashed.
+	Overflow bool
+}
+
+// RequestHash identifies a request by its method and normalised input, so
+// equivalent requests share a hash.
+type RequestHash [sha256.Size]byte
