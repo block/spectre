@@ -2,21 +2,23 @@
 
 The `spectre-ingress` command mirrors HTTP requests to reference and candidate
 services. It returns the reference response without waiting for the candidate response.
+The `spectre-egress` command sits between those services and their dependencies. It
+forwards reference calls and replays the recorded responses to matching candidate calls.
 
 Logs default to info-level, colorized text on stderr. Use `--log-level=debug|info|warn|error`
 to change the minimum level and `--log-json` for JSON output.
 
 ## Container image
 
-Build the local Alpine-based image with `bit container`. Its entry point is the
-`spectre-ingress` command, and it runs as a non-root user. Start the server with
-backends in the same network namespace:
+Build the local Alpine-based image with `bit container`. It contains both commands,
+its entry point is `spectre-ingress`, and it runs as a non-root user. Start the
+server with backends in the same network namespace:
 
 ```sh
 docker run --rm --network=host \
   -v "$PWD/internal/sample/scripts:/scripts:ro" \
   -v "$PWD/dist/descriptors:/descriptors:ro" \
-  spectre-ingress:dev \
+  spectre:dev \
   --listen=0.0.0.0:50050 \
   --reference=h2c://127.0.0.1:50051 \
   --candidate=h2c://127.0.0.1:50052 \
@@ -24,8 +26,31 @@ docker run --rm --network=host \
   --descriptors-dir=/descriptors
 ```
 
+Run the egress proxy from the same image with `--entrypoint spectre-egress`.
+
 Releases are published for Linux AMD64 and ARM64 as `ghcr.io/block/spectre`
 and `docker.io/blockossreleases/spectre`.
+
+## Egress proxy
+
+`spectre-egress` has three listeners. Reference services send dependency calls to
+`127.0.0.1:50060`, candidates send them to `127.0.0.1:50061`, and `/livez` and
+`/readyz` are served on `127.0.0.1:50062`. The candidate listener must use a
+loopback IP or a unix socket. Each `--destination=HOST=URL` flag sends requests
+for `HOST` to `URL`:
+
+```sh
+spectre-egress \
+  --destination=forecasts.example=http://127.0.0.1:50053 \
+  --scripts-dir=internal/sample/scripts \
+  --descriptors-dir=dist/descriptors
+```
+
+Scripts declare dependency endpoints with `spectre.egress()`, and their types come
+only from `--descriptors-dir`. A candidate call waits up to `--match-window` for an
+equivalent reference call and receives its recorded response. A candidate call
+without a match gets a `502` and stops all later candidate calls until the process
+restarts. Ingress then quarantines the candidate when its responses diverge.
 
 ## Sample Connect service
 
@@ -81,6 +106,22 @@ from `dist/descriptors/`. Use `--weather=path/to/weather.json` to load different
 curl 'localhost:50050/v2/forecast?location=london'
 curl 'localhost:50050/api/v1/forecast?location=sydney'
 curl localhost:50050/_status
+```
+
+With `--forecasts=URL`, the weather endpoints fetch forecasts from a forecast
+provider instead of their local data, sending `--forecasts-host`
+(`forecasts.example` by default) as the host. Alerts still come from `--weather`.
+Run the provider with `spectre-sample-forecasts`, which listens on
+`127.0.0.1:50053` and serves `GET /v1/forecasts/{location}` from the same weather
+data. The [forecasts script](internal/sample/scripts/forecasts.js) declares this
+endpoint for egress.
+
+To run the whole stack on unix sockets under `dist/sockets/`, with reloads on
+change, run `proctor`. It starts the forecast provider, egress, reference and
+candidate samples in dependency mode, and ingress:
+
+```sh
+curl --unix-socket dist/sockets/ingress.sock 'http://ingress/v2/forecast?location=london'
 ```
 
 Edit the [protobuf definitions](internal/sample/proto/service.proto) and run

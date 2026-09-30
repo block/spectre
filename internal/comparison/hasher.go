@@ -92,7 +92,7 @@ func (h *RequestHasher) Hash(ctx context.Context, request Request) (RequestHash,
 	}
 	normaliseContext, cancel := context.WithTimeout(ctx, h.timeout)
 	defer cancel()
-	normalised, err := h.scripts.normalise(normaliseContext, configured, method.Input(), true, "request", payload)
+	normalised, err := h.scripts.normalise(normaliseContext, configured, method.Input(), true, request.Side, payload)
 	if err != nil {
 		return RequestHash{}, errors.Wrap(err, "normalise request")
 	}

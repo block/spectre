@@ -12,19 +12,29 @@ See the [design document](docs/design.md) for the proposed architecture and safe
 
 ## Try it
 
-The builtin sample service uses the normaliser scripts in `internal/sample/scripts/`. `bit sample` generates the sample's descriptor set, then `proctor` runs the Spectre ingress and two sample backends, all over unix domain sockets under `dist/sockets/`:
+The builtin sample service uses the normaliser scripts in `internal/sample/scripts/`. `bit sample` generates the sample's descriptor set. Then `proctor` runs the whole exemplar over unix domain sockets under `dist/sockets/`:
+
+- `forecasts`, a forecast provider that stands in for a downstream dependency.
+- `egress`, the Spectre egress proxy between the samples and the forecast provider.
+- `reference` and `candidate`, two sample backends that fetch forecasts through egress.
+- `ingress`, the Spectre ingress proxy that mirrors client requests to both backends.
 
 ```
 $ bit sample
 $ proctor
-            setup ● ready
-        reference │ INF Sample Connect server listening address=.../dist/sockets/reference.sock
-        candidate │ INF Sample Connect server listening address=.../dist/sockets/candidate.sock
-  reference-ready ● ready
-  candidate-ready ● ready
-          ingress │ INF Ingress proxy listening address=.../dist/sockets/ingress.sock
-    ingress-ready ● ready
-
+    setup ● exit 0
+forecasts │ INF Sample forecast provider listening address=.../dist/sockets/forecasts.sock
+forecasts ● ready
+   egress │ INF Proxy listening address=.../dist/sockets/egress-reference.sock
+   egress │ INF Proxy listening address=.../dist/sockets/egress-candidate.sock
+   egress │ INF Proxy listening address=.../dist/sockets/egress-health.sock
+   egress ● ready
+reference │ INF Sample Connect server listening address=.../dist/sockets/reference.sock
+candidate │ INF Sample Connect server listening address=.../dist/sockets/candidate.sock
+reference ● ready
+candidate ● ready
+  ingress │ INF Proxy listening address=.../dist/sockets/ingress.sock
+  ingress ● ready
 ```
 
 In another terminal issue a gRPC request over the ingress socket. `grpcurl -unix` needs an absolute socket path:
@@ -38,22 +48,24 @@ The first terminal should then output something like this:
 
 
 ```
-candidate │ INF HTTP request method=POST path=/spectre.sample.v1.UserService/ListUsers status=200 duration=783.958µs
-candidate │ INF HTTP request method=POST path=/grpc.reflection.v1.ServerReflection/ServerReflectionInfo status=200 duration=3.499958ms
-reference │ INF HTTP request method=POST path=/spectre.sample.v1.UserService/ListUsers status=200 duration=723.833µs
-reference │ INF HTTP request method=POST path=/grpc.reflection.v1.ServerReflection/ServerReflectionInfo status=200 duration=3.078125ms
-  ingress │ INF HTTP request method=POST path=/spectre.sample.v1.UserService/ListUsers status=200 duration=1.035708ms
-  ingress │ INF HTTP request method=POST path=/grpc.reflection.v1.ServerReflection/ServerReflectionInfo status=200 duration=4.005333ms
+reference │ INF HTTP request method=POST path=/spectre.sample.v1.UserService/ListUsers status=200 duration=941.25µs
+reference │ INF HTTP request method=POST path=/grpc.reflection.v1.ServerReflection/ServerReflectionInfo status=200 duration=3.49ms
+candidate │ INF HTTP request method=POST path=/spectre.sample.v1.UserService/ListUsers status=200 duration=1.01725ms
+candidate │ INF HTTP request method=POST path=/grpc.reflection.v1.ServerReflection/ServerReflectionInfo status=200 duration=3.748417ms
+  ingress │ INF HTTP request method=POST path=/spectre.sample.v1.UserService/ListUsers status=200 duration=1.13775ms
+  ingress │ INF HTTP request method=POST path=/grpc.reflection.v1.ServerReflection/ServerReflectionInfo status=200 duration=4.2135ms
   ingress │ DBG Response comparison completed path=/grpc.reflection.v1.ServerReflection/ServerReflectionInfo outcome=skipped reason="gRPC namespace is excluded from response comparison"
   ingress │ DBG Response comparison skipped reason="gRPC namespace is excluded from response comparison"
-  ingress │ DBG Response normaliser completed kind=field target=spectre.sample.v1.User.roles side=reference response_path=$.users[0].roles
-  ingress │ DBG Response normaliser completed kind=field target=spectre.sample.v1.User.roles side=reference response_path=$.users[1].roles
-  ingress │ DBG Response normaliser completed kind=field target=spectre.sample.v1.User.roles side=reference response_path=$.users[2].roles
-  ingress │ DBG Response normaliser completed kind=field target=spectre.sample.v1.ListUsersResponse.generated_at side=reference response_path=$.generatedAt
-  ingress │ DBG Response normaliser completed kind=field target=spectre.sample.v1.User.roles side=candidate response_path=$.users[0].roles
-  ingress │ DBG Response normaliser completed kind=field target=spectre.sample.v1.User.roles side=candidate response_path=$.users[1].roles
-  ingress │ DBG Response normaliser completed kind=field target=spectre.sample.v1.User.roles side=candidate response_path=$.users[2].roles
-  ingress │ DBG Response normaliser completed kind=field target=spectre.sample.v1.ListUsersResponse.generated_at side=candidate response_path=$.generatedAt
+  ingress │ DBG Payload normaliser completed kind=field target=spectre.sample.v1.User.roles side=reference payload_path=$.users[0].roles
+  ingress │ DBG Payload normaliser completed kind=field target=spectre.sample.v1.User.roles side=reference payload_path=$.users[1].roles
+  ingress │ DBG Payload normaliser completed kind=field target=spectre.sample.v1.User.roles side=reference payload_path=$.users[2].roles
+  ingress │ DBG Payload normaliser completed kind=field target=spectre.sample.v1.ListUsersResponse.generated_at side=reference payload_path=$.generatedAt
+  ingress │ DBG Payload normalisation completed message=spectre.sample.v1.ListUsersResponse side=reference normalisers=4
+  ingress │ DBG Payload normaliser completed kind=field target=spectre.sample.v1.User.roles side=candidate payload_path=$.users[0].roles
+  ingress │ DBG Payload normaliser completed kind=field target=spectre.sample.v1.User.roles side=candidate payload_path=$.users[1].roles
+  ingress │ DBG Payload normaliser completed kind=field target=spectre.sample.v1.User.roles side=candidate payload_path=$.users[2].roles
+  ingress │ DBG Payload normaliser completed kind=field target=spectre.sample.v1.ListUsersResponse.generated_at side=candidate payload_path=$.generatedAt
+  ingress │ DBG Payload normalisation completed message=spectre.sample.v1.ListUsersResponse side=candidate normalisers=4
   ingress │ DBG Response comparison completed path=/spectre.sample.v1.UserService/ListUsers outcome=equivalent
 ```
 
@@ -66,15 +78,25 @@ $ curl --unix-socket dist/sockets/ingress.sock 'http://localhost/v2/forecast?loc
 {"forecast":{"location":"london", ...}, "alerts":[{"id":"alert-1", ...}, ...]}
 ```
 
-The first terminal should then show the alerts being sorted before comparison:
+Each backend fetches the forecast from the forecast provider through egress. `internal/sample/scripts/forecasts.js` types that dependency call so egress can match the candidate's call with the reference's. Egress forwards only the reference's call to the provider, then replays the recorded response to the candidate. The first terminal should show one provider request, two egress requests with their normalisation, the candidate's request matching the reference's, and the alerts being sorted before comparison. No normalisers are registered for the forecast request, so egress hashes it unchanged:
 
 ```
-reference │ INF HTTP request method=GET path=/v2/forecast status=200 duration=111.334µs
-candidate │ INF HTTP request method=GET path=/v2/forecast status=200 duration=107.625µs
-  ingress │ INF HTTP request method=GET path=/v2/forecast status=200 duration=425.125µs
-  ingress │ DBG Response normaliser completed kind=field target=spectre.sample.v1.GetForecastV2Response.alerts side=reference response_path=$.alerts
-  ingress │ DBG Response normaliser completed kind=field target=spectre.sample.v1.GetForecastV2Response.alerts side=candidate response_path=$.alerts
+forecasts │ INF HTTP request method=GET path=/v1/forecasts/london status=200 duration=850.416µs
+   egress │ INF HTTP request method=GET path=/v1/forecasts/london status=200 duration=4.520709ms
+   egress │ DBG Payload normalisation completed message=spectre.sample.v1.FetchForecastRequest side=reference normalisers=0
+   egress │ DBG Payload normalisation completed message=spectre.sample.v1.FetchForecastRequest side=candidate normalisers=0
+   egress │ DBG Candidate request matched a reference request host=forecasts.example path=/v1/forecasts/london
+   egress │ INF HTTP request method=GET path=/v1/forecasts/london status=200 duration=5.972042ms
+reference │ INF HTTP request method=GET path=/v2/forecast status=200 duration=2.718583ms
+candidate │ INF HTTP request method=GET path=/v2/forecast status=200 duration=2.736917ms
+  ingress │ INF HTTP request method=GET path=/v2/forecast status=200 duration=3.01225ms
+  ingress │ DBG Payload normaliser completed kind=field target=spectre.sample.v1.GetForecastV2Response.alerts side=reference payload_path=$.alerts
+  ingress │ DBG Payload normalisation completed message=spectre.sample.v1.GetForecastV2Response side=reference normalisers=1
+  ingress │ DBG Payload normaliser completed kind=field target=spectre.sample.v1.GetForecastV2Response.alerts side=candidate payload_path=$.alerts
+  ingress │ DBG Payload normalisation completed message=spectre.sample.v1.GetForecastV2Response side=candidate normalisers=1
   ingress │ DBG Response comparison completed path=/v2/forecast outcome=equivalent
 ```
+
+If the candidate makes a dependency call that the reference did not, egress answers it with a `502` and stops serving the candidate. The candidate's responses then diverge, and ingress quarantines it.
 
 `/api/v1/forecast?location=sydney` and `/_status` are also available.

@@ -1,6 +1,7 @@
 package comparison_test
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"log/slog"
 	"net/http"
@@ -27,6 +28,26 @@ func TestHashesMethodAndCanonicalJSON(t *testing.T) {
 	assert.NoError(t, err)
 	expected := sha256.Sum256([]byte("test.v1.Service.Find\x00" + `{"days":3,"location":"london"}`))
 	assert.Equal(t, comparison.RequestHash(expected), hash)
+}
+
+func TestLogsRequestNormalisationWithoutNormalisers(t *testing.T) {
+	var output bytes.Buffer
+	config := comparison.NewConfig()
+	config.ScriptsDir = writeScripts(t, map[string]string{"test.js": module(`
+		spectre.egress("POST weather.example/v1/search", "test.v1.Service.Find");
+	`)})
+	log := slog.New(slog.NewJSONHandler(&output, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	hasher, err := comparison.NewRequestHasher(t.Context(), config, log)
+	assert.NoError(t, err)
+	assert.NoError(t, hasher.Configure(t.Context(), descriptorSet()))
+
+	request := searchRequest(`{"location":"london"}`)
+	request.Side = "candidate"
+
+	_, err = hasher.Hash(t.Context(), request)
+
+	assert.NoError(t, err)
+	assert.Contains(t, output.String(), `"level":"DEBUG","msg":"Payload normalisation completed","message":"test.v1.Query","side":"candidate","normalisers":0`)
 }
 
 func TestRequestHashIsStable(t *testing.T) {

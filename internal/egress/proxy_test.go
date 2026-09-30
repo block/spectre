@@ -61,6 +61,7 @@ func TestReplaysReferenceResponseToCandidate(t *testing.T) {
 	assert.Equal(t, http.Header{"X-Checksum": []string{"abc"}}, reference.Trailer)
 	assert.Equal(t, reference, candidate)
 	assert.Equal(t, int32(1), calls.Load())
+	assert.Contains(t, harness.Logs.String(), `"level":"DEBUG","msg":"Candidate request matched a reference request","host":"`+dependencyHost+`","path":"/spectre.sample.v1.WeatherService/GetForecast"`)
 }
 
 func TestCandidateWaitsForReference(t *testing.T) {
@@ -297,7 +298,7 @@ func (h *harness) Start(t *testing.T, hashed chan<- struct{}) (stop func() error
 	if hashed != nil {
 		hasher = newSignallingHasher(hasher, hashed)
 	}
-	log := slog.New(slog.NewJSONHandler(h.Logs, nil))
+	log := slog.New(slog.NewJSONHandler(h.Logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	egressProxy, err := egress.New(h.Config, http.DefaultTransport, hasher, log)
 	assert.NoError(t, err)
 	ctx, cancel := context.WithCancel(t.Context())

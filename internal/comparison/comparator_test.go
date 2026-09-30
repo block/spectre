@@ -277,6 +277,7 @@ func TestLogsComparisonAndIndividualNormaliserResults(t *testing.T) {
 	logs := output.String()
 	assert.Contains(t, logs, `"msg":"Payload normaliser completed","kind":"field","target":"test.v1.Response.ignored","side":"reference","payload_path":"$.ignored"`)
 	assert.Contains(t, logs, `"msg":"Payload normaliser completed","kind":"field","target":"test.v1.Response.stable","side":"candidate","payload_path":"$.stable"`)
+	assert.Contains(t, logs, `"msg":"Payload normalisation completed","message":"test.v1.Response","side":"reference","normalisers":2`)
 	assert.Contains(t, logs, `"level":"DEBUG","msg":"Response comparison completed","path":"/test.v1.Service/Get","outcome":"divergent","differences":["$.stable"]`)
 }
 

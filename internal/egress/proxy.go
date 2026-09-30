@@ -182,7 +182,7 @@ func (p *Proxy) serveReference(writer http.ResponseWriter, request *http.Request
 	// The transport may never run, so the handler guarantees the recording completes.
 	defer recorded.finish(nil, errors.New("reference request ended without a response"))
 	// Snapshot the request now, because hashing may start after the handler returns.
-	identity := newHashRequest(request, nil, false)
+	identity := newHashRequest(request, nil, false, "reference")
 	hashContext := context.WithoutCancel(ctx)
 	captured := func(body []byte, overflow bool, complete bool) {
 		identity.Body, identity.Overflow = body, overflow
@@ -252,6 +252,10 @@ func (p *Proxy) serveCandidate(writer http.ResponseWriter, request *http.Request
 		return
 	}
 	defer recorded.release()
+	p.log.DebugContext(ctx, "Candidate request matched a reference request",
+		"host", request.Host,
+		"path", request.URL.EscapedPath(),
+	)
 	replayed := request.Clone(ctx)
 	replayed.Body = http.NoBody
 	replayed.ContentLength = 0
@@ -270,7 +274,7 @@ func (p *Proxy) match(ctx context.Context, request *http.Request) (*recording, e
 		return nil, errors.Wrap(err, "read candidate request body")
 	}
 	overflow := len(body) > limit
-	hash, err := p.hasher.Hash(ctx, newHashRequest(request, body[:min(len(body), limit)], overflow))
+	hash, err := p.hasher.Hash(ctx, newHashRequest(request, body[:min(len(body), limit)], overflow, "candidate"))
 	if err != nil {
 		return nil, errors.Wrap(err, "identify candidate request")
 	}
@@ -287,7 +291,7 @@ func (p *Proxy) match(ctx context.Context, request *http.Request) (*recording, e
 
 // newHashRequest describes a request for hashing, detached from the request's
 // own header map.
-func newHashRequest(request *http.Request, body []byte, overflow bool) comparison.Request {
+func newHashRequest(request *http.Request, body []byte, overflow bool, side string) comparison.Request {
 	return comparison.Request{
 		Method:   request.Method,
 		Host:     request.Host,
@@ -296,6 +300,7 @@ func newHashRequest(request *http.Request, body []byte, overflow bool) compariso
 		Header:   request.Header.Clone(),
 		Body:     body,
 		Overflow: overflow,
+		Side:     side,
 	}
 }
 

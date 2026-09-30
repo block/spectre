@@ -14,6 +14,7 @@ import (
 	"github.com/block/spectre/internal"
 	"github.com/block/spectre/internal/logger"
 	"github.com/block/spectre/internal/netaddr"
+	"github.com/block/spectre/internal/proxy"
 	"github.com/block/spectre/internal/sample"
 	"github.com/block/spectre/internal/sample/pb/samplepbconnect"
 )
@@ -26,6 +27,9 @@ func main() {
 		Data     string           `default:"internal/sample/testdata/users.json" type:"existingfile" help:"ProtoJSON sample users."`
 		Weather  string           `default:"internal/sample/testdata/weather.json" type:"existingfile" help:"Sample weather, keyed by location."`
 		Revision string           `default:"${version}" help:"Revision reported by the raw HTTP status endpoint."`
+		// Forecasts enables dependency mode, usually pointing at an egress listener.
+		Forecasts     string `placeholder:"URL" help:"Fetch forecasts from a forecast provider at this URL: http, https, h2c, http+unix:<socket>, or h2c+unix:<socket>. Unset serves local forecasts."`
+		ForecastsHost string `default:"forecasts.example" help:"Host name sent to the forecast provider."`
 	}
 	cli.Log = logger.NewConfig()
 	kctx := kong.Parse(&cli, kong.Vars{"version": internal.Version})
@@ -39,7 +43,15 @@ func main() {
 	kctx.FatalIfErrorf(err)
 	weatherData, err := os.ReadFile(cli.Weather)
 	kctx.FatalIfErrorf(errors.Wrap(err, "read sample weather"))
-	weather, err := sample.NewWeather(weatherData, cli.Revision)
+	var forecasts *sample.ForecastClient
+	if cli.Forecasts != "" {
+		provider, err := netaddr.ParseBackend(cli.Forecasts)
+		kctx.FatalIfErrorf(errors.Wrap(err, "parse forecast provider"))
+		transport := proxy.NewTransport(proxy.NewConfig())
+		defer transport.CloseIdleConnections()
+		forecasts = sample.NewForecastClient(provider.URL(), cli.ForecastsHost, transport.ForBackend(provider), log)
+	}
+	weather, err := sample.NewWeather(weatherData, cli.Revision, forecasts)
 	kctx.FatalIfErrorf(err)
 	listener, err := netaddr.ParseListen(cli.Listen).Listen(ctx)
 	kctx.FatalIfErrorf(errors.Wrap(err, "listen for Connect requests"))

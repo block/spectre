@@ -38,8 +38,11 @@ func newNormalisationRun(
 	}
 }
 
+// normalise logs a summary for every payload, so a payload with no applicable
+// normalisers is still visible in the logs.
 func (r *normalisationRun) normalise(ctx context.Context) error {
-	for _, occurrence := range collectOccurrences(r.root, r.targets, r.payload) {
+	occurrences := collectOccurrences(r.root, r.targets, r.payload)
+	for _, occurrence := range occurrences {
 		// A removed value still reaches later normalisers at its path as undefined.
 		value := occurrence.value(r.payload)
 		normalised, err := occurrence.normalise(r.evaluator, value)
@@ -52,6 +55,11 @@ func (r *normalisationRun) normalise(ctx context.Context) error {
 			return err
 		}
 	}
+	r.log.DebugContext(ctx, "Payload normalisation completed",
+		"message", string(r.root.FullName()),
+		"side", r.side,
+		"normalisers", len(occurrences),
+	)
 	return nil
 }
 

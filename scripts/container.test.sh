@@ -6,6 +6,8 @@ expected_version="$2"
 
 version="$(docker run --rm "$image" --version)"
 test "$version" = "$expected_version"
+version="$(docker run --rm --entrypoint spectre-egress "$image" --version)"
+test "$version" = "$expected_version"
 
 source="$(docker image inspect "$image" --format '{{ index .Config.Labels "org.opencontainers.image.source" }}')"
 test "$source" = "https://github.com/block/spectre"
