@@ -42,10 +42,7 @@
 - Use `log/slog` for logging.
 - Keep a type and all of its methods in the same file. Do not split a type's
   methods across multiple files.
-- Respect a type's encapsulation even within the same package. Access its state
-  through methods rather than reaching into its fields.
-- Wrap errors with `github.com/alecthomas/errors/v2`.
-- Define and use constructor functions for all public types.
+- Wrap errors with `github.com/alecthomas/errors`.
 - Name every input parameter in function, method, and interface signatures.
 - Name result parameters when intrinsic types such as `bool`, `int`, or `string`
   do not convey their meaning. Do not use naked returns.

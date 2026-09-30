@@ -43,10 +43,14 @@ func bindField(message protoreflect.Message, name string, values []string, repea
 		return err
 	}
 	for _, parent := range path[:len(path)-1] {
+		// Mutable would silently clear a oneof member bound by another source.
+		if otherOneofMemberSet(message, parent) {
+			return errors.Errorf("field %q conflicts with a bound oneof member", parent.FullName())
+		}
 		message = message.Mutable(parent).Message()
 	}
 	field := path[len(path)-1]
-	if oneof := field.ContainingOneof(); message.Has(field) || oneof != nil && message.WhichOneof(oneof) != nil {
+	if message.Has(field) || otherOneofMemberSet(message, field) {
 		return errors.Errorf("field %q is already bound", field.FullName())
 	}
 	if !field.IsList() {
@@ -69,6 +73,46 @@ func bindField(message protoreflect.Message, name string, values []string, repea
 		list.Append(value)
 	}
 	return nil
+}
+
+func otherOneofMemberSet(message protoreflect.Message, field protoreflect.FieldDescriptor) bool {
+	oneof := field.ContainingOneof()
+	if oneof == nil {
+		return false
+	}
+	set := message.WhichOneof(oneof)
+	return set != nil && set.Number() != field.Number()
+}
+
+// requireExplicitPresence checks that every singular scalar in a raw HTTP input has
+// presence, because ProtoJSON drops implicit defaults such as an explicit "?location=".
+func requireExplicitPresence(descriptor protoreflect.MessageDescriptor) error {
+	visited := map[protoreflect.FullName]bool{}
+	var check func(message protoreflect.MessageDescriptor) error
+	check = func(message protoreflect.MessageDescriptor) error {
+		// Well-known types have their own JSON form rather than one key per field.
+		if visited[message.FullName()] || strings.HasPrefix(string(message.FullName()), "google.protobuf.") {
+			return nil
+		}
+		visited[message.FullName()] = true
+		fields := message.Fields()
+		for index := range fields.Len() {
+			field := fields.Get(index)
+			if field.IsMap() {
+				field = field.MapValue()
+			}
+			switch {
+			case field.Message() != nil:
+				if err := check(field.Message()); err != nil {
+					return err
+				}
+			case !field.IsList() && !field.HasPresence():
+				return errors.Errorf("field %q must be optional so an explicit default differs from a missing value", field.FullName())
+			}
+		}
+		return nil
+	}
+	return check(descriptor)
 }
 
 // resolveBinding resolves a dotted field name through singular messages to a

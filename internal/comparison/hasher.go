@@ -36,7 +36,7 @@ func NewRequestHasher(ctx context.Context, config Config, log *slog.Logger) (*Re
 }
 
 // Configure activates the hasher against a descriptor set. It fails if an endpoint
-// path wildcard does not name a field of the method's input.
+// input lacks field presence or a path wildcard does not name one of its fields.
 func (h *RequestHasher) Configure(ctx context.Context, set *descriptorpb.FileDescriptorSet) error {
 	configured, err := h.scripts.prepare(ctx, set)
 	if err != nil {
@@ -46,6 +46,9 @@ func (h *RequestHasher) Configure(ctx context.Context, set *descriptorpb.FileDes
 		method, err := endpointMethod(configured.Schema(), protoreflect.FullName(endpoint.Method()))
 		if err != nil {
 			return errors.Wrapf(err, "resolve endpoint %q", endpoint.Pattern())
+		}
+		if err := requireExplicitPresence(method.Input()); err != nil {
+			return errors.Wrapf(err, "bind endpoint %q", endpoint.Pattern())
 		}
 		for _, name := range route.Wildcards(endpoint.Pattern()) {
 			if _, err := resolveBinding(method.Input(), name, false); err != nil {

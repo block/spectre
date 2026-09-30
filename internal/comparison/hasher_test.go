@@ -66,6 +66,10 @@ func TestRequestHashIsStable(t *testing.T) {
 			right: searchRequest(`{"location":"london","days":3,"tags":["wind"],"filter":{"minDays":2}}`),
 			equal: true,
 		},
+		"ExplicitDefault": {
+			left:  forecastRequest("london", ""),
+			right: forecastRequest("london", "days=0"),
+		},
 		"EscapedWildcard": {
 			left:  forecastRequest("new%20york", ""),
 			right: searchRequest(`{"location":"new york"}`),
@@ -114,6 +118,8 @@ func TestRejectsUnidentifiableRequests(t *testing.T) {
 		"PathAndQuery":          {request: forecastRequest("london", "location=paris"), message: `field "test.v1.Query.location" is already bound`},
 		"BodyAndQuery":          {request: withQuery(searchRequest(`{"days":3}`), "days=3"), message: `field "test.v1.Query.days" is already bound`},
 		"TwoNamesForOneField":   {request: forecastRequest("london", "filter.minDays=2&filter.min_days=2"), message: "is already bound"},
+		"OneofMember":           {request: withQuery(searchRequest(`{"city":{"name":"london"}}`), "code=LON"), message: `field "test.v1.Query.code" is already bound`},
+		"OneofParent":           {request: withQuery(searchRequest(`{"code":"LON"}`), "city.name=london"), message: `field "test.v1.Query.city" conflicts with a bound oneof member`},
 		"GetWithBody":           {request: getWithBody, message: "GET request has a body"},
 		"BodyNotJSON":           {request: withContentType(searchRequest(`{}`), "text/plain"), message: `body is not JSON: "text/plain"`},
 		"UnknownHost":           {request: withHost(forecastRequest("london", ""), "other.example"), message: "request content type is not supported"},
@@ -139,19 +145,21 @@ func TestHasherRequiresSchema(t *testing.T) {
 	assert.EqualError(t, err, "comparison schema is not ready")
 }
 
-func TestRejectsUnboundWildcards(t *testing.T) {
+func TestRejectsUnbindableEndpoints(t *testing.T) {
 	for name, test := range map[string]struct {
 		pattern string
+		method  string
 		message string
 	}{
-		"UnknownField": {pattern: "GET weather.example/v1/{place}", message: `message "test.v1.Query" has no field "place"`},
-		"Repeated":     {pattern: "GET weather.example/v1/{tags}", message: `field "test.v1.Query.tags" is repeated`},
-		"Message":      {pattern: "GET weather.example/v1/{filter}", message: `field "test.v1.Query.filter" is not a scalar or enum`},
+		"UnknownField":     {pattern: "GET weather.example/v1/{place}", method: "Find", message: `message "test.v1.Query" has no field "place"`},
+		"Repeated":         {pattern: "GET weather.example/v1/{tags}", method: "Find", message: `field "test.v1.Query.tags" is repeated`},
+		"Message":          {pattern: "GET weather.example/v1/{filter}", method: "Find", message: `field "test.v1.Query.filter" is not a scalar or enum`},
+		"ImplicitPresence": {pattern: "POST weather.example/v1/users", method: "Rename", message: `field "test.v1.User.name" must be optional`},
 	} {
 		t.Run(name, func(t *testing.T) {
 			config := comparison.NewConfig()
 			config.ScriptsDir = writeScripts(t, map[string]string{
-				"weather.js": module(`spectre.egress("` + test.pattern + `", "test.v1.Service.Find");`),
+				"weather.js": module(`spectre.egress("` + test.pattern + `", "test.v1.Service.` + test.method + `");`),
 			})
 			hasher, err := comparison.NewRequestHasher(t.Context(), config, slog.New(slog.DiscardHandler))
 			assert.NoError(t, err)

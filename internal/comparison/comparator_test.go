@@ -833,7 +833,7 @@ func descriptorSet() *descriptorpb.FileDescriptorSet {
 		}},
 		MessageType: []*descriptorpb.DescriptorProto{
 			{Name: new("Request")},
-			{
+			withProto3Optional(&descriptorpb.DescriptorProto{
 				Name: new("Filter"),
 				Field: []*descriptorpb.FieldDescriptorProto{{
 					Name:   new("min_days"),
@@ -841,9 +841,19 @@ func descriptorSet() *descriptorpb.FileDescriptorSet {
 					Label:  descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(),
 					Type:   descriptorpb.FieldDescriptorProto_TYPE_INT32.Enum(),
 				}},
-			},
-			{
-				Name: new("Query"),
+			}),
+			withProto3Optional(&descriptorpb.DescriptorProto{
+				Name: new("City"),
+				Field: []*descriptorpb.FieldDescriptorProto{{
+					Name:   new("name"),
+					Number: proto.Int32(1),
+					Label:  descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(),
+					Type:   descriptorpb.FieldDescriptorProto_TYPE_STRING.Enum(),
+				}},
+			}),
+			withProto3Optional(&descriptorpb.DescriptorProto{
+				Name:      new("Query"),
+				OneofDecl: []*descriptorpb.OneofDescriptorProto{{Name: new("place")}},
 				Field: []*descriptorpb.FieldDescriptorProto{
 					{
 						Name:   new("location"),
@@ -883,8 +893,23 @@ func descriptorSet() *descriptorpb.FileDescriptorSet {
 						Label:  descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(),
 						Type:   descriptorpb.FieldDescriptorProto_TYPE_STRING.Enum(),
 					},
+					{
+						Name:       new("city"),
+						Number:     proto.Int32(7),
+						Label:      descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(),
+						Type:       descriptorpb.FieldDescriptorProto_TYPE_MESSAGE.Enum(),
+						TypeName:   new(".test.v1.City"),
+						OneofIndex: proto.Int32(0),
+					},
+					{
+						Name:       new("code"),
+						Number:     proto.Int32(8),
+						Label:      descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(),
+						Type:       descriptorpb.FieldDescriptorProto_TYPE_STRING.Enum(),
+						OneofIndex: proto.Int32(0),
+					},
 				},
-			},
+			}),
 			{
 				Name: new("User"),
 				Field: []*descriptorpb.FieldDescriptorProto{{
@@ -977,6 +1002,11 @@ func descriptorSet() *descriptorpb.FileDescriptorSet {
 					OutputType: new(".test.v1.Response"),
 				},
 				{
+					Name:       new("Rename"),
+					InputType:  new(".test.v1.User"),
+					OutputType: new(".test.v1.Response"),
+				},
+				{
 					Name:            new("Watch"),
 					InputType:       new(".test.v1.Request"),
 					OutputType:      new(".test.v1.Response"),
@@ -985,4 +1015,19 @@ func descriptorSet() *descriptorpb.FileDescriptorSet {
 			},
 		}},
 	}}}
+}
+
+// withProto3Optional gives each singular scalar outside a oneof explicit presence,
+// as synthetic raw HTTP services require.
+func withProto3Optional(message *descriptorpb.DescriptorProto) *descriptorpb.DescriptorProto {
+	for _, field := range message.GetField() {
+		if field.OneofIndex != nil || field.GetType() == descriptorpb.FieldDescriptorProto_TYPE_MESSAGE ||
+			field.GetLabel() == descriptorpb.FieldDescriptorProto_LABEL_REPEATED {
+			continue
+		}
+		field.Proto3Optional = new(true)
+		field.OneofIndex = new(int32(len(message.GetOneofDecl())))
+		message.OneofDecl = append(message.OneofDecl, &descriptorpb.OneofDescriptorProto{Name: new("_" + field.GetName())})
+	}
+	return message
 }
