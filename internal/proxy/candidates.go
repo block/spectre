@@ -109,24 +109,34 @@ func (c *Candidates) Quarantine(ctx context.Context, reason error) {
 	}()
 }
 
+// Close refuses further candidate work and cancels active runs without waiting.
+func (c *Candidates) Close() {
+	c.close()
+}
+
 // Shutdown refuses further candidate work and waits for active runs to finish.
 func (c *Candidates) Shutdown(ctx context.Context) error {
-	c.mu.Lock()
-	c.closing = true
-	idle := c.idle
-	runs := c.snapshot()
-	c.mu.Unlock()
-	// Candidate work is non-critical and must not extend server shutdown.
-	for _, run := range runs {
-		run.cancel()
-	}
-
+	idle := c.close()
 	select {
 	case <-idle:
 		return nil
 	case <-ctx.Done():
 		return errors.Wrap(ctx.Err(), "wait for candidate requests")
 	}
+}
+
+// close cancels active runs and returns a channel closed once they finish.
+func (c *Candidates) close() (idle <-chan struct{}) {
+	c.mu.Lock()
+	c.closing = true
+	idle = c.idle
+	runs := c.snapshot()
+	c.mu.Unlock()
+	// Candidate work is non-critical and must not extend server shutdown.
+	for _, run := range runs {
+		run.cancel()
+	}
+	return idle
 }
 
 // snapshot copies the active runs. Callers hold c.mu.

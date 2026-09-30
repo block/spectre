@@ -35,6 +35,11 @@ func NewRequestHasher(ctx context.Context, config Config, log *slog.Logger) (*Re
 	}, nil
 }
 
+// MaxRequestBytes returns the request body capture limit.
+func (h *RequestHasher) MaxRequestBytes() int {
+	return h.maxBodyBytes
+}
+
 // Configure activates the hasher against a descriptor set. It fails if an endpoint
 // input lacks field presence or a path wildcard does not name one of its fields.
 func (h *RequestHasher) Configure(ctx context.Context, set *descriptorpb.FileDescriptorSet) error {

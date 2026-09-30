@@ -174,12 +174,22 @@ func (e *Endpoint) Port() uint16 {
 	return e.port
 }
 
-// IsLoopback reports whether the backend host is a loopback IP address.
+// IsLoopback reports whether the backend or TCP listener host is a loopback IP address.
 func (e *Endpoint) IsLoopback() bool {
-	if e.url == nil {
+	var host string
+	switch {
+	case e.url != nil:
+		host = e.url.Hostname()
+	case e.network == networkTCP:
+		listenHost, _, err := net.SplitHostPort(e.address)
+		if err != nil {
+			return false
+		}
+		host = listenHost
+	default:
 		return false
 	}
-	address, err := netip.ParseAddr(e.url.Hostname())
+	address, err := netip.ParseAddr(host)
 	return err == nil && address.Unmap().IsLoopback()
 }
 
