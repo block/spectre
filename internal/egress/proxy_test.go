@@ -201,6 +201,24 @@ func TestServeShutsDownWhileCandidateWaits(t *testing.T) {
 	assert.False(t, strings.Contains(harness.Logs.String(), "Candidate quarantined"))
 }
 
+func TestForwardsDependencyHealthPaths(t *testing.T) {
+	var calls atomic.Int32
+	upstream := newUpstream(t, func(writer http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		_, _ = io.WriteString(writer, "dependency")
+	})
+	harness := newHarness(t, upstream)
+	harness.Start(t, nil)
+
+	for _, path := range []string{"/livez", "/readyz"} {
+		assert.Equal(t, "dependency", get(t, harness.Reference, dependencyHost, path).Body)
+	}
+
+	assert.Equal(t, int32(2), calls.Load())
+	assert.NotEqual(t, http.StatusNoContent, get(t, harness.Candidate, dependencyHost, "/readyz").Status)
+	assert.Equal(t, http.StatusNotFound, get(t, harness.Health, dependencyHost, forecastPath).Status)
+}
+
 func TestRejectsUnsafeConfiguration(t *testing.T) {
 	for name, test := range map[string]struct {
 		update  func(config *egress.Config)
@@ -253,6 +271,7 @@ type harness struct {
 	Config    egress.Config
 	Reference net.Listener
 	Candidate net.Listener
+	Health    net.Listener
 	Logs      *syncBuffer
 }
 
@@ -260,12 +279,14 @@ func newHarness(t *testing.T, upstream string) *harness {
 	t.Helper()
 	reference := listen(t)
 	candidate := listen(t)
+	health := listen(t)
 	config := egress.NewConfig()
 	config.ReferenceListen = reference.Addr().String()
 	config.CandidateListen = candidate.Addr().String()
+	config.HealthListen = health.Addr().String()
 	config.Destinations = map[string]string{dependencyHost: upstream}
 	config.Schema.DescriptorsDir = writeDescriptors(t)
-	return &harness{Config: config, Reference: reference, Candidate: candidate, Logs: &syncBuffer{}}
+	return &harness{Config: config, Reference: reference, Candidate: candidate, Health: health, Logs: &syncBuffer{}}
 }
 
 // Start serves until the returned function stops it. A non-nil hashed channel
@@ -281,7 +302,7 @@ func (h *harness) Start(t *testing.T, hashed chan<- struct{}) (stop func() error
 	assert.NoError(t, err)
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
-	go func() { done <- egressProxy.Serve(ctx, h.Reference, h.Candidate) }()
+	go func() { done <- egressProxy.Serve(ctx, h.Reference, h.Candidate, h.Health) }()
 	stop = sync.OnceValue(func() error {
 		cancel()
 		select {
@@ -293,7 +314,7 @@ func (h *harness) Start(t *testing.T, hashed chan<- struct{}) (stop func() error
 		}
 	})
 	t.Cleanup(func() { assert.NoError(t, stop()) })
-	waitReady(t, h.Candidate)
+	waitReady(t, h.Health)
 	return stop
 }
 
@@ -409,8 +430,20 @@ func send(t *testing.T, listener net.Listener, host string, body string) respons
 	t.Helper()
 	request, err := http.NewRequest(http.MethodPost, "http://"+listener.Addr().String()+forecastPath, strings.NewReader(body))
 	assert.NoError(t, err)
-	request.Host = host
 	request.Header.Set("Content-Type", "application/json")
+	return do(t, request, host)
+}
+
+func get(t *testing.T, listener net.Listener, host string, path string) responseView {
+	t.Helper()
+	request, err := http.NewRequest(http.MethodGet, "http://"+listener.Addr().String()+path, nil)
+	assert.NoError(t, err)
+	return do(t, request, host)
+}
+
+func do(t *testing.T, request *http.Request, host string) responseView {
+	t.Helper()
+	request.Host = host
 	client := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
 	response, err := client.Do(request)
 	assert.NoError(t, err)

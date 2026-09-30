@@ -41,8 +41,9 @@ type Proxy struct {
 	requests     chan struct{}
 	// hashing tracks reference hashes, which may finish after their request.
 	hashing   sync.WaitGroup
-	reference *health.Handler
-	candidate *health.Handler
+	reference http.Handler
+	candidate http.Handler
+	health    *health.Handler
 }
 
 // RequestHasher identifies dependency requests by their normalised input.
@@ -70,7 +71,11 @@ func New(config Config, transport http.RoundTripper, hasher RequestHasher, log *
 	if !candidateListen.IsUnix() && !candidateListen.IsLoopback() {
 		return nil, errors.New("candidate listener must use a loopback IP address or a unix socket")
 	}
-	listeners := []*netaddr.Endpoint{netaddr.ParseListen(config.ReferenceListen), candidateListen}
+	listeners := []*netaddr.Endpoint{
+		netaddr.ParseListen(config.ReferenceListen),
+		candidateListen,
+		netaddr.ParseListen(config.HealthListen),
+	}
 	destinations := make(map[string]*httputil.ReverseProxy, len(config.Destinations))
 	for host, upstream := range config.Destinations {
 		name := hostname(host)
@@ -105,16 +110,21 @@ func New(config Config, transport http.RoundTripper, hasher RequestHasher, log *
 		recorder:     newRecorder(config.MatchWindow),
 		candidates:   proxy.NewCandidates(config.CandidateMaxInFlight, log),
 		requests:     make(chan struct{}, config.MaxInFlightRequests),
+		health:       health.New(http.NotFoundHandler()),
 	}
-	egress.reference = health.New(logging.New(http.HandlerFunc(egress.serveReference), log))
-	egress.candidate = health.New(logging.New(http.HandlerFunc(egress.serveCandidate), log))
+	egress.reference = logging.New(http.HandlerFunc(egress.serveReference), log)
+	egress.candidate = logging.New(http.HandlerFunc(egress.serveCandidate), log)
 	return egress, nil
 }
 
-// Serve accepts reference and candidate traffic until the context is cancelled
-// or a server fails. Readiness remains false until the schema is configured.
-func (p *Proxy) Serve(ctx context.Context, reference net.Listener, candidate net.Listener) error {
-	bindings := []proxy.Binding{proxy.NewBinding(reference, p.reference), proxy.NewBinding(candidate, p.candidate)}
+// Serve accepts reference, candidate, and health traffic until the context is
+// cancelled or a server fails. Readiness remains false until the schema is configured.
+func (p *Proxy) Serve(ctx context.Context, reference net.Listener, candidate net.Listener, probes net.Listener) error {
+	bindings := []proxy.Binding{
+		proxy.NewBinding(reference, p.reference),
+		proxy.NewBinding(candidate, p.candidate),
+		proxy.NewBinding(probes, p.health),
+	}
 	lifecycle := proxy.NewLifecycle(p.configureSchema, p.stop, p.drain)
 	return errors.Wrap(proxy.Serve(ctx, p.config.Config, p.log, bindings, lifecycle), "serve egress")
 }
@@ -124,13 +134,13 @@ func (p *Proxy) configureSchema(ctx context.Context) {
 		p.log.ErrorContext(ctx, "Request hashing setup failed", "error", err)
 		return
 	}
-	p.setReady(true)
+	p.health.SetReady(true)
 }
 
 // stop cancels waiting candidates before servers shut down, because their
 // handlers would otherwise hold shutdown for up to the match window.
 func (p *Proxy) stop() {
-	p.setReady(false)
+	p.health.SetReady(false)
 	p.candidates.Close()
 }
 
@@ -149,11 +159,6 @@ func (p *Proxy) drain(ctx context.Context) error {
 	case <-ctx.Done():
 		return errors.Wrap(ctx.Err(), "wait for reference hashing")
 	}
-}
-
-func (p *Proxy) setReady(ready bool) {
-	p.reference.SetReady(ready)
-	p.candidate.SetReady(ready)
 }
 
 // serveReference forwards immediately and hashes a copy of the request in

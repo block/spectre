@@ -17,6 +17,9 @@ type Config struct {
 	// CandidateListen receives candidate traffic. It must stay local: a loopback
 	// IP or a unix socket.
 	CandidateListen string `default:"127.0.0.1:50061" help:"Candidate listener address on a loopback IP or unix socket: host:port, or unix:<path|@abstract>."`
+	// HealthListen serves liveness and readiness. Probes need their own listener,
+	// because any path on the traffic listeners may belong to a dependency.
+	HealthListen string `default:"127.0.0.1:50062" help:"Health listener address for /livez and /readyz: host:port, or unix:<path|@abstract>."`
 	// Destinations maps each request host to its upstream URL, using the backend
 	// URL forms that ingress accepts.
 	Destinations map[string]string `name:"destination" placeholder:"HOST=URL" help:"Upstream URL for requests to HOST: http, https, h2c, http+unix:<socket>, or h2c+unix:<socket>. Repeat for each dependency."`
