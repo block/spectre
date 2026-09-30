@@ -2,6 +2,7 @@ package comparisoninternal
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"slices"
 
@@ -45,8 +46,8 @@ func (p *Plan) Schema() *schema.Schema {
 	return p.loaded
 }
 
-// Normalise applies the plan to one payload of type root, using an evaluator owned
-// by that payload. side only labels log records.
+// Normalise applies the plan to one decoded JSON payload of type root, which it takes
+// ownership of and mutates. side only labels log records.
 func (p *Plan) Normalise(
 	ctx context.Context,
 	log *slog.Logger,
@@ -54,21 +55,18 @@ func (p *Plan) Normalise(
 	root protoreflect.MessageDescriptor,
 	runNormalisers bool,
 	side string,
-	payloadJSON []byte,
+	payload any,
 ) (*Normalised, error) {
-	payload, err := newDocument(payloadJSON)
-	if err != nil {
-		return nil, errors.Wrapf(err, "parse %s payload JSON", side)
-	}
+	document := newDocument(payload)
 	targets := p.resolved
 	if !runNormalisers {
 		targets = nil
 	}
-	run := newNormalisationRun(log, evaluator, root, slices.Clone(targets), side, payload)
+	run := newNormalisationRun(log, evaluator, root, slices.Clone(targets), side, document)
 	if err := run.normalise(ctx); err != nil {
 		return nil, err
 	}
-	return newNormalised(payload), nil
+	return newNormalised(document), nil
 }
 
 // Normalised is one payload after every applicable normaliser has run.
@@ -82,6 +80,13 @@ func newNormalised(payload *document) *Normalised {
 
 func (n *Normalised) document() *document {
 	return n.payload
+}
+
+// CanonicalJSON encodes the payload with sorted object keys, so structurally equal
+// payloads encode identically. A removed root encodes as null.
+func (n *Normalised) CanonicalJSON() ([]byte, error) {
+	data, err := json.Marshal(n.document().Export())
+	return data, errors.Wrap(err, "encode canonical JSON")
 }
 
 // Diff returns the paths at which two normalised payloads differ, without values.

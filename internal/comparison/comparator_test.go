@@ -25,7 +25,7 @@ func TestRejectsInvalidConfiguration(t *testing.T) {
 	tests := map[string]func(*comparison.Config){
 		"ScriptsDir": func(config *comparison.Config) { config.ScriptsDir = "" },
 		"Timeout":    func(config *comparison.Config) { config.ComparisonTimeout = 0 },
-		"BodyLimit":  func(config *comparison.Config) { config.ComparisonMaxResponseBytes = 0 },
+		"BodyLimit":  func(config *comparison.Config) { config.ComparisonMaxBodyBytes = 0 },
 	}
 	for name, update := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -275,8 +275,8 @@ func TestLogsComparisonAndIndividualNormaliserResults(t *testing.T) {
 
 	assert.Equal(t, comparison.NewDifferenceResult("$.stable"), result)
 	logs := output.String()
-	assert.Contains(t, logs, `"msg":"Response normaliser completed","kind":"field","target":"test.v1.Response.ignored","side":"reference","response_path":"$.ignored"`)
-	assert.Contains(t, logs, `"msg":"Response normaliser completed","kind":"field","target":"test.v1.Response.stable","side":"candidate","response_path":"$.stable"`)
+	assert.Contains(t, logs, `"msg":"Payload normaliser completed","kind":"field","target":"test.v1.Response.ignored","side":"reference","payload_path":"$.ignored"`)
+	assert.Contains(t, logs, `"msg":"Payload normaliser completed","kind":"field","target":"test.v1.Response.stable","side":"candidate","payload_path":"$.stable"`)
 	assert.Contains(t, logs, `"level":"DEBUG","msg":"Response comparison completed","path":"/test.v1.Service/Get","outcome":"divergent","differences":["$.stable"]`)
 }
 
@@ -529,7 +529,7 @@ func TestComparesHTTPJSONAsMethodOutput(t *testing.T) {
 		"NotJSON": {
 			reference: httpJSONResponse(http.StatusInternalServerError, "text/html", `<html></html>`),
 			candidate: httpJSONResponse(http.StatusInternalServerError, "text/html", `<html></html>`),
-			expected:  comparison.Resultf(comparison.Unable, `HTTP response is not JSON: reference="text/html" candidate="text/html"`),
+			expected:  comparison.Resultf(comparison.Unable, `cannot decode reference response as test.v1.Response: body is not JSON: "text/html"`),
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -547,7 +547,7 @@ func TestRejectsHTTPJSONWithUnknownFields(t *testing.T) {
 	result := comparator.Compare(t.Context(), http.MethodGet, "/v1/forecast", "", reference, candidate)
 
 	assert.Equal(t, comparison.Unable, result.Outcome())
-	assert.Contains(t, result.Reason(), "candidate response does not match test.v1.Response")
+	assert.Contains(t, result.Reason(), "cannot decode candidate response as test.v1.Response")
 	assert.Contains(t, result.Reason(), "unknown field")
 }
 
@@ -653,7 +653,7 @@ func TestRejectsInvalidEndpointDeclarations(t *testing.T) {
 	}{
 		"Host": {
 			scripts: map[string]string{"weather.js": module(`spectre.ingress("GET weather.example/v1/forecast", "test.v1.Service.Get");`)},
-			message: "must not include a host",
+			message: `must have the form "<METHOD> /<path>"`,
 		},
 		"NoMethod": {
 			scripts: map[string]string{"weather.js": module(`spectre.ingress("/v1/forecast", "test.v1.Service.Get");`)},
@@ -824,8 +824,67 @@ func descriptorSet() *descriptorpb.FileDescriptorSet {
 		Name:    new("comparison.proto"),
 		Package: new("test.v1"),
 		Syntax:  new("proto3"),
+		EnumType: []*descriptorpb.EnumDescriptorProto{{
+			Name: new("Units"),
+			Value: []*descriptorpb.EnumValueDescriptorProto{
+				{Name: new("UNITS_UNSPECIFIED"), Number: proto.Int32(0)},
+				{Name: new("METRIC"), Number: proto.Int32(1)},
+			},
+		}},
 		MessageType: []*descriptorpb.DescriptorProto{
 			{Name: new("Request")},
+			{
+				Name: new("Filter"),
+				Field: []*descriptorpb.FieldDescriptorProto{{
+					Name:   new("min_days"),
+					Number: proto.Int32(1),
+					Label:  descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(),
+					Type:   descriptorpb.FieldDescriptorProto_TYPE_INT32.Enum(),
+				}},
+			},
+			{
+				Name: new("Query"),
+				Field: []*descriptorpb.FieldDescriptorProto{
+					{
+						Name:   new("location"),
+						Number: proto.Int32(1),
+						Label:  descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(),
+						Type:   descriptorpb.FieldDescriptorProto_TYPE_STRING.Enum(),
+					},
+					{
+						Name:   new("days"),
+						Number: proto.Int32(2),
+						Label:  descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(),
+						Type:   descriptorpb.FieldDescriptorProto_TYPE_INT32.Enum(),
+					},
+					{
+						Name:     new("units"),
+						Number:   proto.Int32(3),
+						Label:    descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(),
+						Type:     descriptorpb.FieldDescriptorProto_TYPE_ENUM.Enum(),
+						TypeName: new(".test.v1.Units"),
+					},
+					{
+						Name:   new("tags"),
+						Number: proto.Int32(4),
+						Label:  descriptorpb.FieldDescriptorProto_LABEL_REPEATED.Enum(),
+						Type:   descriptorpb.FieldDescriptorProto_TYPE_STRING.Enum(),
+					},
+					{
+						Name:     new("filter"),
+						Number:   proto.Int32(5),
+						Label:    descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(),
+						Type:     descriptorpb.FieldDescriptorProto_TYPE_MESSAGE.Enum(),
+						TypeName: new(".test.v1.Filter"),
+					},
+					{
+						Name:   new("trace"),
+						Number: proto.Int32(6),
+						Label:  descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(),
+						Type:   descriptorpb.FieldDescriptorProto_TYPE_STRING.Enum(),
+					},
+				},
+			},
 			{
 				Name: new("User"),
 				Field: []*descriptorpb.FieldDescriptorProto{{
@@ -910,6 +969,11 @@ func descriptorSet() *descriptorpb.FileDescriptorSet {
 				{
 					Name:       new("Get"),
 					InputType:  new(".test.v1.Request"),
+					OutputType: new(".test.v1.Response"),
+				},
+				{
+					Name:       new("Find"),
+					InputType:  new(".test.v1.Query"),
 					OutputType: new(".test.v1.Response"),
 				},
 				{

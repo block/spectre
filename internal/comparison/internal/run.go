@@ -60,5 +60,5 @@ func (r *normalisationRun) logResult(ctx context.Context, occurrence occurrence,
 	if reason != "" {
 		attributes = append(attributes, "outcome", "unable", "reason", reason)
 	}
-	r.log.DebugContext(ctx, "Response normaliser completed", attributes...)
+	r.log.DebugContext(ctx, "Payload normaliser completed", attributes...)
 }

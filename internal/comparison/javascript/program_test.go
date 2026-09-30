@@ -57,6 +57,14 @@ func TestRejectsInvalidEndpointDeclarations(t *testing.T) {
 			body:    `spectre.ingress("GET /v1/forecast", "test.v1.Weather.Get"); spectre.ingress("GET /v1/forecast", "test.v1.Weather.Get");`,
 			message: `duplicate endpoint "GET /v1/forecast"`,
 		},
+		"IngressWithHost": {
+			body:    `spectre.ingress("GET weather.example/v1/forecast", "test.v1.Weather.Get");`,
+			message: `spectre.ingress pattern "GET weather.example/v1/forecast" must have the form "<METHOD> /<path>"`,
+		},
+		"IngressWithoutMethod": {
+			body:    `spectre.ingress("/v1/forecast", "test.v1.Weather.Get");`,
+			message: `must have the form "<METHOD> /<path>"`,
+		},
 		"EgressNoArguments": {body: `spectre.egress();`, message: "spectre.egress requires a pattern and an RPC method"},
 		"EgressWithoutHost": {
 			body:    `spectre.egress("GET /v1/forecast", "test.v1.Weather.Get");`,

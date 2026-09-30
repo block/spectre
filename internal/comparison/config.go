@@ -13,8 +13,8 @@ type Config struct {
 	ScriptsDir string `required:"" type:"existingdir" help:"Directory of normaliser scripts. Every .js file in it, including subdirectories, is loaded."`
 	// ComparisonTimeout limits one response comparison.
 	ComparisonTimeout time.Duration `default:"1s" help:"Maximum duration of one response comparison."`
-	// ComparisonMaxResponseBytes limits each captured backend response body.
-	ComparisonMaxResponseBytes int `default:"1048576" help:"Maximum captured response bytes per backend."`
+	// ComparisonMaxBodyBytes limits each captured request or response body.
+	ComparisonMaxBodyBytes int `default:"1048576" help:"Maximum captured body bytes per request or response."`
 }
 
 // NewConfig returns the default response comparison configuration.
@@ -36,8 +36,8 @@ func (c Config) Validate() error {
 	if c.ComparisonTimeout <= 0 {
 		return errors.New("comparison timeout must be positive")
 	}
-	if c.ComparisonMaxResponseBytes <= 0 {
-		return errors.New("comparison maximum response size must be positive")
+	if c.ComparisonMaxBodyBytes <= 0 {
+		return errors.New("comparison maximum body size must be positive")
 	}
 	return nil
 }
