@@ -23,7 +23,6 @@ func main() {
 		Listen  string           `default:"127.0.0.1:50053" help:"Address for the plaintext HTTP server: host:port, or unix:<path|@abstract>."`
 		Weather string           `default:"internal/sample/testdata/weather.json" type:"existingfile" help:"Sample weather, keyed by location. Only the forecasts are served."`
 	}
-	cli.Log = logger.NewConfig()
 	kctx := kong.Parse(&cli, kong.Vars{"version": internal.Version})
 	log := logger.New(cli.Log, os.Stderr)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
