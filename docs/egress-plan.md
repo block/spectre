@@ -205,10 +205,10 @@ candidate. Every raw HTTP path served through ingress therefore needs an endpoin
 
 ### 6. Exercise it end to end
 
-- [ ] Add an optional raw HTTP dependency mode to `spectre-sample`.
-- [ ] Extend the Procfiles and integration test. Cover replay, exactly one
+- [x] Add an optional raw HTTP dependency mode to `spectre-sample`.
+- [x] Extend the Procfiles and integration test. Cover replay, exactly one
   dependency call per ingress request, and quarantine on divergence.
-- [ ] Add build, release, and container entries for `spectre-egress`. Update
+- [x] Add build, release, and container entries for `spectre-egress`. Update
   `CONTRIBUTING.md`.
 
 ## Open decisions

@@ -1,7 +1,8 @@
 version: 2
 
 builds:
-  - main: ./cmd/spectre-ingress
+  - &build
+    main: ./cmd/spectre-ingress
     binary: spectre-ingress
     id: spectre-ingress
     env:
@@ -16,6 +17,10 @@ builds:
       - -trimpath
     ldflags:
       - -s -w -buildid= -X github.com/block/spectre/internal.Version={{ .Version }}
+  - <<: *build
+    main: ./cmd/spectre-egress
+    binary: spectre-egress
+    id: spectre-egress
 
 archives:
   - formats: [tar.gz]

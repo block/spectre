@@ -86,6 +86,8 @@ type Request struct {
 	Body []byte
 	// Overflow reports that Body is truncated and must not be hashed.
 	Overflow bool
+	// Side labels log records, such as "reference" or "candidate". It is not hashed.
+	Side string
 }
 
 // RequestHash identifies a request by its method and normalised input, so

@@ -1,0 +1,25 @@
+syntax = "proto3";
+
+package spectre.sample.v1;
+
+import "weather.proto";
+
+option go_package = "github.com/block/spectre/internal/sample/pb;samplepb";
+
+// ForecastProviderService types the raw HTTP JSON API of the forecast provider
+// that the weather sample calls in dependency mode.
+service ForecastProviderService {
+  // GET /v1/forecasts/{location}
+  rpc FetchForecast(FetchForecastRequest) returns (FetchForecastResponse);
+}
+
+// FetchForecastRequest binds the path wildcard, so egress can hash the request.
+message FetchForecastRequest {
+  optional string location = 1;
+}
+
+// FetchForecastResponse holds a forecast or, when the request fails, an error.
+message FetchForecastResponse {
+  Forecast forecast = 1;
+  optional string message = 2;
+}

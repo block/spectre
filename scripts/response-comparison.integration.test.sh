@@ -4,13 +4,24 @@ set -eu
 
 service=spectre.sample.v1.UserService
 ingress_address=$(pwd)/dist/sockets/ingress.sock
+egress_candidate_address=$(pwd)/dist/sockets/egress-candidate.sock
+escape=$(printf '\033')
+
+# Proctor prefixes each line with a coloured, right-aligned process name and a bar.
+process_log() {
+	sed "s/${escape}\[[0-9;]*m//g" "$SPECTRE_PROCTOR_LOG" | grep -E "^ *$1 │"
+}
+
+count_log() {
+	process_log "$1" | grep -Fc "$2" || true
+}
 
 wait_for_log() {
 	process=$1
 	message=$2
 	attempt=0
 	while [ "$attempt" -lt 100 ]; do
-		if grep -F "$process" "$SPECTRE_PROCTOR_LOG" | grep -Fq "$message"; then
+		if process_log "$process" | grep -Fq "$message"; then
 			return
 		fi
 		attempt=$((attempt + 1))
@@ -24,13 +35,18 @@ fetch() {
 	curl --unix-socket "$ingress_address" --fail --silent --show-error --max-time 5 "http://ingress$1"
 }
 
+fetch_forecast_as_candidate() {
+	curl --unix-socket "$egress_candidate_address" --silent --show-error --max-time 5 \
+		--output /dev/null --write-out '%{http_code}' "http://forecasts.example/v1/forecasts/$1"
+}
+
 wait_for_log_count() {
 	process=$1
 	message=$2
 	expected=$3
 	attempt=0
 	while [ "$attempt" -lt 100 ]; do
-		count=$(grep -F "$process" "$SPECTRE_PROCTOR_LOG" | grep -Fc "$message" || true)
+		count=$(count_log "$process" "$message")
 		if [ "$count" -ge "$expected" ]; then
 			return
 		fi
@@ -71,6 +87,21 @@ verify() {
 	fetch /_status >/dev/null
 	wait_for_log ingress '"msg":"Response comparison completed","path":"/_status","outcome":"equivalent"'
 
+	# Egress replays the reference's forecast to the candidate, so each mirrored
+	# request reaches the provider once.
+	for side in reference candidate; do
+		wait_for_log egress "\"msg\":\"Payload normalisation completed\",\"message\":\"spectre.sample.v1.FetchForecastRequest\",\"side\":\"$side\",\"normalisers\":0"
+	done
+	wait_for_log egress '"msg":"Candidate request matched a reference request","host":"forecasts.example","path":"/v1/forecasts/london"'
+	for location in london sydney; do
+		wait_for_log forecasts "\"path\":\"/v1/forecasts/$location\""
+		provider_calls=$(count_log forecasts "\"path\":\"/v1/forecasts/$location\"")
+		if [ "$provider_calls" -ne 1 ]; then
+			printf 'forecast provider received %s requests for %s, expected 1\n' "$provider_calls" "$location" >&2
+			exit 1
+		fi
+	done
+
 	different_response=$(grpcurl -plaintext -unix -connect-timeout 2 -max-time 5 \
 		-d '{"id":"user-2"}' "$ingress_address" "$service/GetUser")
 	if ! printf '%s\n' "$different_response" | grep -Fq 'Sam Sample'; then
@@ -81,15 +112,31 @@ verify() {
 	wait_for_log ingress '"msg":"Response comparison completed","path":"/spectre.sample.v1.UserService/GetUser","outcome":"divergent"'
 	wait_for_log ingress '"msg":"Candidate quarantined"'
 
-	candidate_list_calls=$(grep -F candidate "$SPECTRE_PROCTOR_LOG" | \
-		grep -Fc '"path":"/spectre.sample.v1.UserService/ListUsers"')
+	candidate_list_calls=$(count_log candidate '"path":"/spectre.sample.v1.UserService/ListUsers"')
 	grpcurl -plaintext -unix -connect-timeout 2 -max-time 5 \
 		-d '{"ids":["user-1"]}' "$ingress_address" "$service/ListUsers" >/dev/null
 	sleep 0.2
-	candidate_list_calls_after=$(grep -F candidate "$SPECTRE_PROCTOR_LOG" | \
-		grep -Fc '"path":"/spectre.sample.v1.UserService/ListUsers"')
+	candidate_list_calls_after=$(count_log candidate '"path":"/spectre.sample.v1.UserService/ListUsers"')
 	if [ "$candidate_list_calls_after" -ne "$candidate_list_calls" ]; then
 		printf 'candidate received a request after response divergence\n' >&2
+		exit 1
+	fi
+
+	# A candidate dependency call that the reference never made quarantines egress
+	# without reaching the provider.
+	status=$(fetch_forecast_as_candidate paris)
+	if [ "$status" != 502 ]; then
+		printf 'unmatched candidate dependency call returned %s, expected 502\n' "$status" >&2
+		exit 1
+	fi
+	wait_for_log egress '"msg":"Candidate quarantined"'
+	status=$(fetch_forecast_as_candidate london)
+	if [ "$status" != 503 ]; then
+		printf 'quarantined egress returned %s, expected 503\n' "$status" >&2
+		exit 1
+	fi
+	if [ "$(count_log forecasts '"path":"/v1/forecasts/paris"')" -ne 0 ]; then
+		printf 'forecast provider received an unmatched candidate request\n' >&2
 		exit 1
 	fi
 
