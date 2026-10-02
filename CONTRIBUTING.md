@@ -13,6 +13,7 @@ flag names without the leading dashes, and command-line flags take precedence:
 
 ```toml
 scripts-dir = "internal/sample/scripts"
+schema-dir = "internal/sample/schema"
 descriptors-dir = "dist/descriptors"
 
 [destination]
@@ -30,12 +31,14 @@ server with backends in the same network namespace:
 ```sh
 docker run --rm --network=host \
   -v "$PWD/internal/sample/scripts:/scripts:ro" \
+  -v "$PWD/internal/sample/schema:/schema:ro" \
   -v "$PWD/dist/descriptors:/descriptors:ro" \
   spectre:dev \
   --listen=0.0.0.0:50050 \
   --reference=h2c://127.0.0.1:50051 \
   --candidate=h2c://127.0.0.1:50052 \
   --scripts-dir=/scripts \
+  --schema-dir=/schema \
   --descriptors-dir=/descriptors
 ```
 
@@ -56,11 +59,12 @@ for `HOST` to `URL`:
 spectre-egress \
   --destination=forecasts.example=http://127.0.0.1:50053 \
   --scripts-dir=internal/sample/scripts \
+  --schema-dir=internal/sample/schema \
   --descriptors-dir=dist/descriptors
 ```
 
-Scripts declare dependency endpoints with `spectre.egress()`, and their types come
-only from `--descriptors-dir`. A candidate call waits up to `--match-window` for an
+Scripts declare dependency endpoints with `egress("http", pattern, typeName)`.
+Types come from `--schema-dir`; descriptors are only needed for protobuf traffic. A candidate call waits up to `--match-window` for an
 equivalent reference call and receives its recorded response. A candidate call
 without a match gets a `502` and stops all later candidate calls until the process
 restarts. Ingress then quarantines the candidate when its responses diverge.
@@ -81,6 +85,7 @@ spectre-ingress \
   --reference=h2c://127.0.0.1:50051 \
   --candidate=h2c://127.0.0.1:50052 \
   --scripts-dir=internal/sample/scripts \
+  --schema-dir=internal/sample/schema \
   --descriptors-dir=dist/descriptors
 ```
 
@@ -110,9 +115,9 @@ or false values. Responses preserve fixture order and user creation timestamps.
 filters by IDs and an optional role.
 
 The sample also serves raw HTTP JSON endpoints modelled on a legacy weather service.
-They are not exposed through reflection, so the proxy types them with the synthetic
-`WeatherService` in [weather.proto](internal/sample/proto/weather.proto), loaded
-from `dist/descriptors/`. Use `--weather=path/to/weather.json` to load different
+Their payloads are described directly in
+[weather.d.ts](internal/sample/schema/weather.d.ts), with no protobuf definitions.
+Use `--weather=path/to/weather.json` to load different
 [weather](internal/sample/testdata/weather.json) and `--revision` to set the status revision:
 
 ```sh
@@ -126,7 +131,7 @@ provider instead of their local data, sending `--forecasts-host`
 (`forecasts.example` by default) as the host. Alerts still come from `--weather`.
 Run the provider with `spectre-sample-forecasts`, which listens on
 `127.0.0.1:50053` and serves `GET /v1/forecasts/{location}` from the same weather
-data. The [forecasts script](internal/sample/scripts/forecasts.js) declares this
+data. The [forecasts script](internal/sample/scripts/forecasts.ts) declares this
 endpoint for egress.
 
 To run the whole stack on unix sockets under `dist/sockets/`, with reloads on
@@ -138,5 +143,49 @@ curl --unix-socket dist/sockets/ingress.sock 'http://ingress/v2/forecast?locatio
 ```
 
 Edit the [protobuf definitions](internal/sample/proto/service.proto) and run
-`bit sample` to regenerate the Go and Connect bindings and descriptor set with
-Buf. `bit test` and `bit lint` also generate them before running their checks.
+`bit sample` to regenerate the Go and Connect bindings, descriptors, and TypeScript
+declarations. Generated declarations are checked in alongside the Go bindings.
+
+## TypeScript schemas and normalisers
+
+`--schema-dir` is required. Every `.ts` file in it, including subdirectories,
+contains only `declare module "name" { ... }` blocks. A type's name is its module
+name followed by its namespace path, such as `weather.GetForecastV2Response`, so
+separate services cannot collide. Modules share nothing unless one imports another.
+Use interfaces or object aliases, namespaces, optional members, scalar types, arrays,
+`Record<string, T>`, and string-literal unions. Unsupported constructs fail at
+startup. Raw JSON must match the declared shape; unknown keys, missing required
+members, and nulls are rejected.
+
+`--scripts-dir` loads every `.ts` script, including subdirectories. Scripts can
+import relative modules inside the directory, the virtual `spectre` module, and
+types from schema modules. At startup the host type-checks the scripts against the
+schema with the TypeScript 7 checker, and any error stops it.
+
+```ts
+import { field, ingress } from "spectre";
+import type { GetForecastV2Response } from "weather";
+
+ingress<GetForecastV2Response>("http", "GET /v2/forecast");
+field<GetForecastV2Response, "alerts">((alerts) =>
+  alerts?.sort((a, b) => (a.id ?? "").localeCompare(b.id ?? "")),
+);
+```
+
+Type arguments are required, and they must name schema types. The host reads them
+from the checker, so aliases and namespace imports work. `field<T, "path">(callback)`
+uses JSON field names. Paths descend through objects with dots and through lists
+with `[]`, such as `users[].name`. `message<T>(callback)` applies wherever that
+object type occurs. Missing optional values arrive as `undefined`; returning
+`undefined` removes them.
+
+For protobuf traffic, generate declarations with
+`spectre-gen proto --descriptors-dir=dist/descriptors --output=internal/sample/schema`.
+Wire descriptors must agree with those declarations. ProtoJSON defaults are emitted
+so required scalar, array, and map members are present. Oneofs become optional sibling
+members. Arbitrary JSON well-known types, including `google.protobuf.Any`, are unsupported.
+
+`tsconfig.json` gives editors the host's compiler options, so they report the errors
+the host would. Keep it in step with `internal/typescript/program.go`. For scripts
+outside this repository, write the `spectre` module declaration with
+`spectre-gen module --output=spectre.d.ts`.

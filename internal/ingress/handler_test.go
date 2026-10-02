@@ -21,6 +21,7 @@ import (
 	"google.golang.org/protobuf/types/descriptorpb"
 
 	"github.com/block/spectre/internal/comparison"
+	"github.com/block/spectre/internal/descriptors"
 	"github.com/block/spectre/internal/ingress"
 	"github.com/block/spectre/internal/proxy"
 )
@@ -116,7 +117,7 @@ func TestUsesConfiguredH2CProtocol(t *testing.T) {
 		writer.WriteHeader(http.StatusNoContent)
 	}))
 	t.Cleanup(candidate.Close)
-	config := newTestConfig("h2c://"+listener.Addr().String(), candidate.URL)
+	config := newTestConfig(t, "h2c://"+listener.Addr().String(), candidate.URL)
 	transport := proxy.NewTransport(config.Config)
 	t.Cleanup(transport.CloseIdleConnections)
 	handler, err := ingress.New(config, transport, matchingDescriptorLoader(), newTestComparator(t), slog.New(slog.DiscardHandler))
@@ -156,7 +157,7 @@ func TestForwardsToUnixSocketBackends(t *testing.T) {
 		assert.NoError(t, err)
 	}))
 
-	config := newTestConfig("http+unix:"+referenceSocket, "http+unix:"+candidateSocket)
+	config := newTestConfig(t, "http+unix:"+referenceSocket, "http+unix:"+candidateSocket)
 	transport := proxy.NewTransport(config.Config)
 	t.Cleanup(transport.CloseIdleConnections)
 	handler, err := ingress.New(config, transport, matchingDescriptorLoader(), newTestComparator(t), slog.New(slog.DiscardHandler))
@@ -197,7 +198,7 @@ func TestServesOverUnixSocketListener(t *testing.T) {
 	}))
 	t.Cleanup(candidate.Close)
 
-	config := newTestConfig(reference.URL, candidate.URL)
+	config := newTestConfig(t, reference.URL, candidate.URL)
 	config.Listen = "unix:" + ingressSocket
 	network, address := config.ListenNetworkAddress()
 	assert.Equal(t, "unix", network)
@@ -302,7 +303,7 @@ func TestComparisonDoesNotDelayReferenceAndDivergenceQuarantines(t *testing.T) {
 		return noContentResponse(request), nil
 	})
 	messages := make(chan string, 8)
-	config := newTestConfig("http://127.0.0.1:50051", "http://127.0.0.1:50052")
+	config := newTestConfig(t, "http://127.0.0.1:50051", "http://127.0.0.1:50052")
 	handler, err := ingress.New(config, transport, matchingDescriptorLoader(), comparator, slog.New(newObservedLogHandler(messages)))
 	assert.NoError(t, err)
 	firstDone := make(chan struct{})
@@ -386,7 +387,7 @@ func TestHealthEndpointsAreLocalAndTrackReadiness(t *testing.T) {
 		return noContentResponse(request), nil
 	})
 	var logs bytes.Buffer
-	config := newTestConfig("http://127.0.0.1:50051", "http://127.0.0.1:50052")
+	config := newTestConfig(t, "http://127.0.0.1:50051", "http://127.0.0.1:50052")
 	handler, err := ingress.New(config, transport, matchingDescriptorLoader(), newTestComparator(t), slog.New(slog.NewJSONHandler(&logs, nil)))
 	assert.NoError(t, err)
 	response := httptest.NewRecorder()
@@ -462,8 +463,8 @@ func TestDescriptorMismatchKeepsServerUnreadyAndLogs(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			config := newTestConfig("http://127.0.0.1:50051", "http://127.0.0.1:50052")
-			config.Schema.DescriptorsDir = test.static
+			config := newTestConfig(t, "http://127.0.0.1:50051", "http://127.0.0.1:50052")
+			config.Descriptors.DescriptorsDir = test.static
 			messages := make(chan string, 2)
 			handler, err := ingress.New(config, http.DefaultTransport, test.descriptors, newTestComparator(t), slog.New(newObservedLogHandler(messages)))
 			assert.NoError(t, err)
@@ -499,6 +500,12 @@ func TestDescriptorMismatchKeepsServerUnreadyAndLogs(t *testing.T) {
 	}
 }
 
+func TestReflectionRequiresDescriptorLoader(t *testing.T) {
+	config := newTestConfig(t, "http://127.0.0.1:50051", "http://127.0.0.1:50052")
+	_, err := ingress.New(config, http.DefaultTransport, nil, newTestComparator(t), slog.New(slog.DiscardHandler))
+	assert.EqualError(t, err, "descriptor loader is required")
+}
+
 func TestConfiguresComparatorWithStaticAndReflectedSchemas(t *testing.T) {
 	static := &descriptorpb.FileDescriptorSet{File: []*descriptorpb.FileDescriptorProto{{
 		Name:   new("static.proto"),
@@ -508,28 +515,33 @@ func TestConfiguresComparatorWithStaticAndReflectedSchemas(t *testing.T) {
 	assert.NoError(t, err)
 	for name, test := range map[string]struct {
 		reflection bool
+		static     bool
 		expected   *descriptorpb.FileDescriptorSet
 	}{
-		"StaticOnly": {expected: static},
+		"NoDescriptors": {expected: &descriptorpb.FileDescriptorSet{}},
+		"StaticOnly":    {static: true, expected: static},
 		"ReflectedAndStatic": {
 			reflection: true,
+			static:     true,
 			expected:   &descriptorpb.FileDescriptorSet{File: []*descriptorpb.FileDescriptorProto{static.GetFile()[0], reflected.GetFile()[0]}},
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			config := newTestConfig("http://127.0.0.1:50051", "http://127.0.0.1:50052")
+			config := newTestConfig(t, "http://127.0.0.1:50051", "http://127.0.0.1:50052")
 			config.Reflection = test.reflection
-			config.Schema.DescriptorsDir = writeDescriptorsDir(t, static)
-			descriptors := descriptorLoaderFunc(func(ctx context.Context, endpoint string) (*descriptorpb.FileDescriptorSet, error) {
-				if !test.reflection {
-					t.Errorf("reflection loaded descriptors from %s while disabled", endpoint)
-				}
-				return matchingDescriptorLoader()(ctx, endpoint)
-			})
+			if test.static {
+				config.Descriptors.DescriptorsDir = writeDescriptorsDir(t, static)
+			}
+			var loader ingress.DescriptorLoader
+			if test.reflection {
+				loader = matchingDescriptorLoader()
+			}
 			configured := make(chan *descriptorpb.FileDescriptorSet, 1)
 			comparator := newResponseComparator(nil)
-			comparator.configure = func(set *descriptorpb.FileDescriptorSet) { configured <- set }
-			handler, err := ingress.New(config, http.DefaultTransport, descriptors, comparator, slog.New(slog.DiscardHandler))
+			comparator.configure = func(set *descriptorpb.FileDescriptorSet) {
+				configured <- set
+			}
+			handler, err := ingress.New(config, http.DefaultTransport, loader, comparator, slog.New(slog.DiscardHandler))
 			assert.NoError(t, err)
 			listener, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
 			assert.NoError(t, err)
@@ -570,7 +582,7 @@ func TestServeDrainsReferenceAfterContextCancellation(t *testing.T) {
 		writer.WriteHeader(http.StatusNoContent)
 	}))
 	t.Cleanup(candidate.Close)
-	config := newTestConfig(reference.URL, candidate.URL)
+	config := newTestConfig(t, reference.URL, candidate.URL)
 	config.ShutdownTimeout = time.Second
 	handler, err := ingress.New(config, http.DefaultTransport, matchingDescriptorLoader(), newTestComparator(t), slog.New(slog.DiscardHandler))
 	assert.NoError(t, err)
@@ -702,9 +714,7 @@ func TestCandidateBufferOverflowQuarantinesCandidate(t *testing.T) {
 			Request:    request,
 		}, nil
 	})
-	config := ingress.NewConfig()
-	config.Reference = "http://127.0.0.1:50051"
-	config.Candidate = "http://127.0.0.1:50052"
+	config := newTestConfig(t, "http://127.0.0.1:50051", "http://127.0.0.1:50052")
 	config.CandidateBufferBytes = 4
 	handler, err := ingress.New(config, transport, matchingDescriptorLoader(), newTestComparator(t), slog.New(slog.DiscardHandler))
 	assert.NoError(t, err)
@@ -749,7 +759,7 @@ func TestDefaultBufferSupportsCandidateConcurrencyLimit(t *testing.T) {
 		assert.NoError(t, err)
 		return noContentResponse(request), nil
 	})
-	config := newTestConfig("http://127.0.0.1:50051", "http://127.0.0.1:50052")
+	config := newTestConfig(t, "http://127.0.0.1:50051", "http://127.0.0.1:50052")
 	config.CandidateTimeout = 10 * time.Second
 	handler, err := ingress.New(config, transport, matchingDescriptorLoader(), newTestComparator(t), slog.New(slog.DiscardHandler))
 	assert.NoError(t, err)
@@ -868,7 +878,7 @@ func TestCandidateConcurrencyLimitQuarantinesAllRequests(t *testing.T) {
 		}
 		return noContentResponse(request), nil
 	})
-	config := newTestConfig("http://127.0.0.1:50051", "http://127.0.0.1:50052")
+	config := newTestConfig(t, "http://127.0.0.1:50051", "http://127.0.0.1:50052")
 	config.CandidateMaxInFlight = 2
 	handler, err := ingress.New(config, transport, matchingDescriptorLoader(), newTestComparator(t), slog.New(slog.DiscardHandler))
 	assert.NoError(t, err)
@@ -906,7 +916,7 @@ func TestRejectsIngressRequestsOverCapacity(t *testing.T) {
 		}
 		return noContentResponse(request), nil
 	})
-	config := newTestConfig("http://127.0.0.1:50051", "http://127.0.0.1:50052")
+	config := newTestConfig(t, "http://127.0.0.1:50051", "http://127.0.0.1:50052")
 	config.MaxInFlightRequests = 1
 	handler, err := ingress.New(config, transport, matchingDescriptorLoader(), newTestComparator(t), slog.New(slog.DiscardHandler))
 	assert.NoError(t, err)
@@ -980,10 +990,6 @@ func TestRejectsUnsafeConfiguration(t *testing.T) {
 			update:  func(config *ingress.Config) { config.ReflectionTimeout = 0 },
 			message: "reflection timeout must be positive",
 		},
-		"SchemaSource": {
-			update:  func(config *ingress.Config) { config.Reflection = false },
-			message: "a schema source is required",
-		},
 		"CandidateTargetsIngress": {
 			update: func(config *ingress.Config) {
 				config.Listen = "127.0.0.1:50050"
@@ -1001,7 +1007,7 @@ func TestRejectsUnsafeConfiguration(t *testing.T) {
 	}
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
-			config := newTestConfig("http://127.0.0.1:50051", "http://127.0.0.1:50052")
+			config := newTestConfig(t, "http://127.0.0.1:50051", "http://127.0.0.1:50052")
 			test.update(&config)
 			_, err := ingress.New(config, http.DefaultTransport, matchingDescriptorLoader(), newTestComparator(t), slog.New(slog.DiscardHandler))
 			assert.Error(t, err)
@@ -1017,13 +1023,14 @@ func newTestHandler(t *testing.T, reference, candidate string) *ingress.Handler 
 
 func newTestHandlerWithTransport(t *testing.T, reference, candidate string, transport http.RoundTripper) *ingress.Handler {
 	t.Helper()
-	config := newTestConfig(reference, candidate)
+	config := newTestConfig(t, reference, candidate)
 	handler, err := ingress.New(config, transport, matchingDescriptorLoader(), newTestComparator(t), slog.New(slog.DiscardHandler))
 	assert.NoError(t, err)
 	return handler
 }
 
-func newTestConfig(reference, candidate string) ingress.Config {
+func newTestConfig(t *testing.T, reference, candidate string) ingress.Config {
+	t.Helper()
 	config := ingress.NewConfig()
 	config.Listen = "127.0.0.1:0"
 	config.Reference = reference
@@ -1035,8 +1042,11 @@ func newTestConfig(reference, candidate string) ingress.Config {
 func newTestComparator(t *testing.T) *comparison.Comparator {
 	t.Helper()
 	config := comparison.NewConfig()
-	// With no scripts, RPCs are compared without normalisers.
+	// Forwarding fixtures do not register response comparisons.
 	config.ScriptsDir = t.TempDir()
+	set, err := matchingDescriptorLoader().Load(t.Context(), "")
+	assert.NoError(t, err)
+	config.Schema.SchemaDir = writeSchemaDir(t, set)
 	comparator, err := comparison.New(t.Context(), config, slog.New(slog.DiscardHandler))
 	assert.NoError(t, err)
 	return comparator
@@ -1085,7 +1095,7 @@ type responseComparator struct {
 		comparison.Response,
 		comparison.Response,
 	) comparison.Result
-	configure func(*descriptorpb.FileDescriptorSet)
+	configure func(set *descriptorpb.FileDescriptorSet)
 }
 
 func newResponseComparator(compare func(
@@ -1156,12 +1166,32 @@ func writeDescriptorsDir(t *testing.T, set *descriptorpb.FileDescriptorSet) stri
 	return dir
 }
 
+func writeSchemaDir(t *testing.T, set *descriptorpb.FileDescriptorSet) string {
+	t.Helper()
+	declarations, err := descriptors.Declarations(t.Context(), set)
+	assert.NoError(t, err)
+	dir := t.TempDir()
+	for name, declaration := range declarations {
+		target := filepath.Join(dir, filepath.FromSlash(name))
+		assert.NoError(t, os.MkdirAll(filepath.Dir(target), 0o750))
+		assert.NoError(t, os.WriteFile(target, []byte(declaration), 0o600))
+	}
+	return dir
+}
+
 func matchingDescriptorLoader() descriptorLoaderFunc {
 	return func(ctx context.Context, endpoint string) (*descriptorpb.FileDescriptorSet, error) {
 		_, _ = ctx, endpoint
 		return &descriptorpb.FileDescriptorSet{File: []*descriptorpb.FileDescriptorProto{{
-			Name:   new("test.proto"),
-			Syntax: new("proto3"),
+			Name:        new("test.proto"),
+			Package:     new("test"),
+			Syntax:      new("proto3"),
+			MessageType: []*descriptorpb.DescriptorProto{{
+				Name: new("Payload"),
+				Field: []*descriptorpb.FieldDescriptorProto{{
+					Name: new("value"), Number: new(int32(1)), Type: descriptorpb.FieldDescriptorProto_TYPE_STRING.Enum(),
+				}},
+			}},
 		}}}, nil
 	}
 }

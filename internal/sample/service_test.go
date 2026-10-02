@@ -18,10 +18,10 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/dynamicpb"
 
+	"github.com/block/spectre/internal/descriptors"
 	"github.com/block/spectre/internal/sample"
 	samplepb "github.com/block/spectre/internal/sample/pb"
 	"github.com/block/spectre/internal/sample/pb/samplepbconnect"
-	"github.com/block/spectre/internal/schema"
 )
 
 func TestUserRPCs(t *testing.T) {
@@ -194,7 +194,7 @@ func TestCancelledRequests(t *testing.T) {
 func TestSampleDescriptorAndEncodings(t *testing.T) {
 	data, err := os.ReadFile("../../dist/descriptors/sample.pb")
 	assert.NoError(t, err)
-	loaded, err := schema.New(data)
+	loaded, err := descriptors.New(data)
 	assert.NoError(t, err)
 	getUser, err := loaded.Method("spectre.sample.v1.UserService.GetUser")
 	assert.NoError(t, err)

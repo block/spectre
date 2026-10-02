@@ -1,16 +1,12 @@
 package sample
 
-import (
-	"net/http"
-
-	samplepb "github.com/block/spectre/internal/sample/pb"
-)
+import "net/http"
 
 // ForecastProvider serves the raw HTTP JSON forecast API that the weather sample
-// calls in dependency mode. ForecastProviderService in forecasts.proto types it.
+// calls in dependency mode.
 type ForecastProvider struct {
 	// Forecasts are immutable after construction and keyed by location name.
-	forecasts map[string]*samplepb.Forecast
+	forecasts map[string]*Forecast
 }
 
 // NewForecastProvider loads forecasts from the same data format as NewWeather,
@@ -20,9 +16,9 @@ func NewForecastProvider(data []byte) (*ForecastProvider, error) {
 	if err != nil {
 		return nil, err
 	}
-	forecasts := make(map[string]*samplepb.Forecast, len(locations))
+	forecasts := make(map[string]*Forecast, len(locations))
 	for name, location := range locations {
-		forecasts[name] = location.GetForecast()
+		forecasts[name] = location.Forecast
 	}
 	return &ForecastProvider{forecasts: forecasts}, nil
 }
@@ -31,8 +27,8 @@ func NewForecastProvider(data []byte) (*ForecastProvider, error) {
 func (p *ForecastProvider) FetchForecast(writer http.ResponseWriter, request *http.Request) {
 	forecast, known := p.forecasts[request.PathValue("location")]
 	if !known {
-		writeJSON(writer, http.StatusNotFound, &samplepb.FetchForecastResponse{Message: new(http.StatusText(http.StatusNotFound))})
+		writeJSON(writer, http.StatusNotFound, &FetchForecastResponse{Message: new(http.StatusText(http.StatusNotFound))})
 		return
 	}
-	writeJSON(writer, http.StatusOK, &samplepb.FetchForecastResponse{Forecast: forecast})
+	writeJSON(writer, http.StatusOK, &FetchForecastResponse{Forecast: forecast})
 }

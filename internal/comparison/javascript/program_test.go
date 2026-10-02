@@ -1,6 +1,8 @@
 package javascript_test
 
 import (
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"testing/fstest"
@@ -10,22 +12,37 @@ import (
 	"github.com/block/spectre/internal/comparison/javascript"
 )
 
+const testDeclarations = `
+declare module "test.v1" {
+  export interface Response { value: string; values: string[]; owner?: string }
+  export interface User { name: string }
+  export interface UserService { GetUser(request: User): User }
+}
+declare module "test" {
+  export interface A { B: A.B }
+  export namespace A { export interface B { value: string } }
+}
+`
+
 func TestProgramOwnsDeclarations(t *testing.T) {
 	program, err := compile(t, fstest.MapFS{
-		"weather.js": script(`
-			spectre.ingress("GET /v1/forecast", "test.v1.Weather.Get");
-			spectre.ingress("GET /v2/forecast", "test.v1.Weather.GetV2");
-			spectre.egress("GET weather.example/v1/forecast", "test.v1.Upstream.Get");
-			spectre.field("test.v1.Response.value", () => true);
+		"weather.ts": script(`
+			spectre.ingress<v1.Response>("http", "GET /v1/forecast");
+			spectre.ingress<v1.Response>("http", "GET /v2/forecast");
+			spectre.egress<v1.Response>("http", "GET weather.example/v1/forecast");
+			spectre.field<v1.Response, "value">(() => "fixed");
 		`),
-		"users/user.js": script(`spectre.message("test.v1.User", () => true);`),
+		"users/user.ts": script(`spectre.message<v1.User>((user) => user);`),
 	})
 	assert.NoError(t, err)
 
-	assert.Equal(t, []endpoint{{"GET /v1/forecast", "test.v1.Weather.Get"}, {"GET /v2/forecast", "test.v1.Weather.GetV2"}}, endpoints(program, javascript.Ingress))
-	assert.Equal(t, []endpoint{{"GET weather.example/v1/forecast", "test.v1.Upstream.Get"}}, endpoints(program, javascript.Egress))
-	assert.Equal(t, []string{"test.v1.Response.value"}, program.Fields())
+	assert.Equal(t, []endpoint{{"http", "GET /v1/forecast", "test.v1.Response"}, {"http", "GET /v2/forecast", "test.v1.Response"}}, endpoints(program, javascript.Ingress))
+	assert.Equal(t, []endpoint{{"http", "GET weather.example/v1/forecast", "test.v1.Response"}}, endpoints(program, javascript.Egress))
+	assert.Equal(t, []javascript.FieldTarget{javascript.NewFieldTarget("test.v1.Response", "value")}, program.Fields())
 	assert.Equal(t, []string{"test.v1.User"}, program.Messages())
+	operation, err := program.Schema().Operation("test.v1.UserService.GetUser")
+	assert.NoError(t, err)
+	assert.Equal(t, "test.v1.User", operation.Request)
 }
 
 func TestLoadsEmptyScriptsDirectory(t *testing.T) {
@@ -34,11 +51,93 @@ func TestLoadsEmptyScriptsDirectory(t *testing.T) {
 
 	assert.Equal(t, []endpoint{}, endpoints(program, javascript.Ingress))
 	assert.Equal(t, []endpoint{}, endpoints(program, javascript.Egress))
-	assert.Equal(t, []string{}, program.Fields())
+	assert.Equal(t, []javascript.FieldTarget{}, program.Fields())
 	assert.Equal(t, []string{}, program.Messages())
 	evaluator, err := program.NewEvaluator(t.Context())
 	assert.NoError(t, err)
 	evaluator.Close()
+}
+
+func TestResolvesTypeArgumentsWithTheChecker(t *testing.T) {
+	program, err := compile(t, fstest.MapFS{
+		"aliases.ts": {Data: []byte(`
+			import { field as normalise, message } from "spectre";
+			import type { User } from "test.v1";
+			import * as test from "test";
+			type Person = User;
+			const register = message;
+			register<Person>((user) => user);
+			normalise<test.A, "B.value">(() => "first");
+		`)},
+	})
+	assert.NoError(t, err)
+	assert.Equal(t, []string{"test.v1.User"}, program.Messages())
+	assert.Equal(t, []javascript.FieldTarget{javascript.NewFieldTarget("test.A", "B.value")}, program.Fields())
+}
+
+func TestRejectsUncheckedRegistrations(t *testing.T) {
+	for name, test := range map[string]struct {
+		files   fstest.MapFS
+		message string
+	}{
+		"TypeError": {
+			files:   fstest.MapFS{"test.ts": script(`const count: number = "one";`)},
+			message: "scripts/test.ts(1,78): error TS2322: Type 'string' is not assignable to type 'number'.",
+		},
+		"MissingTypeArgument": {
+			files:   fstest.MapFS{"test.ts": script(`spectre.ingress("http", "GET /v1/forecast");`)},
+			message: "scripts/test.ts:1:72: spectre.ingress needs 1 explicit type argument(s)",
+		},
+		"MissingPath": {
+			files:   fstest.MapFS{"test.ts": script(`spectre.field<v1.Response>((value) => value);`)},
+			message: "Expected 2 type arguments, but got 1.",
+		},
+		"UnknownPath": {
+			files:   fstest.MapFS{"test.ts": script(`spectre.field<v1.Response, "missing">((value) => value);`)},
+			message: `Type '"missing"' does not satisfy the constraint`,
+		},
+		"WrongNormaliser": {
+			files:   fstest.MapFS{"test.ts": script(`spectre.field<v1.Response, "value">((value: number) => value);`)},
+			message: "error TS2345",
+		},
+		"PathUnion": {
+			files:   fstest.MapFS{"test.ts": script(`spectre.field<v1.Response, "value" | "owner">(() => undefined);`)},
+			message: "spectre.field path must be one string literal type",
+		},
+		"LocalType": {
+			files:   fstest.MapFS{"test.ts": script(`interface Local { name: string } spectre.message<Local>((value) => value);`)},
+			message: `spectre.message type argument Local: type "Local" is not exported from a schema module`,
+		},
+		"InlineType": {
+			files:   fstest.MapFS{"test.ts": script(`spectre.message<{ name: string }>((value) => value);`)},
+			message: "object types must be declared by name in a schema module",
+		},
+		"TypeParameter": {
+			files:   fstest.MapFS{"test.ts": script(`function register<T extends object>() { spectre.message<T>((value) => value); }`)},
+			message: "spectre.message type argument T: object types must be declared by name",
+		},
+		"Service": {
+			files:   fstest.MapFS{"test.ts": script(`spectre.message<v1.UserService>((value) => value);`)},
+			message: `type "test.v1.UserService" is not declared`,
+		},
+		"Augmentation": {
+			files: fstest.MapFS{"test.ts": script(`
+				declare module "test.v1" { interface Extra { name: string } }
+				spectre.message<v1.Extra>((value) => value);
+			`)},
+			message: `type "Extra" is not exported from a schema module`,
+		},
+		"JavaScript": {
+			files:   fstest.MapFS{"test.js": {Data: []byte(`export const value = 1;`)}},
+			message: `comparison script "test.js" is JavaScript; scripts must be TypeScript`,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := compile(t, test.files)
+			assert.Error(t, err)
+			assert.Contains(t, err.Error(), test.message)
+		})
+	}
 }
 
 func TestRejectsInvalidEndpointDeclarations(t *testing.T) {
@@ -46,37 +145,45 @@ func TestRejectsInvalidEndpointDeclarations(t *testing.T) {
 		body    string
 		message string
 	}{
-		"NoArguments":      {body: `spectre.ingress();`, message: "requires a pattern and an RPC method"},
-		"OneArgument":      {body: `spectre.ingress("GET /v1/forecast");`, message: "requires a pattern and an RPC method"},
-		"ThreeArguments":   {body: `spectre.ingress("GET /v1/forecast", "test.v1.Weather.Get", 1);`, message: "requires a pattern and an RPC method"},
-		"EmptyPattern":     {body: `spectre.ingress("", "test.v1.Weather.Get");`, message: "pattern must be a non-empty string"},
-		"NonStringPattern": {body: `spectre.ingress(1, "test.v1.Weather.Get");`, message: "pattern must be a non-empty string"},
-		"EmptyMethod":      {body: `spectre.ingress("GET /v1/forecast", "");`, message: "method must be a non-empty string"},
-		"NonStringMethod":  {body: `spectre.ingress("GET /v1/forecast", {});`, message: "method must be a non-empty string"},
+		"NoArguments": {body: `ingress();`, message: "requires a type name, a protocol, and a pattern"},
+		"TwoArguments": {
+			body:    `ingress("test.v1.Response", "http");`,
+			message: "requires a type name, a protocol, and a pattern",
+		},
+		"FourArguments": {
+			body:    `ingress("test.v1.Response", "http", "GET /v1/forecast", 1);`,
+			message: "requires a type name, a protocol, and a pattern",
+		},
+		"EmptyType":         {body: `ingress("", "http", "GET /v1/forecast");`, message: "type name must be a non-empty string"},
+		"NonStringType":     {body: `ingress({}, "http", "GET /v1/forecast");`, message: "type name must be a non-empty string"},
+		"EmptyProtocol":     {body: `ingress("test.v1.Response", "", "GET /v1/forecast");`, message: "protocol must be a non-empty string"},
+		"NonStringProtocol": {body: `ingress("test.v1.Response", 1, "GET /v1/forecast");`, message: "protocol must be a non-empty string"},
+		"EmptyPattern":      {body: `ingress("test.v1.Response", "http", "");`, message: "pattern must be a non-empty string"},
+		"NonStringPattern":  {body: `ingress("test.v1.Response", "http", 1);`, message: "pattern must be a non-empty string"},
 		"Duplicate": {
-			body:    `spectre.ingress("GET /v1/forecast", "test.v1.Weather.Get"); spectre.ingress("GET /v1/forecast", "test.v1.Weather.Get");`,
+			body:    `spectre.ingress<v1.Response>("http", "GET /v1/forecast"); spectre.ingress<v1.User>("http", "GET /v1/forecast");`,
 			message: `duplicate endpoint "GET /v1/forecast"`,
 		},
 		"IngressWithHost": {
-			body:    `spectre.ingress("GET weather.example/v1/forecast", "test.v1.Weather.Get");`,
+			body:    `spectre.ingress<v1.Response>("http", "GET weather.example/v1/forecast");`,
 			message: `spectre.ingress pattern "GET weather.example/v1/forecast" must have the form "<METHOD> /<path>"`,
 		},
 		"IngressWithoutMethod": {
-			body:    `spectre.ingress("/v1/forecast", "test.v1.Weather.Get");`,
+			body:    `spectre.ingress<v1.Response>("http", "/v1/forecast");`,
 			message: `must have the form "<METHOD> /<path>"`,
 		},
-		"EgressNoArguments": {body: `spectre.egress();`, message: "spectre.egress requires a pattern and an RPC method"},
+		"EgressNoArguments": {body: `egress();`, message: "spectre.egress requires a type name, a protocol, and a pattern"},
 		"EgressWithoutHost": {
-			body:    `spectre.egress("GET /v1/forecast", "test.v1.Weather.Get");`,
+			body:    `spectre.egress<v1.Response>("http", "GET /v1/forecast");`,
 			message: `spectre.egress pattern "GET /v1/forecast" must have the form "<METHOD> <host>/<path>"`,
 		},
 		"EgressWithoutMethod": {
-			body:    `spectre.egress("weather.example/v1/forecast", "test.v1.Weather.Get");`,
+			body:    `spectre.egress<v1.Response>("http", "weather.example/v1/forecast");`,
 			message: `must have the form "<METHOD> <host>/<path>"`,
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, err := newProgram(t, test.body)
+			_, err := newProgram(t, untyped+test.body)
 			assert.Error(t, err)
 			assert.Contains(t, err.Error(), test.message)
 		})
@@ -84,23 +191,23 @@ func TestRejectsInvalidEndpointDeclarations(t *testing.T) {
 }
 
 func TestEvaluatesEachScriptOnce(t *testing.T) {
-	// Every file is loaded and users.js is also imported twice; a second evaluation
+	// Every file is loaded and users.ts is also imported twice; a second evaluation
 	// would register a duplicate target.
 	program, err := compile(t, fstest.MapFS{
-		"weather.js": script(`
-			import "./lib/users.js";
-			import "./lib/accounts/owners.js";
-			spectre.field("test.v1.Response.value", () => true);
+		"weather.ts": script(`
+			import "./lib/users";
+			import "./lib/accounts/owners";
+			spectre.field<v1.Response, "value">((value) => value);
 		`),
-		"lib/users.js": script(`spectre.message("test.v1.User", (user) => user);`),
-		"lib/accounts/owners.js": script(`
-			import "../users.js";
-			spectre.field("test.v1.Response.owner", (owner) => owner);
+		"lib/users.ts": script(`spectre.message<v1.User>((user) => user);`),
+		"lib/accounts/owners.ts": script(`
+			import "../users";
+			spectre.field<v1.Response, "owner">((owner) => owner);
 		`),
 	})
 	assert.NoError(t, err)
 
-	assert.Equal(t, []string{"test.v1.Response.owner", "test.v1.Response.value"}, program.Fields())
+	assert.Equal(t, []javascript.FieldTarget{javascript.NewFieldTarget("test.v1.Response", "owner"), javascript.NewFieldTarget("test.v1.Response", "value")}, program.Fields())
 	assert.Equal(t, []string{"test.v1.User"}, program.Messages())
 	evaluator, err := program.NewEvaluator(t.Context())
 	assert.NoError(t, err)
@@ -113,8 +220,8 @@ func TestEvaluatesEachScriptOnce(t *testing.T) {
 
 func TestRejectsDuplicateTargetsAcrossScripts(t *testing.T) {
 	_, err := compile(t, fstest.MapFS{
-		"weather.js":   script(`spectre.message("test.v1.User", (user) => user);`),
-		"lib/users.js": script(`spectre.message("test.v1.User", (user) => user);`),
+		"weather.ts":   script(`spectre.message<v1.User>((user) => user);`),
+		"lib/users.ts": script(`spectre.message<v1.User>((user) => user);`),
 	})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), `duplicate normaliser target "test.v1.User"`)
@@ -127,20 +234,32 @@ func TestRejectsInvalidImports(t *testing.T) {
 		message string
 	}{
 		"Bare": {
-			files:   fstest.MapFS{"weather.js": script(`import "lib/users.js";`), "lib/users.js": library},
-			message: `comparison module "weather.js" must import modules by relative path, not "lib/users.js"`,
+			files:   fstest.MapFS{"weather.ts": script(`import "lib/users";`), "lib/users.ts": library},
+			message: "Cannot find module or type declarations for side-effect import of 'lib/users'",
+		},
+		"SchemaModule": {
+			files:   fstest.MapFS{"weather.ts": script(`import "test.v1";`)},
+			message: `comparison module "weather.ts" must import modules by relative path, not "test.v1"`,
+		},
+		"SchemaFile": {
+			files:   fstest.MapFS{"weather.ts": script(`import "../schema/test";`)},
+			message: `comparison module "weather.ts" imports "../schema/test" outside the scripts directory`,
 		},
 		"Escapes": {
-			files:   fstest.MapFS{"weather.js": script(`import "../users.js";`)},
-			message: `comparison module "weather.js" imports "../users.js" outside the scripts directory`,
+			files:   fstest.MapFS{"lib/users.ts": script(`import "../../users";`)},
+			message: "Cannot find module or type declarations for side-effect import of '../../users'",
 		},
-		"NestedEscapes": {
-			files:   fstest.MapFS{"lib/users.js": script(`import "../../users.js";`)},
-			message: `comparison module "lib/users.js" imports "../../users.js" outside the scripts directory`,
+		"UnsupportedExtension": {
+			files:   fstest.MapFS{"weather.ts": script(`import "./data.json";`), "data.json": {Data: []byte(`{}`)}},
+			message: "Cannot find module or type declarations for side-effect import of './data.json'",
 		},
-		"Missing": {
-			files:   fstest.MapFS{"weather.js": script(`import "./lib/missing.js";`)},
-			message: `read comparison module "lib/missing.js"`,
+		"MissingSideEffect": {
+			files:   fstest.MapFS{"weather.ts": script(`import "./lib/missing";`)},
+			message: "Cannot find module or type declarations for side-effect import of './lib/missing'",
+		},
+		"MissingValue": {
+			files:   fstest.MapFS{"weather.ts": script(`import { value } from "./lib/missing"; console.log(value);`)},
+			message: "Cannot find module './lib/missing'",
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -153,7 +272,7 @@ func TestRejectsInvalidImports(t *testing.T) {
 
 func TestEvaluatorPreservesMissingAndNullArguments(t *testing.T) {
 	program, err := newProgram(t, `
-		spectre.field("test.v1.Response.value", (value) =>
+		spectre.field<v1.Response, "owner">((value: unknown) =>
 			value === undefined ? "missing" : value === null ? "null" : "other");
 	`)
 	assert.NoError(t, err)
@@ -171,7 +290,7 @@ func TestEvaluatorPreservesMissingAndNullArguments(t *testing.T) {
 	}
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
-			normalised, present, err := evaluator.NormaliseField("test.v1.Response.value", test.value, test.present)
+			normalised, present, err := evaluator.NormaliseField(javascript.NewFieldTarget("test.v1.Response", "owner"), test.value, test.present)
 
 			assert.NoError(t, err)
 			assert.True(t, present)
@@ -204,15 +323,16 @@ func TestNormaliserResults(t *testing.T) {
 	}
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
+			// The cast lets results the declared type forbids reach the runtime checks.
 			program, err := newProgram(t, `
-				spectre.field("test.v1.Response.value", `+test.normaliser+`);
+				spectre.field<v1.Response, "values">((`+test.normaliser+`) as (value: string[]) => any);
 			`)
 			assert.NoError(t, err)
 			evaluator, err := program.NewEvaluator(t.Context())
 			assert.NoError(t, err)
 			defer evaluator.Close()
 
-			normalised, present, err := evaluator.NormaliseField("test.v1.Response.value", []any{"b", "a"}, true)
+			normalised, present, err := evaluator.NormaliseField(javascript.NewFieldTarget("test.v1.Response", "values"), []any{"b", "a"}, true)
 
 			assert.Equal(t, test.expected, result{Normalised: normalised, Present: present, Failed: err != nil})
 		})
@@ -223,30 +343,38 @@ func TestNormalisersCannotReplaceJSONHelpers(t *testing.T) {
 	program, err := newProgram(t, `
 		JSON.stringify = () => "\"replaced\"";
 		JSON.parse = () => "replaced";
-		spectre.field("test.v1.Response.value", (value) => value);
+		spectre.field<v1.Response, "value">((value) => value);
 	`)
 	assert.NoError(t, err)
 	evaluator, err := program.NewEvaluator(t.Context())
 	assert.NoError(t, err)
 	defer evaluator.Close()
 
-	normalised, present, err := evaluator.NormaliseField("test.v1.Response.value", "original", true)
+	normalised, present, err := evaluator.NormaliseField(javascript.NewFieldTarget("test.v1.Response", "value"), "original", true)
 
 	assert.NoError(t, err)
 	assert.True(t, present)
 	assert.Equal(t, any("original"), normalised)
 }
 
-func TestRegistrationsRequireTwoArguments(t *testing.T) {
+func TestRejectsInvalidNormaliserDeclarations(t *testing.T) {
 	tests := map[string]string{
-		"FieldMissing": `spectre.field();`,
-		"MessageOne":   `spectre.message("test.v1.Response");`,
-		"FieldThree":   `spectre.field("test.v1.Response.value", () => true, "extra");`,
+		"FieldMissing":       `field();`,
+		"MessageOne":         `message("test.v1.Response");`,
+		"FieldTwo":           `field("test.v1.Response.value", () => true);`,
+		"FieldFour":          `field("test.v1.Response", "value", () => true, "extra");`,
+		"MessageThree":       `message("test.v1.Response", () => true, "extra");`,
+		"FieldEmptyType":     `field("", "value", () => true);`,
+		"FieldNonStringType": `field({}, "value", () => true);`,
+		"FieldEmptyPath":     `field("test.v1.Response", "", () => true);`,
+		"FieldNonStringPath": `field("test.v1.Response", 1, () => true);`,
+		"FieldNonFunction":   `field("test.v1.Response", "value", true);`,
+		"MessageEmptyType":   `message("", () => true);`,
+		"MessageNonFunction": `message("test.v1.Response", true);`,
 	}
 	for name, call := range tests {
 		t.Run(name, func(t *testing.T) {
-			_, err := newProgram(t, call)
-
+			_, err := newProgram(t, untyped+call)
 			assert.Error(t, err)
 		})
 	}
@@ -254,8 +382,8 @@ func TestRegistrationsRequireTwoArguments(t *testing.T) {
 
 func TestEvaluatorProtectsArgumentsFromMutation(t *testing.T) {
 	program, err := newProgram(t, `
-		spectre.message("test.v1.Response", (value) => {
-			value.value = "changed";
+		spectre.message<v1.Response>((value) => {
+			value!.value = "changed";
 			return value;
 		});
 	`)
@@ -276,7 +404,7 @@ func TestEvaluatorProtectsArgumentsFromMutation(t *testing.T) {
 func TestEvaluatorsKeepConcurrentRuntimesIsolated(t *testing.T) {
 	program, err := newProgram(t, `
 		let calls = 0;
-		spectre.field("test.v1.Response.value", (value) => value + ":" + (++calls));
+		spectre.field<v1.Response, "value">((value) => value + ":" + (++calls));
 	`)
 	assert.NoError(t, err)
 
@@ -295,7 +423,7 @@ func TestEvaluatorsKeepConcurrentRuntimesIsolated(t *testing.T) {
 				return
 			}
 			defer evaluator.Close()
-			normalised, _, err := evaluator.NormaliseField("test.v1.Response.value", "same", true)
+			normalised, _, err := evaluator.NormaliseField(javascript.NewFieldTarget("test.v1.Response", "value"), "same", true)
 			results <- result{normalised: normalised, err: err}
 		})
 	}
@@ -308,30 +436,166 @@ func TestEvaluatorsKeepConcurrentRuntimesIsolated(t *testing.T) {
 	}
 }
 
+func TestTranspilesTypeScriptModules(t *testing.T) {
+	program, err := compile(t, fstest.MapFS{
+		"main.ts": script(`
+			import { prefix, suffix } from "./lib/helpers";
+			import type { Greeting } from "./lib/types";
+			const greet = (value: Greeting): Greeting => prefix + value + suffix;
+			spectre.ingress<v1.Response>("http", "GET /v1/forecast");
+			spectre.field<v1.Response, "value">(greet);
+		`),
+		"lib/helpers.ts": {Data: []byte(`export const prefix: string = "hello "; export const suffix: string = "!";`)},
+		"lib/types.d.ts": {Data: []byte(`export type Greeting = string;`)},
+	})
+	assert.NoError(t, err)
+	assert.Equal(t, []javascript.FieldTarget{javascript.NewFieldTarget("test.v1.Response", "value")}, program.Fields())
+	evaluator, err := program.NewEvaluator(t.Context())
+	assert.NoError(t, err)
+	defer evaluator.Close()
+	normalised, present, err := evaluator.NormaliseField(javascript.NewFieldTarget("test.v1.Response", "value"), "world", true)
+	assert.NoError(t, err)
+	assert.True(t, present)
+	assert.Equal(t, any("hello world!"), normalised)
+}
+
+func TestEvaluatorsUseStartupModuleGraph(t *testing.T) {
+	directory := t.TempDir()
+	mainPath := filepath.Join(directory, "main.ts")
+	helperPath := filepath.Join(directory, "helper.ts")
+	assert.NoError(t, os.WriteFile(mainPath, script(`
+		import { normalise } from "./helper";
+		spectre.field<v1.Response, "value">(normalise);
+	`).Data, 0o600))
+	assert.NoError(t, os.WriteFile(helperPath, []byte(`export const normalise = (value: string) => value + "!";`), 0o600))
+	program, err := javascript.NewProgram(t.Context(), declarations(), os.DirFS(directory))
+	assert.NoError(t, err)
+	assert.NoError(t, os.Remove(mainPath))
+	assert.NoError(t, os.WriteFile(helperPath, []byte(`throw new Error("new source");`), 0o600))
+	evaluator, err := program.NewEvaluator(t.Context())
+	assert.NoError(t, err)
+	defer evaluator.Close()
+	value, present, err := evaluator.NormaliseField(javascript.NewFieldTarget("test.v1.Response", "value"), "original", true)
+	assert.NoError(t, err)
+	assert.True(t, present)
+	assert.Equal(t, any("original!"), value)
+}
+
+func TestExplicitTypeScriptImportsShareModuleRecord(t *testing.T) {
+	program, err := compile(t, fstest.MapFS{
+		"main.ts": script(`
+			import "./lib/register";
+			import "./lib/register.ts";
+		`),
+		"lib/register.ts": script(`spectre.message<v1.User>((user) => user);`),
+	})
+	assert.NoError(t, err)
+	assert.Equal(t, []string{"test.v1.User"}, program.Messages())
+}
+
+func TestRejectsMalformedTypeScript(t *testing.T) {
+	_, err := compile(t, fstest.MapFS{"main.ts": script(`const value: = 1;`)})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "scripts/main.ts(1,")
+}
+
+func TestRejectsScriptSymlinks(t *testing.T) {
+	for _, name := range []string{"DirectFile", "ImportedDirectory"} {
+		t.Run(name, func(t *testing.T) {
+			scripts := t.TempDir()
+			outside := t.TempDir()
+			assert.NoError(t, os.WriteFile(filepath.Join(outside, "outside.ts"), []byte(`export const value = 1;`), 0o600))
+			if name == "DirectFile" {
+				assert.NoError(t, os.Symlink(filepath.Join(outside, "outside.ts"), filepath.Join(scripts, "link.ts")))
+			} else {
+				assert.NoError(t, os.Symlink(outside, filepath.Join(scripts, "lib")))
+				assert.NoError(t, os.WriteFile(filepath.Join(scripts, "main.ts"), []byte(`import "./lib/outside";`), 0o600))
+			}
+			_, err := javascript.NewProgram(t.Context(), declarations(), os.DirFS(scripts))
+			assert.Error(t, err)
+			assert.Contains(t, err.Error(), "symbolic link")
+		})
+	}
+}
+
+func TestProtocolsAreNotValidatedUntilConfigure(t *testing.T) {
+	program, err := newProgram(t, untyped+`ingress("test.v1.Response", "sql", "query");`)
+	assert.NoError(t, err)
+	assert.Equal(t, []endpoint{{"sql", "query", "test.v1.Response"}}, endpoints(program, javascript.Ingress))
+}
+
+func TestRejectsDuplicateFieldsAcrossScripts(t *testing.T) {
+	_, err := compile(t, fstest.MapFS{
+		"first.ts":  script(`spectre.field<v1.Response, "value">((value) => value);`),
+		"second.ts": script(`spectre.field<v1.Response, "value">((value: string) => value);`),
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), `duplicate normaliser target "test.v1.Response.value"`)
+}
+
+func TestFieldRegistrationsPreserveExplicitTypeAndPath(t *testing.T) {
+	program, err := newProgram(t, `
+		import type * as test from "test";
+		spectre.field<test.A, "B.value">(() => "first");
+		spectre.field<test.A.B, "value">(() => "second");
+	`)
+	assert.NoError(t, err)
+	first := javascript.NewFieldTarget("test.A", "B.value")
+	second := javascript.NewFieldTarget("test.A.B", "value")
+	assert.Equal(t, []javascript.FieldTarget{first, second}, program.Fields())
+	evaluator, err := program.NewEvaluator(t.Context())
+	assert.NoError(t, err)
+	defer evaluator.Close()
+	for name, test := range map[string]struct {
+		target   javascript.FieldTarget
+		expected string
+	}{
+		"First":  {target: first, expected: "first"},
+		"Second": {target: second, expected: "second"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			value, present, err := evaluator.NormaliseField(test.target, "original", true)
+			assert.NoError(t, err)
+			assert.True(t, present)
+			assert.Equal(t, any(test.expected), value)
+		})
+	}
+}
+
 type endpoint struct {
-	pattern string
-	method  string
+	protocol string
+	pattern  string
+	typeName string
 }
 
 func endpoints(program *javascript.Program, direction javascript.Direction) []endpoint {
 	declared := []endpoint{}
 	for _, value := range program.Endpoints(direction) {
-		declared = append(declared, endpoint{value.Pattern(), value.Method()})
+		declared = append(declared, endpoint{value.Protocol(), value.Pattern(), value.Type()})
 	}
 	return declared
 }
 
-// script is a module with the spectre module imported.
+// untyped bypasses the checker so tests can reach the runtime's own argument checks.
+const untyped = `
+	const { ingress, egress, field, message } = spectre as unknown as Record<string, (...args: unknown[]) => void>;
+`
+
+// script is a module with the spectre module and the test.v1 types imported.
 func script(body string) *fstest.MapFile {
-	return &fstest.MapFile{Data: []byte(`import * as spectre from "spectre";` + body)}
+	return &fstest.MapFile{Data: []byte(`import * as spectre from "spectre"; import type * as v1 from "test.v1";` + body)}
 }
 
 func newProgram(t *testing.T, body string) (*javascript.Program, error) {
 	t.Helper()
-	return compile(t, fstest.MapFS{"test.js": script(body)})
+	return compile(t, fstest.MapFS{"test.ts": script(body)})
 }
 
 func compile(t *testing.T, files fstest.MapFS) (*javascript.Program, error) {
 	t.Helper()
-	return javascript.NewProgram(t.Context(), files)
+	return javascript.NewProgram(t.Context(), declarations(), files)
+}
+
+func declarations() fstest.MapFS {
+	return fstest.MapFS{"test.d.ts": {Data: []byte(testDeclarations)}}
 }

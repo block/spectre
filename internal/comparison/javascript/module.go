@@ -1,6 +1,7 @@
 package javascript
 
 import (
+	"cmp"
 	"slices"
 	"sort"
 	"strings"
@@ -26,15 +27,16 @@ const (
 	Egress Direction = "egress"
 )
 
-// Endpoint maps a raw HTTP request pattern to the RPC method that types it.
+// Endpoint maps a protocol-specific request pattern to a payload type.
 type Endpoint struct {
 	direction Direction
+	protocol  string
 	pattern   string
-	method    string
+	typeName  string
 }
 
-func newEndpoint(direction Direction, pattern, method string) Endpoint {
-	return Endpoint{direction: direction, pattern: pattern, method: method}
+func newEndpoint(direction Direction, protocol, pattern, typeName string) Endpoint {
+	return Endpoint{direction: direction, protocol: protocol, pattern: pattern, typeName: typeName}
 }
 
 // Direction returns the proxy that uses the endpoint.
@@ -42,20 +44,52 @@ func (e Endpoint) Direction() Direction {
 	return e.direction
 }
 
-// Pattern returns the net/http.ServeMux pattern the endpoint matches.
+// Protocol returns the protocol key that interprets the endpoint.
+func (e Endpoint) Protocol() string {
+	return e.protocol
+}
+
+// Pattern returns the protocol-specific pattern the endpoint matches.
 func (e Endpoint) Pattern() string {
 	return e.pattern
 }
 
-// Method returns the full name of the RPC method that types the endpoint.
-func (e Endpoint) Method() string {
-	return e.method
+// Type returns the fully qualified name of the endpoint's payload type.
+func (e Endpoint) Type() string {
+	return e.typeName
+}
+
+// FieldTarget identifies a JSON field path relative to an explicitly named type.
+// The two components remain separate because namespace names can overlap field paths.
+type FieldTarget struct {
+	typeName string
+	path     string
+}
+
+// NewFieldTarget creates a target without resolving it against a schema.
+func NewFieldTarget(typeName, path string) FieldTarget {
+	return FieldTarget{typeName: typeName, path: path}
+}
+
+// Type returns the fully qualified name of the target's root object type.
+func (t FieldTarget) Type() string {
+	return t.typeName
+}
+
+// Path returns the JSON field path relative to the root type.
+func (t FieldTarget) Path() string {
+	return t.path
+}
+
+// String returns a human-readable target name, not a unique identity.
+func (t FieldTarget) String() string {
+	return t.typeName + "." + t.path
 }
 
 // registrations are the declarations one evaluation of a program produced.
 type registrations struct {
 	endpoints []Endpoint
-	fields    []string
+	fields    []FieldTarget
 	messages  []string
 }
 
@@ -102,14 +136,14 @@ type callbackRegistry struct {
 	runtime   *sobek.Runtime
 	functions map[string]sobek.Value
 	endpoints []Endpoint
-	fields    map[string]sobek.Callable
+	fields    map[FieldTarget]sobek.Callable
 	messages  map[string]sobek.Callable
 }
 
 func newCallbackRegistry(runtime *sobek.Runtime) *callbackRegistry {
 	registry := &callbackRegistry{
 		runtime:  runtime,
-		fields:   map[string]sobek.Callable{},
+		fields:   map[FieldTarget]sobek.Callable{},
 		messages: map[string]sobek.Callable{},
 	}
 	registry.functions = map[string]sobek.Value{
@@ -121,29 +155,27 @@ func newCallbackRegistry(runtime *sobek.Runtime) *callbackRegistry {
 	return registry
 }
 
+// endpointRegistration receives the type name compile inserts before the script's arguments.
 func (r *callbackRegistry) endpointRegistration(direction Direction) func(sobek.FunctionCall) sobek.Value {
 	return func(call sobek.FunctionCall) sobek.Value {
-		if len(call.Arguments) != 2 {
-			panic(r.runtime.NewTypeError("spectre.%s requires a pattern and an RPC method", direction))
+		if len(call.Arguments) != 3 {
+			panic(r.runtime.NewTypeError("spectre.%s requires a type name, a protocol, and a pattern", direction))
 		}
-		pattern, ok := call.Argument(0).Export().(string)
-		if !ok || pattern == "" {
-			panic(r.runtime.NewTypeError("spectre.%s pattern must be a non-empty string", direction))
-		}
-		if direction == Ingress && !hasForm(pattern, false) {
+		typeName := r.stringArgument(call, 0, string(direction), "type name")
+		protocol := r.stringArgument(call, 1, string(direction), "protocol")
+		pattern := r.stringArgument(call, 2, string(direction), "pattern")
+		if protocol == "http" && direction == Ingress && !hasForm(pattern, false) {
 			panic(r.runtime.NewTypeError("spectre.ingress pattern %q must have the form \"<METHOD> /<path>\"", pattern))
 		}
-		if direction == Egress && !hasForm(pattern, true) {
+		if protocol == "http" && direction == Egress && !hasForm(pattern, true) {
 			panic(r.runtime.NewTypeError("spectre.egress pattern %q must have the form \"<METHOD> <host>/<path>\"", pattern))
 		}
-		method, ok := call.Argument(1).Export().(string)
-		if !ok || method == "" {
-			panic(r.runtime.NewTypeError("spectre.%s method must be a non-empty string", direction))
-		}
-		if slices.ContainsFunc(r.endpoints, func(endpoint Endpoint) bool { return endpoint.Pattern() == pattern }) {
+		if slices.ContainsFunc(r.endpoints, func(endpoint Endpoint) bool {
+			return endpoint.Direction() == direction && endpoint.Protocol() == protocol && endpoint.Pattern() == pattern
+		}) {
 			panic(r.runtime.NewTypeError("duplicate endpoint %q", pattern))
 		}
-		r.endpoints = append(r.endpoints, newEndpoint(direction, pattern, method))
+		r.endpoints = append(r.endpoints, newEndpoint(direction, protocol, pattern, typeName))
 		return sobek.Undefined()
 	}
 }
@@ -161,65 +193,70 @@ func (r *callbackRegistry) GetBindingValue(name string) sobek.Value {
 
 func (r *callbackRegistry) registration(kind targetKind) func(sobek.FunctionCall) sobek.Value {
 	return func(call sobek.FunctionCall) sobek.Value {
-		if len(call.Arguments) != 2 {
-			panic(r.runtime.NewTypeError("spectre.%s requires exactly two arguments", kind))
+		argumentCount := 2
+		if kind == targetField {
+			argumentCount = 3
 		}
-		target, ok := call.Argument(0).Export().(string)
-		if !ok || target == "" {
-			panic(r.runtime.NewTypeError("spectre.%s target must be a non-empty string", kind))
+		if len(call.Arguments) != argumentCount {
+			panic(r.runtime.NewTypeError("spectre.%s requires exactly %d arguments", kind, argumentCount))
 		}
-		callback, ok := sobek.AssertFunction(call.Argument(1))
+		typeName := r.stringArgument(call, 0, string(kind), "type name")
+		callback, ok := sobek.AssertFunction(call.Argument(argumentCount - 1))
 		if !ok {
 			panic(r.runtime.NewTypeError("spectre.%s normaliser must be a function", kind))
 		}
-		if !r.register(kind, target, callback) {
-			panic(r.runtime.NewTypeError("duplicate normaliser target %q", target))
+		if kind == targetField {
+			path := r.stringArgument(call, 1, string(kind), "path")
+			target := NewFieldTarget(typeName, path)
+			if _, duplicate := r.fields[target]; duplicate {
+				panic(r.runtime.NewTypeError("duplicate normaliser target %q", target.String()))
+			}
+			r.fields[target] = callback
+			return sobek.Undefined()
 		}
+		if _, duplicate := r.messages[typeName]; duplicate {
+			panic(r.runtime.NewTypeError("duplicate normaliser target %q", typeName))
+		}
+		r.messages[typeName] = callback
 		return sobek.Undefined()
 	}
 }
 
-func (r *callbackRegistry) register(kind targetKind, target string, callback sobek.Callable) bool {
-	callbacks := r.callbacks(kind)
-	if _, duplicate := callbacks[target]; duplicate {
-		return false
+func (r *callbackRegistry) stringArgument(call sobek.FunctionCall, index int, name, argument string) string {
+	value, ok := call.Argument(index).Export().(string)
+	if !ok || value == "" {
+		panic(r.runtime.NewTypeError("spectre.%s %s must be a non-empty string", name, argument))
 	}
-	callbacks[target] = callback
-	return true
+	return value
 }
 
-func (r *callbackRegistry) lookup(kind targetKind, target string) (sobek.Callable, bool) {
-	callback, ok := r.callbacks(kind)[target]
+func (r *callbackRegistry) field(target FieldTarget) (sobek.Callable, bool) {
+	callback, ok := r.fields[target]
+	return callback, ok
+}
+
+func (r *callbackRegistry) message(typeName string) (sobek.Callable, bool) {
+	callback, ok := r.messages[typeName]
 	return callback, ok
 }
 
 func (r *callbackRegistry) registrations() registrations {
-	return registrations{
-		endpoints: slices.Clone(r.endpoints),
-		fields:    r.targets(targetField),
-		messages:  r.targets(targetMessage),
+	fields := make([]FieldTarget, 0, len(r.fields))
+	for target := range r.fields {
+		fields = append(fields, target)
 	}
-}
-
-func (r *callbackRegistry) targets(kind targetKind) []string {
-	callbacks := r.callbacks(kind)
-	targets := make([]string, 0, len(callbacks))
-	for target := range callbacks {
-		targets = append(targets, target)
+	slices.SortFunc(fields, func(left, right FieldTarget) int {
+		if order := cmp.Compare(left.Type(), right.Type()); order != 0 {
+			return order
+		}
+		return cmp.Compare(left.Path(), right.Path())
+	})
+	messages := make([]string, 0, len(r.messages))
+	for typeName := range r.messages {
+		messages = append(messages, typeName)
 	}
-	sort.Strings(targets)
-	return targets
-}
-
-func (r *callbackRegistry) callbacks(kind targetKind) map[string]sobek.Callable {
-	switch kind {
-	case targetField:
-		return r.fields
-	case targetMessage:
-		return r.messages
-	default:
-		return nil
-	}
+	sort.Strings(messages)
+	return registrations{endpoints: slices.Clone(r.endpoints), fields: fields, messages: messages}
 }
 
 // loadSpectreModule requires synchronous evaluation so registration is complete at return.

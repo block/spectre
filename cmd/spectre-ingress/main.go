@@ -13,11 +13,11 @@ import (
 
 	"github.com/block/spectre/internal"
 	"github.com/block/spectre/internal/comparison"
+	"github.com/block/spectre/internal/descriptors"
 	"github.com/block/spectre/internal/ingress"
 	"github.com/block/spectre/internal/logger"
 	"github.com/block/spectre/internal/netaddr"
 	"github.com/block/spectre/internal/proxy"
-	"github.com/block/spectre/internal/schema"
 )
 
 type cli struct {
@@ -50,7 +50,7 @@ func (c *cli) Run(runtime *commandContext) error {
 	if err != nil {
 		return errors.Wrap(err, "configure response comparison")
 	}
-	handler, err := ingress.New(c.Ingress, transport, schema.NewReflectionLoader(), comparator, runtime.log)
+	handler, err := ingress.New(c.Ingress, transport, descriptors.NewReflectionLoader(), comparator, runtime.log)
 	if err != nil {
 		return errors.Wrap(err, "configure ingress")
 	}

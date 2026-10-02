@@ -8,8 +8,8 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/descriptorpb"
 
+	"github.com/block/spectre/internal/descriptors"
 	"github.com/block/spectre/internal/proxy"
-	"github.com/block/spectre/internal/schema"
 )
 
 // Serve accepts ingress traffic until the context is cancelled or the server fails.
@@ -40,7 +40,7 @@ func (h *Handler) configureSchema(ctx context.Context) {
 			h.log.ErrorContext(ctx, "Backend descriptors differ")
 			return
 		}
-		set, err = schema.Merge(reference, h.static)
+		set, err = descriptors.Merge(reference, h.static)
 		if err != nil {
 			h.log.ErrorContext(ctx, "Backend descriptors conflict with static descriptors", "error", err)
 			return

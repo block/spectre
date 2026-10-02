@@ -1,4 +1,4 @@
-package schema_test
+package descriptors_test
 
 import (
 	"testing"
@@ -9,14 +9,14 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/descriptorpb"
 
-	"github.com/block/spectre/internal/schema"
+	"github.com/block/spectre/internal/descriptors"
 )
 
 func TestResolveDescriptors(t *testing.T) {
 	set := newDescriptorSet()
 	data, err := proto.Marshal(set)
 	assert.NoError(t, err)
-	loaded, err := schema.New(data)
+	loaded, err := descriptors.New(data)
 	assert.NoError(t, err)
 
 	method, err := loaded.Method("example.users.v1.UserService.ListUsers")
@@ -29,7 +29,7 @@ func TestResolveDescriptors(t *testing.T) {
 	message, err := loaded.Message("example.users.v1.ListUsersResponse")
 	assert.NoError(t, err)
 	assert.True(t, proto.Equal(set.GetFile()[1].GetMessageType()[1], protodesc.ToDescriptorProto(message)))
-	// Method outputs and name lookups must resolve to the same descriptor within a schema.
+	// Method outputs and name lookups must resolve to the same descriptor within a descriptors.
 	assert.True(t, method.Output() == message)
 
 	nested, err := loaded.Message("example.users.v1.ListUsersResponse.User")
@@ -42,7 +42,6 @@ func TestRejectInvalidDescriptorSets(t *testing.T) {
 		name   string
 		mutate func(*descriptorpb.FileDescriptorSet)
 	}{
-		{name: "Empty", mutate: func(set *descriptorpb.FileDescriptorSet) { set.File = nil }},
 		{name: "MissingImport", mutate: func(set *descriptorpb.FileDescriptorSet) { set.File = set.GetFile()[:1] }},
 		{name: "MissingGlobalImport", mutate: func(set *descriptorpb.FileDescriptorSet) {
 			set.File[0].Dependency = append(set.GetFile()[0].GetDependency(), "google/protobuf/descriptor.proto")
@@ -62,24 +61,31 @@ func TestRejectInvalidDescriptorSets(t *testing.T) {
 			test.mutate(set)
 			data, err := proto.Marshal(set)
 			assert.NoError(t, err)
-			loaded, err := schema.New(data)
+			loaded, err := descriptors.New(data)
 			assert.Error(t, err)
-			assert.Equal(t, (*schema.Schema)(nil), loaded)
+			assert.Equal(t, (*descriptors.Registry)(nil), loaded)
 		})
 	}
 }
 
+func TestAcceptsEmptyDescriptorSet(t *testing.T) {
+	loaded, err := descriptors.NewRegistry(&descriptorpb.FileDescriptorSet{})
+	assert.NoError(t, err)
+	_, err = loaded.Message("example.users.v1.ListUsersResponse")
+	assert.Error(t, err)
+}
+
 func TestRejectMalformedDescriptorSet(t *testing.T) {
-	loaded, err := schema.New([]byte{0xff})
+	loaded, err := descriptors.New([]byte{0xff})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "decode descriptor set")
-	assert.Equal(t, (*schema.Schema)(nil), loaded)
+	assert.Equal(t, (*descriptors.Registry)(nil), loaded)
 }
 
 func TestRejectInvalidLookups(t *testing.T) {
 	data, err := proto.Marshal(newDescriptorSet())
 	assert.NoError(t, err)
-	loaded, err := schema.New(data)
+	loaded, err := descriptors.New(data)
 	assert.NoError(t, err)
 
 	for _, test := range []struct {
@@ -108,16 +114,16 @@ func TestRejectInvalidLookups(t *testing.T) {
 	assert.Contains(t, err.Error(), "is not a method")
 }
 
-func TestSchemaIsolation(t *testing.T) {
+func TestRegistryIsolation(t *testing.T) {
 	set := newDescriptorSet()
 	data, err := proto.Marshal(set)
 	assert.NoError(t, err)
-	first, err := schema.New(data)
+	first, err := descriptors.New(data)
 	assert.NoError(t, err)
 	set.File[1].MessageType[1].NestedType[0].Field[0].JsonName = new("userID")
 	data, err = proto.Marshal(set)
 	assert.NoError(t, err)
-	second, err := schema.New(data)
+	second, err := descriptors.New(data)
 	assert.NoError(t, err)
 
 	firstUser, err := first.Message("example.users.v1.ListUsersResponse.User")

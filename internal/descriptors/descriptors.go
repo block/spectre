@@ -1,4 +1,4 @@
-package schema
+package descriptors
 
 import (
 	"io/fs"
@@ -12,17 +12,17 @@ import (
 	"google.golang.org/protobuf/types/descriptorpb"
 )
 
-// Config selects static schema sources.
+// Config selects static descriptor sources.
 type Config struct {
 	// DescriptorsDir holds binary FileDescriptorSet files, each including its imports.
 	DescriptorsDir string `type:"existingdir" placeholder:"DIR" help:"Directory of binary protobuf FileDescriptorSet files, each including its imports. Every .pb file in it, including subdirectories, is loaded."`
 }
 
-// NewConfig returns the default schema configuration.
+// NewConfig returns the default descriptors configuration.
 func NewConfig() Config {
 	config := Config{}
 	if err := kong.ApplyDefaults(&config); err != nil {
-		panic(errors.Wrap(err, "apply schema defaults"))
+		panic(errors.Wrap(err, "apply descriptors defaults"))
 	}
 	return config
 }
@@ -61,7 +61,7 @@ func LoadDescriptorSets(config Config) (*descriptorpb.FileDescriptorSet, error) 
 		return nil, errors.Wrap(err, "merge descriptor sets")
 	}
 	// Resolve now so a missing import fails at startup rather than at readiness.
-	if _, err := NewFromFileDescriptorSet(merged); err != nil {
+	if _, err := NewRegistry(merged); err != nil {
 		return nil, errors.Wrap(err, "load descriptor sets")
 	}
 	return merged, nil

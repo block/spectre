@@ -1,19 +1,29 @@
 # Build file for github.com/alecthomas/bit
 
 param version = "dev"
+param test-package = "./..."
+param test-run = "."
 param registry : string
 param image-tag : string
 
 sample-proto = exec {
   command = "mkdir -p internal/sample/pb dist/descriptors && buf generate && buf build --as-file-descriptor-set -o dist/descriptors/sample.pb"
   inputs = ["buf.yaml", "buf.gen.yaml", "internal/sample/proto/*.proto", "bin/.buf-1.73.0.pkg", "bin/.protoc-gen-go-1.36.12.pkg", "bin/.protoc-gen-connect-go-1.21.0.pkg"]
-  output = ["internal/sample/pb/users.pb.go", "internal/sample/pb/service.pb.go", "internal/sample/pb/weather.pb.go", "internal/sample/pb/forecasts.pb.go", "internal/sample/pb/samplepbconnect/service.connect.go", "dist/descriptors/sample.pb"]
+  output = ["internal/sample/pb/users.pb.go", "internal/sample/pb/service.pb.go", "internal/sample/pb/samplepbconnect/service.connect.go", "dist/descriptors/sample.pb"]
+}
+
+# Keep protobuf declarations checked in, like the generated Go bindings.
+sample-schema = exec {
+  command = "spectre-gen proto --descriptors-dir=dist/descriptors --output=internal/sample/schema"
+  inputs = ["internal/descriptors/*.go", "internal/schema/*.go", "internal/typescript/**/*.go", "internal/typescript/go.mod", "cmd/spectre-gen/*.go", "go.mod", "go.sum", "scripts/spectre-gen", "scripts/spectre-ingress"]
+  output = ["internal/sample/schema/users.d.ts", "internal/sample/schema/service.d.ts"]
+  depends_on = [sample-proto]
 }
 
 test-go = go.test {
-  package = "./..."
-  flags = ["-timeout=30s"]
-  depends_on = [sample-proto]
+  package = test-package
+  flags = ["-timeout=30s", "-run=#{test-run}"]
+  depends_on = [sample-schema]
 }
 test-comment-length = exec.test {
   command = "sh scripts/check-comment-length.test.sh"
@@ -25,8 +35,8 @@ test-launcher = exec.test {
 }
 test-response-comparison-integration = exec.test {
   command = "response-comparison.integration.test.sh"
-  inputs = ["Procfile.integration", "spectre.js", "scripts/response-comparison.integration.test.sh", "scripts/spectre-ingress", "scripts/spectre-egress", "scripts/spectre-sample", "scripts/spectre-sample-forecasts", "internal/**/*.js", "internal/sample/testdata/*.json"]
-  depends_on = [ingress-bin, egress-bin, sample-bin, sample-forecasts-bin]
+  inputs = ["Procfile.integration", "scripts/response-comparison.integration.test.sh", "scripts/spectre-ingress", "scripts/spectre-egress", "scripts/spectre-sample", "scripts/spectre-sample-forecasts", "internal/**/*.ts", "internal/sample/testdata/*.json"]
+  depends_on = [ingress-bin, egress-bin, sample-bin, sample-forecasts-bin, sample-schema]
 }
 test-release-version = exec.test {
   command = "scripts/release-version.test.sh"

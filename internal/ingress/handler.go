@@ -13,11 +13,11 @@ import (
 	"google.golang.org/protobuf/types/descriptorpb"
 
 	"github.com/block/spectre/internal/comparison"
+	"github.com/block/spectre/internal/descriptors"
 	"github.com/block/spectre/internal/middleware/health"
 	"github.com/block/spectre/internal/middleware/logging"
 	"github.com/block/spectre/internal/netaddr"
 	"github.com/block/spectre/internal/proxy"
-	"github.com/block/spectre/internal/schema"
 )
 
 // Handler returns reference responses without waiting for candidate comparison.
@@ -59,7 +59,7 @@ type ResponseComparator interface {
 func New(
 	config Config,
 	transport http.RoundTripper,
-	descriptors DescriptorLoader,
+	loader DescriptorLoader,
 	comparator ResponseComparator,
 	log *slog.Logger,
 ) (*Handler, error) {
@@ -69,7 +69,7 @@ func New(
 	if transport == nil {
 		return nil, errors.New("transport is required")
 	}
-	if descriptors == nil {
+	if config.Reflection && loader == nil {
 		return nil, errors.New("descriptor loader is required")
 	}
 	if comparator == nil {
@@ -99,9 +99,9 @@ func New(
 	if reference.TargetsListener(listen) {
 		return nil, errors.New("reference backend must not target the ingress listener")
 	}
-	static, err := schema.LoadDescriptorSets(config.Schema)
+	static, err := descriptors.LoadDescriptorSets(config.Descriptors)
 	if err != nil {
-		return nil, errors.Wrap(err, "load static schemas")
+		return nil, errors.Wrap(err, "load static descriptors")
 	}
 	handler := &Handler{
 		reference:   proxy.NewReverseProxy(reference, transport, log, false),
@@ -110,7 +110,7 @@ func New(
 		log:         log,
 		buffer:      proxy.NewBudget(config.CandidateBufferBytes),
 		requests:    make(chan struct{}, config.MaxInFlightRequests),
-		descriptors: descriptors,
+		descriptors: loader,
 		static:      static,
 		comparator:  comparator,
 		candidates:  proxy.NewCandidates(config.CandidateMaxInFlight, log),

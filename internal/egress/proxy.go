@@ -18,11 +18,11 @@ import (
 	"google.golang.org/protobuf/types/descriptorpb"
 
 	"github.com/block/spectre/internal/comparison"
+	"github.com/block/spectre/internal/descriptors"
 	"github.com/block/spectre/internal/middleware/health"
 	"github.com/block/spectre/internal/middleware/logging"
 	"github.com/block/spectre/internal/netaddr"
 	"github.com/block/spectre/internal/proxy"
-	"github.com/block/spectre/internal/schema"
 )
 
 // Proxy serves reference and candidate traffic on separate listeners. Candidate
@@ -94,9 +94,9 @@ func New(config Config, transport http.RoundTripper, hasher RequestHasher, log *
 		}
 		destinations[name] = proxy.NewReverseProxy(endpoint, transport, log, false)
 	}
-	static, err := schema.LoadDescriptorSets(config.Schema)
+	static, err := descriptors.LoadDescriptorSets(config.Descriptors)
 	if err != nil {
-		return nil, errors.Wrap(err, "load static schemas")
+		return nil, errors.Wrap(err, "load static descriptors")
 	}
 	egress := &Proxy{
 		config:       config,

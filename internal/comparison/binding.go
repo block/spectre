@@ -1,8 +1,8 @@
 package comparison
 
 import (
-	"encoding/base64"
 	"maps"
+	"math"
 	"net/http"
 	"net/url"
 	"slices"
@@ -10,17 +10,18 @@ import (
 	"strings"
 
 	"github.com/alecthomas/errors"
-	"google.golang.org/protobuf/reflect/protoreflect"
+
+	"github.com/block/spectre/internal/schema"
 )
 
-// bindHTTPParameters binds path wildcards and query parameters over a decoded body by
-// the google.api.http rules. Each field is bound once, so no source overrides another.
-func bindHTTPParameters(message protoreflect.Message, request Request, wildcards map[string]string) error {
+// bindHTTPParameters binds each field once, so path and query values cannot
+// overwrite a body value or one another. Required fields are validated afterwards.
+func bindHTTPParameters(loaded *schema.Schema, root *schema.Type, object map[string]any, request Request, wildcards map[string]string) error {
 	if request.Method == http.MethodGet && len(request.Body) > 0 {
 		return errors.New("GET request has a body")
 	}
 	for _, name := range slices.Sorted(maps.Keys(wildcards)) {
-		if err := bindField(message, name, []string{wildcards[name]}, false); err != nil {
+		if err := bindField(loaded, root, object, name, []string{wildcards[name]}, false); err != nil {
 			return errors.Wrapf(err, "bind path wildcard %q", name)
 		}
 	}
@@ -29,181 +30,118 @@ func bindHTTPParameters(message protoreflect.Message, request Request, wildcards
 		return errors.Wrap(err, "parse query")
 	}
 	for _, name := range slices.Sorted(maps.Keys(query)) {
-		if err := bindField(message, name, query[name], true); err != nil {
+		if err := bindField(loaded, root, object, name, query[name], true); err != nil {
 			return errors.Wrapf(err, "bind query parameter %q", name)
 		}
 	}
 	return nil
 }
 
-// bindField parses values into the field a dotted name selects.
-func bindField(message protoreflect.Message, name string, values []string, repeatable bool) error {
-	path, err := resolveBinding(message.Descriptor(), name, repeatable)
+func bindField(loaded *schema.Schema, root *schema.Type, object map[string]any, name string, values []string, repeatable bool) error {
+	path, err := resolveBinding(loaded, root, name, repeatable)
 	if err != nil {
 		return err
 	}
 	for _, parent := range path[:len(path)-1] {
-		// Mutable would silently clear a oneof member bound by another source.
-		if otherOneofMemberSet(message, parent) {
-			return errors.Errorf("field %q conflicts with a bound oneof member", parent.FullName())
+		value, present := object[parent.Name]
+		if !present {
+			value = map[string]any{}
+			object[parent.Name] = value
 		}
-		message = message.Mutable(parent).Message()
+		var ok bool
+		object, ok = value.(map[string]any)
+		if !ok {
+			return errors.Errorf("field %q is not an object", parent.Name)
+		}
 	}
 	field := path[len(path)-1]
-	if message.Has(field) || otherOneofMemberSet(message, field) {
-		return errors.Errorf("field %q is already bound", field.FullName())
+	if _, present := object[field.Name]; present {
+		return errors.Errorf("field %q is already bound", name)
 	}
-	if !field.IsList() {
+	if field.Value.Kind != schema.KindList {
 		if len(values) != 1 {
-			return errors.Errorf("field %q is not repeated", field.FullName())
+			return errors.Errorf("field %q is not repeated", name)
 		}
-		value, err := parseFieldValue(field, values[0])
+		value, err := parseScalar(field.Value, values[0])
 		if err != nil {
-			return err
+			return errors.Wrapf(err, "parse field %q", name)
 		}
-		message.Set(field, value)
+		object[field.Name] = value
 		return nil
 	}
-	list := message.Mutable(field).List()
+	list := make([]any, 0, len(values))
 	for _, raw := range values {
-		value, err := parseFieldValue(field, raw)
+		value, err := parseScalar(*field.Value.Element, raw)
 		if err != nil {
-			return err
+			return errors.Wrapf(err, "parse field %q", name)
 		}
-		list.Append(value)
+		list = append(list, value)
 	}
+	object[field.Name] = list
 	return nil
 }
 
-func otherOneofMemberSet(message protoreflect.Message, field protoreflect.FieldDescriptor) bool {
-	oneof := field.ContainingOneof()
-	if oneof == nil {
-		return false
-	}
-	set := message.WhichOneof(oneof)
-	return set != nil && set.Number() != field.Number()
-}
-
-// requireExplicitPresence checks that every singular scalar in a raw HTTP input has
-// presence, because ProtoJSON drops implicit defaults such as an explicit "?location=".
-func requireExplicitPresence(descriptor protoreflect.MessageDescriptor) error {
-	visited := map[protoreflect.FullName]bool{}
-	var check func(message protoreflect.MessageDescriptor) error
-	check = func(message protoreflect.MessageDescriptor) error {
-		// Well-known types have their own JSON form rather than one key per field.
-		if visited[message.FullName()] || strings.HasPrefix(string(message.FullName()), "google.protobuf.") {
-			return nil
-		}
-		visited[message.FullName()] = true
-		fields := message.Fields()
-		for index := range fields.Len() {
-			field := fields.Get(index)
-			if field.IsMap() {
-				field = field.MapValue()
-			}
-			switch {
-			case field.Message() != nil:
-				if err := check(field.Message()); err != nil {
-					return err
-				}
-			case !field.IsList() && !field.HasPresence():
-				return errors.Errorf("field %q must be optional so an explicit default differs from a missing value", field.FullName())
-			}
-		}
-		return nil
-	}
-	return check(descriptor)
-}
-
-// resolveBinding resolves a dotted field name through singular messages to a
-// scalar or enum field. Path wildcards are not repeatable.
-func resolveBinding(descriptor protoreflect.MessageDescriptor, name string, repeatable bool) ([]protoreflect.FieldDescriptor, error) {
+// resolveBinding resolves JSON field names through singular objects to scalars.
+// Query fields may be lists of scalars; path wildcards may not.
+func resolveBinding(loaded *schema.Schema, root *schema.Type, name string, repeatable bool) ([]schema.Field, error) {
 	parts := strings.Split(name, ".")
-	path := make([]protoreflect.FieldDescriptor, 0, len(parts))
-	current := descriptor
+	path := make([]schema.Field, 0, len(parts))
+	current := root
 	for index, part := range parts {
-		fields := current.Fields()
-		field := fields.ByName(protoreflect.Name(part))
-		if field == nil {
-			field = fields.ByJSONName(part)
-		}
-		if field == nil {
-			return nil, errors.Errorf("message %q has no field %q", current.FullName(), part)
+		field, found := current.Field(part)
+		if !found {
+			return nil, errors.Errorf("type %q has no field %q", current.Name, part)
 		}
 		path = append(path, field)
 		if index == len(parts)-1 {
 			break
 		}
-		if field.Message() == nil || field.IsList() || field.IsMap() {
-			return nil, errors.Errorf("field %q is not a singular message", field.FullName())
+		if field.Value.Kind != schema.KindObject {
+			return nil, errors.Errorf("field %q is not a singular object", part)
 		}
-		current = field.Message()
-	}
-	field := path[len(path)-1]
-	if field.IsMap() || field.Message() != nil {
-		return nil, errors.Errorf("field %q is not a scalar or enum", field.FullName())
-	}
-	if field.IsList() && !repeatable {
-		return nil, errors.Errorf("field %q is repeated", field.FullName())
-	}
-	return path, nil
-}
-
-// parseFieldValue parses one text value for a scalar or enum field. Enums accept
-// value names and numbers, and bytes accept any base64 alphabet, as in ProtoJSON.
-func parseFieldValue(field protoreflect.FieldDescriptor, raw string) (protoreflect.Value, error) {
-	value, err := parseScalar(field, raw)
-	if err != nil {
-		return protoreflect.Value{}, errors.Wrapf(err, "parse field %q", field.FullName())
-	}
-	return value, nil
-}
-
-func parseScalar(field protoreflect.FieldDescriptor, raw string) (protoreflect.Value, error) {
-	switch field.Kind() {
-	case protoreflect.StringKind:
-		return protoreflect.ValueOfString(raw), nil
-	case protoreflect.BytesKind:
-		encoding := base64.StdEncoding
-		if strings.ContainsAny(raw, "-_") {
-			encoding = base64.URLEncoding
-		}
-		if len(raw)%4 != 0 {
-			encoding = encoding.WithPadding(base64.NoPadding)
-		}
-		value, err := encoding.DecodeString(raw)
-		return protoreflect.ValueOfBytes(value), errors.WithStack(err)
-	case protoreflect.BoolKind:
-		value, err := strconv.ParseBool(raw)
-		return protoreflect.ValueOfBool(value), errors.WithStack(err)
-	case protoreflect.Int32Kind, protoreflect.Sint32Kind, protoreflect.Sfixed32Kind:
-		value, err := strconv.ParseInt(raw, 10, 32)
-		return protoreflect.ValueOfInt32(int32(value)), errors.WithStack(err)
-	case protoreflect.Int64Kind, protoreflect.Sint64Kind, protoreflect.Sfixed64Kind:
-		value, err := strconv.ParseInt(raw, 10, 64)
-		return protoreflect.ValueOfInt64(value), errors.WithStack(err)
-	case protoreflect.Uint32Kind, protoreflect.Fixed32Kind:
-		value, err := strconv.ParseUint(raw, 10, 32)
-		return protoreflect.ValueOfUint32(uint32(value)), errors.WithStack(err)
-	case protoreflect.Uint64Kind, protoreflect.Fixed64Kind:
-		value, err := strconv.ParseUint(raw, 10, 64)
-		return protoreflect.ValueOfUint64(value), errors.WithStack(err)
-	case protoreflect.FloatKind:
-		value, err := strconv.ParseFloat(raw, 32)
-		return protoreflect.ValueOfFloat32(float32(value)), errors.WithStack(err)
-	case protoreflect.DoubleKind:
-		value, err := strconv.ParseFloat(raw, 64)
-		return protoreflect.ValueOfFloat64(value), errors.WithStack(err)
-	case protoreflect.EnumKind:
-		if value := field.Enum().Values().ByName(protoreflect.Name(raw)); value != nil {
-			return protoreflect.ValueOfEnum(value.Number()), nil
-		}
-		number, err := strconv.ParseInt(raw, 10, 32)
+		var err error
+		current, err = loaded.Type(field.Value.Type)
 		if err != nil {
-			return protoreflect.Value{}, errors.Errorf("enum %q has no value %q", field.Enum().FullName(), raw)
+			return nil, errors.WithStack(err)
 		}
-		return protoreflect.ValueOfEnum(protoreflect.EnumNumber(number)), nil
-	case protoreflect.MessageKind, protoreflect.GroupKind:
 	}
-	return protoreflect.Value{}, errors.Errorf("field kind %s cannot be bound", field.Kind())
+	value := path[len(path)-1].Value
+	if value.Kind == schema.KindList {
+		if !repeatable {
+			return nil, errors.Errorf("field %q is repeated", name)
+		}
+		value = *value.Element
+	}
+	switch value.Kind {
+	case schema.KindString, schema.KindNumber, schema.KindBoolean, schema.KindEnum:
+		return path, nil
+	default:
+		return nil, errors.Errorf("field %q is not a scalar", name)
+	}
+}
+
+func parseScalar(value schema.Value, raw string) (any, error) {
+	switch value.Kind {
+	case schema.KindString:
+		return raw, nil
+	case schema.KindNumber:
+		number, err := strconv.ParseFloat(raw, 64)
+		if err != nil {
+			return nil, errors.Wrap(err, "parse number")
+		}
+		if math.IsInf(number, 0) || math.IsNaN(number) {
+			return nil, errors.New("number must be finite")
+		}
+		return number, nil
+	case schema.KindBoolean:
+		boolean, err := strconv.ParseBool(raw)
+		return boolean, errors.Wrap(err, "parse boolean")
+	case schema.KindEnum:
+		if !slices.Contains(value.Literals, raw) {
+			return nil, errors.New("value is not a declared enum literal")
+		}
+		return raw, nil
+	default:
+		return nil, errors.Errorf("type %s cannot be bound from text", value)
+	}
 }

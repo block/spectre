@@ -1,4 +1,4 @@
-package schema_test
+package descriptors_test
 
 import (
 	"os"
@@ -9,7 +9,7 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/descriptorpb"
 
-	"github.com/block/spectre/internal/schema"
+	"github.com/block/spectre/internal/descriptors"
 )
 
 func TestLoadsAndMergesDescriptorSetFiles(t *testing.T) {
@@ -17,14 +17,14 @@ func TestLoadsAndMergesDescriptorSetFiles(t *testing.T) {
 	service := &descriptorpb.FileDescriptorSet{File: full.GetFile()}
 	// The second file repeats an identical import, as separate protoc runs would.
 	messages := &descriptorpb.FileDescriptorSet{File: full.GetFile()[1:]}
-	config := schema.NewConfig()
+	config := descriptors.NewConfig()
 	config.DescriptorsDir = writeDescriptorSets(t, map[string][]byte{
 		"service.pb":         marshal(t, service),
 		"nested/messages.pb": marshal(t, messages),
 		"notes.txt":          []byte("not a descriptor set"),
 	})
 
-	loaded, err := schema.LoadDescriptorSets(config)
+	loaded, err := descriptors.LoadDescriptorSets(config)
 	assert.NoError(t, err)
 
 	expected := &descriptorpb.FileDescriptorSet{File: []*descriptorpb.FileDescriptorProto{full.GetFile()[1], full.GetFile()[0]}}
@@ -32,7 +32,7 @@ func TestLoadsAndMergesDescriptorSetFiles(t *testing.T) {
 }
 
 func TestLoadsNoDescriptorSetFiles(t *testing.T) {
-	loaded, err := schema.LoadDescriptorSets(schema.NewConfig())
+	loaded, err := descriptors.LoadDescriptorSets(descriptors.NewConfig())
 	assert.NoError(t, err)
 	assert.True(t, proto.Equal(&descriptorpb.FileDescriptorSet{}, loaded))
 }
@@ -46,7 +46,7 @@ func TestMergeIgnoresMetadataDifferences(t *testing.T) {
 		file.ProtoReflect().SetUnknown([]byte("\xd2\xf6\x03\x04\x08\x01\x18\x00"))
 	}
 
-	merged, err := schema.Merge(first, annotated)
+	merged, err := descriptors.Merge(first, annotated)
 	assert.NoError(t, err)
 
 	expected := &descriptorpb.FileDescriptorSet{File: []*descriptorpb.FileDescriptorProto{first.GetFile()[1], first.GetFile()[0]}}
@@ -70,9 +70,9 @@ func TestRejectsInvalidDescriptorSetFiles(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			config := schema.NewConfig()
+			config := descriptors.NewConfig()
 			config.DescriptorsDir = writeDescriptorSets(t, test.files)
-			_, err := schema.LoadDescriptorSets(config)
+			_, err := descriptors.LoadDescriptorSets(config)
 			assert.Error(t, err)
 			assert.Contains(t, err.Error(), test.message)
 		})
@@ -80,9 +80,9 @@ func TestRejectsInvalidDescriptorSetFiles(t *testing.T) {
 }
 
 func TestRejectsMissingDescriptorsDir(t *testing.T) {
-	config := schema.NewConfig()
+	config := descriptors.NewConfig()
 	config.DescriptorsDir = filepath.Join(t.TempDir(), "missing")
-	_, err := schema.LoadDescriptorSets(config)
+	_, err := descriptors.LoadDescriptorSets(config)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "read descriptors directory")
 }

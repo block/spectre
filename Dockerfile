@@ -4,6 +4,7 @@ FROM --platform=$BUILDPLATFORM golang:1.27.1-alpine3.24 AS build
 
 WORKDIR /src
 COPY go.mod go.sum ./
+COPY internal/typescript ./internal/typescript
 RUN --mount=type=cache,target=/go/pkg/mod \
     go mod download
 COPY cmd/spectre-ingress ./cmd/spectre-ingress

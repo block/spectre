@@ -5,12 +5,16 @@ import (
 
 	"github.com/alecthomas/errors"
 	"github.com/alecthomas/kong"
+
+	"github.com/block/spectre/internal/schema"
 )
 
 // Config contains the command-line configuration for response comparison.
 type Config struct {
 	// ScriptsDir holds the normaliser scripts, which are all loaded as one set.
-	ScriptsDir string `required:"" type:"existingdir" help:"Directory of normaliser scripts. Every .js file in it, including subdirectories, is loaded."`
+	ScriptsDir string `required:"" type:"existingdir" help:"Directory of normaliser scripts. Every .ts file in it, including subdirectories, is loaded and type-checked against the schema."`
+	// Schema types every payload the scripts register for.
+	Schema schema.Config `embed:""`
 	// ComparisonTimeout limits one response comparison.
 	ComparisonTimeout time.Duration `default:"1s" help:"Maximum duration of one response comparison."`
 	// ComparisonMaxBodyBytes limits each captured request or response body.
@@ -20,11 +24,12 @@ type Config struct {
 // NewConfig returns the default response comparison configuration.
 func NewConfig() Config {
 	// ApplyDefaults validates required fields, so seed the directory while applying tag defaults.
-	config := Config{ScriptsDir: "placeholder"}
+	config := Config{ScriptsDir: "placeholder", Schema: schema.Config{SchemaDir: "placeholder"}}
 	if err := kong.ApplyDefaults(&config); err != nil {
 		panic(errors.Wrap(err, "apply comparison defaults"))
 	}
 	config.ScriptsDir = ""
+	config.Schema.SchemaDir = ""
 	return config
 }
 
@@ -32,6 +37,9 @@ func NewConfig() Config {
 func (c Config) Validate() error {
 	if c.ScriptsDir == "" {
 		return errors.New("scripts directory is required")
+	}
+	if err := c.Schema.Validate(); err != nil {
+		return errors.WithStack(err)
 	}
 	if c.ComparisonTimeout <= 0 {
 		return errors.New("comparison timeout must be positive")

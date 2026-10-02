@@ -1,16 +1,15 @@
 package sample
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
 
 	"github.com/alecthomas/errors"
-	"google.golang.org/protobuf/encoding/protojson"
-
-	samplepb "github.com/block/spectre/internal/sample/pb"
 )
 
 // maxForecastBytes bounds a provider response, which is small in practice.
@@ -37,7 +36,7 @@ func NewForecastClient(target *url.URL, host string, transport http.RoundTripper
 
 // Fetch returns the forecast for a location, or the status to report instead.
 // A provider failure other than an unknown location is reported as a bad gateway.
-func (c *ForecastClient) Fetch(ctx context.Context, location string) (forecast *samplepb.Forecast, status int) {
+func (c *ForecastClient) Fetch(ctx context.Context, location string) (forecast *Forecast, status int) {
 	forecast, status, err := c.fetch(ctx, location)
 	if err != nil {
 		c.log.ErrorContext(ctx, "Forecast provider request failed", "location", location, "error", err)
@@ -46,7 +45,7 @@ func (c *ForecastClient) Fetch(ctx context.Context, location string) (forecast *
 	return forecast, status
 }
 
-func (c *ForecastClient) fetch(ctx context.Context, location string) (forecast *samplepb.Forecast, status int, err error) {
+func (c *ForecastClient) fetch(ctx context.Context, location string) (forecast *Forecast, status int, err error) {
 	target := *c.target
 	target.Path = "/v1/forecasts/" + location
 	target.RawPath = "/v1/forecasts/" + url.PathEscape(location)
@@ -71,9 +70,20 @@ func (c *ForecastClient) fetch(ctx context.Context, location string) (forecast *
 	if err != nil {
 		return nil, 0, errors.Wrap(err, "read forecast response")
 	}
-	decoded := &samplepb.FetchForecastResponse{}
-	if err := protojson.Unmarshal(body, decoded); err != nil {
+	var decoded *FetchForecastResponse
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&decoded); err != nil {
 		return nil, 0, errors.Wrap(err, "decode forecast response")
 	}
-	return decoded.GetForecast(), http.StatusOK, nil
+	if decoded == nil {
+		return nil, 0, errors.New("decode forecast response: expected an object")
+	}
+	if err := decoder.Decode(new(any)); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return nil, 0, errors.New("decode forecast response: unexpected trailing JSON value")
+		}
+		return nil, 0, errors.Wrap(err, "decode forecast response")
+	}
+	return decoded.Forecast, http.StatusOK, nil
 }

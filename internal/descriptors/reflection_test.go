@@ -1,4 +1,4 @@
-package schema_test
+package descriptors_test
 
 import (
 	"net"
@@ -14,7 +14,7 @@ import (
 	"google.golang.org/protobuf/types/descriptorpb"
 
 	"github.com/block/spectre/internal/sample/pb/samplepbconnect"
-	"github.com/block/spectre/internal/schema"
+	"github.com/block/spectre/internal/descriptors"
 )
 
 func TestReflectionLoaderLoadsApplicationDescriptors(t *testing.T) {
@@ -22,7 +22,7 @@ func TestReflectionLoaderLoadsApplicationDescriptors(t *testing.T) {
 	assert.NoError(t, err)
 	serveReflection(t, listener)
 
-	set, err := schema.NewReflectionLoader().Load(t.Context(), "h2c://"+listener.Addr().String())
+	set, err := descriptors.NewReflectionLoader().Load(t.Context(), "h2c://"+listener.Addr().String())
 	assert.NoError(t, err)
 	assertUserServiceDescriptors(t, set)
 }
@@ -33,7 +33,7 @@ func TestReflectionLoaderLoadsOverUnixSocket(t *testing.T) {
 	assert.NoError(t, err)
 	serveReflection(t, listener)
 
-	set, err := schema.NewReflectionLoader().Load(t.Context(), "h2c+unix:"+socket)
+	set, err := descriptors.NewReflectionLoader().Load(t.Context(), "h2c+unix:"+socket)
 	assert.NoError(t, err)
 	assertUserServiceDescriptors(t, set)
 }

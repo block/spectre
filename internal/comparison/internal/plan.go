@@ -7,13 +7,12 @@ import (
 	"slices"
 
 	"github.com/alecthomas/errors"
-	"google.golang.org/protobuf/reflect/protoreflect"
 
 	"github.com/block/spectre/internal/comparison/javascript"
 	"github.com/block/spectre/internal/schema"
 )
 
-// Plan binds JavaScript normaliser declarations to one reflected schema.
+// Plan binds JavaScript normaliser declarations to one declared schema.
 // It is immutable after construction and safe to share across normalisations.
 type Plan struct {
 	loaded   *schema.Schema
@@ -21,27 +20,26 @@ type Plan struct {
 }
 
 // NewPlan resolves and validates every declared normaliser target before activation.
-func NewPlan(loaded *schema.Schema, fields, messages []string) (*Plan, error) {
+func NewPlan(loaded *schema.Schema, fields []javascript.FieldTarget, messages []string) (*Plan, error) {
 	targets := make([]normalisationTarget, 0, len(fields)+len(messages))
-	for _, declared := range []struct {
-		kind  targetKind
-		names []string
-	}{
-		{kind: targetField, names: fields},
-		{kind: targetMessage, names: messages},
-	} {
-		for _, name := range declared.names {
-			resolved, err := resolveTarget(loaded, declared.kind, name)
-			if err != nil {
-				return nil, errors.Wrapf(err, "validate normaliser target %q", name)
-			}
-			targets = append(targets, resolved)
+	for _, declared := range fields {
+		root, steps, err := resolveField(loaded, declared)
+		if err != nil {
+			return nil, errors.Wrapf(err, "validate normaliser target %q", declared.String())
 		}
+		targets = append(targets, newFieldTarget(declared, root, steps))
+	}
+	for _, name := range messages {
+		root, err := loaded.Type(name)
+		if err != nil {
+			return nil, errors.Wrapf(err, "validate normaliser target %q", name)
+		}
+		targets = append(targets, newMessageTarget(name, root))
 	}
 	return &Plan{loaded: loaded, resolved: targets}, nil
 }
 
-// Schema returns the descriptor schema bound to the plan.
+// Schema returns the declared schema bound to the plan.
 func (p *Plan) Schema() *schema.Schema {
 	return p.loaded
 }
@@ -52,7 +50,7 @@ func (p *Plan) Normalise(
 	ctx context.Context,
 	log *slog.Logger,
 	evaluator *javascript.Evaluator,
-	root protoreflect.MessageDescriptor,
+	root *schema.Type,
 	runNormalisers bool,
 	side string,
 	payload any,
@@ -62,7 +60,7 @@ func (p *Plan) Normalise(
 	if !runNormalisers {
 		targets = nil
 	}
-	run := newNormalisationRun(log, evaluator, root, slices.Clone(targets), side, document)
+	run := newNormalisationRun(p.loaded, log, evaluator, root, slices.Clone(targets), side, document)
 	if err := run.normalise(ctx); err != nil {
 		return nil, err
 	}

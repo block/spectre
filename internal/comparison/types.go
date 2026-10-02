@@ -90,6 +90,6 @@ type Request struct {
 	Side string
 }
 
-// RequestHash identifies a request by its method and normalised input, so
+// RequestHash identifies a request by its endpoint and normalised input, so
 // equivalent requests share a hash.
 type RequestHash [sha256.Size]byte

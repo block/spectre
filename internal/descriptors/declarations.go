@@ -1,0 +1,380 @@
+package descriptors
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"github.com/alecthomas/errors"
+	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/types/descriptorpb"
+
+	"github.com/block/spectre/internal/schema"
+)
+
+// scalarMessageKind models well-known messages whose ProtoJSON is a scalar.
+func scalarMessageKind(name protoreflect.FullName) schema.Kind {
+	switch name {
+	case "google.protobuf.Timestamp", "google.protobuf.Duration", "google.protobuf.FieldMask",
+		"google.protobuf.StringValue", "google.protobuf.BytesValue", "google.protobuf.Int64Value", "google.protobuf.UInt64Value":
+		return schema.KindString
+	case "google.protobuf.DoubleValue", "google.protobuf.FloatValue", "google.protobuf.Int32Value", "google.protobuf.UInt32Value":
+		return schema.KindNumber
+	case "google.protobuf.BoolValue":
+		return schema.KindBoolean
+	default:
+		return ""
+	}
+}
+
+// isUntypedMessage identifies ProtoJSON shapes outside the schema subset.
+func isUntypedMessage(name protoreflect.FullName) (unsupported bool) {
+	switch name {
+	case "google.protobuf.Any", "google.protobuf.Struct", "google.protobuf.Value", "google.protobuf.ListValue", "google.protobuf.NullValue":
+		return true
+	default:
+		return false
+	}
+}
+
+// Declarations renders one TypeScript declaration file per protobuf file, keyed
+// by the proto file name with a .d.ts extension. Empty declarations are omitted.
+func Declarations(ctx context.Context, set *descriptorpb.FileDescriptorSet) (map[string]string, error) {
+	if set == nil {
+		return nil, errors.New("descriptor set is nil")
+	}
+	registry, err := NewRegistry(set)
+	if err != nil {
+		return nil, errors.Wrap(err, "resolve descriptor set")
+	}
+	declarations := map[string]string{}
+	var renderErr error
+	registry.Files().RangeFiles(func(file protoreflect.FileDescriptor) bool {
+		if renderErr = checkDeclarationPath(file.Path()); renderErr != nil {
+			return false
+		}
+		var rendered string
+		rendered, renderErr = renderFile(file)
+		if renderErr != nil {
+			renderErr = errors.Wrapf(renderErr, "render %q", file.Path())
+			return false
+		}
+		if rendered != "" {
+			name := strings.TrimSuffix(file.Path(), ".proto") + ".d.ts"
+			if _, duplicate := declarations[name]; duplicate {
+				renderErr = errors.Errorf("multiple proto files write declaration %q", name)
+				return false
+			}
+			declarations[name] = rendered
+		}
+		return true
+	})
+	if renderErr != nil {
+		return nil, renderErr
+	}
+	// Valid protobuf names can be TypeScript keywords, so parse the output to catch them.
+	loaded, err := schema.ParseSources(ctx, declarations)
+	if err != nil {
+		return nil, errors.Wrap(err, "parse generated declarations")
+	}
+	if err := CheckAgreement(registry, loaded); err != nil {
+		return nil, errors.Wrap(err, "check generated declarations")
+	}
+	return declarations, nil
+}
+
+func checkDeclarationPath(name string) error {
+	if !fs.ValidPath(name) || !filepath.IsLocal(filepath.FromSlash(name)) || strings.ContainsAny(name, "\\:\r\n") {
+		return errors.Errorf("proto file path %q is not a safe relative path", name)
+	}
+	return nil
+}
+
+// WriteDeclarations renders the declarations for set into dir, replacing any files
+// of the same name. Other files are left alone; symlinks cannot escape dir.
+func WriteDeclarations(ctx context.Context, set *descriptorpb.FileDescriptorSet, dir string) error {
+	declarations, err := Declarations(ctx, set)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		return errors.Wrap(err, "create declarations directory")
+	}
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return errors.Wrap(err, "open declarations directory")
+	}
+	defer root.Close() //nolint:errcheck // Closing the directory cannot affect completed writes.
+	for name, contents := range declarations {
+		target := filepath.FromSlash(name)
+		if err := root.MkdirAll(filepath.Dir(target), 0o750); err != nil {
+			return errors.Wrapf(err, "create directory for %q", name)
+		}
+		if err := root.WriteFile(target, []byte(contents), 0o600); err != nil {
+			return errors.Wrapf(err, "write %q", name)
+		}
+	}
+	return nil
+}
+
+// declarationWriter indents nested namespaces and remembers whether anything
+// was declared, so files without declarations can be dropped.
+type declarationWriter struct {
+	builder  strings.Builder
+	depth    int
+	declared bool
+}
+
+// separate starts each declaration after the first with a blank line.
+func (w *declarationWriter) separate() {
+	if w.declared {
+		w.builder.WriteString("\n")
+	}
+}
+
+func (w *declarationWriter) line(format string, args ...any) {
+	w.builder.WriteString(strings.Repeat("  ", w.depth))
+	fmt.Fprintf(&w.builder, format, args...)
+	w.builder.WriteString("\n")
+}
+
+func renderFile(file protoreflect.FileDescriptor) (declaration string, err error) {
+	if file.Package() == "" {
+		return "", errors.New("proto files must declare a package, which names their schema module")
+	}
+	writer := &declarationWriter{}
+	writer.line("declare module %q {", file.Package())
+	writer.depth++
+	if err := renderScope(writer, file.Messages(), file.Enums()); err != nil {
+		return "", err
+	}
+	services := file.Services()
+	for index := range services.Len() {
+		if err := renderService(writer, services.Get(index)); err != nil {
+			return "", err
+		}
+	}
+	if !writer.declared {
+		return "", nil
+	}
+	writer.depth--
+	writer.line("}")
+	header := "// Code generated by spectre-gen proto. DO NOT EDIT.\n// Source: " + file.Path() + "\n\n"
+	return header + writer.builder.String(), nil
+}
+
+func renderScope(writer *declarationWriter, messages protoreflect.MessageDescriptors, enums protoreflect.EnumDescriptors) error {
+	for index := range enums.Len() {
+		enum := enums.Get(index)
+		if isUntypedMessage(enum.FullName()) {
+			continue
+		}
+		writer.separate()
+		writer.line("export type %s = %s;", enum.Name(), enumLiterals(enum))
+		writer.declared = true
+	}
+	for index := range messages.Len() {
+		message := messages.Get(index)
+		if message.IsMapEntry() || isUntypedMessage(message.FullName()) || scalarMessageKind(message.FullName()) != "" {
+			continue
+		}
+		if err := renderMessage(writer, message); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func renderMessage(writer *declarationWriter, message protoreflect.MessageDescriptor) error {
+	declared, err := messageType(message)
+	if err != nil {
+		return err
+	}
+	writer.separate()
+	writer.line("export interface %s {", message.Name())
+	writer.depth++
+	for index, field := range declared.Fields {
+		optional := ""
+		if field.Optional {
+			optional = "?"
+		}
+		referenced := referencedType(message.Fields().Get(index))
+		value := field.Value.Format(func(string) string { return typeReference(referenced) })
+		writer.line("%s%s: %s;", propertyName(field.Name), optional, value)
+	}
+	writer.depth--
+	writer.line("}")
+	writer.declared = true
+	nested := message.Messages()
+	if nested.Len() == 0 && message.Enums().Len() == 0 {
+		return nil
+	}
+	// Merging a namespace with the interface keeps nested names fully qualified.
+	inner := &declarationWriter{depth: writer.depth + 1}
+	if err := renderScope(inner, nested, message.Enums()); err != nil {
+		return err
+	}
+	if inner.declared {
+		writer.separate()
+		writer.line("export namespace %s {", message.Name())
+		writer.builder.WriteString(inner.builder.String())
+		writer.line("}")
+	}
+	return nil
+}
+
+func renderService(writer *declarationWriter, service protoreflect.ServiceDescriptor) error {
+	methods := service.Methods()
+	signatures := []string{}
+	for index := range methods.Len() {
+		method := methods.Get(index)
+		// Streaming methods have no single request and response to compare.
+		if method.IsStreamingClient() || method.IsStreamingServer() {
+			continue
+		}
+		if err := checkMethodTypes(method); err != nil {
+			return err
+		}
+		signatures = append(signatures, fmt.Sprintf("%s(request: %s): %s;", propertyName(string(method.Name())), typeReference(method.Input()), typeReference(method.Output())))
+	}
+	if len(signatures) == 0 {
+		return nil
+	}
+	writer.separate()
+	writer.line("export interface %s {", service.Name())
+	writer.depth++
+	for _, signature := range signatures {
+		writer.line("%s", signature)
+	}
+	writer.depth--
+	writer.line("}")
+	writer.declared = true
+	return nil
+}
+
+func checkMethodTypes(method protoreflect.MethodDescriptor) error {
+	for _, message := range []protoreflect.MessageDescriptor{method.Input(), method.Output()} {
+		if isUntypedMessage(message.FullName()) || scalarMessageKind(message.FullName()) != "" {
+			return errors.Errorf("method %q uses unsupported request or response type %q", method.FullName(), message.FullName())
+		}
+	}
+	return nil
+}
+
+// messageType models the ProtoJSON object a message encodes to when default values
+// are emitted: only fields with presence may be absent.
+func messageType(message protoreflect.MessageDescriptor) (*schema.Type, error) {
+	fields := message.Fields()
+	declared := &schema.Type{Name: string(message.FullName()), Fields: make([]schema.Field, 0, fields.Len())}
+	for index := range fields.Len() {
+		field := fields.Get(index)
+		value, err := fieldValue(field)
+		if err != nil {
+			return nil, errors.Wrapf(err, "field %q", field.FullName())
+		}
+		declared.Fields = append(declared.Fields, schema.Field{Name: field.JSONName(), Optional: field.HasPresence(), Value: value})
+	}
+	return declared, nil
+}
+
+func fieldValue(field protoreflect.FieldDescriptor) (schema.Value, error) {
+	if field.IsMap() {
+		element, err := singularValue(field.MapValue())
+		return schema.Value{Kind: schema.KindMap, Element: &element}, err
+	}
+	element, err := singularValue(field)
+	if err != nil || !field.IsList() {
+		return element, err
+	}
+	return schema.Value{Kind: schema.KindList, Element: &element}, nil
+}
+
+func singularValue(field protoreflect.FieldDescriptor) (schema.Value, error) {
+	switch field.Kind() {
+	case protoreflect.StringKind, protoreflect.BytesKind,
+		protoreflect.Int64Kind, protoreflect.Sint64Kind, protoreflect.Sfixed64Kind,
+		protoreflect.Uint64Kind, protoreflect.Fixed64Kind:
+		// ProtoJSON encodes bytes as base64 and 64-bit integers as strings.
+		return schema.Value{Kind: schema.KindString}, nil
+	case protoreflect.BoolKind:
+		return schema.Value{Kind: schema.KindBoolean}, nil
+	case protoreflect.Int32Kind, protoreflect.Sint32Kind, protoreflect.Sfixed32Kind,
+		protoreflect.Uint32Kind, protoreflect.Fixed32Kind, protoreflect.FloatKind, protoreflect.DoubleKind:
+		return schema.Value{Kind: schema.KindNumber}, nil
+	case protoreflect.EnumKind:
+		if isUntypedMessage(field.Enum().FullName()) {
+			return schema.Value{}, errors.Errorf("%s is not supported", field.Enum().FullName())
+		}
+		return enumValue(field.Enum()), nil
+	case protoreflect.MessageKind, protoreflect.GroupKind:
+		name := field.Message().FullName()
+		if kind := scalarMessageKind(name); kind != "" {
+			return schema.Value{Kind: kind}, nil
+		}
+		if isUntypedMessage(name) {
+			return schema.Value{}, errors.Errorf("%s is not supported", name)
+		}
+		return schema.Value{Kind: schema.KindObject, Type: string(name)}, nil
+	}
+	return schema.Value{}, errors.Errorf("field kind %s is not supported", field.Kind())
+}
+
+// referencedType returns the message or enum a field's value names, if any.
+func referencedType(field protoreflect.FieldDescriptor) protoreflect.Descriptor {
+	if field.IsMap() {
+		field = field.MapValue()
+	}
+	if field.Enum() != nil {
+		return field.Enum()
+	}
+	return field.Message()
+}
+
+// typeReference names a type through its package's module, which no nested
+// declaration can shadow.
+func typeReference(descriptor protoreflect.Descriptor) (reference string) {
+	pkg := descriptor.ParentFile().Package()
+	path := strings.TrimPrefix(string(descriptor.FullName()), string(pkg)+".")
+	return fmt.Sprintf("import(%q).%s", pkg, path)
+}
+
+func enumValue(enum protoreflect.EnumDescriptor) schema.Value {
+	values := enum.Values()
+	literals := make([]string, 0, values.Len())
+	for index := range values.Len() {
+		literals = append(literals, string(values.Get(index).Name()))
+	}
+	return schema.Value{Kind: schema.KindEnum, Literals: literals, Type: string(enum.FullName())}
+}
+
+func enumLiterals(enum protoreflect.EnumDescriptor) (literals string) {
+	value := enumValue(enum)
+	value.Type = ""
+	return value.String()
+}
+
+func propertyName(name string) (property string) {
+	if isIdentifier(name) {
+		return name
+	}
+	// JSON strings are valid TypeScript string literals.
+	quoted, _ := json.Marshal(name) //nolint:errchkjson // Strings always encode.
+	return string(quoted)
+}
+
+func isIdentifier(name string) (valid bool) {
+	if name == "" {
+		return false
+	}
+	for index, char := range name {
+		if char == '$' || char == '_' || char >= 'A' && char <= 'Z' || char >= 'a' && char <= 'z' || index > 0 && char >= '0' && char <= '9' {
+			continue
+		}
+		return false
+	}
+	return true
+}
