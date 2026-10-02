@@ -101,8 +101,8 @@ func (s *scriptSet) resolve(
 ) (method protoreflect.MethodDescriptor, selected protocol, wildcards map[string]string, result Result) {
 	name, wildcards, declared := s.routes.Match(requestMethod, requestHost, requestPath)
 	selected, result = requestProtocol(requestContentType)
-	if declared && selected != protocolGRPC {
-		// Declared endpoints serve raw HTTP JSON unless the request is gRPC.
+	if declared && selected != protocolGRPC && selected != protocolProtobuf {
+		// Declared endpoints serve raw HTTP JSON unless the request is a binary RPC protocol.
 		selected, result = protocolHTTPJSON, newEmptyResult()
 	}
 	if result.Outcome() != "" {
