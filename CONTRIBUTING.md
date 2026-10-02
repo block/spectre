@@ -63,7 +63,7 @@ spectre-egress \
   --descriptors-dir=dist/descriptors
 ```
 
-Scripts declare dependency endpoints with `egress("http", pattern, typeName)`.
+Scripts declare dependency endpoints with `egress<Type>("http", pattern)`.
 Types come from `--schema-dir`; descriptors are only needed for protobuf traffic. A candidate call waits up to `--match-window` for an
 equivalent reference call and receives its recorded response. A candidate call
 without a match gets a `502` and stops all later candidate calls until the process
