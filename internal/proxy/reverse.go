@@ -18,6 +18,11 @@ func NewReverseProxy(target *netaddr.Endpoint, transport http.RoundTripper, log 
 	return &httputil.ReverseProxy{
 		Rewrite: func(request *httputil.ProxyRequest) {
 			request.SetURL(target.URL())
+			// A unix-socket backend is a mesh socket that routes by authority over
+			// a fixed connection, so the inbound Host selects the upstream.
+			if target.IsUnix() {
+				request.Out.Host = request.In.Host
+			}
 			for name := range request.Out.Header {
 				if strings.HasPrefix(http.CanonicalHeaderKey(name), "X-Forwarded-") {
 					request.Out.Header.Del(name)
@@ -25,7 +30,7 @@ func NewReverseProxy(target *netaddr.Endpoint, transport http.RoundTripper, log 
 			}
 			request.Out.Header.Del("X-Real-IP")
 			request.SetXForwarded()
-			// The inbound Host is untrusted and must not become backend routing input.
+			// Drop X-Forwarded-Host so the inbound host is never forwarded as a hint.
 			request.Out.Header.Del("X-Forwarded-Host")
 		},
 		Transport: transport,
