@@ -6,6 +6,9 @@ param test-run = "."
 param registry : string
 param image-tag : string
 
+# The TypeScript shim is a separate module, so Go tools skip it from the root.
+let go-module = [".", "internal/typescript"]
+
 sample-proto = exec {
   command = "mkdir -p internal/sample/pb dist/descriptors && buf generate && buf build --as-file-descriptor-set -o dist/descriptors/sample.pb"
   inputs = ["buf.yaml", "buf.gen.yaml", "internal/sample/proto/*.proto", "bin/.buf-1.73.0.pkg", "bin/.protoc-gen-go-1.36.12.pkg", "bin/.protoc-gen-connect-go-1.21.0.pkg"]
@@ -20,8 +23,9 @@ sample-schema = exec {
   depends_on = [sample-proto]
 }
 
-test-go = go.test {
+test-go[go-module] = go.test {
   package = test-package
+  dir = go-module
   flags = ["-timeout=30s", "-run=#{test-run}"]
   depends_on = [sample-schema]
 }
@@ -50,16 +54,20 @@ explicit test-container = exec.test {
   command = "container.test.sh #{local-image.ref} #{version}"
   inputs = ["scripts/container.test.sh"]
 }
-fmt-go = go.fmt {}
-fmt-check-go = go.fmt-l {}
+fmt-go[go-module] = go.fmt { dir = go-module }
+fmt-check-go[go-module] = go.fmt-l { dir = go-module }
 fmt-action-pins = exec {
   command = "ratchet pin .github/workflows/*.yml"
   inputs = [".github/workflows/*.yml", "bin/.ratchet-0.12.0.pkg"]
 }
-lint-go = go.lint { depends_on = [sample-proto] }
-lint-encapsulation = exec.test {
+lint-go[go-module] = go.lint {
+  dir = go-module
+  depends_on = [sample-proto]
+}
+lint-encapsulation[go-module] = exec.test {
   command = "encapsulation-linter -allow-generated-construction ./..."
-  inputs = ["cmd/**/*.go", "internal/**/*.go", "go.mod", "go.sum", "bin/.encapsulation-linter-0.2.0.pkg"]
+  dir = go-module
+  inputs = ["#{go-module}/**/*.go", "#{go-module}/go.mod", "#{go-module}/go.sum", "bin/.encapsulation-linter-0.2.0.pkg"]
   depends_on = [sample-proto]
 }
 lint-proto = exec.test {

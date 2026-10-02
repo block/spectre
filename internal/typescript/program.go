@@ -2,12 +2,12 @@ package typescript
 
 import (
 	"context"
-	"errors"
 	"maps"
 	"slices"
 	"strings"
 	"testing/fstest"
 
+	"github.com/alecthomas/errors"
 	"github.com/microsoft/TypeScript/tsc/internal/ast"
 	"github.com/microsoft/TypeScript/tsc/internal/bundled"
 	"github.com/microsoft/TypeScript/tsc/internal/compiler"
@@ -32,33 +32,33 @@ func NewProgram(ctx context.Context, files map[string]string) (*Program, error) 
 	tree := fstest.MapFS{}
 	for name, text := range files {
 		if !strings.HasPrefix(name, "/") {
-			return nil, errors.New("program file " + name + " is not absolute")
+			return nil, errors.Errorf("program file %s is not absolute", name)
 		}
 		tree[strings.TrimPrefix(name, "/")] = &fstest.MapFile{Data: []byte(text)}
 	}
 	fileSystem := bundled.WrapFS(iovfs.From(tree, true))
 	host := compiler.NewCompilerHost("/", fileSystem, bundled.LibPath(), nil, nil, nil)
 	program := compiler.NewProgram(compiler.ProgramOptions{
-		ProgramConfig: compiler.ProgramConfig{
-			Config: &tsoptions.ParsedCommandLine{ParsedConfig: &tsoptions.ParsedOptions{
-				FileNames: slices.Sorted(maps.Keys(files)),
-				CompilerOptions: &core.CompilerOptions{
-					Target:                     core.ScriptTargetES2020,
-					Module:                     core.ModuleKindESNext,
-					ModuleResolution:           core.ModuleResolutionKindBundler,
-					Lib:                        []string{"lib.es2020.d.ts"},
-					Types:                      []string{},
-					Strict:                     core.TSTrue,
-					IsolatedModules:            core.TSTrue,
-					NoEmit:                     core.TSTrue,
-					AllowImportingTsExtensions: core.TSTrue,
-					SkipDefaultLibCheck:        core.TSTrue,
-				},
-			}},
-			// One checker keeps diagnostics and type identities in a single checker.
-			SingleThreaded: core.TSTrue,
-		},
-		ProgramHosts: compiler.ProgramHosts{Host: host},
+		Config: tsoptions.NewParsedCommandLine(
+			&core.CompilerOptions{
+				Target:                     core.ScriptTargetES2020,
+				Module:                     core.ModuleKindESNext,
+				ModuleResolution:           core.ModuleResolutionKindBundler,
+				Lib:                        []string{"lib.es2020.d.ts"},
+				Types:                      []string{},
+				Strict:                     core.TSTrue,
+				IsolatedModules:            core.TSTrue,
+				NoEmit:                     core.TSTrue,
+				AllowImportingTsExtensions: core.TSTrue,
+				SkipDefaultLibCheck:        core.TSTrue,
+			},
+			slices.Sorted(maps.Keys(files)),
+			nil,
+			tspath.ComparePathsOptions{UseCaseSensitiveFileNames: true, CurrentDirectory: "/"},
+		),
+		// One checker keeps diagnostics and type identities in a single checker.
+		SingleThreaded: core.TSTrue,
+		Host:           host,
 	})
 	diagnostics, err := programDiagnostics(ctx, program)
 	if err != nil {
@@ -68,9 +68,10 @@ func NewProgram(ctx context.Context, files map[string]string) (*Program, error) 
 		var report strings.Builder
 		diagnosticwriter.WriteFormatDiagnostics(&report, diagnosticwriter.FromASTDiagnostics(compiler.SortAndDeduplicateDiagnostics(diagnostics)),
 			&diagnosticwriter.FormattingOptions{
-				Locale:              locale.Default,
-				ComparePathsOptions: tspath.ComparePathsOptions{UseCaseSensitiveFileNames: true, CurrentDirectory: "/"},
-				NewLine:             "\n",
+				Locale:                    locale.Default,
+				UseCaseSensitiveFileNames: true,
+				CurrentDirectory:          "/",
+				NewLine:                   "\n",
 			})
 		return nil, errors.New(strings.TrimSpace(report.String()))
 	}
@@ -86,11 +87,11 @@ func programDiagnostics(ctx context.Context, program *compiler.Program) (diagnos
 			if ctx.Err() == nil {
 				panic(recovered)
 			}
-			diagnostics, err = nil, ctx.Err()
+			diagnostics, err = nil, errors.WithStack(ctx.Err())
 		}
 	}()
 	diagnostics = compiler.GetDiagnosticsOfAnyProgram(ctx, program, nil, false, program.GetBindDiagnostics, program.GetSemanticDiagnostics)
-	return diagnostics, ctx.Err()
+	return diagnostics, errors.WithStack(ctx.Err())
 }
 
 // SourceFile returns the named root file, or nil if it is not in the program.
