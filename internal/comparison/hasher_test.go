@@ -139,7 +139,7 @@ func TestRejectsUnidentifiableRequests(t *testing.T) {
 		"MessageParameter":      {request: forecastRequest("london", "filter=1"), message: `field "filter" is not a scalar`},
 		"PathAndQuery":          {request: forecastRequest("london", "location=paris"), message: `field "location" is already bound`},
 		"BodyAndQuery":          {request: withQuery(searchRequest(`{"days":3}`), "days=3"), message: `field "days" is already bound`},
-		"ProtoNameRejected":    {request: forecastRequest("london", "filter.minDays=2&filter.min_days=2"), message: `has no field "min_days"`},
+		"ProtoNameRejected":     {request: forecastRequest("london", "filter.minDays=2&filter.min_days=2"), message: `has no field "min_days"`},
 		"GetWithBody":           {request: getWithBody, message: "GET request has a body"},
 		"BodyNotJSON":           {request: withContentType(searchRequest(`{}`), "text/plain"), message: `body is not JSON: "text/plain"`},
 		"UnknownHost":           {request: withHost(forecastRequest("london", ""), "other.example"), message: "request content type is not supported"},
@@ -169,9 +169,9 @@ func TestRejectsUnbindableEndpoints(t *testing.T) {
 		pattern string
 		message string
 	}{
-		"UnknownField":     {pattern: "GET weather.example/v1/{place}", message: `type "weather.HTTPQuery" has no field "place"`},
-		"Repeated":         {pattern: "GET weather.example/v1/{tags}", message: `field "tags" is repeated`},
-		"Message":          {pattern: "GET weather.example/v1/{filter}", message: `field "filter" is not a scalar`},
+		"UnknownField": {pattern: "GET weather.example/v1/{place}", message: `type "weather.HTTPQuery" has no field "place"`},
+		"Repeated":     {pattern: "GET weather.example/v1/{tags}", message: `field "tags" is repeated`},
+		"Message":      {pattern: "GET weather.example/v1/{filter}", message: `field "filter" is not a scalar`},
 	} {
 		t.Run(name, func(t *testing.T) {
 			config := newConfig(t, map[string]string{

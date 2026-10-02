@@ -60,7 +60,7 @@ func (v Value) Format(reference func(name string) string) string {
 		literals := make([]string, 0, len(v.Literals))
 		for _, literal := range v.Literals {
 			// JSON strings are valid TypeScript string literals.
-			encoded, _ := json.Marshal(literal) //nolint:errchkjson // Strings always encode.
+			encoded, _ := json.Marshal(literal) //nolint:errcheck // Strings always encode.
 			literals = append(literals, string(encoded))
 		}
 		return strings.Join(literals, " | ")

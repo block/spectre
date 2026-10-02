@@ -151,6 +151,8 @@ func findMessages(
 			for _, key := range objectKeys(payload, path) {
 				walk(*value.Element, path.appendField(key), true)
 			}
+		case schema.KindString, schema.KindNumber, schema.KindBoolean, schema.KindEnum:
+			return
 		}
 	}
 	root := newDocumentPath(nil)

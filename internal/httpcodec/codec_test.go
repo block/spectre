@@ -57,11 +57,11 @@ func TestWireFormatsShareDeclaredJSONShape(t *testing.T) {
 }`), &expected))
 	for name, test := range map[string]struct {
 		format httpcodec.Format
-		body []byte
+		body   []byte
 	}{
 		"ProtoJSON": {format: httpcodec.ConnectJSON, body: jsonBody},
-		"Protobuf": {format: httpcodec.Protobuf, body: binaryBody},
-		"GRPC": {format: httpcodec.GRPC, body: frame},
+		"Protobuf":  {format: httpcodec.Protobuf, body: binaryBody},
+		"GRPC":      {format: httpcodec.GRPC, body: frame},
 	} {
 		t.Run(name, func(t *testing.T) {
 			decoded, err := codec.Decode("spectre.sample.v1.ListUsersResponse", test.format, http.Header{}, test.body, 1<<20)

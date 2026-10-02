@@ -86,23 +86,7 @@ func FromProgram(program *ts.Program, sources map[string]string) (*Schema, error
 			modules[statement.Name().Text()] = true
 		}
 	}
-	reader := &reader{checker: program.Checker(), queued: map[string]bool{}}
-	for _, module := range slices.Sorted(maps.Keys(modules)) {
-		if err := reader.members(reader.checker.TryFindAmbientModule(module)); err != nil {
-			return nil, err
-		}
-	}
-	types := []*Type{}
-	for len(reader.pending) > 0 {
-		next := reader.pending[0]
-		reader.pending = reader.pending[1:]
-		declared, err := reader.objectType(next.name, next.t)
-		if err != nil {
-			return nil, err
-		}
-		types = append(types, declared)
-	}
-	return New(types, reader.operations)
+	return newReader(program.Checker()).read(modules)
 }
 
 // TypeName returns the schema name of a named object type, which is how scripts and
@@ -153,6 +137,29 @@ type reader struct {
 	pending    []pendingType
 	queued     map[string]bool
 	operations []Operation
+}
+
+func newReader(checker *ts.Checker) *reader {
+	return &reader{checker: checker, queued: map[string]bool{}}
+}
+
+func (r *reader) read(modules map[string]bool) (*Schema, error) {
+	for _, module := range slices.Sorted(maps.Keys(modules)) {
+		if err := r.members(r.checker.TryFindAmbientModule(module)); err != nil {
+			return nil, err
+		}
+	}
+	types := []*Type{}
+	for len(r.pending) > 0 {
+		next := r.pending[0]
+		r.pending = r.pending[1:]
+		declared, err := r.objectType(next.name, next.t)
+		if err != nil {
+			return nil, err
+		}
+		types = append(types, declared)
+	}
+	return New(types, r.operations)
 }
 
 // members reads every export of a module or namespace, so unreferenced types are
@@ -293,7 +300,9 @@ func (r *reader) enum(t *ts.Type, at *ts.Node) (Value, error) {
 	value := Value{Kind: KindEnum, Literals: literals}
 	if alias := t.Alias(); alias != nil {
 		// The alias name only renders the enum, so one declared outside a module is dropped.
-		value.Type, _ = qualifiedName(alias.Symbol())
+		if name, err := qualifiedName(alias.Symbol()); err == nil {
+			value.Type = name
+		}
 	}
 	return value, nil
 }

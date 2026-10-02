@@ -13,8 +13,8 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/descriptorpb"
 
-	"github.com/block/spectre/internal/sample/pb/samplepbconnect"
 	"github.com/block/spectre/internal/descriptors"
+	"github.com/block/spectre/internal/sample/pb/samplepbconnect"
 )
 
 func TestReflectionLoaderLoadsApplicationDescriptors(t *testing.T) {

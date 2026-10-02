@@ -20,19 +20,19 @@ func TestAgreementRequiresEveryMessage(t *testing.T) {
 	loaded, err := schema.ParseSources(t.Context(), generated)
 	assert.NoError(t, err)
 	for name, test := range map[string]struct {
-		mutate func(set *descriptorpb.FileDescriptorSet)
+		mutate  func(set *descriptorpb.FileDescriptorSet)
 		missing string
 	}{
 		"TopLevel": {
 			mutate: func(set *descriptorpb.FileDescriptorSet) {
-				file := set.File[len(set.GetFile())-1]
+				file := set.GetFile()[len(set.GetFile())-1]
 				file.MessageType = append(file.GetMessageType(), &descriptorpb.DescriptorProto{Name: new("Unused")})
 			},
 			missing: "spectre.sample.v1.Unused",
 		},
 		"Nested": {
 			mutate: func(set *descriptorpb.FileDescriptorSet) {
-				user := set.File[1].MessageType[0]
+				user := set.GetFile()[1].GetMessageType()[0]
 				user.NestedType = append(user.GetNestedType(), &descriptorpb.DescriptorProto{Name: new("Unused")})
 			},
 			missing: "spectre.sample.v1.User.Unused",
@@ -89,28 +89,28 @@ func TestAgreementRejectsMismatchedFields(t *testing.T) {
 	registry, err := descriptors.NewRegistry(set)
 	assert.NoError(t, err)
 	for name, test := range map[string]struct {
-		typeName string
+		typeName  string
 		fieldName string
-		mutate func(field *schema.Field)
-		message string
+		mutate    func(field *schema.Field)
+		message   string
 	}{
 		"NonPresenceScalar": {typeName: "User", fieldName: "id", mutate: func(field *schema.Field) { field.Optional = true }, message: `field "id" must be required`},
-		"OptionalScalar": {typeName: "User", fieldName: "nickname", mutate: func(field *schema.Field) { field.Optional = false }, message: `field "nickname" must be optional`},
-		"MessagePresence": {typeName: "User", fieldName: "profile", mutate: func(field *schema.Field) { field.Optional = false }, message: `field "profile" must be optional`},
-		"OneofPresence": {typeName: "User", fieldName: "email", mutate: func(field *schema.Field) { field.Optional = false }, message: `field "email" must be optional`},
-		"JSONName": {typeName: "User", fieldName: "id", mutate: func(field *schema.Field) { field.Name = "userId" }, message: `field "id" is missing`},
-		"Bytes": {typeName: "User", fieldName: "avatar", mutate: func(field *schema.Field) { field.Value = schema.Value{Kind: schema.KindNumber} }, message: `field "avatar" has type number, expected string`},
-		"Unsigned64": {typeName: "User", fieldName: "revision", mutate: func(field *schema.Field) { field.Value = schema.Value{Kind: schema.KindNumber} }, message: `field "revision" has type number, expected string`},
-		"Signed64": {typeName: "ListUsersResponse", fieldName: "totalCount", mutate: func(field *schema.Field) { field.Value = schema.Value{Kind: schema.KindNumber} }, message: `field "totalCount" has type number, expected string`},
-		"Timestamp": {typeName: "User", fieldName: "createdAt", mutate: func(field *schema.Field) { field.Value = schema.Value{Kind: schema.KindNumber} }, message: `field "createdAt" has type number, expected string`},
+		"OptionalScalar":    {typeName: "User", fieldName: "nickname", mutate: func(field *schema.Field) { field.Optional = false }, message: `field "nickname" must be optional`},
+		"MessagePresence":   {typeName: "User", fieldName: "profile", mutate: func(field *schema.Field) { field.Optional = false }, message: `field "profile" must be optional`},
+		"OneofPresence":     {typeName: "User", fieldName: "email", mutate: func(field *schema.Field) { field.Optional = false }, message: `field "email" must be optional`},
+		"JSONName":          {typeName: "User", fieldName: "id", mutate: func(field *schema.Field) { field.Name = "userId" }, message: `field "id" is missing`},
+		"Bytes":             {typeName: "User", fieldName: "avatar", mutate: func(field *schema.Field) { field.Value = schema.Value{Kind: schema.KindNumber} }, message: `field "avatar" has type number, expected string`},
+		"Unsigned64":        {typeName: "User", fieldName: "revision", mutate: func(field *schema.Field) { field.Value = schema.Value{Kind: schema.KindNumber} }, message: `field "revision" has type number, expected string`},
+		"Signed64":          {typeName: "ListUsersResponse", fieldName: "totalCount", mutate: func(field *schema.Field) { field.Value = schema.Value{Kind: schema.KindNumber} }, message: `field "totalCount" has type number, expected string`},
+		"Timestamp":         {typeName: "User", fieldName: "createdAt", mutate: func(field *schema.Field) { field.Value = schema.Value{Kind: schema.KindNumber} }, message: `field "createdAt" has type number, expected string`},
 		"Enum": {typeName: "User", fieldName: "roles", mutate: func(field *schema.Field) {
 			value := *field.Value.Element
 			value.Literals = value.Literals[:1]
 			field.Value.Element = &value
 		}, message: `field "roles" has type`},
-		"MapElement": {typeName: "User", fieldName: "labels", mutate: func(field *schema.Field) { field.Value.Element = &schema.Value{Kind: schema.KindBoolean} }, message: `field "labels" has type Record<string, boolean>, expected Record<string, string>`},
+		"MapElement":       {typeName: "User", fieldName: "labels", mutate: func(field *schema.Field) { field.Value.Element = &schema.Value{Kind: schema.KindBoolean} }, message: `field "labels" has type Record<string, boolean>, expected Record<string, string>`},
 		"NestedCollection": {typeName: "User.Profile", fieldName: "addresses", mutate: func(field *schema.Field) { field.Value.Kind = schema.KindMap }, message: `field "addresses" has type Record<string, spectre.sample.v1.Address>, expected spectre.sample.v1.Address[]`},
-		"ObjectReference": {typeName: "User", fieldName: "profile", mutate: func(field *schema.Field) { field.Value.Type = "spectre.sample.v1.Phone" }, message: `field "profile" has type spectre.sample.v1.Phone, expected spectre.sample.v1.User.Profile`},
+		"ObjectReference":  {typeName: "User", fieldName: "profile", mutate: func(field *schema.Field) { field.Value.Type = "spectre.sample.v1.Phone" }, message: `field "profile" has type spectre.sample.v1.Phone, expected spectre.sample.v1.User.Profile`},
 	} {
 		t.Run(name, func(t *testing.T) {
 			types := cloneDeclaredTypes(loaded)
@@ -141,11 +141,11 @@ func TestAgreementRejectsMissingAndExtraFields(t *testing.T) {
 	registry, err := descriptors.NewRegistry(set)
 	assert.NoError(t, err)
 	for name, test := range map[string]struct {
-		fields []schema.Field
+		fields  []schema.Field
 		message string
 	}{
 		"Missing": {message: `field "id" is missing`},
-		"Extra": {fields: []schema.Field{{Name: "id", Value: schema.Value{Kind: schema.KindString}}, {Name: "extra", Value: schema.Value{Kind: schema.KindString}}}, message: `field "extra" is not in the protobuf message`},
+		"Extra":   {fields: []schema.Field{{Name: "id", Value: schema.Value{Kind: schema.KindString}}, {Name: "extra", Value: schema.Value{Kind: schema.KindString}}}, message: `field "extra" is not in the protobuf message`},
 	} {
 		t.Run(name, func(t *testing.T) {
 			loaded, err := schema.New([]*schema.Type{{Name: "example.Payload", Fields: test.fields}}, nil)
@@ -239,7 +239,7 @@ func TestAgreementRejectsDeclaredStreamingMethods(t *testing.T) {
 	for _, name := range []string{"ClientStream", "ServerStream", "BidirectionalStream"} {
 		t.Run(name, func(t *testing.T) {
 			operation := loaded.Operations()[0]
-			operation.Name = "example.users.v1.UserService."+name
+			operation.Name = "example.users.v1.UserService." + name
 			modified, err := schema.New(loaded.Types(), append(loaded.Operations(), operation))
 			assert.NoError(t, err)
 			err = descriptors.CheckAgreement(registry, modified)

@@ -115,6 +115,8 @@ func resolveBinding(loaded *schema.Schema, root *schema.Type, name string, repea
 	switch value.Kind {
 	case schema.KindString, schema.KindNumber, schema.KindBoolean, schema.KindEnum:
 		return path, nil
+	case schema.KindObject, schema.KindList, schema.KindMap:
+		return nil, errors.Errorf("field %q is not a scalar", name)
 	default:
 		return nil, errors.Errorf("field %q is not a scalar", name)
 	}
@@ -141,6 +143,8 @@ func parseScalar(value schema.Value, raw string) (any, error) {
 			return nil, errors.New("value is not a declared enum literal")
 		}
 		return raw, nil
+	case schema.KindObject, schema.KindList, schema.KindMap:
+		return nil, errors.Errorf("type %s cannot be bound from text", value)
 	default:
 		return nil, errors.Errorf("type %s cannot be bound from text", value)
 	}

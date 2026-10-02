@@ -1128,8 +1128,8 @@ func descriptorSet() *descriptorpb.FileDescriptorSet {
 				}},
 			},
 			{
-				Name:       new("Response"),
-				OneofDecl:  []*descriptorpb.OneofDescriptorProto{{Name: new("_ignored")}},
+				Name:      new("Response"),
+				OneofDecl: []*descriptorpb.OneofDescriptorProto{{Name: new("_ignored")}},
 				NestedType: []*descriptorpb.DescriptorProto{{
 					Name:    new("LabelsEntry"),
 					Options: &descriptorpb.MessageOptions{MapEntry: new(true)},

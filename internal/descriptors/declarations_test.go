@@ -93,11 +93,11 @@ func TestSampleDeclarationWireJSONRoundTrip(t *testing.T) {
 		expected string
 	}{
 		"AbsentPresence": {
-			message: &samplepb.User{},
+			message:  &samplepb.User{},
 			expected: `{"id":"","name":"","roles":[],"labels":{},"avatar":"","revision":"0"}`,
 		},
 		"PresentDefaults": {
-			message: &samplepb.User{Nickname: new(""), Profile: &samplepb.User_Profile{MarketingConsent: new(false)}, Contact: &samplepb.User_Email{Email: ""}},
+			message:  &samplepb.User{Nickname: new(""), Profile: &samplepb.User_Profile{MarketingConsent: new(false)}, Contact: &samplepb.User_Email{Email: ""}},
 			expected: `{"id":"","name":"","nickname":"","roles":[],"labels":{},"profile":{"addresses":[],"marketingConsent":false,"preferences":{}},"avatar":"","revision":"0","email":""}`,
 		},
 		"PopulatedCollections": {
@@ -107,10 +107,10 @@ func TestSampleDeclarationWireJSONRoundTrip(t *testing.T) {
 					Labels: map[string]string{"team": "core"}, Avatar: []byte{0, 255}, Revision: 18446744073709551615,
 					CreatedAt: &timestamppb.Timestamp{Seconds: 1}, Contact: &samplepb.User_Phone{Phone: &samplepb.Phone{CountryCode: "1", Number: "555", Extension: new("")}},
 					Profile: &samplepb.User_Profile{
-						Addresses: []*samplepb.Address{{Lines: []string{"1 Main St"}, City: "Town", PostalCode: "123", CountryCode: "US"}},
+						Addresses:        []*samplepb.Address{{Lines: []string{"1 Main St"}, City: "Town", PostalCode: "123", CountryCode: "US"}},
 						MarketingConsent: new(false), Preferences: map[string]*samplepb.Preference{
-							"zero": {Value: &samplepb.Preference_Weight{Weight: 0}},
-							"off": {Value: &samplepb.Preference_Enabled{Enabled: false}},
+							"zero":  {Value: &samplepb.Preference_Weight{Weight: 0}},
+							"off":   {Value: &samplepb.Preference_Enabled{Enabled: false}},
 							"empty": {Value: &samplepb.Preference_Text{Text: ""}},
 						},
 					},
@@ -194,7 +194,7 @@ func TestDeclarationsRejectUnsupportedWellKnownReferences(t *testing.T) {
 
 func TestDeclarationsRejectInvalidSets(t *testing.T) {
 	for name, set := range map[string]*descriptorpb.FileDescriptorSet{
-		"Nil": nil,
+		"Nil":           nil,
 		"MissingImport": {File: newDescriptorSet().GetFile()[:1]},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -207,13 +207,13 @@ func TestDeclarationsRejectInvalidSets(t *testing.T) {
 
 func TestDeclarationsRejectUnsafePaths(t *testing.T) {
 	for name, path := range map[string]string{
-		"Traversal": "../outside.proto",
-		"NestedTraversal": "nested/../../outside.proto",
-		"Absolute": "/outside.proto",
+		"Traversal":          "../outside.proto",
+		"NestedTraversal":    "nested/../../outside.proto",
+		"Absolute":           "/outside.proto",
 		"BackslashTraversal": `..\outside.proto`,
-		"Drive": `C:/outside.proto`,
-		"CommentInjection": "outside.proto\ninterface Malicious {}",
-		"NotCanonical": "nested/../outside.proto",
+		"Drive":              `C:/outside.proto`,
+		"CommentInjection":   "outside.proto\ninterface Malicious {}",
+		"NotCanonical":       "nested/../outside.proto",
 	} {
 		t.Run(name, func(t *testing.T) {
 			set := plainDescriptorSet()
@@ -252,7 +252,7 @@ func TestDeclarationsRejectNamesThatCannotRoundTrip(t *testing.T) {
 	for name, messageName := range map[string]string{"Keyword": "class"} {
 		t.Run(name, func(t *testing.T) {
 			set := plainDescriptorSet()
-			message := set.File[0].MessageType[0]
+			message := set.GetFile()[0].GetMessageType()[0]
 			message.Name = new(messageName)
 			message.Field = []*descriptorpb.FieldDescriptorProto{messageField("next", 1, ".example."+messageName)}
 			generated, err := descriptors.Declarations(t.Context(), set)
@@ -419,9 +419,9 @@ func messageField(name string, number int32, typeName string) *descriptorpb.Fiel
 
 func streamingDescriptorSet() *descriptorpb.FileDescriptorSet {
 	set := newDescriptorSet()
-	service := set.File[0].Service[0]
+	service := set.GetFile()[0].GetService()[0]
 	for _, test := range []struct {
-		name string
+		name           string
 		client, server bool
 	}{
 		{name: "ClientStream", client: true},
@@ -461,7 +461,7 @@ func decodeJSON(t *testing.T, data []byte) any {
 
 func TestDeclarationsTypeDoesNotShadowNamespace(t *testing.T) {
 	set := plainDescriptorSet()
-	message := set.File[0].MessageType[0]
+	message := set.GetFile()[0].GetMessageType()[0]
 	message.Name = new("example")
 	message.Field = []*descriptorpb.FieldDescriptorProto{messageField("next", 1, ".example.example")}
 	generated, err := descriptors.Declarations(t.Context(), set)

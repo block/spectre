@@ -140,7 +140,7 @@ func typeArguments(checker *ts.Checker, loaded *schema.Schema, call *ts.Node) (*
 	encoded := make([]string, 0, len(values)+1)
 	for _, value := range values {
 		// JSON strings are valid JavaScript string literals.
-		literal, _ := json.Marshal(value) //nolint:errchkjson // Strings always encode.
+		literal, _ := json.Marshal(value) //nolint:errcheck // Strings always encode.
 		encoded = append(encoded, string(literal))
 	}
 	if len(call.Arguments()) > 0 {

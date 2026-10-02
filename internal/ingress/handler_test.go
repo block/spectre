@@ -1183,9 +1183,9 @@ func matchingDescriptorLoader() descriptorLoaderFunc {
 	return func(ctx context.Context, endpoint string) (*descriptorpb.FileDescriptorSet, error) {
 		_, _ = ctx, endpoint
 		return &descriptorpb.FileDescriptorSet{File: []*descriptorpb.FileDescriptorProto{{
-			Name:        new("test.proto"),
-			Package:     new("test"),
-			Syntax:      new("proto3"),
+			Name:    new("test.proto"),
+			Package: new("test"),
+			Syntax:  new("proto3"),
 			MessageType: []*descriptorpb.DescriptorProto{{
 				Name: new("Payload"),
 				Field: []*descriptorpb.FieldDescriptorProto{{

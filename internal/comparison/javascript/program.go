@@ -18,7 +18,8 @@ import (
 )
 
 const (
-	spectreModuleName = "spectre"
+	spectreModuleName   = "spectre"
+	typeScriptExtension = ".ts"
 	// entryModuleName names the synthetic module importing every script. It cannot
 	// collide with a script, whose names end in ".ts".
 	entryModuleName = "."
@@ -40,7 +41,7 @@ type Program struct {
 func NewProgram(ctx context.Context, declarations fs.FS, scripts fs.FS) (*Program, error) {
 	declarationSources, err := schema.ReadSources(declarations)
 	if err != nil {
-		return nil, err
+		return nil, errors.Wrap(err, "read schema declarations")
 	}
 	scriptSources, err := readScripts(scripts)
 	if err != nil {
@@ -87,7 +88,7 @@ func readScripts(scripts fs.FS) (map[string]string, error) {
 		if path.Ext(name) == ".js" {
 			return errors.Errorf("comparison script %q is JavaScript; scripts must be TypeScript", name)
 		}
-		if entry.IsDir() || path.Ext(name) != ".ts" {
+		if entry.IsDir() || path.Ext(name) != typeScriptExtension {
 			return nil
 		}
 		source, err := fs.ReadFile(scripts, name)
@@ -218,14 +219,14 @@ func (l *moduleLoader) resolve(referencing any, specifier string) (sobek.ModuleR
 		return nil, errors.Errorf("comparison module %q imports %q outside the scripts directory", referrer, specifier)
 	}
 	if path.Ext(name) == "" {
-		name += ".ts"
+		name += typeScriptExtension
 	}
-	if _, ok := l.compiled[name]; !ok {
+	if _, found := l.compiled[name]; !found {
 		return nil, errors.Errorf("comparison module %q imports %q, which is not a TypeScript script", referrer, specifier)
 	}
 	return l.load(name)
 }
 
 func isScript(name string) bool {
-	return path.Ext(name) == ".ts" && !strings.HasSuffix(name, ".d.ts")
+	return path.Ext(name) == typeScriptExtension && !strings.HasSuffix(name, ".d.ts")
 }

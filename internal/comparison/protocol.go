@@ -309,10 +309,13 @@ func decodePayload(codec *httpcodec.Codec, root *schema.Type, selected protocol,
 		format = httpcodec.GRPC
 	case protocolProtobuf:
 		format = httpcodec.Protobuf
+	case protocolHTTPJSON:
+		return nil, errors.New("HTTP JSON must be decoded without a wire codec")
 	default:
 		return nil, errors.Errorf("unknown protocol: %d", selected)
 	}
-	return codec.Decode(root.Name, format, header, body, maxBodyBytes)
+	payload, err := codec.Decode(root.Name, format, header, body, maxBodyBytes)
+	return payload, errors.Wrap(err, "decode wire payload")
 }
 
 func hasJSONMediaType(header http.Header) bool {
