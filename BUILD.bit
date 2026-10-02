@@ -1,11 +1,5 @@
 # Build file for github.com/alecthomas/bit
 
-param version = "dev"
-param test-package = "./..."
-param test-run = "."
-param registry : string
-param image-tag : string
-
 # The TypeScript shim is a separate module, so Go tools skip it from the root.
 let go-module = [".", "internal/typescript"]
 
@@ -26,10 +20,10 @@ sample-schema = exec {
   depends_on = [sample-proto, typescript-compiler]
 }
 
-test-go[go-module] = go.test {
-  package = test-package
+test-go[go-module](package = "./...", run = ".") = go.test {
+  package = package
   dir = go-module
-  flags = ["-timeout=30s", "-run=#{test-run}"]
+  flags = ["-timeout=30s", "-run=#{run}"]
   depends_on = [sample-schema, typescript-compiler]
 }
 test-comment-length = exec.test {
@@ -53,8 +47,8 @@ test-container-publisher = exec.test {
   command = "sh scripts/publish-container-images.test.sh"
   inputs = ["scripts/publish-container-images", "scripts/publish-container-images.test.sh"]
 }
-explicit test-container = exec.test {
-  command = "container.test.sh #{local-image.ref} #{version}"
+explicit test-container(version = "dev") = exec.test {
+  command = "container.test.sh #{local-image(version = version).ref} #{version}"
   inputs = ["scripts/container.test.sh"]
 }
 fmt-go[go-module] = go.fmt { dir = go-module }
@@ -119,11 +113,11 @@ explicit egress-bin = go.exe {
   output = "dist/spectre-egress"
   depends_on = [typescript-compiler]
 }
-explicit local-image = docker.image {
+explicit local-image(version = "dev") = docker.image {
   tag = "spectre:#{version}"
   build_args = { VERSION = version }
 }
-explicit publish-release-image = docker.image {
+explicit publish-release-image(registry : string, image-tag : string, version : string) = docker.image {
   tag = "#{registry}/spectre:#{image-tag}"
   build_args = { VERSION = version }
   platform = ["linux/amd64", "linux/arm64"]
@@ -136,7 +130,7 @@ target sample = [sample-bin, sample-forecasts-bin]
 target container = [local-image]
 
 # Publish the ingress and egress container image.
-target publish-container = [publish-release-image]
+target publish-container(registry : string, image-tag : string, version : string) = [publish-release-image(registry = registry, image-tag = image-tag, version = version)]
 
 # Run all tests
 target test = [test-go, test-comment-length, test-launcher, test-response-comparison-integration, test-release-version, test-container-publisher]

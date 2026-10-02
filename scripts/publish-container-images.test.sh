@@ -56,7 +56,7 @@ assert_count() {
 
 : > "$log"
 PUBLISHED_IMAGES='' "$publisher" v1.2.3 >/dev/null
-assert_count 2 'bit <-P> <version=v1.2.3>'
+assert_count 2 'bit <publish-container> <version=v1.2.3>'
 assert_count 2 '<image-tag=1.2.3>'
 assert_count 6 'docker <buildx> <imagetools> <create>'
 assert_count 1 '<--tag> <ghcr.io/block/spectre:1.2> <ghcr.io/block/spectre:1.2.3>'
@@ -80,7 +80,7 @@ assert_count 6 'docker <buildx> <imagetools> <create>'
 
 : > "$log"
 PUBLISHED_IMAGES='' "$publisher" v1.2.3-rc.1 >/dev/null
-assert_count 2 'bit <-P> <version=v1.2.3-rc.1>'
+assert_count 2 'bit <publish-container> <version=v1.2.3-rc.1>'
 assert_count 0 'docker <buildx> <imagetools> <create>'
 
 printf 'Container publisher regression tests passed\n'

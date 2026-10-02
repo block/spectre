@@ -12,11 +12,10 @@ for registry in ghcr.io/block docker.io/blockossreleases; do
   if docker buildx imagetools inspect "$release_image" >/dev/null 2>&1; then
     printf '%s already exists; skipping build\n' "$release_image"
   else
-    bit \
-      -P "version=$version" \
-      -P "registry=$registry" \
-      -P "image-tag=$release" \
-      publish-container
+    bit publish-container \
+      "version=$version" \
+      "registry=$registry" \
+      "image-tag=$release"
   fi
 
   # Exact versions may be immutable; retries only retarget the mutable aliases.
