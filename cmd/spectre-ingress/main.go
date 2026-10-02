@@ -9,6 +9,7 @@ import (
 
 	"github.com/alecthomas/errors"
 	"github.com/alecthomas/kong"
+	kongtoml "github.com/alecthomas/kong-toml"
 
 	"github.com/block/spectre/internal"
 	"github.com/block/spectre/internal/comparison"
@@ -21,6 +22,7 @@ import (
 
 type cli struct {
 	Log        logger.Config     `embed:""`
+	Config     kong.ConfigFlag   `placeholder:"FILE" help:"Load flag values from a TOML file. Command-line flags take precedence."`
 	Version    kong.VersionFlag  `help:"Print the version and exit."`
 	Ingress    ingress.Config    `embed:""`
 	Comparison comparison.Config `embed:""`
@@ -33,7 +35,7 @@ type commandContext struct {
 
 func main() {
 	command := &cli{}
-	kctx := kong.Parse(command, kong.Vars{"version": internal.Version})
+	kctx := kong.Parse(command, kong.Vars{"version": internal.Version}, kong.Configuration(kongtoml.Loader))
 	log := logger.New(command.Log, os.Stderr)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

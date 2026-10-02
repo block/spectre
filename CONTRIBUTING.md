@@ -8,6 +8,19 @@ forwards reference calls and replays the recorded responses to matching candidat
 Logs default to info-level, colorized text on stderr. Use `--log-level=debug|info|warn|error`
 to change the minimum level and `--log-json` for JSON output.
 
+Both commands accept `--config=FILE` to load flag values from a TOML file. Keys are
+flag names without the leading dashes, and command-line flags take precedence:
+
+```toml
+scripts-dir = "internal/sample/scripts"
+descriptors-dir = "dist/descriptors"
+
+[destination]
+"forecasts.example" = "http://127.0.0.1:50053"
+```
+
+Unknown keys are rejected.
+
 ## Container image
 
 Build the local Alpine-based image with `bit container`. It contains both commands,
