@@ -28,6 +28,8 @@ const (
 	protocolGRPC
 	// protocolHTTPJSON is a raw HTTP response whose JSON body is the endpoint method's output.
 	protocolHTTPJSON
+	// protocolProtobuf is a bare serialized protobuf message carried as the HTTP body.
+	protocolProtobuf
 )
 
 const jsonMediaType = "application/json"
@@ -48,6 +50,8 @@ func requestProtocol(contentType string) (protocol, Result) {
 		return protocolConnectJSON, newEmptyResult()
 	case "application/grpc", "application/grpc+proto":
 		return protocolGRPC, newEmptyResult()
+	case "application/x-protobuf", "application/protobuf":
+		return protocolProtobuf, newEmptyResult()
 	default:
 		return 0, Resultf(Skipped, "request protocol is not supported: %q", mediaType)
 	}
@@ -90,6 +94,8 @@ func normaliseResponses(
 		return normaliseGRPC(loaded, root, reference, candidate, maxResponseBytes)
 	case protocolHTTPJSON:
 		return normaliseHTTPJSON(loaded, root, reference, candidate, maxResponseBytes)
+	case protocolProtobuf:
+		return normaliseProtobuf(loaded, root, reference, candidate, maxResponseBytes)
 	default:
 		return nil, nil, Resultf(Unable, "unknown comparison protocol: %d", selected)
 	}
@@ -190,6 +196,30 @@ func normaliseGRPC(
 	return decodeResponses(loaded, root, protocolGRPC, reference, candidate, maxResponseBytes)
 }
 
+// normaliseProtobuf decodes bare protobuf response bodies.
+func normaliseProtobuf(
+	loaded *schema.Schema,
+	root protoreflect.MessageDescriptor,
+	reference Response,
+	candidate Response,
+	maxResponseBytes int,
+) (referencePayload, candidatePayload any, result Result) {
+	// A non-OK status carries an error body that is not the method output; the
+	// caller already matched the statuses, so treat them as equivalent.
+	if reference.StatusCode != http.StatusOK {
+		return nil, nil, Resultf(Equivalent, "")
+	}
+	if !hasProtobufMediaType(reference.Header) || !hasProtobufMediaType(candidate.Header) {
+		return nil, nil, Resultf(
+			Unable,
+			"protobuf response has an invalid content type: reference=%q candidate=%q",
+			reference.Header.Get("Content-Type"),
+			candidate.Header.Get("Content-Type"),
+		)
+	}
+	return decodeResponses(loaded, root, protocolProtobuf, reference, candidate, maxResponseBytes)
+}
+
 // decodeResponses decodes both response bodies as root, reporting which side failed.
 func decodeResponses(
 	loaded *schema.Schema,
@@ -286,6 +316,14 @@ func decodePayload(
 		if containsUnknown(message, loaded.Types()) {
 			return nil, errors.New("protobuf payload contains unknown fields")
 		}
+	case protocolProtobuf:
+		// The body is the bare serialized message, without a gRPC frame.
+		if err := (proto.UnmarshalOptions{Resolver: loaded.Types()}).Unmarshal(body, message); err != nil {
+			return nil, errors.Wrap(err, "decode protobuf")
+		}
+		if containsUnknown(message, loaded.Types()) {
+			return nil, errors.New("protobuf payload contains unknown fields")
+		}
 	default:
 		return nil, errors.Errorf("unknown protocol: %d", selected)
 	}
@@ -300,6 +338,11 @@ func hasJSONMediaType(header http.Header) bool {
 func hasGRPCMediaType(header http.Header) bool {
 	mediaType, _, err := mime.ParseMediaType(header.Get("Content-Type"))
 	return err == nil && (mediaType == "application/grpc" || mediaType == "application/grpc+proto")
+}
+
+func hasProtobufMediaType(header http.Header) bool {
+	mediaType, _, err := mime.ParseMediaType(header.Get("Content-Type"))
+	return err == nil && (mediaType == "application/x-protobuf" || mediaType == "application/protobuf")
 }
 
 func grpcStatus(header http.Header) (int, error) {

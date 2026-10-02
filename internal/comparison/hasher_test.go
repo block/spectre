@@ -101,6 +101,11 @@ func TestRequestHashIsStable(t *testing.T) {
 			right: grpcRequest(t, "Find", queryProto("london", 3)),
 			equal: true,
 		},
+		"ProtobufMatchesJSON": {
+			left:  searchRequest(`{"location":"london","days":3}`),
+			right: searchProtobuf(queryProto("london", 3)),
+			equal: true,
+		},
 		"Value": {
 			left:  searchRequest(`{"location":"london","days":3}`),
 			right: searchRequest(`{"location":"london","days":4}`),
@@ -228,6 +233,16 @@ func searchRequest(body string) comparison.Request {
 		Path:   "/v1/search",
 		Header: http.Header{"Content-Type": []string{"application/json"}},
 		Body:   []byte(body),
+	}
+}
+
+func searchProtobuf(payload []byte) comparison.Request {
+	return comparison.Request{
+		Method: http.MethodPost,
+		Host:   "weather.example:8080",
+		Path:   "/v1/search",
+		Header: http.Header{"Content-Type": []string{"application/x-protobuf"}},
+		Body:   payload,
 	}
 }
 

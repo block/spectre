@@ -606,6 +606,18 @@ func TestDeclaredEndpointsDecodeGRPCRequestsAsGRPC(t *testing.T) {
 	assert.Equal(t, comparison.NewDifferenceResult("$.stable"), result)
 }
 
+func TestDeclaredEndpointsDecodeProtobufRequestsAsProtobuf(t *testing.T) {
+	comparator := newScriptsComparator(t, map[string]string{
+		"weather.js": module(`spectre.ingress("POST /v1/forecast", "test.v1.Service.Get");`),
+	})
+	reference := protobufResponse(responseProto("first", "", nil))
+	candidate := protobufResponse(responseProto("second", "", nil))
+
+	result := comparator.Compare(t.Context(), http.MethodPost, "/v1/forecast", "application/x-protobuf", reference, candidate)
+
+	assert.Equal(t, comparison.NewDifferenceResult("$.stable"), result)
+}
+
 func TestLoadsEveryScriptAsOneSet(t *testing.T) {
 	comparator := newScriptsComparator(t, map[string]string{
 		"users/user.js": module(`
@@ -768,6 +780,14 @@ func connectResponse(body string) comparison.Response {
 		StatusCode: http.StatusOK,
 		Header:     http.Header{"Content-Type": []string{"application/json"}},
 		Body:       []byte(body),
+	}
+}
+
+func protobufResponse(payload []byte) comparison.Response {
+	return comparison.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/x-protobuf"}},
+		Body:       payload,
 	}
 }
 
