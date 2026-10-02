@@ -1,6 +1,7 @@
 package schema_test
 
 import (
+	"context"
 	"testing"
 	"testing/fstest"
 
@@ -141,6 +142,16 @@ func TestModulesDoNotShareScope(t *testing.T) {
 	})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "Cannot find name 'B'")
+}
+
+func TestCancelledCheckReturnsError(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	_, err := schema.ParseSources(ctx, map[string]string{
+		"a.d.ts": `declare module "a" { export interface A {} }`,
+		"b.d.ts": `declare module "b" { export interface B {} }`,
+	})
+	assert.IsError(t, err, context.Canceled)
 }
 
 func TestValidatesJSON(t *testing.T) {

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing/fstest"
 
+	"github.com/microsoft/TypeScript/tsc/internal/ast"
 	"github.com/microsoft/TypeScript/tsc/internal/bundled"
 	"github.com/microsoft/TypeScript/tsc/internal/compiler"
 	"github.com/microsoft/TypeScript/tsc/internal/core"
@@ -59,8 +60,8 @@ func NewProgram(ctx context.Context, files map[string]string) (*Program, error) 
 		},
 		ProgramHosts: compiler.ProgramHosts{Host: host},
 	})
-	diagnostics := compiler.GetDiagnosticsOfAnyProgram(ctx, program, nil, false, program.GetBindDiagnostics, program.GetSemanticDiagnostics)
-	if err := ctx.Err(); err != nil {
+	diagnostics, err := programDiagnostics(ctx, program)
+	if err != nil {
 		return nil, err
 	}
 	if len(diagnostics) > 0 {
@@ -75,6 +76,21 @@ func NewProgram(ctx context.Context, files map[string]string) (*Program, error) 
 	}
 	checker, _ := program.GetTypeChecker(ctx)
 	return &Program{program: program, checker: checker}, nil
+}
+
+// programDiagnostics reports cancellation as an error. A cancelled checker panics
+// when asked about its next file, so that panic is recovered once ctx is done.
+func programDiagnostics(ctx context.Context, program *compiler.Program) (diagnostics []*ast.Diagnostic, err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			if ctx.Err() == nil {
+				panic(recovered)
+			}
+			diagnostics, err = nil, ctx.Err()
+		}
+	}()
+	diagnostics = compiler.GetDiagnosticsOfAnyProgram(ctx, program, nil, false, program.GetBindDiagnostics, program.GetSemanticDiagnostics)
+	return diagnostics, ctx.Err()
 }
 
 // SourceFile returns the named root file, or nil if it is not in the program.

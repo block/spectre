@@ -46,9 +46,7 @@ func newScriptSet(ctx context.Context, config Config, direction javascript.Direc
 		return nil, errors.Wrap(err, "open scripts directory")
 	}
 	defer root.Close() //nolint:errcheck // Module source is fully loaded before closing.
-	programContext, cancel := context.WithTimeout(ctx, config.ComparisonTimeout)
-	defer cancel()
-	program, err := javascript.NewProgram(programContext, os.DirFS(config.Schema.SchemaDir), root.FS())
+	program, err := javascript.NewProgram(ctx, config.ComparisonTimeout, os.DirFS(config.Schema.SchemaDir), root.FS())
 	if err != nil {
 		return nil, errors.Wrap(err, "compile comparison scripts")
 	}

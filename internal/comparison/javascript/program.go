@@ -10,6 +10,7 @@ import (
 	"path"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/alecthomas/errors"
 	"github.com/grafana/sobek"
@@ -36,9 +37,9 @@ type Program struct {
 	messages  []string
 }
 
-// NewProgram type-checks every TypeScript script against the schema declarations,
-// links the scripts, then evaluates them once to validate their combined registrations.
-func NewProgram(ctx context.Context, declarations fs.FS, scripts fs.FS) (*Program, error) {
+// NewProgram type-checks every TypeScript script against the schema declarations, links
+// them, then evaluates them once within evaluationTimeout to collect their registrations.
+func NewProgram(ctx context.Context, evaluationTimeout time.Duration, declarations fs.FS, scripts fs.FS) (*Program, error) {
 	declarationSources, err := schema.ReadSources(declarations)
 	if err != nil {
 		return nil, errors.Wrap(err, "read schema declarations")
@@ -59,7 +60,9 @@ func NewProgram(ctx context.Context, declarations fs.FS, scripts fs.FS) (*Progra
 	if err := module.Link(); err != nil {
 		return nil, errors.Wrap(err, "link comparison modules")
 	}
-	evaluator, registered, err := newEvaluator(ctx, module, loader.spectreModule())
+	evaluationContext, cancel := context.WithTimeout(ctx, evaluationTimeout)
+	defer cancel()
+	evaluator, registered, err := newEvaluator(evaluationContext, module, loader.spectreModule())
 	if err != nil {
 		return nil, errors.Wrap(err, "evaluate comparison modules")
 	}

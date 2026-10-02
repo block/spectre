@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 	"testing/fstest"
+	"time"
 
 	"github.com/alecthomas/assert/v2"
 
@@ -79,7 +80,7 @@ declare module "test" {
 			source := `import { ingress, egress, field, message } from "spectre";
 import type { Address, Preference, Root } from "test";
 ` + test.body
-			_, err := javascript.NewProgram(t.Context(), declarations, fstest.MapFS{"test.ts": {Data: []byte(source)}})
+			_, err := javascript.NewProgram(t.Context(), time.Second, declarations, fstest.MapFS{"test.ts": {Data: []byte(source)}})
 			if test.valid {
 				assert.NoError(t, err)
 				return

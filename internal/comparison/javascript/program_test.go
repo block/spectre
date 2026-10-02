@@ -6,6 +6,7 @@ import (
 	"sync"
 	"testing"
 	"testing/fstest"
+	"time"
 
 	"github.com/alecthomas/assert/v2"
 
@@ -216,6 +217,12 @@ func TestEvaluatesEachScriptOnce(t *testing.T) {
 	assert.NoError(t, err)
 	assert.True(t, present)
 	assert.Equal(t, any("alice"), normalised)
+}
+
+func TestTimeoutBoundsOnlyEvaluation(t *testing.T) {
+	_, err := javascript.NewProgram(t.Context(), 10*time.Millisecond, declarations(), fstest.MapFS{"test.ts": script(`while (true) {}`)})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "evaluate comparison modules")
 }
 
 func TestRejectsDuplicateTargetsAcrossScripts(t *testing.T) {
@@ -468,7 +475,7 @@ func TestEvaluatorsUseStartupModuleGraph(t *testing.T) {
 		spectre.field<v1.Response, "value">(normalise);
 	`).Data, 0o600))
 	assert.NoError(t, os.WriteFile(helperPath, []byte(`export const normalise = (value: string) => value + "!";`), 0o600))
-	program, err := javascript.NewProgram(t.Context(), declarations(), os.DirFS(directory))
+	program, err := javascript.NewProgram(t.Context(), time.Second, declarations(), os.DirFS(directory))
 	assert.NoError(t, err)
 	assert.NoError(t, os.Remove(mainPath))
 	assert.NoError(t, os.WriteFile(helperPath, []byte(`throw new Error("new source");`), 0o600))
@@ -511,7 +518,7 @@ func TestRejectsScriptSymlinks(t *testing.T) {
 				assert.NoError(t, os.Symlink(outside, filepath.Join(scripts, "lib")))
 				assert.NoError(t, os.WriteFile(filepath.Join(scripts, "main.ts"), []byte(`import "./lib/outside";`), 0o600))
 			}
-			_, err := javascript.NewProgram(t.Context(), declarations(), os.DirFS(scripts))
+			_, err := javascript.NewProgram(t.Context(), time.Second, declarations(), os.DirFS(scripts))
 			assert.Error(t, err)
 			assert.Contains(t, err.Error(), "symbolic link")
 		})
@@ -593,7 +600,7 @@ func newProgram(t *testing.T, body string) (*javascript.Program, error) {
 
 func compile(t *testing.T, files fstest.MapFS) (*javascript.Program, error) {
 	t.Helper()
-	return javascript.NewProgram(t.Context(), declarations(), files)
+	return javascript.NewProgram(t.Context(), time.Second, declarations(), files)
 }
 
 func declarations() fstest.MapFS {
