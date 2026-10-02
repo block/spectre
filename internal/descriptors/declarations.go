@@ -71,7 +71,7 @@ func Declarations(ctx context.Context, set *descriptorpb.FileDescriptorSet) (map
 			return false
 		}
 		var rendered string
-		rendered, renderErr = renderFile(file)
+		rendered, renderErr = renderFile(registry, file)
 		if renderErr != nil {
 			renderErr = errors.Wrapf(renderErr, "render %q", file.Path())
 			return false
@@ -137,6 +137,7 @@ func WriteDeclarations(ctx context.Context, set *descriptorpb.FileDescriptorSet,
 // declarationWriter indents nested namespaces and remembers whether anything
 // was declared, so files without declarations can be dropped.
 type declarationWriter struct {
+	registry *Registry
 	builder  strings.Builder
 	depth    int
 	declared bool
@@ -155,8 +156,8 @@ func (w *declarationWriter) linef(format string, args ...any) {
 	w.builder.WriteString("\n")
 }
 
-func newDeclarationWriter(depth int) *declarationWriter {
-	return &declarationWriter{depth: depth}
+func newDeclarationWriter(registry *Registry, depth int) *declarationWriter {
+	return &declarationWriter{registry: registry, depth: depth}
 }
 
 func (w *declarationWriter) contents() string {
@@ -167,8 +168,8 @@ func (w *declarationWriter) hasDeclarations() bool {
 	return w.declared
 }
 
-func renderFile(file protoreflect.FileDescriptor) (declaration string, err error) {
-	return newDeclarationWriter(0).renderFile(file)
+func renderFile(registry *Registry, file protoreflect.FileDescriptor) (declaration string, err error) {
+	return newDeclarationWriter(registry, 0).renderFile(file)
 }
 
 func (w *declarationWriter) renderFile(file protoreflect.FileDescriptor) (declaration string, err error) {
@@ -218,7 +219,8 @@ func (w *declarationWriter) renderScope(messages protoreflect.MessageDescriptors
 }
 
 func (w *declarationWriter) renderMessage(message protoreflect.MessageDescriptor) error {
-	declared, err := messageType(message)
+	fields := messageFields(w.registry, message)
+	declared, err := messageType(message.FullName(), fields)
 	if err != nil {
 		return err
 	}
@@ -230,7 +232,7 @@ func (w *declarationWriter) renderMessage(message protoreflect.MessageDescriptor
 		if field.Optional {
 			optional = "?"
 		}
-		referenced := referencedType(message.Fields().Get(index))
+		referenced := referencedType(fields[index])
 		value := field.Value.Format(func(_ string) string { return typeReference(referenced) })
 		w.linef("%s%s: %s;", propertyName(field.Name), optional, value)
 	}
@@ -242,7 +244,7 @@ func (w *declarationWriter) renderMessage(message protoreflect.MessageDescriptor
 		return nil
 	}
 	// Merging a namespace with the interface keeps nested names fully qualified.
-	inner := newDeclarationWriter(w.depth + 1)
+	inner := newDeclarationWriter(w.registry, w.depth+1)
 	if err := inner.renderScope(nested, message.Enums()); err != nil {
 		return err
 	}
@@ -293,18 +295,28 @@ func checkMethodTypes(method protoreflect.MethodDescriptor) error {
 	return nil
 }
 
-// messageType models the ProtoJSON object a message encodes to when default values
-// are emitted: only fields with presence may be absent.
-func messageType(message protoreflect.MessageDescriptor) (*schema.Type, error) {
+// messageFields lists a message's fields followed by the extensions the registry
+// declares for it, which ProtoJSON writes as "[full.name]" keys.
+func messageFields(registry *Registry, message protoreflect.MessageDescriptor) []protoreflect.FieldDescriptor {
 	fields := message.Fields()
-	declared := &schema.Type{Name: string(message.FullName()), Fields: make([]schema.Field, 0, fields.Len())}
+	all := make([]protoreflect.FieldDescriptor, 0, fields.Len())
 	for index := range fields.Len() {
-		field := fields.Get(index)
+		all = append(all, fields.Get(index))
+	}
+	return append(all, registry.Extensions(message.FullName())...)
+}
+
+// messageType models the ProtoJSON object a message encodes to when default values
+// are emitted: only fields with presence and extensions, written when set, may be absent.
+func messageType(name protoreflect.FullName, fields []protoreflect.FieldDescriptor) (*schema.Type, error) {
+	declared := &schema.Type{Name: string(name), Fields: make([]schema.Field, 0, len(fields))}
+	for _, field := range fields {
 		value, err := fieldValue(field)
 		if err != nil {
 			return nil, errors.Wrapf(err, "field %q", field.FullName())
 		}
-		declared.Fields = append(declared.Fields, schema.Field{Name: field.JSONName(), Optional: field.HasPresence(), Value: value})
+		optional := field.HasPresence() || field.IsExtension()
+		declared.Fields = append(declared.Fields, schema.Field{Name: field.JSONName(), Optional: optional, Value: value})
 	}
 	return declared, nil
 }

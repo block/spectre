@@ -14,7 +14,7 @@ import (
 func CheckAgreement(registry *Registry, loaded *schema.Schema) error {
 	var agreementErr error
 	registry.Files().RangeFiles(func(file protoreflect.FileDescriptor) bool {
-		agreementErr = checkMessages(file.Messages(), loaded)
+		agreementErr = checkMessages(registry, file.Messages(), loaded)
 		if agreementErr != nil {
 			return false
 		}
@@ -50,14 +50,14 @@ func CheckAgreement(registry *Registry, loaded *schema.Schema) error {
 	return nil
 }
 
-func checkMessages(messages protoreflect.MessageDescriptors, loaded *schema.Schema) error {
+func checkMessages(registry *Registry, messages protoreflect.MessageDescriptors, loaded *schema.Schema) error {
 	for index := range messages.Len() {
 		message := messages.Get(index)
 		// Map entries are implementation details; well-known scalars are inlined in fields.
 		if message.IsMapEntry() || isUntypedMessage(message.FullName()) || isScalarMessage(message.FullName()) {
 			continue
 		}
-		expected, err := messageType(message)
+		expected, err := messageType(message.FullName(), messageFields(registry, message))
 		if err != nil {
 			return errors.Wrapf(err, "model message %q", message.FullName())
 		}
@@ -68,7 +68,7 @@ func checkMessages(messages protoreflect.MessageDescriptors, loaded *schema.Sche
 		if err := sameFields(expected, declared); err != nil {
 			return errors.Wrapf(err, "type %q disagrees with its protobuf message", declared.Name)
 		}
-		if err := checkMessages(message.Messages(), loaded); err != nil {
+		if err := checkMessages(registry, message.Messages(), loaded); err != nil {
 			return err
 		}
 	}

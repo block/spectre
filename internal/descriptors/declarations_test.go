@@ -211,6 +211,55 @@ func TestDeclarationsAcceptNumbersForOpenEnums(t *testing.T) {
 	}
 }
 
+func TestDeclarationsAcceptExtensions(t *testing.T) {
+	set := plainDescriptorSet()
+	file := set.GetFile()[0]
+	file.Syntax = new("proto2")
+	file.MessageType[0].ExtensionRange = []*descriptorpb.DescriptorProto_ExtensionRange{{Start: new(int32(100)), End: new(int32(200))}}
+	extension := func(name string, number int32, label descriptorpb.FieldDescriptorProto_Label) *descriptorpb.FieldDescriptorProto {
+		return &descriptorpb.FieldDescriptorProto{
+			Name: new(name), Number: new(number), Label: label.Enum(),
+			Type: descriptorpb.FieldDescriptorProto_TYPE_STRING.Enum(), Extendee: new(".example.Payload"),
+		}
+	}
+	file.Extension = []*descriptorpb.FieldDescriptorProto{extension("tags", 101, descriptorpb.FieldDescriptorProto_LABEL_REPEATED)}
+	file.MessageType = append(file.GetMessageType(), &descriptorpb.DescriptorProto{
+		Name: new("Holder"), Extension: []*descriptorpb.FieldDescriptorProto{extension("note", 100, descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL)},
+	})
+	generated, err := descriptors.Declarations(t.Context(), set)
+	assert.NoError(t, err)
+	loaded, err := schema.ParseSources(t.Context(), generated)
+	assert.NoError(t, err)
+	declared, err := loaded.Type("example.Payload")
+	assert.NoError(t, err)
+	assert.Equal(t, &schema.Type{Name: "example.Payload", Fields: []schema.Field{
+		{Name: "[example.Holder.note]", Optional: true, Value: schema.Value{Kind: schema.KindString}},
+		{Name: "[example.tags]", Optional: true, Value: schema.Value{Kind: schema.KindList, Element: &schema.Value{Kind: schema.KindString}}},
+	}}, declared)
+
+	registry, err := descriptors.NewRegistry(set)
+	assert.NoError(t, err)
+	message, err := registry.Message("example.Payload")
+	assert.NoError(t, err)
+	payload := dynamicpb.NewMessage(message)
+	for _, name := range []protoreflect.FullName{"example.Holder.note", "example.tags"} {
+		extensionType, err := registry.Types().FindExtensionByName(name)
+		assert.NoError(t, err)
+		field := extensionType.TypeDescriptor()
+		value := protoreflect.ValueOfString("a")
+		if field.IsList() {
+			list := payload.NewField(field).List()
+			list.Append(value)
+			value = protoreflect.ValueOfList(list)
+		}
+		payload.Set(field, value)
+	}
+	data, err := (protojson.MarshalOptions{Resolver: registry.Types(), EmitDefaultValues: true}).Marshal(payload)
+	assert.NoError(t, err)
+	assert.NoError(t, loaded.Validate("example.Payload", decodeJSON(t, data)))
+	assert.NoError(t, descriptors.CheckAgreement(registry, loaded))
+}
+
 func TestDeclarationsRejectUnsupportedWellKnownReferences(t *testing.T) {
 	for _, name := range []string{"Any", "Struct", "Value", "ListValue", "NullValue"} {
 		t.Run(name, func(t *testing.T) {

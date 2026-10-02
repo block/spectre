@@ -73,6 +73,7 @@ names cannot shadow.
 | `repeated T` | `T[]` |
 | `map<K, V>` | `Record<string, V>` |
 | `google.protobuf.Timestamp`, `Duration` | `string` |
+| extensions | `"[full.name]"?: T` on the extended message |
 | `service` | interface of method signatures |
 
 `oneof` members are optional siblings, matching ProtoJSON. `google.protobuf.Any`

@@ -3,6 +3,9 @@
 package descriptors
 
 import (
+	"cmp"
+	"slices"
+
 	"github.com/alecthomas/errors"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protodesc"
@@ -14,8 +17,9 @@ import (
 
 // Registry resolves messages and RPC methods from a local descriptor set.
 type Registry struct {
-	files *protoregistry.Files
-	types *dynamicpb.Types
+	files      *protoregistry.Files
+	types      *dynamicpb.Types
+	extensions map[protoreflect.FullName][]protoreflect.FieldDescriptor
 }
 
 // New loads a binary FileDescriptorSet containing all of its imported files.
@@ -38,7 +42,38 @@ func NewRegistry(set *descriptorpb.FileDescriptorSet) (*Registry, error) {
 	if err != nil {
 		return nil, errors.Wrap(err, "resolve descriptor set")
 	}
-	return &Registry{files: files, types: dynamicpb.NewTypes(files)}, nil
+	return &Registry{files: files, types: dynamicpb.NewTypes(files), extensions: indexExtensions(files)}, nil
+}
+
+// indexExtensions groups every extension in files by the message it extends,
+// ordered by field number.
+func indexExtensions(files *protoregistry.Files) map[protoreflect.FullName][]protoreflect.FieldDescriptor {
+	index := map[protoreflect.FullName][]protoreflect.FieldDescriptor{}
+	var collect func(extensions protoreflect.ExtensionDescriptors, messages protoreflect.MessageDescriptors)
+	collect = func(extensions protoreflect.ExtensionDescriptors, messages protoreflect.MessageDescriptors) {
+		for position := range extensions.Len() {
+			extension := extensions.Get(position)
+			extended := extension.ContainingMessage().FullName()
+			index[extended] = append(index[extended], extension)
+		}
+		for position := range messages.Len() {
+			collect(messages.Get(position).Extensions(), messages.Get(position).Messages())
+		}
+	}
+	files.RangeFiles(func(file protoreflect.FileDescriptor) bool {
+		collect(file.Extensions(), file.Messages())
+		return true
+	})
+	for _, extensions := range index {
+		slices.SortFunc(extensions, func(left, right protoreflect.FieldDescriptor) int { return cmp.Compare(left.Number(), right.Number()) })
+	}
+	return index
+}
+
+// Extensions returns the extensions of a message declared anywhere in the set,
+// ordered by field number.
+func (r *Registry) Extensions(message protoreflect.FullName) []protoreflect.FieldDescriptor {
+	return r.extensions[message]
 }
 
 // Files returns the descriptors resolved from this registry.
