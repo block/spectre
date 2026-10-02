@@ -15,19 +15,22 @@ sample-proto = exec {
   output = ["internal/sample/pb/users.pb.go", "internal/sample/pb/service.pb.go", "internal/sample/pb/samplepbconnect/service.connect.go", "dist/descriptors/sample.pb"]
 }
 
+# Concurrent cold builds each compile the TypeScript compiler, so warm the cache once first.
+typescript-compiler = go.build { package = "./internal/schema" }
+
 # Keep protobuf declarations checked in, like the generated Go bindings.
 sample-schema = exec {
   command = "spectre-gen proto --descriptors-dir=dist/descriptors --output=internal/sample/schema"
   inputs = ["internal/descriptors/*.go", "internal/schema/*.go", "internal/typescript/**/*.go", "internal/typescript/go.mod", "cmd/spectre-gen/*.go", "go.mod", "go.sum", "scripts/spectre-gen", "scripts/spectre-ingress"]
   output = ["internal/sample/schema/users.d.ts", "internal/sample/schema/service.d.ts"]
-  depends_on = [sample-proto]
+  depends_on = [sample-proto, typescript-compiler]
 }
 
 test-go[go-module] = go.test {
   package = test-package
   dir = go-module
   flags = ["-timeout=30s", "-run=#{test-run}"]
-  depends_on = [sample-schema]
+  depends_on = [sample-schema, typescript-compiler]
 }
 test-comment-length = exec.test {
   command = "sh scripts/check-comment-length.test.sh"
@@ -109,10 +112,12 @@ explicit sample-forecasts-bin = go.exe {
 explicit ingress-bin = go.exe {
   package = "./cmd/spectre-ingress"
   output = "dist/spectre-ingress"
+  depends_on = [typescript-compiler]
 }
 explicit egress-bin = go.exe {
   package = "./cmd/spectre-egress"
   output = "dist/spectre-egress"
+  depends_on = [typescript-compiler]
 }
 explicit local-image = docker.image {
   tag = "spectre:#{version}"
