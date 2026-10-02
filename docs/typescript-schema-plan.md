@@ -5,7 +5,9 @@ Protobuf was the schema because gRPC was the first protocol, so every other prot
 currently needs a synthetic `.proto` such as `internal/sample/proto/weather.proto`.
 With TypeScript as the schema, each protocol produces declarations in the same
 language the normaliser scripts are written in, and `tsc` checks the scripts against
-them. This supersedes the TypeScript items in [the ingress plan](plan.md).
+them. This supersedes the TypeScript items in [the ingress plan](plan.md) and
+supplies the schema model behind the boundary in
+[the protocol abstraction](protocols.md).
 
 ## Decisions
 
@@ -19,11 +21,14 @@ them. This supersedes the TypeScript items in [the ingress plan](plan.md).
   references itself. Anything outside the subset fails at load. `tsc` checks
   everything else at build time.
 - A protocol-neutral schema model in Go replaces `protoreflect` throughout
-  `internal/comparison`. Protocol adapters produce decoded JSON; the model drives
-  target resolution, traversal, HTTP parameter binding, presence, and hashing.
-- The gRPC adapter keeps descriptors for wire decoding only. At load it checks that
-  the descriptors and the generated declarations agree by name. Reflection still
-  verifies that reference and candidate serve the same schema.
+  `internal/comparison`. Protocols hand the engine a `schema.Type` and a JSON
+  value, which is the boundary [the protocol abstraction](protocols.md) defines.
+  The model drives target resolution, traversal, HTTP parameter binding,
+  presence, and hashing.
+- The HTTP protocol keeps descriptors for gRPC and Connect wire decoding only. At
+  configure time it checks that the descriptors and the generated declarations
+  agree by name. Reflection still verifies that reference and candidate serve the
+  same schema, and moves into the HTTP protocol with the descriptors.
 - Scripts refer to types by fully qualified name. The host generates a registry
   declaration from the parsed schema so `tsc` checks names, paths, and normaliser
   argument types.
@@ -65,13 +70,14 @@ mirrors the proto package, so `spectre.sample.v1.User` keeps its name.
 
 ## Script API
 
-Targets stay strings. The registry types them.
+Targets stay strings. The registry types them. The first argument of `ingress` and
+`egress` is the protocol key from [the protocol abstraction](protocols.md).
 
 ```ts
 import { egress, field, ingress } from "spectre";
 
-ingress("GET /v2/forecast", "GetForecastV2Response");
-egress("GET forecasts.example/v1/forecasts/{location}", "FetchForecastRequest");
+ingress("http", "GET /v2/forecast", "GetForecastV2Response");
+egress("http", "GET forecasts.example/v1/forecasts/{location}", "FetchForecastRequest");
 
 field("GetForecastV2Response", "alerts", (alerts) => alerts?.sort(byID));
 message("spectre.sample.v1.User", (user) => ({ ...user, roles: [...user.roles].sort() }));
@@ -97,7 +103,8 @@ typed from the registry entry and the path, and is `undefined` when absent.
 ### 2. Schema model and comparison
 
 - [ ] Define the model in `internal/schema`: named types, fields, scalar kinds,
-  optional, list, map, literal unions, and operations with request and response types.
+  optional, list, map, literal unions, and operations with request and response
+  types. `schema.Type` is the value protocols hand to the engine.
 - [ ] Rewrite target resolution, traversal, HTTP parameter binding, presence checks,
   unknown field rejection, and hashing against the model.
 - [ ] Remove `protoreflect` from `internal/comparison` and from the ingress and
@@ -107,8 +114,9 @@ typed from the registry entry and the path, and is `undefined` when absent.
 
 ### 3. Protocol adapters
 
-- [ ] gRPC and Connect: decode with descriptors into JSON, then validate at load
-  that every method and message in the descriptors has a matching declaration.
+- [ ] gRPC and Connect: the HTTP protocol loads descriptors, by reflection for
+  ingress, decodes with them into JSON, and validates at configure time that every
+  method and message has a matching declaration.
 - [ ] Raw HTTP JSON: decode and bind directly from the model with no descriptors.
 - [ ] Test adapter agreement on presence, 64-bit integers, bytes, enums, and nested
   collections across binary, ProtoJSON, and raw JSON inputs.
@@ -129,8 +137,9 @@ typed from the registry entry and the path, and is `undefined` when absent.
   virtual `spectre` module and rejects imports outside the directory.
 - [ ] Generate the registry declaration and the `spectre` module declaration from
   the parsed schema into a build directory for `tsc`.
-- [ ] Replace method-based `ingress` and `egress` with type-based registration and
-  validate names and paths against the model.
+- [ ] Change the `type` argument of `ingress` and `egress` from an RPC method to a
+  type name, keeping the protocol key, and validate names and paths against the
+  model.
 - [ ] Add `tsc --noEmit` and the generators to `bit` test and lint targets.
 - [ ] Test bundling, type errors surfaced by `tsc`, invalid names, and that
   registrations are identical across fresh runtimes.
@@ -139,10 +148,18 @@ typed from the registry entry and the path, and is `undefined` when absent.
 
 - [ ] Replace `weather.proto` and `forecasts.proto` with hand-written declarations
   and convert the sample scripts to TypeScript.
-- [ ] Remove `--descriptors-dir` from egress once raw HTTP needs no descriptors, and
-  keep it on ingress only for gRPC decoding.
+- [ ] Point the core `schema.Config` at the declarations directory and make the
+  descriptors directory an HTTP protocol flag, optional for egress.
 - [ ] Update `CONTRIBUTING.md` for the generator and `tsc` workflow. Update
   `README.md` when asked.
+
+## Sequencing with the protocol abstraction
+
+Both changes rewrite `comparison/protocol.go`, `binding.go`, `scripts.go`, and
+`hasher.go`. Land steps 1 and 2 of [the protocol abstraction](protocols.md) first,
+so that code reaches `httpcodec` and the `Engine` before it is rewritten. Phases 1
+to 3 here then swap the boundary type in known places. Phases 4 to 6 can proceed in
+parallel with protocol steps 3 to 5, which touch disjoint areas.
 
 ## Open decisions
 
