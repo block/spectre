@@ -61,6 +61,7 @@ fmt-action-pins = exec {
   inputs = [".github/workflows/*.yml", "bin/.ratchet-0.12.0.pkg"]
 }
 lint-go[go-module] = go.lint {
+  concurrency = 1 # golangci-lint refuses to run while another instance holds its lock.
   dir = go-module
   depends_on = [sample-proto]
 }
