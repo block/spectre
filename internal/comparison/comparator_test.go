@@ -561,7 +561,7 @@ func TestComparesHTTPJSONAsDeclaredType(t *testing.T) {
 		"OneEmptyBody": {
 			reference: httpJSONResponse(http.StatusOK, "application/json", `{"stable":"","roles":[],"users":[],"count":"0","labels":{}}`),
 			candidate: httpJSONResponse(http.StatusOK, "", ""),
-			expected:  comparison.NewDifferenceResult("$"),
+			expected:  comparison.Resultf(comparison.Unable, `cannot decode candidate response as test.v1.Response: validate response: $: required field "stable" of type "test.v1.Response" is missing`),
 		},
 		"NotJSON": {
 			reference: httpJSONResponse(http.StatusInternalServerError, "text/html", `<html></html>`),
@@ -711,15 +711,79 @@ func TestUndeclaredRequestsFallBackToRPCPaths(t *testing.T) {
 	}
 }
 
-func TestComparesDeclaredHeadEndpoints(t *testing.T) {
-	comparator := newScriptsComparator(t, map[string]string{
-		"weather.ts": forecastScript(`spectre.ingress<v1.Response>("http", "HEAD /v1/forecast");`),
-	})
-	response := httpJSONResponse(http.StatusOK, "application/json", "")
+func TestComparesBodylessHTTPResponses(t *testing.T) {
+	for name, test := range map[string]struct {
+		method string
+		status int
+	}{
+		"Head":        {method: http.MethodHead, status: http.StatusOK},
+		"NoContent":   {method: http.MethodGet, status: http.StatusNoContent},
+		"NotModified": {method: http.MethodGet, status: http.StatusNotModified},
+	} {
+		t.Run(name, func(t *testing.T) {
+			config := newSchemaConfig(t,
+				map[string]string{"response.d.ts": `declare module "raw" { interface Response { stable: string } }`},
+				map[string]string{"raw.ts": `
+					import * as spectre from "spectre";
+					import type { Response } from "raw";
+					spectre.ingress<Response>("http", "` + test.method + ` /raw");
+					spectre.message<Response>(() => { throw new Error("normaliser ran"); });
+				`})
+			comparator, err := comparison.New(t.Context(), config, slog.New(slog.DiscardHandler))
+			assert.NoError(t, err)
+			assert.NoError(t, comparator.Configure(t.Context(), &descriptorpb.FileDescriptorSet{}))
+			response := httpJSONResponse(test.status, "", "")
 
-	result := comparator.Compare(t.Context(), http.MethodHead, "/v1/forecast", "", response, response)
+			result := comparator.Compare(t.Context(), test.method, "/raw", "", response, response)
 
-	assert.Equal(t, comparison.Resultf(comparison.Equivalent, ""), result)
+			assert.Equal(t, comparison.Resultf(comparison.Equivalent, ""), result)
+		})
+	}
+}
+
+func TestValidatesEmptyHTTPResponses(t *testing.T) {
+	for name, test := range map[string]struct {
+		field     string
+		script    string
+		reference string
+		candidate string
+		message   string
+	}{
+		"RequiredBothEmpty":      {field: "stable: string", message: `cannot decode reference response as raw.Response: validate response: $: required field "stable" of type "raw.Response" is missing`},
+		"RequiredReferenceEmpty": {field: "stable: string", candidate: `{"stable":"same"}`, message: `cannot decode reference response as raw.Response: validate response: $: required field "stable" of type "raw.Response" is missing`},
+		"RequiredCandidateEmpty": {field: "stable: string", reference: `{"stable":"same"}`, message: `cannot decode candidate response as raw.Response: validate response: $: required field "stable" of type "raw.Response" is missing`},
+		"OptionalBothEmpty":      {field: "stable?: string"},
+		"OptionalEmptyObject":    {field: "stable?: string", candidate: `{}`},
+		"OptionalRunsNormaliser": {
+			field:   "stable?: string",
+			script:  `spectre.message<Response>(() => { throw new Error("normaliser ran"); });`,
+			message: "normalise reference response",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			config := newSchemaConfig(t,
+				map[string]string{"response.d.ts": `declare module "raw" { interface Response { ` + test.field + ` } }`},
+				map[string]string{"raw.ts": `
+					import * as spectre from "spectre";
+					import type { Response } from "raw";
+					spectre.ingress<Response>("http", "GET /raw");
+				` + test.script})
+			comparator, err := comparison.New(t.Context(), config, slog.New(slog.DiscardHandler))
+			assert.NoError(t, err)
+			assert.NoError(t, comparator.Configure(t.Context(), &descriptorpb.FileDescriptorSet{}))
+			reference := httpJSONResponse(http.StatusOK, "application/json", test.reference)
+			candidate := httpJSONResponse(http.StatusOK, "application/json", test.candidate)
+
+			result := comparator.Compare(t.Context(), http.MethodGet, "/raw", "", reference, candidate)
+
+			if test.message != "" {
+				assert.Equal(t, comparison.Unable, result.Outcome())
+				assert.Contains(t, result.Reason(), test.message)
+				return
+			}
+			assert.Equal(t, comparison.Resultf(comparison.Equivalent, ""), result)
+		})
+	}
 }
 
 func TestIgnoresEgressEndpoints(t *testing.T) {

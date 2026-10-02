@@ -2,6 +2,8 @@ package schema_test
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 	"testing/fstest"
 
@@ -77,6 +79,31 @@ declare module "audit" {
 		Request:  "example.users.v1.GetUserRequest",
 		Response: "example.users.v1.User",
 	}}, loaded.Operations())
+}
+
+func TestRejectsSchemaSymlinks(t *testing.T) {
+	for name, test := range map[string]struct {
+		link      string
+		directory bool
+	}{
+		"File":            {link: "link.ts"},
+		"DeclarationFile": {link: "link.d.ts"},
+		"Directory":       {link: "nested", directory: true},
+		"IgnoredFile":     {link: "link.js"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			directory := t.TempDir()
+			outside := t.TempDir()
+			target := filepath.Join(outside, "outside.ts")
+			assert.NoError(t, os.WriteFile(target, []byte(`not valid TypeScript`), 0o600))
+			if test.directory {
+				target = outside
+			}
+			assert.NoError(t, os.Symlink(target, filepath.Join(directory, test.link)))
+			_, err := schema.Parse(t.Context(), os.DirFS(directory))
+			assert.EqualError(t, err, `schema path "`+test.link+`" is a symbolic link`)
+		})
+	}
 }
 
 func TestSameNameInDifferentModules(t *testing.T) {

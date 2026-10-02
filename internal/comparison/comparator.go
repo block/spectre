@@ -93,6 +93,7 @@ func (c *Comparator) Compare(
 		configured.codec,
 		root,
 		protocol,
+		requestMethod,
 		reference,
 		candidate,
 		c.maxResponseBytes,

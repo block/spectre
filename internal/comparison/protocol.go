@@ -76,6 +76,7 @@ func normaliseResponses(
 	codec *httpcodec.Codec,
 	root *schema.Type,
 	selected protocol,
+	requestMethod string,
 	reference Response,
 	candidate Response,
 	maxResponseBytes int,
@@ -89,7 +90,7 @@ func normaliseResponses(
 	case protocolGRPC:
 		return normaliseGRPC(loaded, codec, root, reference, candidate, maxResponseBytes)
 	case protocolHTTPJSON:
-		return normaliseHTTPJSON(loaded, codec, root, reference, candidate, maxResponseBytes)
+		return normaliseHTTPJSON(loaded, codec, root, requestMethod, reference, candidate, maxResponseBytes)
 	case protocolProtobuf:
 		return normaliseProtobuf(loaded, codec, root, reference, candidate, maxResponseBytes)
 	default:
@@ -127,23 +128,25 @@ func normaliseConnect(
 	return decodeResponses(loaded, codec, root, protocolConnectJSON, reference, candidate, maxResponseBytes)
 }
 
-// normaliseHTTPJSON decodes every non-empty body as the method output, so error
-// bodies must be modelled in the same message as successful ones.
+// normaliseHTTPJSON validates bodies as the declared output, except for HEAD,
+// 204, and 304 responses. Error bodies use the same type as successful ones.
 func normaliseHTTPJSON(
 	loaded *schema.Schema,
 	codec *httpcodec.Codec,
 	root *schema.Type,
+	requestMethod string,
 	reference Response,
 	candidate Response,
 	maxResponseBytes int,
 ) (referencePayload, candidatePayload any, result Result) {
-	// HEAD, 204, and 304 responses have no body to decode.
-	referenceEmpty, candidateEmpty := len(reference.Body) == 0, len(candidate.Body) == 0
-	if referenceEmpty && candidateEmpty {
-		return nil, nil, Resultf(Equivalent, "")
-	}
-	if referenceEmpty != candidateEmpty {
-		return nil, nil, NewDifferenceResult("$")
+	if requestMethod == http.MethodHead || reference.StatusCode == http.StatusNoContent || reference.StatusCode == http.StatusNotModified {
+		referenceEmpty, candidateEmpty := len(reference.Body) == 0, len(candidate.Body) == 0
+		if referenceEmpty && candidateEmpty {
+			return nil, nil, Resultf(Equivalent, "")
+		}
+		if referenceEmpty != candidateEmpty {
+			return nil, nil, NewDifferenceResult("$")
+		}
 	}
 	return decodeResponses(loaded, codec, root, protocolHTTPJSON, reference, candidate, maxResponseBytes)
 }

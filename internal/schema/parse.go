@@ -21,11 +21,15 @@ const programRoot = "/schema/"
 const reservedModule = "spectre"
 
 // ReadSources reads every .ts file in declarations, keyed by slash-separated name.
+// Symlinks are rejected because fs.FS has no portable root-confined open operation.
 func ReadSources(declarations fs.FS) (map[string]string, error) {
 	sources := map[string]string{}
 	err := fs.WalkDir(declarations, ".", func(name string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return errors.Wrap(err, "read schema directory")
+		}
+		if entry.Type()&fs.ModeSymlink != 0 {
+			return errors.Errorf("schema path %q is a symbolic link", name)
 		}
 		if entry.IsDir() || path.Ext(name) != ".ts" {
 			return nil
