@@ -66,7 +66,7 @@ verify() {
 	fi
 	wait_for_log candidate '"path":"/spectre.sample.v1.UserService/ListUsers"'
 	wait_for_log ingress '"msg":"Payload normaliser completed","kind":"field","target":"spectre.sample.v1.User.roles"'
-	wait_for_log ingress '"target":"spectre.sample.v1.ListUsersResponse.generated_at","side":"candidate","payload_path":"$.generatedAt"'
+	wait_for_log ingress '"target":"spectre.sample.v1.ListUsersResponse.generatedAt","side":"candidate","payload_path":"$.generatedAt"'
 	wait_for_log ingress '"msg":"Response comparison completed","path":"/spectre.sample.v1.UserService/ListUsers","outcome":"equivalent"'
 	# The comparison timeout has elapsed before this probe, so a second mirror proves
 	# the reordered roles did not quarantine the candidate.
@@ -75,12 +75,12 @@ verify() {
 		-d '{"ids":["user-1"]}' "$ingress_address" "$service/ListUsers" >/dev/null
 	wait_for_log_count candidate '"path":"/spectre.sample.v1.UserService/ListUsers"' 2
 
-	# Raw HTTP responses are typed by the endpoints that weather.js declares.
+	# Raw HTTP responses are typed by the endpoints that weather.ts declares.
 	if ! fetch '/v2/forecast?location=london' | grep -Fq '"alerts"'; then
 		printf 'raw HTTP request did not return the reference response\n' >&2
 		exit 1
 	fi
-	wait_for_log ingress '"target":"spectre.sample.v1.GetForecastV2Response.alerts"'
+	wait_for_log ingress '"target":"weather.GetForecastV2Response.alerts"'
 	wait_for_log ingress '"msg":"Response comparison completed","path":"/v2/forecast","outcome":"equivalent"'
 	fetch '/api/v1/forecast?location=sydney' >/dev/null
 	wait_for_log ingress '"msg":"Response comparison completed","path":"/api/v1/forecast","outcome":"equivalent"'
@@ -90,7 +90,7 @@ verify() {
 	# Egress replays the reference's forecast to the candidate, so each mirrored
 	# request reaches the provider once.
 	for side in reference candidate; do
-		wait_for_log egress "\"msg\":\"Payload normalisation completed\",\"message\":\"spectre.sample.v1.FetchForecastRequest\",\"side\":\"$side\",\"normalisers\":0"
+		wait_for_log egress "\"msg\":\"Payload normalisation completed\",\"message\":\"forecasts.FetchForecastRequest\",\"side\":\"$side\",\"normalisers\":0"
 	done
 	wait_for_log egress '"msg":"Candidate request matched a reference request","host":"forecasts.example","path":"/v1/forecasts/london"'
 	for location in london sydney; do

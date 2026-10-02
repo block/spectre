@@ -5,9 +5,9 @@ import (
 	"sort"
 
 	"github.com/alecthomas/errors"
-	"google.golang.org/protobuf/reflect/protoreflect"
 
 	"github.com/block/spectre/internal/comparison/javascript"
+	"github.com/block/spectre/internal/schema"
 )
 
 // occurrence binds a resolved target to one concrete payload path.
@@ -72,13 +72,14 @@ func (o occurrence) before(other occurrence) bool {
 // collectOccurrences freezes traversal before normalisation starts mutating the document.
 // Its ordering is independent of registration order.
 func collectOccurrences(
-	root protoreflect.MessageDescriptor,
+	loaded *schema.Schema,
+	root *schema.Type,
 	targets []normalisationTarget,
 	payload *document,
 ) []occurrence {
 	occurrences := []occurrence{}
 	for _, target := range targets {
-		occurrences = append(occurrences, target.occurrences(root, payload)...)
+		occurrences = append(occurrences, target.occurrences(loaded, root, payload)...)
 	}
 	// A field normaliser replaces any message normaliser at the same location.
 	fieldPaths := map[string]struct{}{}
@@ -118,47 +119,44 @@ func (p pathWithPresence) isPresent() bool {
 // findMessages also reports absent singular message fields of present parents, so
 // normalisers see a missing message as undefined, as they do a missing field.
 func findMessages(
-	descriptor protoreflect.MessageDescriptor,
-	target protoreflect.FullName,
+	loaded *schema.Schema,
+	descriptor *schema.Type,
+	target string,
 	payload *document,
 ) []pathWithPresence {
 	paths := []pathWithPresence{}
-	var walk func(protoreflect.MessageDescriptor, documentPath, bool)
-	walk = func(current protoreflect.MessageDescriptor, path documentPath, present bool) {
-		if current.FullName() == target {
-			paths = append(paths, newPathWithPresence(path, present))
-		}
-		if !present {
+	var walk func(schema.Value, documentPath, bool)
+	walk = func(value schema.Value, path documentPath, present bool) {
+		switch value.Kind {
+		case schema.KindObject:
+			if value.Type == target {
+				paths = append(paths, newPathWithPresence(path, present))
+			}
+			if !present {
+				return
+			}
+			current, err := loaded.Type(value.Type)
+			if err != nil {
+				return // The schema has already resolved all references.
+			}
+			for _, field := range current.Fields {
+				fieldPath := path.appendField(field.Name)
+				walk(field.Value, fieldPath, payload.Value(fieldPath).isPresent())
+			}
+		case schema.KindList:
+			for index := range arrayLength(payload, path) {
+				walk(*value.Element, path.appendIndex(index), true)
+			}
+		case schema.KindMap:
+			for _, key := range objectKeys(payload, path) {
+				walk(*value.Element, path.appendField(key), true)
+			}
+		case schema.KindString, schema.KindNumber, schema.KindBoolean, schema.KindEnum:
 			return
-		}
-		fields := current.Fields()
-		for index := range fields.Len() {
-			field := fields.Get(index)
-			if field.IsMap() {
-				if field.MapValue().Kind() != protoreflect.MessageKind {
-					continue
-				}
-				fieldPath := path.appendField(field.JSONName())
-				for _, key := range objectKeys(payload, fieldPath) {
-					walk(field.MapValue().Message(), fieldPath.appendField(key), true)
-				}
-				continue
-			}
-			if field.Kind() != protoreflect.MessageKind {
-				continue
-			}
-			fieldPath := path.appendField(field.JSONName())
-			if field.IsList() {
-				for item := range arrayLength(payload, fieldPath) {
-					walk(field.Message(), fieldPath.appendIndex(item), true)
-				}
-				continue
-			}
-			walk(field.Message(), fieldPath, payload.Value(fieldPath).isPresent())
 		}
 	}
 	root := newDocumentPath(nil)
-	walk(descriptor, root, payload.Value(root).isPresent())
+	walk(schema.Value{Kind: schema.KindObject, Type: descriptor.Name}, root, payload.Value(root).isPresent())
 	return paths
 }
 

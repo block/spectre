@@ -9,15 +9,18 @@ import (
 
 	"github.com/alecthomas/assert/v2"
 	"google.golang.org/protobuf/encoding/protowire"
+	"google.golang.org/protobuf/types/descriptorpb"
 
 	"github.com/block/spectre/internal/comparison"
 )
 
 const egressScript = `
-	spectre.egress("GET weather.example/v1/locations/{location}/forecast", "test.v1.Service.Find");
-	spectre.egress("POST weather.example/v1/search", "test.v1.Service.Find");
-	spectre.field("test.v1.Query.trace", () => undefined);
-	spectre.field("test.v1.Query.tags", (tags) => tags === undefined ? undefined : tags.sort());
+	spectre.egress<weather.HTTPQuery>("http", "GET weather.example/v1/locations/{location}/forecast");
+	spectre.egress<weather.HTTPQuery>("http", "POST weather.example/v1/search");
+	spectre.field<v1.Query, "trace">(() => undefined);
+	spectre.field<v1.Query, "tags">((tags) => tags === undefined ? undefined : tags.sort());
+	spectre.field<weather.HTTPQuery, "trace">(() => undefined);
+	spectre.field<weather.HTTPQuery, "tags">((tags) => tags === undefined ? undefined : tags.sort());
 `
 
 func TestHashesMethodAndCanonicalJSON(t *testing.T) {
@@ -26,15 +29,14 @@ func TestHashesMethodAndCanonicalJSON(t *testing.T) {
 	hash, err := hasher.Hash(t.Context(), searchRequest(`{"trace":"ignored","location":"london","days":3}`))
 
 	assert.NoError(t, err)
-	expected := sha256.Sum256([]byte("test.v1.Service.Find\x00" + `{"days":3,"location":"london"}`))
+	expected := sha256.Sum256([]byte("POST weather.example/v1/search\x00" + `{"days":3,"location":"london"}`))
 	assert.Equal(t, comparison.RequestHash(expected), hash)
 }
 
 func TestLogsRequestNormalisationWithoutNormalisers(t *testing.T) {
 	var output bytes.Buffer
-	config := comparison.NewConfig()
-	config.ScriptsDir = writeScripts(t, map[string]string{"test.js": module(`
-		spectre.egress("POST weather.example/v1/search", "test.v1.Service.Find");
+	config := newConfig(t, map[string]string{"test.ts": module(`
+		spectre.egress<weather.HTTPQuery>("http", "POST weather.example/v1/search");
 	`)})
 	log := slog.New(slog.NewJSONHandler(&output, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	hasher, err := comparison.NewRequestHasher(t.Context(), config, log)
@@ -47,7 +49,7 @@ func TestLogsRequestNormalisationWithoutNormalisers(t *testing.T) {
 	_, err = hasher.Hash(t.Context(), request)
 
 	assert.NoError(t, err)
-	assert.Contains(t, output.String(), `"level":"DEBUG","msg":"Payload normalisation completed","message":"test.v1.Query","side":"candidate","normalisers":0`)
+	assert.Contains(t, output.String(), `"level":"DEBUG","msg":"Payload normalisation completed","message":"weather.HTTPQuery","side":"candidate","normalisers":0`)
 }
 
 func TestRequestHashIsStable(t *testing.T) {
@@ -77,15 +79,9 @@ func TestRequestHashIsStable(t *testing.T) {
 			right: forecastRequest("london", "tags=rain&units=METRIC&tags=wind&days=3"),
 			equal: true,
 		},
-		"EnumNumber": {
-			left:  forecastRequest("london", "units=1"),
-			right: forecastRequest("london", "units=METRIC"),
-			equal: true,
-		},
 		"PathQueryAndBody": {
 			left:  forecastRequest("london", "days=3&tags=wind&filter.minDays=2"),
 			right: searchRequest(`{"location":"london","days":3,"tags":["wind"],"filter":{"minDays":2}}`),
-			equal: true,
 		},
 		"ExplicitDefault": {
 			left:  forecastRequest("london", ""),
@@ -93,7 +89,7 @@ func TestRequestHashIsStable(t *testing.T) {
 		},
 		"EscapedWildcard": {
 			left:  forecastRequest("new%20york", ""),
-			right: searchRequest(`{"location":"new york"}`),
+			right: forecastRequest("new york", ""),
 			equal: true,
 		},
 		"ConnectAndGRPC": {
@@ -102,8 +98,8 @@ func TestRequestHashIsStable(t *testing.T) {
 			equal: true,
 		},
 		"ProtobufMatchesJSON": {
-			left:  searchRequest(`{"location":"london","days":3}`),
-			right: searchProtobuf(queryProto("london", 3)),
+			left:  rpcRequest("Find", `{"location":"london","days":3}`),
+			right: protobufRequest(queryProto("london", 3)),
 			equal: true,
 		},
 		"Value": {
@@ -135,21 +131,19 @@ func TestRejectsUnidentifiableRequests(t *testing.T) {
 		request comparison.Request
 		message string
 	}{
-		"UnknownQueryParameter": {request: forecastRequest("london", "unknown=1"), message: `bind query parameter "unknown": message "test.v1.Query" has no field "unknown"`},
-		"UnknownBodyField":      {request: searchRequest(`{"unknown":1}`), message: "unknown field"},
-		"InvalidValue":          {request: forecastRequest("london", "days=many"), message: `parse field "test.v1.Query.days"`},
-		"UnknownEnumValue":      {request: forecastRequest("london", "units=KELVIN"), message: `enum "test.v1.Units" has no value "KELVIN"`},
-		"RepeatedSingular":      {request: forecastRequest("london", "days=1&days=2"), message: `field "test.v1.Query.days" is not repeated`},
-		"MessageParameter":      {request: forecastRequest("london", "filter=1"), message: `field "test.v1.Query.filter" is not a scalar or enum`},
-		"PathAndQuery":          {request: forecastRequest("london", "location=paris"), message: `field "test.v1.Query.location" is already bound`},
-		"BodyAndQuery":          {request: withQuery(searchRequest(`{"days":3}`), "days=3"), message: `field "test.v1.Query.days" is already bound`},
-		"TwoNamesForOneField":   {request: forecastRequest("london", "filter.minDays=2&filter.min_days=2"), message: "is already bound"},
-		"OneofMember":           {request: withQuery(searchRequest(`{"city":{"name":"london"}}`), "code=LON"), message: `field "test.v1.Query.code" is already bound`},
-		"OneofParent":           {request: withQuery(searchRequest(`{"code":"LON"}`), "city.name=london"), message: `field "test.v1.Query.city" conflicts with a bound oneof member`},
+		"UnknownQueryParameter": {request: forecastRequest("london", "unknown=1"), message: `bind query parameter "unknown": type "weather.HTTPQuery" has no field "unknown"`},
+		"UnknownBodyField":      {request: searchRequest(`{"unknown":1}`), message: `has no field "unknown"`},
+		"InvalidValue":          {request: forecastRequest("london", "days=many"), message: `parse field "days"`},
+		"UnknownEnumValue":      {request: forecastRequest("london", "units=KELVIN"), message: `value is not a declared enum literal`},
+		"RepeatedSingular":      {request: forecastRequest("london", "days=1&days=2"), message: `field "days" is not repeated`},
+		"MessageParameter":      {request: forecastRequest("london", "filter=1"), message: `field "filter" is not a scalar`},
+		"PathAndQuery":          {request: forecastRequest("london", "location=paris"), message: `field "location" is already bound`},
+		"BodyAndQuery":          {request: withQuery(searchRequest(`{"days":3}`), "days=3"), message: `field "days" is already bound`},
+		"ProtoNameRejected":     {request: forecastRequest("london", "filter.minDays=2&filter.min_days=2"), message: `has no field "min_days"`},
 		"GetWithBody":           {request: getWithBody, message: "GET request has a body"},
 		"BodyNotJSON":           {request: withContentType(searchRequest(`{}`), "text/plain"), message: `body is not JSON: "text/plain"`},
 		"UnknownHost":           {request: withHost(forecastRequest("london", ""), "other.example"), message: "request content type is not supported"},
-		"UnknownMethod":         {request: rpcRequest("Missing", `{}`), message: `resolve method "test.v1.Service.Missing"`},
+		"UnknownMethod":         {request: rpcRequest("Missing", `{}`), message: `operation "test.v1.Service.Missing" is not declared`},
 		"Overflow":              {request: overflow, message: "request exceeds the comparison size limit"},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -161,8 +155,7 @@ func TestRejectsUnidentifiableRequests(t *testing.T) {
 }
 
 func TestHasherRequiresSchema(t *testing.T) {
-	config := comparison.NewConfig()
-	config.ScriptsDir = writeScripts(t, map[string]string{"test.js": module(egressScript)})
+	config := newConfig(t, map[string]string{"test.ts": module(egressScript)})
 	hasher, err := comparison.NewRequestHasher(t.Context(), config, slog.New(slog.DiscardHandler))
 	assert.NoError(t, err)
 
@@ -174,18 +167,15 @@ func TestHasherRequiresSchema(t *testing.T) {
 func TestRejectsUnbindableEndpoints(t *testing.T) {
 	for name, test := range map[string]struct {
 		pattern string
-		method  string
 		message string
 	}{
-		"UnknownField":     {pattern: "GET weather.example/v1/{place}", method: "Find", message: `message "test.v1.Query" has no field "place"`},
-		"Repeated":         {pattern: "GET weather.example/v1/{tags}", method: "Find", message: `field "test.v1.Query.tags" is repeated`},
-		"Message":          {pattern: "GET weather.example/v1/{filter}", method: "Find", message: `field "test.v1.Query.filter" is not a scalar or enum`},
-		"ImplicitPresence": {pattern: "POST weather.example/v1/users", method: "Rename", message: `field "test.v1.User.name" must be optional`},
+		"UnknownField": {pattern: "GET weather.example/v1/{place}", message: `type "weather.HTTPQuery" has no field "place"`},
+		"Repeated":     {pattern: "GET weather.example/v1/{tags}", message: `field "tags" is repeated`},
+		"Message":      {pattern: "GET weather.example/v1/{filter}", message: `field "filter" is not a scalar`},
 	} {
 		t.Run(name, func(t *testing.T) {
-			config := comparison.NewConfig()
-			config.ScriptsDir = writeScripts(t, map[string]string{
-				"weather.js": module(`spectre.egress("` + test.pattern + `", "test.v1.Service.` + test.method + `");`),
+			config := newConfig(t, map[string]string{
+				"weather.ts": module(`spectre.egress<weather.HTTPQuery>("http", "` + test.pattern + `");`),
 			})
 			hasher, err := comparison.NewRequestHasher(t.Context(), config, slog.New(slog.DiscardHandler))
 			assert.NoError(t, err)
@@ -198,8 +188,9 @@ func TestRejectsUnbindableEndpoints(t *testing.T) {
 }
 
 func TestHasherIgnoresIngressEndpoints(t *testing.T) {
-	// An ingress method absent from the schema would fail Configure if egress used it.
-	hasher := newHasher(t, `spectre.ingress("GET /v1/forecast", "test.v1.Service.Missing");`)
+	// An ingress type absent from the schema would fail Configure if egress used it. The
+	// cast skips type checking, so the type reaches Configure.
+	hasher := newHasher(t, `(spectre.ingress as any)("Missing", "http", "GET /v1/forecast");`)
 
 	_, err := hasher.Hash(t.Context(), rpcRequest("Find", `{}`))
 
@@ -208,8 +199,7 @@ func TestHasherIgnoresIngressEndpoints(t *testing.T) {
 
 func newHasher(t *testing.T, script string) *comparison.RequestHasher {
 	t.Helper()
-	config := comparison.NewConfig()
-	config.ScriptsDir = writeScripts(t, map[string]string{"test.js": module(script)})
+	config := newConfig(t, map[string]string{"test.ts": module(script)})
 	hasher, err := comparison.NewRequestHasher(t.Context(), config, slog.New(slog.DiscardHandler))
 	assert.NoError(t, err)
 	assert.NoError(t, hasher.Configure(t.Context(), descriptorSet()))
@@ -236,11 +226,10 @@ func searchRequest(body string) comparison.Request {
 	}
 }
 
-func searchProtobuf(payload []byte) comparison.Request {
+func protobufRequest(payload []byte) comparison.Request {
 	return comparison.Request{
 		Method: http.MethodPost,
-		Host:   "weather.example:8080",
-		Path:   "/v1/search",
+		Path:   "/test.v1.Service/Find",
 		Header: http.Header{"Content-Type": []string{"application/x-protobuf"}},
 		Body:   payload,
 	}
@@ -288,4 +277,50 @@ func queryProto(location string, days uint64) []byte {
 	data = protowire.AppendString(data, location)
 	data = protowire.AppendTag(data, 2, protowire.VarintType)
 	return protowire.AppendVarint(data, days)
+}
+
+func TestBindsRequiredScalarWithoutDescriptors(t *testing.T) {
+	config := newSchemaConfig(t,
+		map[string]string{"request.d.ts": `declare module "api" { interface Request { id: string; count?: number } }`},
+		map[string]string{"request.ts": `
+			import { egress } from "spectre";
+			import type { Request } from "api";
+			egress<Request>("http", "GET api.example/items/{id}");
+		`})
+	hasher, err := comparison.NewRequestHasher(t.Context(), config, slog.New(slog.DiscardHandler))
+	assert.NoError(t, err)
+	assert.NoError(t, hasher.Configure(t.Context(), &descriptorpb.FileDescriptorSet{}))
+	request := comparison.Request{Method: "GET", Host: "api.example", Path: "/items/one"}
+	_, err = hasher.Hash(t.Context(), request)
+	assert.NoError(t, err)
+	request.RawQuery = "count=0"
+	explicit, err := hasher.Hash(t.Context(), request)
+	assert.NoError(t, err)
+	request.RawQuery = ""
+	absent, err := hasher.Hash(t.Context(), request)
+	assert.NoError(t, err)
+	assert.NotEqual(t, explicit, absent)
+}
+
+func TestBindsNumberLiteralsFromText(t *testing.T) {
+	config := newSchemaConfig(t,
+		map[string]string{"request.d.ts": `declare module "api" { interface Request { ratio: number | "NaN" } }`},
+		map[string]string{"request.ts": `
+			import { egress } from "spectre";
+			import type { Request } from "api";
+			egress<Request>("http", "GET api.example/items");
+		`})
+	hasher, err := comparison.NewRequestHasher(t.Context(), config, slog.New(slog.DiscardHandler))
+	assert.NoError(t, err)
+	assert.NoError(t, hasher.Configure(t.Context(), &descriptorpb.FileDescriptorSet{}))
+	request := comparison.Request{Method: "GET", Host: "api.example", Path: "/items", RawQuery: "ratio=NaN"}
+	literal, err := hasher.Hash(t.Context(), request)
+	assert.NoError(t, err)
+	request.RawQuery = "ratio=1"
+	number, err := hasher.Hash(t.Context(), request)
+	assert.NoError(t, err)
+	assert.NotEqual(t, literal, number)
+	request.RawQuery = "ratio=Infinity"
+	_, err = hasher.Hash(t.Context(), request)
+	assert.Error(t, err)
 }

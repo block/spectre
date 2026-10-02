@@ -21,6 +21,10 @@ builds:
     main: ./cmd/spectre-egress
     binary: spectre-egress
     id: spectre-egress
+  - <<: *build
+    main: ./cmd/spectre-gen
+    binary: spectre-gen
+    id: spectre-gen
 
 archives:
   - formats: [tar.gz]

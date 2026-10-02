@@ -39,7 +39,7 @@ func (c *Comparator) MaxResponseBytes() int {
 	return c.maxResponseBytes
 }
 
-// Configure activates the comparator against a descriptor set.
+// Configure activates the comparator against the wire descriptors.
 func (c *Comparator) Configure(ctx context.Context, set *descriptorpb.FileDescriptorSet) error {
 	configured, err := c.scripts.prepare(ctx, set)
 	if err != nil {
@@ -84,14 +84,16 @@ func (c *Comparator) Compare(
 		requestContentType = jsonMediaType
 	}
 	// Ingress endpoints never name a host.
-	method, protocol, _, result := c.scripts.resolve(configured.Schema(), requestMethod, "", requestPath, requestContentType)
+	root, _, protocol, _, result := c.scripts.resolve(configured, requestMethod, "", requestPath, requestContentType)
 	if result.Outcome() != "" {
 		return result
 	}
 	referencePayload, candidatePayload, result := normaliseResponses(
-		configured.Schema(),
-		method.Output(),
+		configured.plan.Schema(),
+		configured.codec,
+		root,
 		protocol,
+		requestMethod,
 		reference,
 		candidate,
 		c.maxResponseBytes,
@@ -103,11 +105,11 @@ func (c *Comparator) Compare(
 	runNormalisers := protocol != protocolConnectJSON || reference.StatusCode == http.StatusOK
 	comparisonContext, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
-	normalisedReference, err := c.scripts.normalise(comparisonContext, configured, method.Output(), runNormalisers, "reference", referencePayload)
+	normalisedReference, err := c.scripts.normalise(comparisonContext, configured, root, runNormalisers, "reference", referencePayload)
 	if err != nil {
 		return Resultf(Unable, "normalise reference response: %v", err)
 	}
-	normalisedCandidate, err := c.scripts.normalise(comparisonContext, configured, method.Output(), runNormalisers, "candidate", candidatePayload)
+	normalisedCandidate, err := c.scripts.normalise(comparisonContext, configured, root, runNormalisers, "candidate", candidatePayload)
 	if err != nil {
 		return Resultf(Unable, "normalise candidate response: %v", err)
 	}

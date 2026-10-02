@@ -20,12 +20,11 @@ import (
 
 	"github.com/alecthomas/assert/v2"
 	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/reflect/protodesc"
 	"google.golang.org/protobuf/types/descriptorpb"
 
 	"github.com/block/spectre/internal/comparison"
+	"github.com/block/spectre/internal/descriptors"
 	"github.com/block/spectre/internal/egress"
-	samplepb "github.com/block/spectre/internal/sample/pb"
 )
 
 const (
@@ -62,6 +61,21 @@ func TestReplaysReferenceResponseToCandidate(t *testing.T) {
 	assert.Equal(t, reference, candidate)
 	assert.Equal(t, int32(1), calls.Load())
 	assert.Contains(t, harness.Logs.String(), `"level":"DEBUG","msg":"Candidate request matched a reference request","host":"`+dependencyHost+`","path":"/spectre.sample.v1.WeatherService/GetForecast"`)
+}
+
+func TestReplaysRawJSONWithoutDescriptors(t *testing.T) {
+	upstream := newUpstream(t, func(writer http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(writer, "reference")
+	})
+	harness := newHarness(t, upstream)
+	harness.Config.Descriptors.DescriptorsDir = ""
+	harness.Start(t, nil)
+
+	reference := send(t, harness.Reference, dependencyHost, london)
+	candidate := send(t, harness.Candidate, dependencyHost, london)
+
+	assert.Equal(t, reference, candidate)
+	assert.False(t, strings.Contains(harness.Logs.String(), "Candidate quarantined"))
 }
 
 func TestCandidateWaitsForReference(t *testing.T) {
@@ -247,10 +261,6 @@ func TestRejectsUnsafeConfiguration(t *testing.T) {
 			},
 			message: `parse destination "weather.example"`,
 		},
-		"NoDescriptors": {
-			update:  func(config *egress.Config) { config.Schema.DescriptorsDir = "" },
-			message: "a descriptors directory is required",
-		},
 		"MatchWindow": {
 			update:  func(config *egress.Config) { config.MatchWindow = 0 },
 			message: "match window must be positive",
@@ -258,7 +268,7 @@ func TestRejectsUnsafeConfiguration(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			config := egress.NewConfig()
-			config.Schema.DescriptorsDir = writeDescriptors(t)
+			_, config.Descriptors.DescriptorsDir = writeSchemaAndDescriptors(t)
 			test.update(&config)
 			_, err := egress.New(config, http.DefaultTransport, newHasher(t), slog.New(slog.DiscardHandler))
 			assert.Error(t, err)
@@ -286,7 +296,7 @@ func newHarness(t *testing.T, upstream string) *harness {
 	config.CandidateListen = candidate.Addr().String()
 	config.HealthListen = health.Addr().String()
 	config.Destinations = map[string]string{dependencyHost: upstream}
-	config.Schema.DescriptorsDir = writeDescriptors(t)
+	_, config.Descriptors.DescriptorsDir = writeSchemaAndDescriptors(t)
 	return &harness{Config: config, Reference: reference, Candidate: candidate, Health: health, Logs: &syncBuffer{}}
 }
 
@@ -384,24 +394,43 @@ func newUpstream(t *testing.T, handler http.HandlerFunc) string {
 func newHasher(t *testing.T) *comparison.RequestHasher {
 	t.Helper()
 	scripts := t.TempDir()
-	assert.NoError(t, os.WriteFile(filepath.Join(scripts, "egress.js"), []byte(`import * as spectre from "spectre";`), 0o600))
+	assert.NoError(t, os.WriteFile(filepath.Join(scripts, "egress.ts"), []byte(`
+import * as spectre from "spectre";
+import type { GetForecastRequest } from "spectre.sample.v1";
+spectre.egress<GetForecastRequest>("http", "POST weather.example/spectre.sample.v1.WeatherService/GetForecast");
+`), 0o600))
 	config := comparison.NewConfig()
 	config.ScriptsDir = scripts
+	config.Schema.SchemaDir, _ = writeSchemaAndDescriptors(t)
 	hasher, err := comparison.NewRequestHasher(t.Context(), config, slog.New(slog.DiscardHandler))
 	assert.NoError(t, err)
 	return hasher
 }
 
-func writeDescriptors(t *testing.T) string {
+func writeSchemaAndDescriptors(t *testing.T) (schemaDir string, descriptorsDir string) {
 	t.Helper()
-	set := &descriptorpb.FileDescriptorSet{File: []*descriptorpb.FileDescriptorProto{
-		protodesc.ToFileDescriptorProto(samplepb.File_weather_proto),
-	}}
+	set := &descriptorpb.FileDescriptorSet{File: []*descriptorpb.FileDescriptorProto{{
+		Name: new("weather.proto"), Syntax: new("proto3"), Package: new("spectre.sample.v1"),
+		MessageType: []*descriptorpb.DescriptorProto{{
+			Name: new("GetForecastRequest"),
+			Field: []*descriptorpb.FieldDescriptorProto{{
+				Name: new("location"), Number: new(int32(1)), Type: descriptorpb.FieldDescriptorProto_TYPE_STRING.Enum(),
+			}},
+		}},
+	}}}
+	declarations, err := descriptors.Declarations(t.Context(), set)
+	assert.NoError(t, err)
+	schemaDir = t.TempDir()
+	for name, declaration := range declarations {
+		target := filepath.Join(schemaDir, filepath.FromSlash(name))
+		assert.NoError(t, os.MkdirAll(filepath.Dir(target), 0o750))
+		assert.NoError(t, os.WriteFile(target, []byte(declaration), 0o600))
+	}
 	data, err := proto.Marshal(set)
 	assert.NoError(t, err)
-	dir := t.TempDir()
-	assert.NoError(t, os.WriteFile(filepath.Join(dir, "weather.pb"), data, 0o600))
-	return dir
+	descriptorsDir = t.TempDir()
+	assert.NoError(t, os.WriteFile(filepath.Join(descriptorsDir, "weather.pb"), data, 0o600))
+	return schemaDir, descriptorsDir
 }
 
 func listen(t *testing.T) net.Listener {
@@ -426,7 +455,7 @@ func waitReady(t *testing.T, listener net.Listener) {
 	t.Fatal("egress did not become ready")
 }
 
-// send makes a Connect JSON request for host through one egress listener.
+// send makes a raw JSON request for host through one egress listener.
 func send(t *testing.T, listener net.Listener, host string, body string) responseView {
 	t.Helper()
 	request, err := http.NewRequest(http.MethodPost, "http://"+listener.Addr().String()+forecastPath, strings.NewReader(body))

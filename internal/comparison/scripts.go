@@ -7,25 +7,31 @@ import (
 	"sync"
 
 	"github.com/alecthomas/errors"
-	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/descriptorpb"
 
 	comparisoninternal "github.com/block/spectre/internal/comparison/internal"
 	"github.com/block/spectre/internal/comparison/javascript"
+	"github.com/block/spectre/internal/httpcodec"
 	"github.com/block/spectre/internal/route"
 	"github.com/block/spectre/internal/schema"
 )
 
-// scriptSet binds one direction's endpoints and every normaliser to a schema.
-// It shares one immutable program; only plan replacement is synchronized.
+// configuredScripts keeps a plan and its wire decoder together, so a concurrent
+// reconfiguration cannot mix declarations from one schema with another's codec.
+type configuredScripts struct {
+	plan  *comparisoninternal.Plan
+	codec *httpcodec.Codec
+}
+
+// scriptSet shares an immutable program; only configuration replacement is synchronized.
 type scriptSet struct {
 	log       *slog.Logger
 	program   *javascript.Program
 	direction javascript.Direction
-	routes    *route.Map[protoreflect.FullName]
+	routes    *route.Map[javascript.Endpoint]
 
-	mu   sync.RWMutex
-	plan *comparisoninternal.Plan
+	mu         sync.RWMutex
+	configured *configuredScripts
 }
 
 func newScriptSet(ctx context.Context, config Config, direction javascript.Direction, log *slog.Logger) (*scriptSet, error) {
@@ -35,19 +41,21 @@ func newScriptSet(ctx context.Context, config Config, direction javascript.Direc
 	if log == nil {
 		return nil, errors.New("logger is required")
 	}
-	programContext, cancel := context.WithTimeout(ctx, config.ComparisonTimeout)
-	defer cancel()
-	program, err := javascript.NewProgram(programContext, os.DirFS(config.ScriptsDir))
+	root, err := os.OpenRoot(config.ScriptsDir)
+	if err != nil {
+		return nil, errors.Wrap(err, "open scripts directory")
+	}
+	defer root.Close() //nolint:errcheck // Module source is fully loaded before closing.
+	program, err := javascript.NewProgram(ctx, config.ComparisonTimeout, os.DirFS(config.Schema.SchemaDir), root.FS())
 	if err != nil {
 		return nil, errors.Wrap(err, "compile comparison scripts")
 	}
-	routes := route.New[protoreflect.FullName]()
+	routes := route.New[javascript.Endpoint]()
 	for _, endpoint := range program.Endpoints(direction) {
-		method := protoreflect.FullName(endpoint.Method())
-		if !method.IsValid() {
-			return nil, errors.Errorf("endpoint %q has an invalid method name %q", endpoint.Pattern(), endpoint.Method())
+		if endpoint.Protocol() != "http" {
+			return nil, errors.Errorf("endpoint %q names unsupported protocol %q", endpoint.Pattern(), endpoint.Protocol())
 		}
-		if err := routes.Add(endpoint.Pattern(), method); err != nil {
+		if err := routes.Add(endpoint.Pattern(), endpoint); err != nil {
 			return nil, errors.Wrapf(err, "route endpoint %q", endpoint.Pattern())
 		}
 	}
@@ -58,94 +66,80 @@ func (s *scriptSet) endpoints() []javascript.Endpoint {
 	return s.program.Endpoints(s.direction)
 }
 
-// prepare resolves every endpoint and normaliser against a descriptor set, so a
-// caller can validate the plan further before activating it.
-func (s *scriptSet) prepare(ctx context.Context, set *descriptorpb.FileDescriptorSet) (*comparisoninternal.Plan, error) {
+func (s *scriptSet) prepare(ctx context.Context, set *descriptorpb.FileDescriptorSet) (*configuredScripts, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, errors.Wrap(err, "configure comparison scripts")
 	}
-	loaded, err := schema.NewFromFileDescriptorSet(set)
-	if err != nil {
-		return nil, errors.Wrap(err, "load comparison schema")
-	}
+	loaded := s.program.Schema()
 	for _, endpoint := range s.endpoints() {
-		if _, err := endpointMethod(loaded, protoreflect.FullName(endpoint.Method())); err != nil {
+		if _, err := loaded.Type(endpoint.Type()); err != nil {
 			return nil, errors.Wrapf(err, "resolve endpoint %q", endpoint.Pattern())
 		}
 	}
-	configured, err := comparisoninternal.NewPlan(loaded, s.program.Fields(), s.program.Messages())
+	codec, err := httpcodec.New(loaded, set)
+	if err != nil {
+		return nil, errors.Wrap(err, "configure wire decoding")
+	}
+	plan, err := comparisoninternal.NewPlan(loaded, s.program.Fields(), s.program.Messages())
 	if err != nil {
 		return nil, errors.Wrap(err, "prepare comparison plan")
 	}
-	return configured, nil
+	return &configuredScripts{plan: plan, codec: codec}, nil
 }
 
-func (s *scriptSet) activate(configured *comparisoninternal.Plan) {
+func (s *scriptSet) activate(configured *configuredScripts) {
 	s.mu.Lock()
-	s.plan = configured
+	s.configured = configured
 	s.mu.Unlock()
 }
 
-// active returns the current plan, or nil before the schema is ready.
-func (s *scriptSet) active() *comparisoninternal.Plan {
+func (s *scriptSet) active() *configuredScripts {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.plan
+	return s.configured
 }
 
-// resolve prefers declared endpoints, then falls back to the gRPC and Connect
-// convention of naming the method in the path.
-func (s *scriptSet) resolve(
-	loaded *schema.Schema,
-	requestMethod, requestHost, requestPath, requestContentType string,
-) (method protoreflect.MethodDescriptor, selected protocol, wildcards map[string]string, result Result) {
-	name, wildcards, declared := s.routes.Match(requestMethod, requestHost, requestPath)
-	selected, result = requestProtocol(requestContentType)
+// resolve prefers explicit payload types, then falls back to RPC service paths.
+func (s *scriptSet) resolve(configured *configuredScripts, method, host, path, contentType string,
+) (root *schema.Type, identity string, selected protocol, wildcards map[string]string, result Result) {
+	endpoint, wildcards, declared := s.routes.Match(method, host, path)
+	selected, result = requestProtocol(contentType)
 	if declared && selected != protocolGRPC && selected != protocolProtobuf {
-		// Declared endpoints serve raw HTTP JSON unless the request is a binary RPC protocol.
 		selected, result = protocolHTTPJSON, newEmptyResult()
 	}
 	if result.Outcome() != "" {
-		return nil, 0, nil, result
+		return nil, "", 0, nil, result
 	}
+	loaded := configured.plan.Schema()
+	name := endpoint.Type()
+	identity = endpoint.Pattern()
 	if !declared {
-		method, result = conventionalMethod(loaded, requestPath)
-		return method, selected, nil, result
+		operation, resolved := conventionalMethod(loaded, configured.codec, path)
+		if resolved.Outcome() != "" {
+			return nil, "", 0, nil, resolved
+		}
+		name, identity = operation.Response, operation.Name
+		if s.direction == javascript.Egress {
+			name = operation.Request
+		}
 	}
-	// prepare resolved every endpoint against this schema.
-	method, err := endpointMethod(loaded, name)
+	root, err := loaded.Type(name)
 	if err != nil {
-		return nil, 0, nil, Resultf(Unable, "endpoint method is unusable: %v", err)
+		return nil, "", 0, nil, Resultf(Unable, "endpoint type is unusable: %v", err)
 	}
-	return method, selected, wildcards, newEmptyResult()
+	return root, identity, selected, wildcards, newEmptyResult()
 }
 
 // normalise gives each payload a fresh evaluator, so script state cannot carry
 // between payloads and a payload's normalised form depends only on its content.
-func (s *scriptSet) normalise(
-	ctx context.Context,
-	configured *comparisoninternal.Plan,
-	root protoreflect.MessageDescriptor,
-	runNormalisers bool,
-	side string,
-	payload any,
+func (s *scriptSet) normalise(ctx context.Context, configured *configuredScripts, root *schema.Type,
+	runNormalisers bool, side string, payload any,
 ) (*comparisoninternal.Normalised, error) {
 	evaluator, err := s.program.NewEvaluator(ctx)
 	if err != nil {
 		return nil, errors.Wrap(err, "initialise JavaScript evaluator")
 	}
 	defer evaluator.Close()
-	normalised, err := configured.Normalise(ctx, s.log, evaluator, root, runNormalisers, side, payload)
+	normalised, err := configured.plan.Normalise(ctx, s.log, evaluator, root, runNormalisers, side, payload)
 	return normalised, errors.Wrap(err, "normalise payload")
-}
-
-func endpointMethod(loaded *schema.Schema, name protoreflect.FullName) (protoreflect.MethodDescriptor, error) {
-	method, err := loaded.Method(name)
-	if err != nil {
-		return nil, errors.WithStack(err)
-	}
-	if method.IsStreamingClient() || method.IsStreamingServer() {
-		return nil, errors.Errorf("endpoint method %q must be unary", name)
-	}
-	return method, nil
 }

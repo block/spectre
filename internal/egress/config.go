@@ -6,8 +6,8 @@ import (
 	"github.com/alecthomas/errors"
 	"github.com/alecthomas/kong"
 
+	"github.com/block/spectre/internal/descriptors"
 	"github.com/block/spectre/internal/proxy"
-	"github.com/block/spectre/internal/schema"
 )
 
 // Config contains the command-line configuration for an egress proxy.
@@ -30,28 +30,23 @@ type Config struct {
 	RecordingBufferBytes int `default:"33554432" help:"Maximum reference response bytes recorded across all requests."`
 	// CandidateMaxInFlight limits concurrent candidate requests.
 	CandidateMaxInFlight int `default:"64" help:"Maximum concurrent candidate requests before quarantine."`
-	// Schema holds the static schemas, which are the only egress schema source.
-	Schema schema.Config `embed:""`
+	// Descriptors supplies protobuf descriptors for wire decoding.
+	Descriptors descriptors.Config `embed:""`
 	// Config holds the server and forwarding limits shared with other proxies.
 	proxy.Config `embed:""`
 }
 
 // NewConfig returns the default egress configuration.
 func NewConfig() Config {
-	// ApplyDefaults validates, so seed the required directory while applying tag defaults.
-	config := Config{Schema: schema.Config{DescriptorsDir: "placeholder"}}
+	config := Config{}
 	if err := kong.ApplyDefaults(&config); err != nil {
 		panic(errors.Wrap(err, "apply egress defaults"))
 	}
-	config.Schema.DescriptorsDir = ""
 	return config
 }
 
-// Validate checks that the egress has a schema source and usable resource limits.
+// Validate checks that the egress has usable resource limits.
 func (c Config) Validate() error {
-	if c.Schema.DescriptorsDir == "" {
-		return errors.New("a descriptors directory is required")
-	}
 	if c.MatchWindow <= 0 {
 		return errors.New("match window must be positive")
 	}

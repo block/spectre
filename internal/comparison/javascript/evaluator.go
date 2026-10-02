@@ -76,35 +76,38 @@ func (e *Evaluator) Close() {
 	e.stop = nil
 }
 
-// NormaliseField invokes the normaliser registered for a protobuf field.
+// NormaliseField invokes the normaliser registered for a JSON field path.
 func (e *Evaluator) NormaliseField(
-	target string,
+	target FieldTarget,
 	value any,
 	present bool,
 ) (normalised any, normalisedPresent bool, err error) {
-	return e.normalise(targetField, target, value, present)
+	callback, ok := e.registry.field(target)
+	if !ok {
+		return nil, false, errors.Errorf("JavaScript field normaliser (%q, %q) is unavailable", target.Type(), target.Path())
+	}
+	return e.normalise(callback, value, present)
 }
 
-// NormaliseMessage invokes the normaliser registered for a protobuf message.
+// NormaliseMessage invokes the normaliser registered for an object type.
 func (e *Evaluator) NormaliseMessage(
 	target string,
 	value any,
 	present bool,
 ) (normalised any, normalisedPresent bool, err error) {
-	return e.normalise(targetMessage, target, value, present)
+	callback, ok := e.registry.message(target)
+	if !ok {
+		return nil, false, errors.Errorf("JavaScript message normaliser %q is unavailable", target)
+	}
+	return e.normalise(callback, value, present)
 }
 
 // normalise returns an undefined result as absent so callers can remove the node.
 func (e *Evaluator) normalise(
-	kind targetKind,
-	target string,
+	callback sobek.Callable,
 	value any,
 	present bool,
 ) (normalised any, normalisedPresent bool, err error) {
-	callback, ok := e.registry.lookup(kind, target)
-	if !ok {
-		return nil, false, errors.Errorf("JavaScript normaliser %q is unavailable", target)
-	}
 	argument, err := e.argument(value, present)
 	if err != nil {
 		return nil, false, errors.Wrap(err, "clone normaliser argument")

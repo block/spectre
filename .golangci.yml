@@ -462,6 +462,10 @@ linters:
       - common-false-positives
     # Excluding configuration per-path, per-linter, per-text and per-source.
     rules:
+      # The shim needs a local module to import TypeScript's internal packages.
+      - path: '^go\.mod$'
+        text: 'local replacement are not allowed: github\.com/microsoft/TypeScript/tsc/shim/typescript'
+        linters: [gomoddirectives]
       - source: "TODO"
         linters: [godot]
       - text: "should have a package comment"

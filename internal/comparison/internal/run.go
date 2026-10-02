@@ -4,31 +4,33 @@ import (
 	"context"
 	"log/slog"
 
-	"google.golang.org/protobuf/reflect/protoreflect"
-
 	"github.com/block/spectre/internal/comparison/javascript"
+	"github.com/block/spectre/internal/schema"
 )
 
 // normalisationRun owns the mutable document and isolated evaluator for one payload.
 // It is single-use because normalisers destructively rewrite the document.
 type normalisationRun struct {
+	loaded    *schema.Schema
 	log       *slog.Logger
 	evaluator *javascript.Evaluator
-	root      protoreflect.MessageDescriptor
+	root      *schema.Type
 	targets   []normalisationTarget
 	side      string
 	payload   *document
 }
 
 func newNormalisationRun(
+	loaded *schema.Schema,
 	log *slog.Logger,
 	evaluator *javascript.Evaluator,
-	root protoreflect.MessageDescriptor,
+	root *schema.Type,
 	targets []normalisationTarget,
 	side string,
 	payload *document,
 ) *normalisationRun {
 	return &normalisationRun{
+		loaded:    loaded,
 		log:       log,
 		evaluator: evaluator,
 		root:      root,
@@ -41,7 +43,7 @@ func newNormalisationRun(
 // normalise logs a summary for every payload, so a payload with no applicable
 // normalisers is still visible in the logs.
 func (r *normalisationRun) normalise(ctx context.Context) error {
-	occurrences := collectOccurrences(r.root, r.targets, r.payload)
+	occurrences := collectOccurrences(r.loaded, r.root, r.targets, r.payload)
 	for _, occurrence := range occurrences {
 		// A removed value still reaches later normalisers at its path as undefined.
 		value := occurrence.value(r.payload)
@@ -56,7 +58,7 @@ func (r *normalisationRun) normalise(ctx context.Context) error {
 		}
 	}
 	r.log.DebugContext(ctx, "Payload normalisation completed",
-		"message", string(r.root.FullName()),
+		"message", r.root.Name,
 		"side", r.side,
 		"normalisers", len(occurrences),
 	)

@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/alecthomas/errors"
-	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/descriptorpb"
 
 	"github.com/block/spectre/internal/comparison/javascript"
@@ -40,23 +39,20 @@ func (h *RequestHasher) MaxRequestBytes() int {
 	return h.maxBodyBytes
 }
 
-// Configure activates the hasher against a descriptor set. It fails if an endpoint
-// input lacks field presence or a path wildcard does not name one of its fields.
+// Configure validates endpoint types and bindings before activating the hasher.
 func (h *RequestHasher) Configure(ctx context.Context, set *descriptorpb.FileDescriptorSet) error {
 	configured, err := h.scripts.prepare(ctx, set)
 	if err != nil {
 		return err
 	}
+	loaded := configured.plan.Schema()
 	for _, endpoint := range h.scripts.endpoints() {
-		method, err := endpointMethod(configured.Schema(), protoreflect.FullName(endpoint.Method()))
+		root, err := loaded.Type(endpoint.Type())
 		if err != nil {
 			return errors.Wrapf(err, "resolve endpoint %q", endpoint.Pattern())
 		}
-		if err := requireExplicitPresence(method.Input()); err != nil {
-			return errors.Wrapf(err, "bind endpoint %q", endpoint.Pattern())
-		}
 		for _, name := range route.Wildcards(endpoint.Pattern()) {
-			if _, err := resolveBinding(method.Input(), name, false); err != nil {
+			if _, err := resolveBinding(loaded, root, name, false); err != nil {
 				return errors.Wrapf(err, "bind endpoint %q wildcard %q", endpoint.Pattern(), name)
 			}
 		}
@@ -65,7 +61,7 @@ func (h *RequestHasher) Configure(ctx context.Context, set *descriptorpb.FileDes
 	return nil
 }
 
-// Hash returns SHA-256 over the method name and the canonical JSON of the
+// Hash returns SHA-256 over the endpoint or method name and the canonical JSON of the
 // normalised input. An error means the request cannot be identified.
 func (h *RequestHasher) Hash(ctx context.Context, request Request) (RequestHash, error) {
 	configured := h.scripts.active()
@@ -75,9 +71,9 @@ func (h *RequestHasher) Hash(ctx context.Context, request Request) (RequestHash,
 	if request.Overflow {
 		return RequestHash{}, errors.New("request exceeds the comparison size limit")
 	}
-	loaded := configured.Schema()
-	method, selected, wildcards, result := h.scripts.resolve(
-		loaded,
+	loaded := configured.plan.Schema()
+	root, identity, selected, wildcards, result := h.scripts.resolve(
+		configured,
 		request.Method,
 		request.Host,
 		request.Path,
@@ -86,13 +82,13 @@ func (h *RequestHasher) Hash(ctx context.Context, request Request) (RequestHash,
 	if result.Outcome() != "" {
 		return RequestHash{}, errors.Errorf("resolve request method: %s", result.Reason())
 	}
-	payload, err := decodeRequest(loaded, method.Input(), selected, request, wildcards, h.maxBodyBytes)
+	payload, err := decodeRequest(loaded, configured.codec, root, selected, request, wildcards, h.maxBodyBytes)
 	if err != nil {
-		return RequestHash{}, errors.Wrapf(err, "decode request as %s", method.Input().FullName())
+		return RequestHash{}, errors.Wrapf(err, "decode request as %s", root.Name)
 	}
 	normaliseContext, cancel := context.WithTimeout(ctx, h.timeout)
 	defer cancel()
-	normalised, err := h.scripts.normalise(normaliseContext, configured, method.Input(), true, request.Side, payload)
+	normalised, err := h.scripts.normalise(normaliseContext, configured, root, true, request.Side, payload)
 	if err != nil {
 		return RequestHash{}, errors.Wrap(err, "normalise request")
 	}
@@ -100,9 +96,9 @@ func (h *RequestHasher) Hash(ctx context.Context, request Request) (RequestHash,
 	if err != nil {
 		return RequestHash{}, errors.WithStack(err)
 	}
-	// Full names never contain a zero byte, so it separates the name from the JSON.
-	hashed := make([]byte, 0, len(method.FullName())+1+len(canonical))
-	hashed = append(hashed, method.FullName()...)
+	// Route patterns and method names contain no zero bytes, separating identity from JSON.
+	hashed := make([]byte, 0, len(identity)+1+len(canonical))
+	hashed = append(hashed, identity...)
 	hashed = append(hashed, 0)
 	hashed = append(hashed, canonical...)
 	return sha256.Sum256(hashed), nil
