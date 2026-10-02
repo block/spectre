@@ -37,12 +37,12 @@ const (
 type Value struct {
 	// Kind is the value's JSON shape.
 	Kind Kind
-	// Literals are an enum's permitted strings, or strings a number also accepts,
-	// as ProtoJSON spells non-finite floats. Their order is not significant.
+	// Literals are an enum's permitted strings, or strings a number also accepts, as
+	// in ProtoJSON's non-finite floats and open enums. Their order is not significant.
 	Literals []string
 	// Element is the element type of a list or the value type of a map.
 	Element *Value
-	// Type names an object's type, or the alias an enum was declared with, if any.
+	// Type names an object's type, or the alias a literal union was declared with, if any.
 	Type string
 }
 
@@ -60,6 +60,9 @@ func (v Value) Format(reference func(name string) string) string {
 		}
 		return strings.Join(quoted(v.Literals), " | ")
 	case KindNumber:
+		if v.Type != "" {
+			return reference(v.Type)
+		}
 		return strings.Join(append([]string{string(KindNumber)}, quoted(v.Literals)...), " | ")
 	case KindObject:
 		return reference(v.Type)
@@ -82,7 +85,7 @@ func (v Value) isUnion() bool {
 	case KindEnum:
 		return v.Type == "" && len(v.Literals) > 1
 	case KindNumber:
-		return len(v.Literals) > 0
+		return v.Type == "" && len(v.Literals) > 0
 	case KindString, KindBoolean, KindObject, KindList, KindMap:
 	}
 	return false

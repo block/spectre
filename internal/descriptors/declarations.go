@@ -378,7 +378,12 @@ func enumValue(enum protoreflect.EnumDescriptor) schema.Value {
 	for index := range values.Len() {
 		literals = append(literals, string(values.Get(index).Name()))
 	}
-	return schema.Value{Kind: schema.KindEnum, Literals: literals, Type: string(enum.FullName())}
+	value := schema.Value{Kind: schema.KindEnum, Literals: literals, Type: string(enum.FullName())}
+	// Open enums keep unknown numbers, which ProtoJSON writes as JSON numbers.
+	if !enum.IsClosed() {
+		value.Kind = schema.KindNumber
+	}
+	return value
 }
 
 func enumLiterals(enum protoreflect.EnumDescriptor) (literals string) {

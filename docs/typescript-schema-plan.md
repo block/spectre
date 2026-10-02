@@ -68,7 +68,7 @@ names cannot shadow.
 | `float`, `double` | `number \| "-Infinity" \| "Infinity" \| "NaN"` |
 | 64-bit integers | `string` |
 | `bytes` | `string` (base64) |
-| `enum` | union of value-name literals |
+| `enum` | union of value-name literals, plus `number` for open enums |
 | `optional`, message fields | `name?: T` |
 | `repeated T` | `T[]` |
 | `map<K, V>` | `Record<string, V>` |

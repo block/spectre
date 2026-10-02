@@ -325,12 +325,12 @@ func (r *reader) union(t *ts.Type, at *ts.Node) (Value, error) {
 	}
 	// The checker orders union members itself, so declaration order is lost.
 	slices.Sort(literals)
-	if number {
-		return Value{Kind: KindNumber, Literals: literals}, nil
-	}
 	value := Value{Kind: KindEnum, Literals: literals}
+	if number {
+		value.Kind = KindNumber
+	}
 	if alias := t.Alias(); alias != nil {
-		// The alias name only renders the enum, so one declared outside a module is dropped.
+		// The alias name only renders the union, so one declared outside a module is dropped.
 		if name, err := qualifiedName(alias.Symbol()); err == nil {
 			value.Type = name
 		}

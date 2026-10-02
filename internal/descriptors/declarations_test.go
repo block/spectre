@@ -57,7 +57,7 @@ func TestDeclarationsSampleRoundTrip(t *testing.T) {
 		{Name: "name", Value: text},
 		{Name: "nickname", Optional: true, Value: text},
 		{Name: "roles", Value: schema.Value{Kind: schema.KindList, Element: &schema.Value{
-			Kind: schema.KindEnum, Type: "spectre.sample.v1.Role",
+			Kind: schema.KindNumber, Type: "spectre.sample.v1.Role",
 			Literals: []string{"ROLE_ADMIN", "ROLE_EDITOR", "ROLE_READER", "ROLE_UNSPECIFIED"},
 		}}},
 		{Name: "labels", Value: schema.Value{Kind: schema.KindMap, Element: &text}},
@@ -100,6 +100,10 @@ func TestSampleDeclarationWireJSONRoundTrip(t *testing.T) {
 		"PresentDefaults": {
 			message:  &samplepb.User{Nickname: new(""), Profile: &samplepb.User_Profile{MarketingConsent: new(false)}, Contact: &samplepb.User_Email{Email: ""}},
 			expected: `{"id":"","name":"","nickname":"","roles":[],"labels":{},"profile":{"addresses":[],"marketingConsent":false,"preferences":{}},"avatar":"","revision":"0","email":""}`,
+		},
+		"UnknownEnumNumber": {
+			message:  &samplepb.User{Roles: []samplepb.Role{samplepb.Role_ROLE_ADMIN, 99}},
+			expected: `{"id":"","name":"","roles":["ROLE_ADMIN",99],"labels":{},"avatar":"","revision":"0"}`,
 		},
 		"NonFiniteFloat": {
 			message:  &samplepb.Preference{Value: &samplepb.Preference_Weight{Weight: math.Inf(-1)}},
@@ -177,6 +181,34 @@ func TestDeclarationsWellKnownScalars(t *testing.T) {
 		{Name: "boolValue", Optional: true, Value: schema.Value{Kind: schema.KindBoolean}},
 	}}, declared)
 	assert.Equal(t, 1, len(generated))
+}
+
+func TestDeclarationsAcceptNumbersForOpenEnums(t *testing.T) {
+	for syntax, kind := range map[string]schema.Kind{"proto2": schema.KindEnum, "proto3": schema.KindNumber} {
+		t.Run(syntax, func(t *testing.T) {
+			set := plainDescriptorSet()
+			file := set.GetFile()[0]
+			file.Syntax = new(syntax)
+			file.EnumType = []*descriptorpb.EnumDescriptorProto{{Name: new("State"), Value: []*descriptorpb.EnumValueDescriptorProto{
+				{Name: new("STATE_UNSPECIFIED"), Number: new(int32(0))},
+				{Name: new("STATE_ACTIVE"), Number: new(int32(1))},
+			}}}
+			file.MessageType[0].Field = []*descriptorpb.FieldDescriptorProto{{
+				Name: new("state"), JsonName: new("state"), Number: new(int32(1)), Label: descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(),
+				Type: descriptorpb.FieldDescriptorProto_TYPE_ENUM.Enum(), TypeName: new(".example.State"),
+			}}
+			generated, err := descriptors.Declarations(t.Context(), set)
+			assert.NoError(t, err)
+			loaded, err := schema.ParseSources(t.Context(), generated)
+			assert.NoError(t, err)
+			declared, err := loaded.Type("example.Payload")
+			assert.NoError(t, err)
+			state := schema.Value{Kind: kind, Literals: []string{"STATE_ACTIVE", "STATE_UNSPECIFIED"}, Type: "example.State"}
+			assert.Equal(t, &schema.Type{Name: "example.Payload", Fields: []schema.Field{
+				{Name: "state", Optional: syntax == "proto2", Value: state},
+			}}, declared)
+		})
+	}
 }
 
 func TestDeclarationsRejectUnsupportedWellKnownReferences(t *testing.T) {

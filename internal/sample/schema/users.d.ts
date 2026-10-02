@@ -2,7 +2,7 @@
 // Source: users.proto
 
 declare module "spectre.sample.v1" {
-  export type Role = "ROLE_UNSPECIFIED" | "ROLE_READER" | "ROLE_EDITOR" | "ROLE_ADMIN";
+  export type Role = number | "ROLE_UNSPECIFIED" | "ROLE_READER" | "ROLE_EDITOR" | "ROLE_ADMIN";
 
   export interface User {
     id: string;
