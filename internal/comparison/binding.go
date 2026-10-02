@@ -127,6 +127,9 @@ func parseScalar(value schema.Value, raw string) (any, error) {
 	case schema.KindString:
 		return raw, nil
 	case schema.KindNumber:
+		if slices.Contains(value.Literals, raw) {
+			return raw, nil
+		}
 		number, err := strconv.ParseFloat(raw, 64)
 		if err != nil {
 			return nil, errors.Wrap(err, "parse number")

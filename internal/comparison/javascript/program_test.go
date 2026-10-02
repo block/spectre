@@ -126,7 +126,20 @@ func TestRejectsUncheckedRegistrations(t *testing.T) {
 				declare module "test.v1" { interface Extra { name: string } }
 				spectre.message<v1.Extra>((value) => value);
 			`)},
-			message: `type "Extra" is not exported from a schema module`,
+			message: "scripts/test.ts:2:32: Extra augments a schema module; only schema files may declare its members",
+		},
+		"AugmentedField": {
+			files: fstest.MapFS{"test.ts": script(`
+				declare module "test.v1" { interface Response { extra: string } }
+				spectre.field<v1.Response, "extra">((value) => value);
+			`)},
+			message: "Response augments a schema module",
+		},
+		"AugmentedMethod": {
+			files: fstest.MapFS{"test.ts": script(`
+				declare module "test.v1" { interface UserService { Find(request: User): User } }
+			`)},
+			message: "UserService augments a schema module",
 		},
 		"JavaScript": {
 			files:   fstest.MapFS{"test.js": {Data: []byte(`export const value = 1;`)}},

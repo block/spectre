@@ -301,3 +301,26 @@ func TestBindsRequiredScalarWithoutDescriptors(t *testing.T) {
 	assert.NoError(t, err)
 	assert.NotEqual(t, explicit, absent)
 }
+
+func TestBindsNumberLiteralsFromText(t *testing.T) {
+	config := newSchemaConfig(t,
+		map[string]string{"request.d.ts": `declare module "api" { interface Request { ratio: number | "NaN" } }`},
+		map[string]string{"request.ts": `
+			import { egress } from "spectre";
+			import type { Request } from "api";
+			egress<Request>("http", "GET api.example/items");
+		`})
+	hasher, err := comparison.NewRequestHasher(t.Context(), config, slog.New(slog.DiscardHandler))
+	assert.NoError(t, err)
+	assert.NoError(t, hasher.Configure(t.Context(), &descriptorpb.FileDescriptorSet{}))
+	request := comparison.Request{Method: "GET", Host: "api.example", Path: "/items", RawQuery: "ratio=NaN"}
+	literal, err := hasher.Hash(t.Context(), request)
+	assert.NoError(t, err)
+	request.RawQuery = "ratio=1"
+	number, err := hasher.Hash(t.Context(), request)
+	assert.NoError(t, err)
+	assert.NotEqual(t, literal, number)
+	request.RawQuery = "ratio=Infinity"
+	_, err = hasher.Hash(t.Context(), request)
+	assert.Error(t, err)
+}

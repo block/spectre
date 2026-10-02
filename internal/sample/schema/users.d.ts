@@ -42,6 +42,6 @@ declare module "spectre.sample.v1" {
   export interface Preference {
     text?: string;
     enabled?: boolean;
-    weight?: number;
+    weight?: number | "-Infinity" | "Infinity" | "NaN";
   }
 }

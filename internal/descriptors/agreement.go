@@ -37,7 +37,7 @@ func CheckAgreement(registry *Registry, loaded *schema.Schema) error {
 	}
 	for _, declared := range loaded.Types() {
 		message, err := registry.Message(protoreflect.FullName(declared.Name))
-		if err == nil && (message.IsMapEntry() || isUntypedMessage(message.FullName()) || scalarMessageKind(message.FullName()) != "") {
+		if err == nil && (message.IsMapEntry() || isUntypedMessage(message.FullName()) || isScalarMessage(message.FullName())) {
 			return errors.Errorf("type %q cannot declare a protobuf message without an object JSON shape", declared.Name)
 		}
 	}
@@ -54,7 +54,7 @@ func checkMessages(messages protoreflect.MessageDescriptors, loaded *schema.Sche
 	for index := range messages.Len() {
 		message := messages.Get(index)
 		// Map entries are implementation details; well-known scalars are inlined in fields.
-		if message.IsMapEntry() || isUntypedMessage(message.FullName()) || scalarMessageKind(message.FullName()) != "" {
+		if message.IsMapEntry() || isUntypedMessage(message.FullName()) || isScalarMessage(message.FullName()) {
 			continue
 		}
 		expected, err := messageType(message)

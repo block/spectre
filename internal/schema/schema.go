@@ -19,7 +19,7 @@ type Kind string
 const (
 	// KindString is a JSON string.
 	KindString Kind = "string"
-	// KindNumber is a JSON number.
+	// KindNumber is a JSON number, or one of its literals.
 	KindNumber Kind = "number"
 	// KindBoolean is a JSON boolean.
 	KindBoolean Kind = "boolean"
@@ -37,7 +37,8 @@ const (
 type Value struct {
 	// Kind is the value's JSON shape.
 	Kind Kind
-	// Literals are an enum's permitted strings. Their order is not significant.
+	// Literals are an enum's permitted strings, or strings a number also accepts,
+	// as ProtoJSON spells non-finite floats. Their order is not significant.
 	Literals []string
 	// Element is the element type of a list or the value type of a map.
 	Element *Value
@@ -57,26 +58,44 @@ func (v Value) Format(reference func(name string) string) string {
 		if v.Type != "" {
 			return reference(v.Type)
 		}
-		literals := make([]string, 0, len(v.Literals))
-		for _, literal := range v.Literals {
-			// JSON strings are valid TypeScript string literals.
-			encoded, _ := json.Marshal(literal) //nolint:errcheck // Strings always encode.
-			literals = append(literals, string(encoded))
-		}
-		return strings.Join(literals, " | ")
+		return strings.Join(quoted(v.Literals), " | ")
+	case KindNumber:
+		return strings.Join(append([]string{string(KindNumber)}, quoted(v.Literals)...), " | ")
 	case KindObject:
 		return reference(v.Type)
 	case KindList:
 		element := v.Element.Format(reference)
-		if v.Element.Kind == KindEnum && v.Element.Type == "" && len(v.Element.Literals) > 1 {
+		if v.Element.isUnion() {
 			element = "(" + element + ")"
 		}
 		return element + "[]"
 	case KindMap:
 		return "Record<string, " + v.Element.Format(reference) + ">"
-	case KindString, KindNumber, KindBoolean:
+	case KindString, KindBoolean:
 	}
 	return string(v.Kind)
+}
+
+// isUnion reports whether the value renders as an unnamed union.
+func (v Value) isUnion() bool {
+	switch v.Kind {
+	case KindEnum:
+		return v.Type == "" && len(v.Literals) > 1
+	case KindNumber:
+		return len(v.Literals) > 0
+	case KindString, KindBoolean, KindObject, KindList, KindMap:
+	}
+	return false
+}
+
+func quoted(literals []string) []string {
+	encoded := make([]string, 0, len(literals))
+	for _, literal := range literals {
+		// JSON strings are valid TypeScript string literals.
+		value, _ := json.Marshal(literal) //nolint:errcheck // Strings always encode.
+		encoded = append(encoded, string(value))
+	}
+	return encoded
 }
 
 // Equal reports whether two values accept the same JSON. Enum alias names are
@@ -86,7 +105,7 @@ func (v Value) Equal(other Value) bool {
 		return false
 	}
 	switch v.Kind {
-	case KindEnum:
+	case KindEnum, KindNumber:
 		left, right := slices.Clone(v.Literals), slices.Clone(other.Literals)
 		slices.Sort(left)
 		slices.Sort(right)
@@ -95,7 +114,7 @@ func (v Value) Equal(other Value) bool {
 		return v.Type == other.Type
 	case KindList, KindMap:
 		return v.Element.Equal(*other.Element)
-	case KindString, KindNumber, KindBoolean:
+	case KindString, KindBoolean:
 	}
 	return true
 }
@@ -257,6 +276,9 @@ func (s *Schema) validate(expected Value, value any, path string) error {
 		}
 	case KindNumber:
 		if _, ok := value.(float64); ok {
+			return nil
+		}
+		if literal, ok := value.(string); ok && slices.Contains(expected.Literals, literal) {
 			return nil
 		}
 	case KindBoolean:

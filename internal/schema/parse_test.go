@@ -19,6 +19,7 @@ declare module "example.users.v1" {
   export interface User extends Audit {
     id: string;
     age?: number;
+    ratio: number | "NaN" | "Infinity";
     active: boolean;
     roles: Role[];
     tags: ("a" | "b")[];
@@ -58,6 +59,7 @@ declare module "audit" {
 			{Name: "updatedBy", Optional: true, Value: schema.Value{Kind: schema.KindString}},
 			{Name: "id", Value: schema.Value{Kind: schema.KindString}},
 			{Name: "age", Optional: true, Value: schema.Value{Kind: schema.KindNumber}},
+			{Name: "ratio", Value: schema.Value{Kind: schema.KindNumber, Literals: []string{"Infinity", "NaN"}}},
 			{Name: "active", Value: schema.Value{Kind: schema.KindBoolean}},
 			{Name: "roles", Value: schema.Value{Kind: schema.KindList, Element: &role}},
 			{Name: "tags", Value: schema.Value{Kind: schema.KindList, Element: &schema.Value{Kind: schema.KindEnum, Literals: []string{"a", "b"}}}},
@@ -111,7 +113,7 @@ func TestRejectsDeclarations(t *testing.T) {
 		"Null":              {source: `declare module "m" { interface A { a: string | null } }`, error: "type string | null is not supported"},
 		"RequiredUndefined": {source: `declare module "m" { interface A { a: string | undefined } }`, error: "type string | undefined is not supported"},
 		"NumberLiteral":     {source: `declare module "m" { interface A { a: 1 } }`, error: "type 1 is not supported"},
-		"MixedUnion":        {source: `declare module "m" { interface A { a: "x" | number } }`, error: `type number | "x" is not supported`},
+		"MixedUnion":        {source: `declare module "m" { interface A { a: string | number } }`, error: `type string | number is not supported`},
 		"Intersection":      {source: `declare module "m" { interface B { b: string } interface C { c: string } interface A { a: B & C } }`, error: "type B & C is not supported"},
 		"FunctionType":      {source: `declare module "m" { interface A { a: () => void } }`, error: "type () => void is not supported"},
 		"Tuple":             {source: `declare module "m" { interface A { a: [string] } }`, error: "type [string] is not supported"},
@@ -157,7 +159,7 @@ func TestCancelledCheckReturnsError(t *testing.T) {
 func TestValidatesJSON(t *testing.T) {
 	loaded, err := schema.ParseSources(t.Context(), map[string]string{"a.d.ts": `
 declare module "m" {
-  interface A { name: string; count?: number; flag?: boolean; kind?: "x" | "y"; items?: B[]; byKey?: Record<string, B> }
+  interface A { name: string; count?: number; ratio?: number | "NaN"; flag?: boolean; kind?: "x" | "y"; items?: B[]; byKey?: Record<string, B> }
   interface B { id: string }
 }
 `})
@@ -174,6 +176,8 @@ declare module "m" {
 		"Null":            {value: map[string]any{"name": "a", "count": nil}, error: "$.count: expected number, found null"},
 		"WrongScalar":     {value: map[string]any{"name": 1.0}, error: "$.name: expected string, found a number"},
 		"WrongLiteral":    {value: map[string]any{"name": "a", "kind": "z"}, error: `$.kind: value is not one of "x" | "y"`},
+		"NumberLiteral":   {value: map[string]any{"name": "a", "ratio": "NaN"}},
+		"NumberString":    {value: map[string]any{"name": "a", "ratio": "Infinity"}, error: `$.ratio: expected number | "NaN", found a string`},
 		"NestedElement":   {value: map[string]any{"name": "a", "items": []any{map[string]any{}}}, error: `$.items[0]: required field "id" of type "m.B" is missing`},
 		"NestedMapValue":  {value: map[string]any{"name": "a", "byKey": map[string]any{"k": "v"}}, error: `$.byKey["k"]: expected m.B, found a string`},
 	} {
@@ -197,6 +201,9 @@ func TestRendersValues(t *testing.T) {
 		"Record<string, a.B[]>":   {Kind: schema.KindMap, Element: &schema.Value{Kind: schema.KindList, Element: &schema.Value{Kind: schema.KindObject, Type: "a.B"}}},
 		`Record<string, "a\"b">`:  {Kind: schema.KindMap, Element: &schema.Value{Kind: schema.KindEnum, Literals: []string{`a"b`}}},
 		"Record<string, boolean>": {Kind: schema.KindMap, Element: &schema.Value{Kind: schema.KindBoolean}},
+		`number | "NaN"`:          {Kind: schema.KindNumber, Literals: []string{"NaN"}},
+		`(number | "NaN")[]`:      {Kind: schema.KindList, Element: &schema.Value{Kind: schema.KindNumber, Literals: []string{"NaN"}}},
+		"number[]":                {Kind: schema.KindList, Element: &schema.Value{Kind: schema.KindNumber}},
 	} {
 		assert.Equal(t, expected, value.String())
 	}

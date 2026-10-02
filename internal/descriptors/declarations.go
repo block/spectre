@@ -16,19 +16,32 @@ import (
 	"github.com/block/spectre/internal/schema"
 )
 
-// scalarMessageKind models well-known messages whose ProtoJSON is a scalar.
-func scalarMessageKind(name protoreflect.FullName) schema.Kind {
+// scalarMessageValue models well-known messages whose ProtoJSON is a scalar.
+func scalarMessageValue(name protoreflect.FullName) (value schema.Value, scalar bool) {
 	switch name {
 	case "google.protobuf.Timestamp", "google.protobuf.Duration", "google.protobuf.FieldMask",
 		"google.protobuf.StringValue", "google.protobuf.BytesValue", "google.protobuf.Int64Value", "google.protobuf.UInt64Value":
-		return schema.KindString
-	case "google.protobuf.DoubleValue", "google.protobuf.FloatValue", "google.protobuf.Int32Value", "google.protobuf.UInt32Value":
-		return schema.KindNumber
+		return schema.Value{Kind: schema.KindString}, true
+	case "google.protobuf.DoubleValue", "google.protobuf.FloatValue":
+		return floatValue(), true
+	case "google.protobuf.Int32Value", "google.protobuf.UInt32Value":
+		return schema.Value{Kind: schema.KindNumber}, true
 	case "google.protobuf.BoolValue":
-		return schema.KindBoolean
+		return schema.Value{Kind: schema.KindBoolean}, true
 	default:
-		return ""
+		return schema.Value{}, false
 	}
+}
+
+func isScalarMessage(name protoreflect.FullName) (scalar bool) {
+	_, scalar = scalarMessageValue(name)
+	return scalar
+}
+
+// floatValue models a float or double, which ProtoJSON writes as a string when
+// it is not finite.
+func floatValue() schema.Value {
+	return schema.Value{Kind: schema.KindNumber, Literals: []string{"-Infinity", "Infinity", "NaN"}}
 }
 
 // isUntypedMessage identifies ProtoJSON shapes outside the schema subset.
@@ -194,7 +207,7 @@ func (w *declarationWriter) renderScope(messages protoreflect.MessageDescriptors
 	}
 	for index := range messages.Len() {
 		message := messages.Get(index)
-		if message.IsMapEntry() || isUntypedMessage(message.FullName()) || scalarMessageKind(message.FullName()) != "" {
+		if message.IsMapEntry() || isUntypedMessage(message.FullName()) || isScalarMessage(message.FullName()) {
 			continue
 		}
 		if err := w.renderMessage(message); err != nil {
@@ -273,7 +286,7 @@ func (w *declarationWriter) renderService(service protoreflect.ServiceDescriptor
 
 func checkMethodTypes(method protoreflect.MethodDescriptor) error {
 	for _, message := range []protoreflect.MessageDescriptor{method.Input(), method.Output()} {
-		if isUntypedMessage(message.FullName()) || scalarMessageKind(message.FullName()) != "" {
+		if isUntypedMessage(message.FullName()) || isScalarMessage(message.FullName()) {
 			return errors.Errorf("method %q uses unsupported request or response type %q", method.FullName(), message.FullName())
 		}
 	}
@@ -318,8 +331,10 @@ func singularValue(field protoreflect.FieldDescriptor) (schema.Value, error) {
 	case protoreflect.BoolKind:
 		return schema.Value{Kind: schema.KindBoolean}, nil
 	case protoreflect.Int32Kind, protoreflect.Sint32Kind, protoreflect.Sfixed32Kind,
-		protoreflect.Uint32Kind, protoreflect.Fixed32Kind, protoreflect.FloatKind, protoreflect.DoubleKind:
+		protoreflect.Uint32Kind, protoreflect.Fixed32Kind:
 		return schema.Value{Kind: schema.KindNumber}, nil
+	case protoreflect.FloatKind, protoreflect.DoubleKind:
+		return floatValue(), nil
 	case protoreflect.EnumKind:
 		if isUntypedMessage(field.Enum().FullName()) {
 			return schema.Value{}, errors.Errorf("%s is not supported", field.Enum().FullName())
@@ -327,8 +342,8 @@ func singularValue(field protoreflect.FieldDescriptor) (schema.Value, error) {
 		return enumValue(field.Enum()), nil
 	case protoreflect.MessageKind, protoreflect.GroupKind:
 		name := field.Message().FullName()
-		if kind := scalarMessageKind(name); kind != "" {
-			return schema.Value{Kind: kind}, nil
+		if value, scalar := scalarMessageValue(name); scalar {
+			return value, nil
 		}
 		if isUntypedMessage(name) {
 			return schema.Value{}, errors.Errorf("%s is not supported", name)

@@ -64,7 +64,8 @@ names cannot shadow.
 | Protobuf | TypeScript |
 | --- | --- |
 | `string`, `bool` | `string`, `boolean` |
-| 32-bit integers, `float`, `double` | `number` |
+| 32-bit integers | `number` |
+| `float`, `double` | `number \| "-Infinity" \| "Infinity" \| "NaN"` |
 | 64-bit integers | `string` |
 | `bytes` | `string` (base64) |
 | `enum` | union of value-name literals |

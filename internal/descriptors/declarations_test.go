@@ -2,6 +2,7 @@ package descriptors_test
 
 import (
 	"encoding/json"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -100,6 +101,10 @@ func TestSampleDeclarationWireJSONRoundTrip(t *testing.T) {
 			message:  &samplepb.User{Nickname: new(""), Profile: &samplepb.User_Profile{MarketingConsent: new(false)}, Contact: &samplepb.User_Email{Email: ""}},
 			expected: `{"id":"","name":"","nickname":"","roles":[],"labels":{},"profile":{"addresses":[],"marketingConsent":false,"preferences":{}},"avatar":"","revision":"0","email":""}`,
 		},
+		"NonFiniteFloat": {
+			message:  &samplepb.Preference{Value: &samplepb.Preference_Weight{Weight: math.Inf(-1)}},
+			expected: `{"weight":"-Infinity"}`,
+		},
 		"PopulatedCollections": {
 			message: &samplepb.ListUsersResponse{
 				Users: []*samplepb.User{{
@@ -156,6 +161,7 @@ func TestDeclarationsWellKnownScalars(t *testing.T) {
 	assert.NoError(t, err)
 	text := schema.Value{Kind: schema.KindString}
 	number := schema.Value{Kind: schema.KindNumber}
+	float := schema.Value{Kind: schema.KindNumber, Literals: []string{"-Infinity", "Infinity", "NaN"}}
 	assert.Equal(t, &schema.Type{Name: "example.Payload", Fields: []schema.Field{
 		{Name: "timestamp", Optional: true, Value: text},
 		{Name: "duration", Optional: true, Value: text},
@@ -164,8 +170,8 @@ func TestDeclarationsWellKnownScalars(t *testing.T) {
 		{Name: "bytesValue", Optional: true, Value: text},
 		{Name: "int64Value", Optional: true, Value: text},
 		{Name: "uint64Value", Optional: true, Value: text},
-		{Name: "doubleValue", Optional: true, Value: number},
-		{Name: "floatValue", Optional: true, Value: number},
+		{Name: "doubleValue", Optional: true, Value: float},
+		{Name: "floatValue", Optional: true, Value: float},
 		{Name: "int32Value", Optional: true, Value: number},
 		{Name: "uint32Value", Optional: true, Value: number},
 		{Name: "boolValue", Optional: true, Value: schema.Value{Kind: schema.KindBoolean}},

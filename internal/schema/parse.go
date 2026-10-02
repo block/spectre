@@ -113,7 +113,7 @@ func qualifiedName(symbol *ts.Symbol) (string, error) {
 		if len(current.Declarations) > 0 {
 			declaration := current.Declarations[0]
 			if declaration.Kind == ts.KindModuleDeclaration && declaration.Name().Kind == ts.KindStringLiteral {
-				if !strings.HasPrefix(ts.SourceFileOf(declaration).FileName(), programRoot) {
+				if !inSchemaFile(declaration) {
 					break
 				}
 				slices.Reverse(names)
@@ -123,6 +123,21 @@ func qualifiedName(symbol *ts.Symbol) (string, error) {
 		names = append(names, current.Name)
 	}
 	return "", errors.Errorf("type %q is not exported from a schema module", symbol.Name)
+}
+
+func inSchemaFile(node *ts.Node) bool {
+	return strings.HasPrefix(ts.SourceFileOf(node).FileName(), programRoot)
+}
+
+// checkDeclaredInSchema rejects script augmentations of schema modules, which
+// would change the payload types the host validates.
+func checkDeclaredInSchema(symbol *ts.Symbol) error {
+	for _, declaration := range symbol.Declarations {
+		if !inSchemaFile(declaration) {
+			return errors.Errorf("%s: %s augments a schema module; only schema files may declare its members", ts.Location(declaration), symbol.Name)
+		}
+	}
+	return nil
 }
 
 type pendingType struct {
@@ -168,6 +183,9 @@ func (r *reader) members(container *ts.Symbol) error {
 	exports := r.checker.GetExportsOfModule(container)
 	slices.SortFunc(exports, func(left, right *ts.Symbol) int { return cmp.Compare(left.Name, right.Name) })
 	for _, symbol := range exports {
+		if err := checkDeclaredInSchema(symbol); err != nil {
+			return err
+		}
 		declaration := symbol.Declarations[0]
 		if symbol.Flags&(ts.SymbolFlagsValue&^ts.SymbolFlagsModule|ts.SymbolFlagsAlias) != 0 {
 			return errors.Errorf("%s: schema modules may only declare interfaces, type aliases, and namespaces", ts.Location(declaration))
@@ -209,6 +227,9 @@ func (r *reader) interfaceDeclaration(symbol *ts.Symbol) error {
 		return errors.Errorf("%s: %v", ts.Location(symbol.Declarations[0]), err)
 	}
 	for _, method := range properties {
+		if err := checkDeclaredInSchema(method); err != nil {
+			return err
+		}
 		operation, err := r.operation(service, method)
 		if err != nil {
 			return err
@@ -271,7 +292,7 @@ func (r *reader) value(t *ts.Type, at *ts.Node) (Value, error) {
 	case flags&ts.TypeFlagsNumber != 0:
 		return Value{Kind: KindNumber}, nil
 	case flags&(ts.TypeFlagsStringLiteral|ts.TypeFlagsUnion) != 0:
-		return r.enum(t, at)
+		return r.union(t, at)
 	case flags&ts.TypeFlagsObject != 0:
 		return r.object(t, at)
 	}
@@ -282,13 +303,20 @@ func (r *reader) unsupported(t *ts.Type, at *ts.Node) error {
 	return errors.Errorf("%s: type %s is not supported in schemas", ts.Location(at), r.checker.TypeToString(t))
 }
 
-func (r *reader) enum(t *ts.Type, at *ts.Node) (Value, error) {
+// union reads string literals as an enum, or as a number's literals when the
+// union also contains number.
+func (r *reader) union(t *ts.Type, at *ts.Node) (Value, error) {
 	members := []*ts.Type{t}
 	if t.Flags()&ts.TypeFlagsUnion != 0 {
 		members = t.Types()
 	}
 	literals := make([]string, 0, len(members))
+	number := false
 	for _, member := range members {
+		if member.Flags()&ts.TypeFlagsNumber != 0 {
+			number = true
+			continue
+		}
 		literal, ok := ts.StringLiteral(member)
 		if !ok || member.Flags()&ts.TypeFlagsEnumLiteral != 0 {
 			return Value{}, r.unsupported(t, at)
@@ -297,6 +325,9 @@ func (r *reader) enum(t *ts.Type, at *ts.Node) (Value, error) {
 	}
 	// The checker orders union members itself, so declaration order is lost.
 	slices.Sort(literals)
+	if number {
+		return Value{Kind: KindNumber, Literals: literals}, nil
+	}
 	value := Value{Kind: KindEnum, Literals: literals}
 	if alias := t.Alias(); alias != nil {
 		// The alias name only renders the enum, so one declared outside a module is dropped.
@@ -354,6 +385,9 @@ func (r *reader) objectType(name string, t *ts.Type) (*Type, error) {
 	properties := r.checker.GetPropertiesOfType(t)
 	declared := &Type{Name: name, Fields: make([]Field, 0, len(properties))}
 	for _, property := range properties {
+		if err := checkDeclaredInSchema(property); err != nil {
+			return nil, err
+		}
 		at := property.Declarations[0]
 		if isMethod(property) {
 			return nil, errors.Errorf("%s: object types may only declare properties; %s mixes them with methods", ts.Location(at), name)
