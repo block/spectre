@@ -1,0 +1,68 @@
+default_workflow = "github"
+
+[[workflow]]
+name = "github"
+extends = "github"
+
+# Codex reviews asynchronously and records progress in a summary comment whose
+# "Code Review" row reads Running or Completed beside the short reviewed commit.
+[workflow.source.codex]
+command = '''
+gh pr view --json comments --jq '([.comments[] | select(.body | startswith("<!-- codex-pull-request-review-summary -->"))] | last | .body // "") | capture("Code Review\\*\\* \\| [^*|]*\\*\\*(?<status>[^*|]+)\\*\\*[^|]*\\| `(?<commit>[0-9a-f]+)`") // {}' 2>/dev/null || echo '{}'
+'''
+interval = "30s"
+inactive_interval = "5m"
+
+[[workflow.step]]
+name = "review"
+replace = true
+title = "Review"
+kind = "action"
+requires = ["pull_request"]
+icon = "message-circle"
+prompt = """
+Post a comment with _exactly_ the body `@codex review` on the existing open pull request $pr_url using `gh pr comment`. Do not create a pull request.
+"""
+ends = "forge.pr.state == 'MERGED' || (codex.status == 'Completed' && forge.pr.head.startsWith(codex.commit))"
+timeout = "30m"
+
+[workflow.step.vars]
+number = "forge.pr.number"
+pr_url = "forge.pr.url"
+commit = "codex.commit"
+
+[[workflow.step.state]]
+when = "forge.pr.state == 'MERGED'"
+color = "green"
+label = "merged"
+url = "$pr_url"
+durable = true
+
+[[workflow.step.state]]
+when = "forge.pr.state == 'CLOSED'"
+label = "pull request closed"
+url = "$pr_url"
+disabled = true
+durable = true
+
+[[workflow.step.state]]
+when = "forge.pr.state == 'OPEN' && codex.status == 'Completed' && forge.pr.head.startsWith(codex.commit)"
+color = "green"
+label = "Codex reviewed $commit"
+url = "$pr_url"
+
+[[workflow.step.state]]
+when = "forge.pr.state == 'OPEN' && codex.status == 'Running'"
+color = "blue"
+label = "Codex reviewing $commit"
+url = "$pr_url"
+
+[[workflow.step.state]]
+when = "forge.pr.state == 'OPEN'"
+color = "neutral"
+label = "request Codex review for #$number"
+url = "$pr_url"
+
+[[workflow.step.state]]
+label = "open pull request required"
+disabled = true
