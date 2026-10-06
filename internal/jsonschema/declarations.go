@@ -25,20 +25,23 @@ func Declarations(ctx context.Context, config Config) (string, error) {
 	compiler := compiled.NewCompiler()
 	compiler.DefaultDraft(compiled.Draft2020)
 	documents := make([]any, 0, len(config.Schemas))
+	locations := make([]string, 0, len(config.Schemas))
 	for _, path := range config.Schemas {
 		document, err := readDocument(path)
 		if err != nil {
 			return "", err
 		}
+		location := documentLocation(path, document)
 		// Adding every input before compiling lets inputs refer to each other.
-		if err := compiler.AddResource(path, document); err != nil {
+		if err := compiler.AddResource(location, document); err != nil {
 			return "", errors.Wrapf(err, "add %q", path)
 		}
 		documents = append(documents, document)
+		locations = append(locations, location)
 	}
 	converter := newConverter(config.Module)
-	for index, path := range config.Schemas {
-		if err := converter.declareDocument(compiler, path, documents[index]); err != nil {
+	for index, location := range locations {
+		if err := converter.declareDocument(compiler, location, documents[index]); err != nil {
 			return "", err
 		}
 	}
@@ -74,6 +77,20 @@ func readDocument(path string) (any, error) {
 	defer file.Close() //nolint:errcheck // Closing a read-only file cannot lose data.
 	document, err := compiled.UnmarshalJSON(file)
 	return document, errors.Wrapf(err, "read %q", path)
+}
+
+// documentLocation returns the URL an input is registered and compiled under. A
+// document with an absolute $id is known by it, so references relative to it resolve.
+func documentLocation(path string, document any) string {
+	object, _ := document.(map[string]any)
+	id, _ := object["$id"].(string)
+	if draft, _ := object["$schema"].(string); id == "" && strings.Contains(draft, "draft-04") {
+		id, _ = object["id"].(string)
+	}
+	if parsed, err := url.Parse(id); err == nil && parsed.IsAbs() {
+		return id
+	}
+	return path
 }
 
 // declaration is one exported type. Inline object schemas are hoisted into nested
@@ -305,7 +322,12 @@ func (c *converter) inlineValue(shape shape, scope *declaration, suggested strin
 
 // resolve follows references to the schema that describes the value.
 func resolve(source *compiled.Schema) (*compiled.Schema, error) {
+	followed := map[*compiled.Schema]bool{}
 	for source.Ref != nil {
+		if followed[source] {
+			return nil, errors.Errorf("%s: $ref chain refers back to itself", source.Location)
+		}
+		followed[source] = true
 		if err := checkRef(source); err != nil {
 			return nil, err
 		}
@@ -368,11 +390,6 @@ func shapeOf(source *compiled.Schema) (shape, error) {
 
 func unsupportedKeyword(source *compiled.Schema) (keyword string) {
 	_, tuple := source.Items.([]*compiled.Schema)
-	dependentSchema := false
-	for _, dependency := range source.Dependencies {
-		_, isSchema := dependency.(*compiled.Schema)
-		dependentSchema = dependentSchema || isSchema
-	}
 	for _, check := range []struct {
 		keyword string
 		present bool
@@ -382,7 +399,10 @@ func unsupportedKeyword(source *compiled.Schema) (keyword string) {
 		{"oneOf", len(source.OneOf) > 0},
 		{"if", source.If != nil || source.Then != nil || source.Else != nil},
 		{"patternProperties", len(source.PatternProperties) > 0},
-		{"dependentSchemas", len(source.DependentSchemas) > 0 || dependentSchema},
+		// Conditional requirements cannot be expressed, so optional members would accept too much.
+		{"dependentRequired", len(source.DependentRequired) > 0},
+		{"dependentSchemas", len(source.DependentSchemas) > 0},
+		{"dependencies", len(source.Dependencies) > 0},
 		{"unevaluatedProperties", source.UnevaluatedProperties != nil},
 		{"unevaluatedItems", source.UnevaluatedItems != nil},
 		{"prefixItems", len(source.PrefixItems) > 0 || tuple},

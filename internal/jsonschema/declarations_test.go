@@ -66,6 +66,25 @@ func TestDeclarationsSchemaModel(t *testing.T) {
 	}, loaded.Types())
 }
 
+func TestDeclarationsResolveInputsByID(t *testing.T) {
+	dir := t.TempDir()
+	for name, document := range map[string]string{
+		"main.json":   `{"$id": "https://example.test/main.json", "title": "Main", "properties": {"common": {"$ref": "common.json"}}}`,
+		"common.json": `{"$id": "https://example.test/common.json", "title": "Common", "properties": {"id": {"type": "string"}}}`,
+	} {
+		assert.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte(document), 0o600))
+	}
+	config := jsonschema.Config{Module: "m", Schemas: []string{filepath.Join(dir, "main.json"), filepath.Join(dir, "common.json")}}
+	generated, err := jsonschema.Declarations(t.Context(), config)
+	assert.NoError(t, err)
+	loaded, err := schema.ParseSources(t.Context(), map[string]string{"m.d.ts": generated})
+	assert.NoError(t, err)
+	assert.Equal(t, []*schema.Type{
+		{Name: "m.Common", Fields: []schema.Field{{Name: "id", Optional: true, Value: schema.Value{Kind: schema.KindString}}}},
+		{Name: "m.Main", Fields: []schema.Field{{Name: "common", Optional: true, Value: schema.Value{Kind: schema.KindObject, Type: "m.Common"}}}},
+	}, loaded.Types())
+}
+
 func TestDeclarationsRejectUnsupportedSchemas(t *testing.T) {
 	for name, test := range map[string]struct {
 		module   string
@@ -123,6 +142,22 @@ func TestDeclarationsRejectUnsupportedSchemas(t *testing.T) {
 		"RefWithType": {
 			schema:   `{"title": "T", "properties": {"a": {"$ref": "#/$defs/A", "type": "string"}}, "$defs": {"A": {"type": "string"}}}`,
 			expected: "$ref cannot be combined with other type keywords",
+		},
+		"RefCycle": {
+			schema:   `{"$defs": {"A": {"$ref": "#/$defs/A"}}}`,
+			expected: "$ref chain refers back to itself",
+		},
+		"MutualRefCycle": {
+			schema:   `{"$defs": {"A": {"$ref": "#/$defs/B"}, "B": {"$ref": "#/$defs/A"}}}`,
+			expected: "$ref chain refers back to itself",
+		},
+		"DependentRequired": {
+			schema:   `{"title": "T", "properties": {"card": {"type": "string"}, "billing": {"type": "string"}}, "dependentRequired": {"card": ["billing"]}}`,
+			expected: "dependentRequired is not supported",
+		},
+		"Dependencies": {
+			schema:   `{"$schema": "http://json-schema.org/draft-07/schema#", "title": "T", "properties": {"card": {"type": "string"}, "billing": {"type": "string"}}, "dependencies": {"card": ["billing"]}}`,
+			expected: "dependencies is not supported",
 		},
 		"AliasCycle": {
 			schema:   `{"$defs": {"A": {"type": "array", "items": {"$ref": "#/$defs/A"}}}}`,
