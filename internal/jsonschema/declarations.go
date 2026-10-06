@@ -526,7 +526,26 @@ func objectShape(source *compiled.Schema) (shape, error) {
 	if isSchema {
 		return shape{}, errors.Errorf("%s: objects cannot declare both properties and an additionalProperties schema", source.Location)
 	}
+	if err := checkPropertyCounts(source); err != nil {
+		return shape{}, err
+	}
 	return shape{kind: schema.KindObject}, nil
+}
+
+// checkPropertyCounts rejects counts that constrain which optional members appear
+// together. Undeclared keys fail validation anyway, so only declared ones count.
+func checkPropertyCounts(source *compiled.Schema) error {
+	required := map[string]bool{}
+	for _, name := range source.Required {
+		required[name] = true
+	}
+	if source.MinProperties != nil && *source.MinProperties > len(required) {
+		return errors.Errorf("%s: minProperties above the number of required properties is not supported", source.Location)
+	}
+	if source.MaxProperties != nil && *source.MaxProperties < len(source.Properties) {
+		return errors.Errorf("%s: maxProperties below the number of properties is not supported", source.Location)
+	}
+	return nil
 }
 
 type writer struct {

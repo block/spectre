@@ -111,6 +111,14 @@ func TestDeclarationsRejectUnsupportedSchemas(t *testing.T) {
 			schema:   `{"title": "T", "properties": {"id": {"type": "string"}}, "not": {"required": ["id"]}}`,
 			expected: "not is not supported",
 		},
+		"MinProperties": {
+			schema:   `{"title": "T", "properties": {"a": {"type": "string"}, "b": {"type": "string"}}, "minProperties": 1}`,
+			expected: "minProperties above the number of required properties is not supported",
+		},
+		"MaxProperties": {
+			schema:   `{"title": "T", "properties": {"a": {"type": "string"}, "b": {"type": "string"}}, "maxProperties": 1}`,
+			expected: "maxProperties below the number of properties is not supported",
+		},
 		"Tuple": {
 			schema:   `{"title": "T", "type": "array", "prefixItems": [{"type": "string"}]}`,
 			expected: "prefixItems is not supported",

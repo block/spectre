@@ -7,13 +7,15 @@
     "forecast": { "$ref": "#/$defs/Forecast" },
     "alerts": { "type": "array", "items": { "$ref": "alerts.schema.json#/definitions/alert" } },
     "success": { "type": "boolean" },
-    "labels": { "type": "object", "properties": {}, "additionalProperties": { "type": "string" } },
+    "labels": { "type": "object", "properties": {}, "additionalProperties": { "type": "string" }, "minProperties": 1 },
     "content-type": { "const": "application/json" }
   },
   "$defs": {
     "Forecast": {
       "type": "object",
       "required": ["location", "days"],
+      "minProperties": 2,
+      "maxProperties": 3,
       "properties": {
         "location": { "type": "string", "minLength": 1 },
         "days": {
