@@ -129,3 +129,15 @@ func TestMissingContextLogger(t *testing.T) {
 	ctx = logger.WithLogger(ctx, nil)
 	assert.False(t, logger.FromContext(ctx).Enabled(ctx, slog.LevelError))
 }
+
+func TestTaggedEvent(t *testing.T) {
+	var output bytes.Buffer
+	config := logger.NewConfig()
+	config.JSON = true
+	log := logger.Tagged(logger.New(config, &output))
+	log.InfoContext(t.Context(), "visible", "event", logger.EventQuarantine)
+	var record map[string]any
+	assert.NoError(t, json.Unmarshal(output.Bytes(), &record))
+	assert.Equal(t, logger.Component, record["component"])
+	assert.Equal(t, logger.EventQuarantine, record["event"])
+}

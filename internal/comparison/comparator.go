@@ -10,6 +10,7 @@ import (
 
 	comparisoninternal "github.com/block/spectre/internal/comparison/internal"
 	"github.com/block/spectre/internal/comparison/javascript"
+	"github.com/block/spectre/internal/logger"
 )
 
 // Comparator compares ingress response pairs with the ingress script endpoints.
@@ -60,7 +61,7 @@ func (c *Comparator) Compare(
 	candidate Response,
 ) (result Result) {
 	defer func() {
-		attributes := []any{"path", requestPath, "outcome", result.Outcome()}
+		attributes := []any{"event", logger.EventCorrelation, "path", requestPath, "outcome", result.Outcome()}
 		differences := result.Differences()
 		if len(differences) > 0 {
 			attributes = append(attributes, "differences", differences)
@@ -68,7 +69,7 @@ func (c *Comparator) Compare(
 		if result.Reason() != "" {
 			attributes = append(attributes, "reason", result.Reason())
 		}
-		c.log.DebugContext(ctx, "Response comparison completed", attributes...)
+		c.log.InfoContext(ctx, "Response comparison completed", attributes...)
 	}()
 	if excludedRequestPath(requestPath) {
 		return Resultf(Skipped, "gRPC namespace is excluded from response comparison")
