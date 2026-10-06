@@ -2,7 +2,6 @@ package descriptors
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io/fs"
 	"os"
@@ -234,7 +233,7 @@ func (w *declarationWriter) renderMessage(message protoreflect.MessageDescriptor
 		}
 		referenced := referencedType(fields[index])
 		value := field.Value.Format(func(_ string) string { return typeReference(referenced) })
-		w.linef("%s%s: %s;", propertyName(field.Name), optional, value)
+		w.linef("%s%s: %s;", schema.PropertyName(field.Name), optional, value)
 	}
 	w.depth--
 	w.linef("}")
@@ -269,7 +268,7 @@ func (w *declarationWriter) renderService(service protoreflect.ServiceDescriptor
 		if err := checkMethodTypes(method); err != nil {
 			return err
 		}
-		signatures = append(signatures, fmt.Sprintf("%s(request: %s): %s;", propertyName(string(method.Name())), typeReference(method.Input()), typeReference(method.Output())))
+		signatures = append(signatures, fmt.Sprintf("%s(request: %s): %s;", schema.PropertyName(string(method.Name())), typeReference(method.Input()), typeReference(method.Output())))
 	}
 	if len(signatures) == 0 {
 		return nil
@@ -402,26 +401,4 @@ func enumLiterals(enum protoreflect.EnumDescriptor) (literals string) {
 	value := enumValue(enum)
 	value.Type = ""
 	return value.String()
-}
-
-func propertyName(name string) (property string) {
-	if isIdentifier(name) {
-		return name
-	}
-	// JSON strings are valid TypeScript string literals.
-	quoted, _ := json.Marshal(name) //nolint:errcheck // Strings always encode.
-	return string(quoted)
-}
-
-func isIdentifier(name string) (valid bool) {
-	if name == "" {
-		return false
-	}
-	for index, char := range name {
-		if char == '$' || char == '_' || char >= 'A' && char <= 'Z' || char >= 'a' && char <= 'z' || index > 0 && char >= '0' && char <= '9' {
-			continue
-		}
-		return false
-	}
-	return true
 }

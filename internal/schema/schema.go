@@ -101,6 +101,30 @@ func quoted(literals []string) []string {
 	return encoded
 }
 
+// PropertyName renders a JSON key as a TypeScript property name, quoting it
+// unless it is an identifier.
+func PropertyName(name string) (property string) {
+	if isIdentifier(name) {
+		return name
+	}
+	// JSON strings are valid TypeScript string literals.
+	encoded, _ := json.Marshal(name) //nolint:errcheck // Strings always encode.
+	return string(encoded)
+}
+
+func isIdentifier(name string) (valid bool) {
+	if name == "" {
+		return false
+	}
+	for index, char := range name {
+		if char == '$' || char == '_' || char >= 'A' && char <= 'Z' || char >= 'a' && char <= 'z' || index > 0 && char >= '0' && char <= '9' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
 // Equal reports whether two values accept the same JSON. Enum alias names are
 // ignored, but object types must have the same name.
 func (v Value) Equal(other Value) bool {

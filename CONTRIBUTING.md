@@ -185,6 +185,13 @@ Wire descriptors must agree with those declarations. ProtoJSON defaults are emit
 so required scalar, array, and map members are present. Oneofs become optional sibling
 members. Arbitrary JSON well-known types, including `google.protobuf.Any`, are unsupported.
 
+For JSON APIs described by JSON Schema, generate one module with
+`spectre-gen json-schema --module=weather --output=schema/weather.d.ts weather.schema.json`.
+Each titled root schema and each `$defs` or `definitions` entry becomes a type, and inline
+objects become nested types named after their property. Properties outside `required` are
+optional. Null, type unions, `anyOf`, `oneOf`, `allOf`, tuples, and free-form objects are
+unsupported. Undeclared properties fail payload validation even when the schema allows them.
+
 `tsconfig.json` gives editors the host's compiler options, so they report the errors
 the host would. Keep it in step with `internal/typescript/program.go`. For scripts
 outside this repository, write the `spectre` module declaration with
