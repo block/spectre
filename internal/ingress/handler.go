@@ -157,7 +157,13 @@ func (h *Handler) serveProxy(writer http.ResponseWriter, request *http.Request) 
 			defer h.candidates.Finish(candidateRun)
 			defer candidateBody.closeReader()
 			candidateWriter := newCaptureResponseWriter(newDiscardResponseWriter(), h.comparator.MaxResponseBytes())
-			h.candidate.ServeHTTP(candidateWriter, candidateRequest)
+			if h.serveCandidate(candidateWriter, candidateRequest) {
+				// Cancellation already explains an aborted copy; otherwise the response is incomplete.
+				if candidateContext.Err() == nil {
+					h.candidates.Quarantine(candidateContext, errors.New("candidate response was aborted"))
+				}
+				return
+			}
 			// The candidate run owns comparison so its existing limits also bound this work.
 			select {
 			case reference := <-referenceResponse:
@@ -190,6 +196,23 @@ func (h *Handler) serveProxy(writer http.ResponseWriter, request *http.Request) 
 	referenceWriter := newCaptureResponseWriter(writer, h.comparator.MaxResponseBytes())
 	h.reference.ServeHTTP(referenceWriter, referenceRequest)
 	referenceResponse <- referenceWriter.Response()
+}
+
+// serveCandidate proxies on a goroutine the HTTP server does not supervise, so it
+// recovers the panic ReverseProxy raises to abort a response it cannot finish copying.
+func (h *Handler) serveCandidate(writer http.ResponseWriter, request *http.Request) (aborted bool) {
+	defer func() {
+		recovered := recover()
+		if recovered == nil {
+			return
+		}
+		if err, ok := recovered.(error); !ok || !errors.Is(err, http.ErrAbortHandler) {
+			panic(recovered)
+		}
+		aborted = true
+	}()
+	h.candidate.ServeHTTP(writer, request)
+	return false
 }
 
 // handleComparison applies the fail-closed policy for divergence and comparison failure.

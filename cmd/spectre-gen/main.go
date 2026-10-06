@@ -9,17 +9,24 @@ import (
 	"github.com/block/spectre/internal"
 	"github.com/block/spectre/internal/comparison/javascript"
 	"github.com/block/spectre/internal/descriptors"
+	"github.com/block/spectre/internal/jsonschema"
 )
 
 type cli struct {
-	Version kong.VersionFlag `help:"Print the version and exit."`
-	Proto   protoCommand     `cmd:"" help:"Generate TypeScript schema declarations from protobuf descriptor sets."`
-	Module  moduleCommand    `cmd:"" help:"Write the spectre script API declaration for editors."`
+	Version    kong.VersionFlag  `help:"Print the version and exit."`
+	Proto      protoCommand      `cmd:"" help:"Generate TypeScript schema declarations from protobuf descriptor sets."`
+	JSONSchema jsonSchemaCommand `cmd:"" name:"json-schema" help:"Generate a TypeScript schema declaration from JSON Schema files."`
+	Module     moduleCommand     `cmd:"" help:"Write the spectre script API declaration for editors."`
 }
 
 type protoCommand struct {
 	Descriptors descriptors.Config `embed:""`
 	Output      string             `required:"" type:"path" placeholder:"DIR" help:"Directory to write one .d.ts file per protobuf file into."`
+}
+
+type jsonSchemaCommand struct {
+	JSONSchema jsonschema.Config `embed:""`
+	Output     string            `required:"" type:"path" placeholder:"FILE" help:"Path to write the module's .d.ts file to."`
 }
 
 type moduleCommand struct {
@@ -42,6 +49,10 @@ func (c *protoCommand) Run(ctx context.Context) error {
 		return errors.WithStack(err)
 	}
 	return errors.Wrap(descriptors.WriteDeclarations(ctx, set, c.Output), "write declarations")
+}
+
+func (c *jsonSchemaCommand) Run(ctx context.Context) error {
+	return errors.Wrap(jsonschema.WriteDeclarations(ctx, c.JSONSchema, c.Output), "write declarations")
 }
 
 func (c *moduleCommand) Run() error {

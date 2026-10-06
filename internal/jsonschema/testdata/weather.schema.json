@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Get forecast response",
+  "type": "object",
+  "required": ["forecast"],
+  "properties": {
+    "forecast": { "$ref": "#/$defs/Forecast" },
+    "alerts": { "type": "array", "items": { "$ref": "alerts.schema.json#/definitions/alert" } },
+    "success": { "type": "boolean" },
+    "labels": { "type": "object", "properties": {}, "additionalProperties": { "type": "string" }, "minProperties": 1 },
+    "content-type": { "const": "application/json" }
+  },
+  "$defs": {
+    "Forecast": {
+      "type": "object",
+      "required": ["location", "days"],
+      "minProperties": 2,
+      "maxProperties": 3,
+      "properties": {
+        "location": { "type": "string", "minLength": 1 },
+        "days": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["date"],
+            "properties": {
+              "date": { "type": "string", "format": "date" },
+              "high": { "$ref": "#/$defs/Temperature" },
+              "precipitation_percent": { "type": "integer", "minimum": 0, "maximum": 100 }
+            }
+          }
+        },
+        "next": { "$ref": "#/$defs/Forecast" }
+      }
+    },
+    "Temperature": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "degrees": { "type": "number" },
+        "unit": { "$ref": "#/$defs/unit" }
+      }
+    },
+    "unit": { "enum": ["celsius", "fahrenheit"] },
+    "tags": { "type": "array", "items": { "type": "string" } }
+  },
+  "definitions": {
+    "wind": { "type": "object", "properties": { "speed_kph": { "type": "number" } } }
+  }
+}
