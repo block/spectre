@@ -31,7 +31,10 @@ func Declarations(ctx context.Context, config Config) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		location := documentLocation(path, document)
+		location, err := documentLocation(path, document)
+		if err != nil {
+			return "", err
+		}
 		// Adding every input before compiling lets inputs refer to each other.
 		if err := compiler.AddResource(location, document); err != nil {
 			return "", errors.Wrapf(err, "add %q", path)
@@ -80,17 +83,32 @@ func readDocument(path string) (any, error) {
 }
 
 // documentLocation returns the URL an input is registered and compiled under. A
-// document with an absolute $id is known by it, so references relative to it resolve.
-func documentLocation(path string, document any) string {
+// root $id, resolved against the file, names the document that references find.
+func documentLocation(path string, document any) (string, error) {
 	object, _ := document.(map[string]any)
 	id, _ := object["$id"].(string)
 	if draft, _ := object["$schema"].(string); id == "" && strings.Contains(draft, "draft-04") {
 		id, _ = object["id"].(string)
 	}
-	if parsed, err := url.Parse(id); err == nil && parsed.IsAbs() {
-		return id
+	if id == "" {
+		return path, nil
 	}
-	return path
+	reference, err := url.Parse(id)
+	if err != nil {
+		return "", errors.Wrapf(err, "%s: parse $id", path)
+	}
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return "", errors.Wrapf(err, "resolve %q", path)
+	}
+	slashed := filepath.ToSlash(absolute)
+	// Windows paths start with a drive letter, which a file URL path must follow a slash.
+	if !strings.HasPrefix(slashed, "/") {
+		slashed = "/" + slashed
+	}
+	resolved := (&url.URL{Scheme: "file", Path: slashed}).ResolveReference(reference)
+	resolved.Fragment = ""
+	return resolved.String(), nil
 }
 
 // declaration is one exported type. Inline object schemas are hoisted into nested

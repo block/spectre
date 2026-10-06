@@ -66,23 +66,35 @@ func TestDeclarationsSchemaModel(t *testing.T) {
 	}, loaded.Types())
 }
 
+// Each test supplies the referenced document as cached.json, so only its $id locates it.
 func TestDeclarationsResolveInputsByID(t *testing.T) {
-	dir := t.TempDir()
-	for name, document := range map[string]string{
-		"main.json":   `{"$id": "https://example.test/main.json", "title": "Main", "properties": {"common": {"$ref": "common.json"}}}`,
-		"common.json": `{"$id": "https://example.test/common.json", "title": "Common", "properties": {"id": {"type": "string"}}}`,
+	for name, documents := range map[string]map[string]string{
+		"AbsoluteID": {
+			"main.json":   `{"$id": "https://example.test/main.json", "title": "Main", "properties": {"common": {"$ref": "common.json"}}}`,
+			"common.json": `{"$id": "https://example.test/common.json", "title": "Common", "properties": {"id": {"type": "string"}}}`,
+		},
+		"RelativeID": {
+			"main.json":   `{"title": "Main", "properties": {"common": {"$ref": "common.json"}}}`,
+			"common.json": `{"$id": "common.json", "title": "Common", "properties": {"id": {"type": "string"}}}`,
+		},
 	} {
-		assert.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte(document), 0o600))
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			paths := map[string]string{"main.json": filepath.Join(dir, "main.json"), "common.json": filepath.Join(dir, "cached.json")}
+			for document, contents := range documents {
+				assert.NoError(t, os.WriteFile(paths[document], []byte(contents), 0o600))
+			}
+			config := jsonschema.Config{Module: "m", Schemas: []string{paths["main.json"], paths["common.json"]}}
+			generated, err := jsonschema.Declarations(t.Context(), config)
+			assert.NoError(t, err)
+			loaded, err := schema.ParseSources(t.Context(), map[string]string{"m.d.ts": generated})
+			assert.NoError(t, err)
+			assert.Equal(t, []*schema.Type{
+				{Name: "m.Common", Fields: []schema.Field{{Name: "id", Optional: true, Value: schema.Value{Kind: schema.KindString}}}},
+				{Name: "m.Main", Fields: []schema.Field{{Name: "common", Optional: true, Value: schema.Value{Kind: schema.KindObject, Type: "m.Common"}}}},
+			}, loaded.Types())
+		})
 	}
-	config := jsonschema.Config{Module: "m", Schemas: []string{filepath.Join(dir, "main.json"), filepath.Join(dir, "common.json")}}
-	generated, err := jsonschema.Declarations(t.Context(), config)
-	assert.NoError(t, err)
-	loaded, err := schema.ParseSources(t.Context(), map[string]string{"m.d.ts": generated})
-	assert.NoError(t, err)
-	assert.Equal(t, []*schema.Type{
-		{Name: "m.Common", Fields: []schema.Field{{Name: "id", Optional: true, Value: schema.Value{Kind: schema.KindString}}}},
-		{Name: "m.Main", Fields: []schema.Field{{Name: "common", Optional: true, Value: schema.Value{Kind: schema.KindObject, Type: "m.Common"}}}},
-	}, loaded.Types())
 }
 
 func TestDeclarationsRejectUnsupportedSchemas(t *testing.T) {
