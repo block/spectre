@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	"github.com/alecthomas/assert/v2"
@@ -815,6 +816,51 @@ func TestReferenceEarlyCloseAbortsCandidateWithoutQuarantine(t *testing.T) {
 		t.Fatal("reference body close quarantined the candidate")
 	}
 	assert.NoError(t, handler.Shutdown(t.Context()))
+}
+
+func TestAbortedCandidateResponseQuarantinesCandidate(t *testing.T) {
+	candidatePaths := make(chan string, 2)
+	transport := roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+		if request.URL.Host != "127.0.0.1:50052" {
+			return noContentResponse(request), nil
+		}
+		candidatePaths <- request.URL.Path
+		response := noContentResponse(request)
+		response.StatusCode = http.StatusOK
+		response.Body = io.NopCloser(iotest.ErrReader(errors.New("stream reset")))
+		return response, nil
+	})
+	messages := make(chan string, 16)
+	config := newTestConfig(t, "http://127.0.0.1:50051", "http://127.0.0.1:50052")
+	handler, err := ingress.New(config, transport, matchingDescriptorLoader(), newTestComparator(t), slog.New(newObservedLogHandler(messages)))
+	assert.NoError(t, err)
+	// ReverseProxy only panics to abort a copy when the request comes from an HTTP server.
+	serverRequest := func(path string) *http.Request {
+		request := httptest.NewRequest(http.MethodGet, "http://proxy.example"+path, nil)
+		return request.WithContext(context.WithValue(request.Context(), http.ServerContextKey, &http.Server{}))
+	}
+	handler.ServeHTTP(httptest.NewRecorder(), serverRequest("/aborted"))
+
+quarantine:
+	for {
+		select {
+		case message := <-messages:
+			if message == "Candidate quarantined" {
+				break quarantine
+			}
+		case <-time.After(time.Second):
+			t.Fatal("aborted candidate response did not quarantine the candidate")
+		}
+	}
+
+	handler.ServeHTTP(httptest.NewRecorder(), serverRequest("/later"))
+	assert.NoError(t, handler.Shutdown(t.Context()))
+	close(candidatePaths)
+	paths := []string{}
+	for path := range candidatePaths {
+		paths = append(paths, path)
+	}
+	assert.Equal(t, []string{"/aborted"}, paths)
 }
 
 func TestRewritesUntrustedForwardingHeaders(t *testing.T) {
