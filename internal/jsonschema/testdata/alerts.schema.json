@@ -10,5 +10,8 @@
       }
     },
     "severity": { "type": "string", "enum": ["minor", "major"] }
+  },
+  "$defs": {
+    "region": { "type": "string" }
   }
 }

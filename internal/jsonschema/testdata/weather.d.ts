@@ -33,6 +33,12 @@ declare module "weather" {
 
   export type Unit = "celsius" | "fahrenheit";
 
+  export interface Wind {
+    speed_kph?: number;
+  }
+
+  export type Region = string;
+
   export interface Alert {
     id: string;
     severity?: import("weather").Severity;

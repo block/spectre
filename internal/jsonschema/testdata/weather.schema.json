@@ -41,5 +41,8 @@
     },
     "unit": { "enum": ["celsius", "fahrenheit"] },
     "tags": { "type": "array", "items": { "type": "string" } }
+  },
+  "definitions": {
+    "wind": { "type": "object", "properties": { "speed_kph": { "type": "number" } } }
   }
 }

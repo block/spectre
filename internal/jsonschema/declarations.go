@@ -122,19 +122,18 @@ func (c *converter) declareDocument(compiler *compiled.Compiler, path string, do
 			return err
 		}
 	}
-	keyword := "$defs"
-	if root.DraftVersion < 2019 {
-		keyword = "definitions"
-	}
 	object, _ := document.(map[string]any)
-	definitions, _ := object[keyword].(map[string]any)
-	for _, key := range slices.Sorted(maps.Keys(definitions)) {
-		definition, err := compiler.Compile(path + "#/" + keyword + "/" + pointerToken(key))
-		if err != nil {
-			return errors.Wrapf(err, "compile %q", path)
-		}
-		if err := c.declare(definition, nil, key); err != nil {
-			return err
+	// Schemas often use either container regardless of their draft, so read both.
+	for _, keyword := range []string{"$defs", "definitions"} {
+		definitions, _ := object[keyword].(map[string]any)
+		for _, key := range slices.Sorted(maps.Keys(definitions)) {
+			definition, err := compiler.Compile(path + "#/" + keyword + "/" + pointerToken(key))
+			if err != nil {
+				return errors.Wrapf(err, "compile %q", path)
+			}
+			if err := c.declare(definition, nil, key); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -321,7 +320,7 @@ func checkRef(source *compiled.Schema) error {
 		return errors.Errorf("%s: %s is not supported", source.Location, keyword)
 	}
 	if source.Types != nil || source.Enum != nil || source.Const != nil || source.Properties != nil ||
-		source.AdditionalProperties != nil || source.Items != nil || source.Items2020 != nil {
+		source.AdditionalProperties != nil || source.Items != nil || source.Items2020 != nil || len(source.Required) > 0 {
 		return errors.Errorf("%s: $ref cannot be combined with other type keywords", source.Location)
 	}
 	return nil
@@ -488,6 +487,12 @@ func arrayShape(source *compiled.Schema) (shape, error) {
 // objectShape treats an object with properties as an interface and one with only
 // an additionalProperties schema as a map. Undeclared keys fail payload validation.
 func objectShape(source *compiled.Schema) (shape, error) {
+	// Maps cannot require keys, so every required key must be a declared property.
+	for _, name := range source.Required {
+		if _, declared := source.Properties[name]; !declared {
+			return shape{}, errors.Errorf("%s: required property %q is not declared", source.Location, name)
+		}
+	}
 	additional, isSchema := source.AdditionalProperties.(*compiled.Schema)
 	if source.Properties == nil && source.AdditionalProperties != false {
 		if !isSchema {
@@ -497,11 +502,6 @@ func objectShape(source *compiled.Schema) (shape, error) {
 	}
 	if isSchema {
 		return shape{}, errors.Errorf("%s: objects cannot declare both properties and an additionalProperties schema", source.Location)
-	}
-	for _, name := range source.Required {
-		if _, declared := source.Properties[name]; !declared {
-			return shape{}, errors.Errorf("%s: required property %q is not declared", source.Location, name)
-		}
 	}
 	return shape{kind: schema.KindObject}, nil
 }

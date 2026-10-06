@@ -60,6 +60,9 @@ func TestDeclarationsSchemaModel(t *testing.T) {
 			{Name: "degrees", Optional: true, Value: number},
 			{Name: "unit", Optional: true, Value: schema.Value{Kind: schema.KindEnum, Literals: []string{"celsius", "fahrenheit"}, Type: "weather.Unit"}},
 		}},
+		{Name: "weather.Wind", Fields: []schema.Field{
+			{Name: "speed_kph", Optional: true, Value: number},
+		}},
 	}, loaded.Types())
 }
 
@@ -108,6 +111,14 @@ func TestDeclarationsRejectUnsupportedSchemas(t *testing.T) {
 		"RequiredUndeclared": {
 			schema:   `{"title": "T", "properties": {}, "required": ["a"]}`,
 			expected: `required property "a" is not declared`,
+		},
+		"RequiredMapKey": {
+			schema:   `{"title": "T", "type": "object", "required": ["tenant"], "additionalProperties": {"type": "string"}}`,
+			expected: `required property "tenant" is not declared`,
+		},
+		"RefWithRequired": {
+			schema:   `{"title": "T", "properties": {"a": {"$ref": "#/$defs/A", "required": ["id"]}}, "$defs": {"A": {"properties": {"id": {"type": "string"}}}}}`,
+			expected: "$ref cannot be combined with other type keywords",
 		},
 		"RefWithType": {
 			schema:   `{"title": "T", "properties": {"a": {"$ref": "#/$defs/A", "type": "string"}}, "$defs": {"A": {"type": "string"}}}`,
