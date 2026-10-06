@@ -360,7 +360,8 @@ func checkRef(source *compiled.Schema) error {
 		return errors.Errorf("%s: %s is not supported", source.Location, keyword)
 	}
 	if source.Types != nil || source.Enum != nil || source.Const != nil || source.Properties != nil ||
-		source.AdditionalProperties != nil || source.Items != nil || source.Items2020 != nil || len(source.Required) > 0 {
+		source.AdditionalProperties != nil || source.Items != nil || source.Items2020 != nil || len(source.Required) > 0 ||
+		source.MinProperties != nil || source.MaxProperties != nil {
 		return errors.Errorf("%s: $ref cannot be combined with other type keywords", source.Location)
 	}
 	return nil

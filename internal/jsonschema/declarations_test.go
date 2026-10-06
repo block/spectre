@@ -167,6 +167,10 @@ func TestDeclarationsRejectUnsupportedSchemas(t *testing.T) {
 			schema:   `{"title": "T", "properties": {"a": {"$ref": "#/$defs/A", "required": ["id"]}}, "$defs": {"A": {"properties": {"id": {"type": "string"}}}}}`,
 			expected: "$ref cannot be combined with other type keywords",
 		},
+		"RefWithMinProperties": {
+			schema:   `{"title": "T", "properties": {"a": {"$ref": "#/$defs/A", "minProperties": 1}}, "$defs": {"A": {"properties": {"x": {"type": "string"}, "y": {"type": "string"}}}}}`,
+			expected: "$ref cannot be combined with other type keywords",
+		},
 		"RefWithType": {
 			schema:   `{"title": "T", "properties": {"a": {"$ref": "#/$defs/A", "type": "string"}}, "$defs": {"A": {"type": "string"}}}`,
 			expected: "$ref cannot be combined with other type keywords",
