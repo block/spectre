@@ -189,7 +189,7 @@ For JSON APIs described by JSON Schema, generate one module with
 `spectre-gen json-schema --module=weather --output=schema/weather.d.ts weather.schema.json`.
 Each titled root schema and each `$defs` or `definitions` entry becomes a type, and inline
 objects become nested types named after their property. Properties outside `required` are
-optional. Null, type unions, `anyOf`, `oneOf`, `allOf`, tuples, and free-form objects are
+optional. Null, type unions, `anyOf`, `oneOf`, `allOf`, `not`, tuples, and free-form objects are
 unsupported. Undeclared properties fail payload validation even when the schema allows them.
 Keywords that only narrow values within a type, such as `pattern`, `minimum`, or a numeric
 or boolean `enum`, are not enforced.

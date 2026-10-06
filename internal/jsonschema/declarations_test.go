@@ -107,6 +107,10 @@ func TestDeclarationsRejectUnsupportedSchemas(t *testing.T) {
 			schema:   `{"title": "T", "anyOf": [{"type": "string"}, {"type": "number"}]}`,
 			expected: "anyOf is not supported",
 		},
+		"Not": {
+			schema:   `{"title": "T", "properties": {"id": {"type": "string"}}, "not": {"required": ["id"]}}`,
+			expected: "not is not supported",
+		},
 		"Tuple": {
 			schema:   `{"title": "T", "type": "array", "prefixItems": [{"type": "string"}]}`,
 			expected: "prefixItems is not supported",

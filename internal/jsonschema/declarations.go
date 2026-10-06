@@ -397,6 +397,8 @@ func unsupportedKeyword(source *compiled.Schema) (keyword string) {
 		{"allOf", len(source.AllOf) > 0},
 		{"anyOf", len(source.AnyOf) > 0},
 		{"oneOf", len(source.OneOf) > 0},
+		// A negated schema can forbid present keys, which optional members cannot express.
+		{"not", source.Not != nil},
 		{"if", source.If != nil || source.Then != nil || source.Else != nil},
 		{"patternProperties", len(source.PatternProperties) > 0},
 		// Conditional requirements cannot be expressed, so optional members would accept too much.
