@@ -14,12 +14,13 @@ interval = "30s"
 inactive_interval = "5m"
 
 [[workflow.step]]
-name = "review"
+name = "pre_push_review"
 replace = true
-title = "Review"
+after = "pull_request"
+title = "Review changes"
 kind = "action"
 requires = ["pull_request"]
-icon = "message-circle"
+icon = "zoom"
 prompt = """
 Post a comment with _exactly_ the body `@codex review` on the existing open pull request $pr_url using `gh pr comment`. Do not create a pull request.
 """
