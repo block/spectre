@@ -260,6 +260,94 @@ func TestDeclarationsAcceptExtensions(t *testing.T) {
 	assert.NoError(t, descriptors.CheckAgreement(registry, loaded))
 }
 
+func TestDeclarationsSkipsDescriptorProto(t *testing.T) {
+	// A custom option extending FieldOptions pulls google/protobuf/descriptor.proto
+	// into the set, the way real dependency protos do.
+	set := descriptorSetFromFiles(descriptorpb.File_google_protobuf_descriptor_proto)
+	payload := plainDescriptorSet().GetFile()[0]
+	payload.Syntax = new("proto2")
+	payload.Dependency = []string{"google/protobuf/descriptor.proto"}
+	payload.Extension = []*descriptorpb.FieldDescriptorProto{{
+		Name: new("required"), Number: new(int32(50000)), Label: descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(),
+		Type: descriptorpb.FieldDescriptorProto_TYPE_BOOL.Enum(), Extendee: new(".google.protobuf.FieldOptions"),
+	}}
+	set.File = append(set.GetFile(), payload)
+
+	generated, err := descriptors.Declarations(t.Context(), set)
+	assert.NoError(t, err)
+	// descriptor.proto describes protobuf options, never a payload, so it gets no declaration.
+	_, hasDescriptor := generated["google/protobuf/descriptor.d.ts"]
+	assert.False(t, hasDescriptor)
+	_, hasPayload := generated["payload.d.ts"]
+	assert.True(t, hasPayload)
+
+	// Agreement holds without a descriptor.proto declaration, as it must when the proxy loads the schema.
+	loaded, err := schema.ParseSources(t.Context(), generated)
+	assert.NoError(t, err)
+	registry, err := descriptors.NewRegistry(set)
+	assert.NoError(t, err)
+	assert.NoError(t, descriptors.CheckAgreement(registry, loaded))
+}
+
+func TestDeclarationsKeepsReferencedDescriptorProto(t *testing.T) {
+	// Here a payload field is typed as a descriptor.proto message, so its
+	// declaration is a real request type, not just option plumbing.
+	set := descriptorSetFromFiles(descriptorpb.File_google_protobuf_descriptor_proto)
+	payload := plainDescriptorSet().GetFile()[0]
+	payload.Dependency = []string{"google/protobuf/descriptor.proto"}
+	payload.MessageType[0].Field = []*descriptorpb.FieldDescriptorProto{
+		messageField("schema", 1, ".google.protobuf.DescriptorProto"),
+	}
+	set.File = append(set.GetFile(), payload)
+
+	generated, err := descriptors.Declarations(t.Context(), set)
+	assert.NoError(t, err)
+	// The payload uses descriptor.proto, so its declaration must be generated.
+	_, hasDescriptor := generated["google/protobuf/descriptor.d.ts"]
+	assert.True(t, hasDescriptor)
+	_, hasPayload := generated["payload.d.ts"]
+	assert.True(t, hasPayload)
+
+	loaded, err := schema.ParseSources(t.Context(), generated)
+	assert.NoError(t, err)
+	registry, err := descriptors.NewRegistry(set)
+	assert.NoError(t, err)
+	assert.NoError(t, descriptors.CheckAgreement(registry, loaded))
+}
+
+func TestDeclarationsSkipsOptionValueMessage(t *testing.T) {
+	set := descriptorSetFromFiles(descriptorpb.File_google_protobuf_descriptor_proto)
+	// annotations.proto defines a message used only as the value of a custom option.
+	annotation := &descriptorpb.FileDescriptorProto{
+		Name: new("annotations.proto"), Package: new("ann"), Syntax: new("proto2"),
+		Dependency:  []string{"google/protobuf/descriptor.proto"},
+		MessageType: []*descriptorpb.DescriptorProto{{Name: new("Annotation")}},
+		Extension: []*descriptorpb.FieldDescriptorProto{{
+			Name: new("note"), Number: new(int32(50000)), Label: descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(),
+			Type: descriptorpb.FieldDescriptorProto_TYPE_MESSAGE.Enum(), TypeName: new(".ann.Annotation"), Extendee: new(".google.protobuf.FieldOptions"),
+		}},
+	}
+	payload := plainDescriptorSet().GetFile()[0]
+	payload.Dependency = []string{"annotations.proto"}
+	set.File = append(set.GetFile(), annotation, payload)
+
+	generated, err := descriptors.Declarations(t.Context(), set)
+	assert.NoError(t, err)
+	// Nothing uses Annotation as a payload, so its file gets no declaration.
+	_, hasAnnotation := generated["annotations.d.ts"]
+	assert.False(t, hasAnnotation)
+	_, hasDescriptor := generated["google/protobuf/descriptor.d.ts"]
+	assert.False(t, hasDescriptor)
+	_, hasPayload := generated["payload.d.ts"]
+	assert.True(t, hasPayload)
+
+	loaded, err := schema.ParseSources(t.Context(), generated)
+	assert.NoError(t, err)
+	registry, err := descriptors.NewRegistry(set)
+	assert.NoError(t, err)
+	assert.NoError(t, descriptors.CheckAgreement(registry, loaded))
+}
+
 func TestDeclarationsRejectUnsupportedWellKnownReferences(t *testing.T) {
 	for _, name := range []string{"Any", "Struct", "Value", "ListValue", "NullValue"} {
 		t.Run(name, func(t *testing.T) {
