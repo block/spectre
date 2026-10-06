@@ -37,12 +37,11 @@ func TestAgreementRequiresEveryMessage(t *testing.T) {
 			},
 			missing: "spectre.sample.v1.User.Unused",
 		},
-		"Imported": {
+		"SeparateFile": {
 			mutate: func(set *descriptorpb.FileDescriptorSet) {
 				file := plainDescriptorSet().GetFile()[0]
-				file.Name = new("imported.proto")
+				file.Name = new("separate.proto")
 				file.Package = new("external")
-				set.File[len(set.GetFile())-1].Dependency = append(set.GetFile()[len(set.GetFile())-1].GetDependency(), "imported.proto")
 				set.File = append(set.GetFile(), file)
 			},
 			missing: "external.Payload",
@@ -58,6 +57,27 @@ func TestAgreementRequiresEveryMessage(t *testing.T) {
 			assert.Contains(t, err.Error(), `protobuf message "`+test.missing+`" needs a declaration`)
 		})
 	}
+}
+
+func TestAgreementSkipsUnreferencedImport(t *testing.T) {
+	set := sampleDescriptorSet()
+	generated, err := descriptors.Declarations(t.Context(), set)
+	assert.NoError(t, err)
+	loaded, err := schema.ParseSources(t.Context(), generated)
+	assert.NoError(t, err)
+
+	// A file imported for its side effects, with a message no payload references.
+	imported := plainDescriptorSet().GetFile()[0]
+	imported.Name = new("imported.proto")
+	imported.Package = new("external")
+	last := set.GetFile()[len(set.GetFile())-1]
+	last.Dependency = append(last.GetDependency(), "imported.proto")
+	set.File = append(set.GetFile(), imported)
+
+	registry, err := descriptors.NewRegistry(set)
+	assert.NoError(t, err)
+	// Nothing reaches external.Payload, so it needs no declaration.
+	assert.NoError(t, descriptors.CheckAgreement(registry, loaded))
 }
 
 func TestAgreementRequiresEveryUnaryMethod(t *testing.T) {

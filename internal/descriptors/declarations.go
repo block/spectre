@@ -54,6 +54,88 @@ func isUntypedMessage(name protoreflect.FullName) (unsupported bool) {
 	}
 }
 
+// schemaFiles returns the paths of files a payload can reach through field,
+// method, or enum references, leaving out files imported only for options.
+func schemaFiles(registry *Registry) map[string]bool {
+	imported := map[string]bool{}
+	hasContent := map[string]bool{}
+	hasService := map[string]bool{}
+	edges := map[string][]string{}
+	registry.Files().RangeFiles(func(file protoreflect.FileDescriptor) bool {
+		if file.Messages().Len() > 0 || file.Enums().Len() > 0 || file.Services().Len() > 0 {
+			hasContent[file.Path()] = true
+		}
+		hasService[file.Path()] = file.Services().Len() > 0
+		for index := range file.Imports().Len() {
+			imported[file.Imports().Get(index).Path()] = true
+		}
+		collectSchemaEdges(file, edges)
+		return true
+	})
+
+	reached := map[string]bool{}
+	var queue []string
+	visit := func(path string) {
+		if hasContent[path] && !reached[path] {
+			reached[path] = true
+			queue = append(queue, path)
+		}
+	}
+	// Roots are the request and response surfaces: top-level files and services.
+	for path := range hasContent {
+		if !imported[path] || hasService[path] {
+			visit(path)
+		}
+	}
+	for len(queue) > 0 {
+		path := queue[0]
+		queue = queue[1:]
+		for _, target := range edges[path] {
+			visit(target)
+		}
+	}
+	return reached
+}
+
+func collectSchemaEdges(file protoreflect.FileDescriptor, edges map[string][]string) {
+	collectMessageEdges(file.Path(), file.Messages(), edges)
+	services := file.Services()
+	for index := range services.Len() {
+		methods := services.Get(index).Methods()
+		for index := range methods.Len() {
+			method := methods.Get(index)
+			addSchemaEdge(edges, file.Path(), method.Input().ParentFile().Path())
+			addSchemaEdge(edges, file.Path(), method.Output().ParentFile().Path())
+		}
+	}
+}
+
+func collectMessageEdges(from string, messages protoreflect.MessageDescriptors, edges map[string][]string) {
+	for index := range messages.Len() {
+		message := messages.Get(index)
+		for index := range message.Fields().Len() {
+			field := message.Fields().Get(index)
+			value := field
+			if field.IsMap() {
+				value = field.MapValue()
+			}
+			if value.Message() != nil {
+				addSchemaEdge(edges, from, value.Message().ParentFile().Path())
+			}
+			if value.Enum() != nil {
+				addSchemaEdge(edges, from, value.Enum().ParentFile().Path())
+			}
+		}
+		collectMessageEdges(from, message.Messages(), edges)
+	}
+}
+
+func addSchemaEdge(edges map[string][]string, from, to string) {
+	if from != to {
+		edges[from] = append(edges[from], to)
+	}
+}
+
 // Declarations renders one TypeScript declaration file per protobuf file, keyed
 // by the proto file name with a .d.ts extension. Empty declarations are omitted.
 func Declarations(ctx context.Context, set *descriptorpb.FileDescriptorSet) (map[string]string, error) {
@@ -65,8 +147,12 @@ func Declarations(ctx context.Context, set *descriptorpb.FileDescriptorSet) (map
 		return nil, errors.Wrap(err, "resolve descriptor set")
 	}
 	declarations := map[string]string{}
+	reachable := schemaFiles(registry)
 	var renderErr error
 	registry.Files().RangeFiles(func(file protoreflect.FileDescriptor) bool {
+		if !reachable[file.Path()] {
+			return true
+		}
 		if renderErr = checkDeclarationPath(file.Path()); renderErr != nil {
 			return false
 		}
