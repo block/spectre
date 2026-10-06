@@ -7,7 +7,7 @@
     "forecast": { "$ref": "#/$defs/Forecast" },
     "alerts": { "type": "array", "items": { "$ref": "alerts.schema.json#/definitions/alert" } },
     "success": { "type": "boolean" },
-    "labels": { "type": "object", "additionalProperties": { "type": "string" } },
+    "labels": { "type": "object", "properties": {}, "additionalProperties": { "type": "string" } },
     "content-type": { "const": "application/json" }
   },
   "$defs": {

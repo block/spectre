@@ -119,6 +119,10 @@ func TestDeclarationsRejectUnsupportedSchemas(t *testing.T) {
 			schema:   `{"title": "T", "type": "object", "properties": {"a": {"type": "object"}}}`,
 			expected: "objects must declare properties or an additionalProperties schema",
 		},
+		"EmptyPropertiesFreeFormObject": {
+			schema:   `{"title": "T", "type": "object", "properties": {}}`,
+			expected: "objects must declare properties or an additionalProperties schema",
+		},
 		"AnyValue": {
 			schema:   `{"title": "T", "type": "object", "properties": {"a": {}}}`,
 			expected: "accepts any JSON value",
@@ -173,7 +177,7 @@ func TestDeclarationsRejectUnsupportedSchemas(t *testing.T) {
 		},
 		"ReservedModule": {
 			module:   "spectre",
-			schema:   `{"title": "T", "properties": {}}`,
+			schema:   `{"title": "T", "properties": {"a": {"type": "string"}}}`,
 			expected: `module "spectre" is reserved`,
 		},
 	} {

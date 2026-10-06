@@ -357,7 +357,7 @@ type shape struct {
 }
 
 // shapeOf checks that a resolved schema is inside the TypeScript schema subset.
-// Keywords that only narrow the accepted values, such as pattern, are ignored.
+// Keywords that only narrow values within a type, such as pattern or a numeric enum, are ignored.
 func shapeOf(source *compiled.Schema) (shape, error) {
 	// The compiler also represents {} as the boolean schema true.
 	if source.Bool != nil && *source.Bool {
@@ -514,7 +514,8 @@ func objectShape(source *compiled.Schema) (shape, error) {
 		}
 	}
 	additional, isSchema := source.AdditionalProperties.(*compiled.Schema)
-	if source.Properties == nil && source.AdditionalProperties != false {
+	// An empty properties object declares nothing, like an absent one.
+	if len(source.Properties) == 0 && source.AdditionalProperties != false {
 		if !isSchema {
 			return shape{}, errors.Errorf("%s: objects must declare properties or an additionalProperties schema", source.Location)
 		}

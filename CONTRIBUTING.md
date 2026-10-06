@@ -191,6 +191,8 @@ Each titled root schema and each `$defs` or `definitions` entry becomes a type, 
 objects become nested types named after their property. Properties outside `required` are
 optional. Null, type unions, `anyOf`, `oneOf`, `allOf`, tuples, and free-form objects are
 unsupported. Undeclared properties fail payload validation even when the schema allows them.
+Keywords that only narrow values within a type, such as `pattern`, `minimum`, or a numeric
+or boolean `enum`, are not enforced.
 
 `tsconfig.json` gives editors the host's compiler options, so they report the errors
 the host would. Keep it in step with `internal/typescript/program.go`. For scripts
