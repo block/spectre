@@ -20,7 +20,7 @@ type Server struct {
 
 // NewServer constructs a sample server around a configured Connect handler.
 func NewServer(connectHandler http.Handler, log *slog.Logger) *Server {
-	handler := logging.New(connectHandler, log)
+	handler := logging.New(connectHandler, log, "request")
 	return &Server{health: health.New(handler)}
 }
 

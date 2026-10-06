@@ -19,6 +19,7 @@ import (
 
 	"github.com/block/spectre/internal/comparison"
 	"github.com/block/spectre/internal/descriptors"
+	"github.com/block/spectre/internal/logger"
 	"github.com/block/spectre/internal/middleware/health"
 	"github.com/block/spectre/internal/middleware/logging"
 	"github.com/block/spectre/internal/netaddr"
@@ -112,8 +113,8 @@ func New(config Config, transport http.RoundTripper, hasher RequestHasher, log *
 		requests:     make(chan struct{}, config.MaxInFlightRequests),
 		health:       health.New(http.NotFoundHandler()),
 	}
-	egress.reference = logging.New(http.HandlerFunc(egress.serveReference), log)
-	egress.candidate = logging.New(http.HandlerFunc(egress.serveCandidate), log)
+	egress.reference = logging.New(http.HandlerFunc(egress.serveReference), log, logger.EventEgressReceived)
+	egress.candidate = logging.New(http.HandlerFunc(egress.serveCandidate), log, logger.EventEgressReceived)
 	return egress, nil
 }
 
@@ -252,7 +253,8 @@ func (p *Proxy) serveCandidate(writer http.ResponseWriter, request *http.Request
 		return
 	}
 	defer recorded.release()
-	p.log.DebugContext(ctx, "Candidate request matched a reference request",
+	p.log.InfoContext(ctx, "Candidate request matched a reference request",
+		"event", logger.EventCorrelation,
 		"host", request.Host,
 		"path", request.URL.EscapedPath(),
 	)

@@ -6,6 +6,8 @@ import (
 	"sync"
 
 	"github.com/alecthomas/errors"
+
+	"github.com/block/spectre/internal/logger"
 )
 
 // Candidates admits candidate work and tracks it so quarantine and shutdown can
@@ -105,7 +107,7 @@ func (c *Candidates) Quarantine(ctx context.Context, reason error) {
 		for _, run := range runs {
 			run.cancel()
 		}
-		c.log.ErrorContext(context.WithoutCancel(ctx), "Candidate quarantined", "reason", reason)
+		c.log.ErrorContext(context.WithoutCancel(ctx), "Candidate quarantined", "event", logger.EventQuarantine, "reason", reason)
 	}()
 }
 

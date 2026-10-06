@@ -11,16 +11,18 @@ import (
 
 // Handler logs each request after delegating it to the next handler.
 type Handler struct {
-	next http.Handler
-	log  *slog.Logger
+	next  http.Handler
+	log   *slog.Logger
+	event string
 }
 
-// New constructs request logging middleware around the next handler.
-func New(next http.Handler, log *slog.Logger) *Handler {
-	return &Handler{next: next, log: log}
+// New constructs request logging middleware around the next handler. event names
+// the SPECTRE event each request is logged under, e.g. "ingress_received".
+func New(next http.Handler, log *slog.Logger, event string) *Handler {
+	return &Handler{next: next, log: log, event: event}
 }
 
-// ServeHTTP logs the method, path, response status, and elapsed time.
+// ServeHTTP logs the event, method, path, response status, and elapsed time.
 func (h *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	start := time.Now()
 	response := newResponseWriter(writer)
@@ -30,6 +32,7 @@ func (h *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		status = http.StatusOK
 	}
 	h.log.InfoContext(request.Context(), "HTTP request",
+		"event", h.event,
 		"method", request.Method,
 		"path", request.URL.Path,
 		"status", status,

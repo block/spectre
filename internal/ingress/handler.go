@@ -14,6 +14,7 @@ import (
 
 	"github.com/block/spectre/internal/comparison"
 	"github.com/block/spectre/internal/descriptors"
+	"github.com/block/spectre/internal/logger"
 	"github.com/block/spectre/internal/middleware/health"
 	"github.com/block/spectre/internal/middleware/logging"
 	"github.com/block/spectre/internal/netaddr"
@@ -115,7 +116,7 @@ func New(
 		comparator:  comparator,
 		candidates:  proxy.NewCandidates(config.CandidateMaxInFlight, log),
 	}
-	requestHandler := logging.New(http.HandlerFunc(handler.serveProxy), log)
+	requestHandler := logging.New(http.HandlerFunc(handler.serveProxy), log, logger.EventIngressReceived)
 	handler.health = health.New(requestHandler)
 	return handler, nil
 }

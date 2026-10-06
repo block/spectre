@@ -36,7 +36,7 @@ type commandContext struct {
 func main() {
 	command := &cli{}
 	kctx := kong.Parse(command, kong.Vars{"version": internal.Version}, kong.Configuration(kongtoml.Loader))
-	log := logger.New(command.Log, os.Stderr)
+	log := logger.Tagged(logger.New(command.Log, os.Stderr))
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	ctx = logger.WithLogger(ctx, log)

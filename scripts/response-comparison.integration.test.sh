@@ -65,9 +65,9 @@ verify() {
 		exit 1
 	fi
 	wait_for_log candidate '"path":"/spectre.sample.v1.UserService/ListUsers"'
-	wait_for_log ingress '"msg":"Payload normaliser completed","kind":"field","target":"spectre.sample.v1.User.roles"'
+	wait_for_log ingress '"msg":"Payload normaliser completed","component":"spectre","kind":"field","target":"spectre.sample.v1.User.roles"'
 	wait_for_log ingress '"target":"spectre.sample.v1.ListUsersResponse.generatedAt","side":"candidate","payload_path":"$.generatedAt"'
-	wait_for_log ingress '"msg":"Response comparison completed","path":"/spectre.sample.v1.UserService/ListUsers","outcome":"equivalent"'
+	wait_for_log ingress '"msg":"Response comparison completed","component":"spectre","event":"correlation","path":"/spectre.sample.v1.UserService/ListUsers","outcome":"equivalent"'
 	# The comparison timeout has elapsed before this probe, so a second mirror proves
 	# the reordered roles did not quarantine the candidate.
 	sleep 1.1
@@ -81,18 +81,18 @@ verify() {
 		exit 1
 	fi
 	wait_for_log ingress '"target":"weather.GetForecastV2Response.alerts"'
-	wait_for_log ingress '"msg":"Response comparison completed","path":"/v2/forecast","outcome":"equivalent"'
+	wait_for_log ingress '"msg":"Response comparison completed","component":"spectre","event":"correlation","path":"/v2/forecast","outcome":"equivalent"'
 	fetch '/api/v1/forecast?location=sydney' >/dev/null
-	wait_for_log ingress '"msg":"Response comparison completed","path":"/api/v1/forecast","outcome":"equivalent"'
+	wait_for_log ingress '"msg":"Response comparison completed","component":"spectre","event":"correlation","path":"/api/v1/forecast","outcome":"equivalent"'
 	fetch /_status >/dev/null
-	wait_for_log ingress '"msg":"Response comparison completed","path":"/_status","outcome":"equivalent"'
+	wait_for_log ingress '"msg":"Response comparison completed","component":"spectre","event":"correlation","path":"/_status","outcome":"equivalent"'
 
 	# Egress replays the reference's forecast to the candidate, so each mirrored
 	# request reaches the provider once.
 	for side in reference candidate; do
-		wait_for_log egress "\"msg\":\"Payload normalisation completed\",\"message\":\"forecasts.FetchForecastRequest\",\"side\":\"$side\",\"normalisers\":0"
+		wait_for_log egress "\"msg\":\"Payload normalisation completed\",\"component\":\"spectre\",\"message\":\"forecasts.FetchForecastRequest\",\"side\":\"$side\",\"normalisers\":0"
 	done
-	wait_for_log egress '"msg":"Candidate request matched a reference request","host":"forecasts.example","path":"/v1/forecasts/london"'
+	wait_for_log egress '"msg":"Candidate request matched a reference request","component":"spectre","event":"correlation","host":"forecasts.example","path":"/v1/forecasts/london"'
 	for location in london sydney; do
 		wait_for_log forecasts "\"path\":\"/v1/forecasts/$location\""
 		provider_calls=$(count_log forecasts "\"path\":\"/v1/forecasts/$location\"")
@@ -109,7 +109,7 @@ verify() {
 		exit 1
 	fi
 	wait_for_log candidate '"path":"/spectre.sample.v1.UserService/GetUser"'
-	wait_for_log ingress '"msg":"Response comparison completed","path":"/spectre.sample.v1.UserService/GetUser","outcome":"divergent"'
+	wait_for_log ingress '"msg":"Response comparison completed","component":"spectre","event":"correlation","path":"/spectre.sample.v1.UserService/GetUser","outcome":"divergent"'
 	wait_for_log ingress '"msg":"Candidate quarantined"'
 
 	candidate_list_calls=$(count_log candidate '"path":"/spectre.sample.v1.UserService/ListUsers"')
