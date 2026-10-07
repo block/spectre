@@ -46,10 +46,16 @@ declare module "spectre" {
   /** The value a normaliser for path P of T receives and returns. */
   export type FieldValue<T, P> = Extract<Fields<T>, [P, unknown]>[1];
 
-  /** Types the proxied service's responses for requests matching "<METHOD> /<path>". */
-  export function ingress<T extends object>(protocol: "http", pattern: string): void;
-  /** Types requests to a dependency matching "<METHOD> <host>/<path>". */
-  export function egress<T extends object>(protocol: "http", pattern: string): void;
+  /** The proxied service's inbound endpoints. */
+  export const ingress: {
+    /** Types the service's responses for requests matching "<METHOD> /<path>". */
+    match<T extends object>(protocol: "http", pattern: string): void;
+  };
+  /** The service's outbound calls to its dependencies. */
+  export const egress: {
+    /** Types requests to a dependency matching "<METHOD> <host>/<path>". */
+    match<T extends object>(protocol: "http", pattern: string): void;
+  };
   /** Normalises field P of every T; returning undefined removes it. */
   export function field<T extends object, P extends FieldPath<T>>(normalise: Normaliser<FieldValue<T, P>>): void;
   /** Normalises every T; returning undefined removes it. */

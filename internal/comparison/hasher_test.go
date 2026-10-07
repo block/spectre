@@ -15,8 +15,8 @@ import (
 )
 
 const egressScript = `
-	spectre.egress<weather.HTTPQuery>("http", "GET weather.example/v1/locations/{location}/forecast");
-	spectre.egress<weather.HTTPQuery>("http", "POST weather.example/v1/search");
+	spectre.egress.match<weather.HTTPQuery>("http", "GET weather.example/v1/locations/{location}/forecast");
+	spectre.egress.match<weather.HTTPQuery>("http", "POST weather.example/v1/search");
 	spectre.field<v1.Query, "trace">(() => undefined);
 	spectre.field<v1.Query, "tags">((tags) => tags === undefined ? undefined : tags.sort());
 	spectre.field<weather.HTTPQuery, "trace">(() => undefined);
@@ -36,7 +36,7 @@ func TestHashesMethodAndCanonicalJSON(t *testing.T) {
 func TestLogsRequestNormalisationWithoutNormalisers(t *testing.T) {
 	var output bytes.Buffer
 	config := newConfig(t, map[string]string{"test.ts": module(`
-		spectre.egress<weather.HTTPQuery>("http", "POST weather.example/v1/search");
+		spectre.egress.match<weather.HTTPQuery>("http", "POST weather.example/v1/search");
 	`)})
 	log := slog.New(slog.NewJSONHandler(&output, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	hasher, err := comparison.NewRequestHasher(t.Context(), config, log)
@@ -175,7 +175,7 @@ func TestRejectsUnbindableEndpoints(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			config := newConfig(t, map[string]string{
-				"weather.ts": module(`spectre.egress<weather.HTTPQuery>("http", "` + test.pattern + `");`),
+				"weather.ts": module(`spectre.egress.match<weather.HTTPQuery>("http", "` + test.pattern + `");`),
 			})
 			hasher, err := comparison.NewRequestHasher(t.Context(), config, slog.New(slog.DiscardHandler))
 			assert.NoError(t, err)
@@ -190,7 +190,7 @@ func TestRejectsUnbindableEndpoints(t *testing.T) {
 func TestHasherIgnoresIngressEndpoints(t *testing.T) {
 	// An ingress type absent from the schema would fail Configure if egress used it. The
 	// cast skips type checking, so the type reaches Configure.
-	hasher := newHasher(t, `(spectre.ingress as any)("Missing", "http", "GET /v1/forecast");`)
+	hasher := newHasher(t, `(spectre.ingress.match as any)("Missing", "http", "GET /v1/forecast");`)
 
 	_, err := hasher.Hash(t.Context(), rpcRequest("Find", `{}`))
 
@@ -285,7 +285,7 @@ func TestBindsRequiredScalarWithoutDescriptors(t *testing.T) {
 		map[string]string{"request.ts": `
 			import { egress } from "spectre";
 			import type { Request } from "api";
-			egress<Request>("http", "GET api.example/items/{id}");
+			egress.match<Request>("http", "GET api.example/items/{id}");
 		`})
 	hasher, err := comparison.NewRequestHasher(t.Context(), config, slog.New(slog.DiscardHandler))
 	assert.NoError(t, err)
@@ -308,7 +308,7 @@ func TestBindsNumberLiteralsFromText(t *testing.T) {
 		map[string]string{"request.ts": `
 			import { egress } from "spectre";
 			import type { Request } from "api";
-			egress<Request>("http", "GET api.example/items");
+			egress.match<Request>("http", "GET api.example/items");
 		`})
 	hasher, err := comparison.NewRequestHasher(t.Context(), config, slog.New(slog.DiscardHandler))
 	assert.NoError(t, err)

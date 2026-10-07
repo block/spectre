@@ -672,7 +672,7 @@ func TestComparesHTTPJSONWithoutDescriptors(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			config := newSchemaConfig(t, declarations, map[string]string{
 				"raw.ts": `import * as spectre from "spectre"; import type * as raw from "raw";` +
-					`spectre.ingress<raw.Response>("http", "GET /raw");` + test.script,
+					`spectre.ingress.match<raw.Response>("http", "GET /raw");` + test.script,
 			})
 			comparator, err := comparison.New(t.Context(), config, slog.New(slog.DiscardHandler))
 			assert.NoError(t, err)
@@ -726,7 +726,7 @@ func TestComparesBodylessHTTPResponses(t *testing.T) {
 				map[string]string{"raw.ts": `
 					import * as spectre from "spectre";
 					import type { Response } from "raw";
-					spectre.ingress<Response>("http", "` + test.method + ` /raw");
+					spectre.ingress.match<Response>("http", "` + test.method + ` /raw");
 					spectre.message<Response>(() => { throw new Error("normaliser ran"); });
 				`})
 			comparator, err := comparison.New(t.Context(), config, slog.New(slog.DiscardHandler))
@@ -766,7 +766,7 @@ func TestValidatesEmptyHTTPResponses(t *testing.T) {
 				map[string]string{"raw.ts": `
 					import * as spectre from "spectre";
 					import type { Response } from "raw";
-					spectre.ingress<Response>("http", "GET /raw");
+					spectre.ingress.match<Response>("http", "GET /raw");
 				` + test.script})
 			comparator, err := comparison.New(t.Context(), config, slog.New(slog.DiscardHandler))
 			assert.NoError(t, err)
@@ -790,7 +790,7 @@ func TestIgnoresEgressEndpoints(t *testing.T) {
 	// An undeclared egress type does not participate in ingress configuration. The
 	// cast skips type checking, so the type reaches Configure.
 	comparator := newScriptsComparator(t, map[string]string{
-		"weather.ts": module(`(spectre.egress as any)("test.v1.Missing", "http", "GET weather.example/v1/forecast");`),
+		"weather.ts": module(`(spectre.egress.match as any)("test.v1.Missing", "http", "GET weather.example/v1/forecast");`),
 	})
 	response := httpJSONResponse(http.StatusOK, "application/json", `{"stable":"same"}`)
 
@@ -802,7 +802,7 @@ func TestIgnoresEgressEndpoints(t *testing.T) {
 
 func TestDeclaredEndpointsDecodeGRPCRequestsAsGRPC(t *testing.T) {
 	comparator := newScriptsComparator(t, map[string]string{
-		"weather.ts": module(`spectre.ingress<v1.Response>("http", "POST /v1/forecast");`),
+		"weather.ts": module(`spectre.ingress.match<v1.Response>("http", "POST /v1/forecast");`),
 	})
 	reference := grpcResponse(t, responseProto("first", "", nil), false)
 	candidate := grpcResponse(t, responseProto("second", "", nil), false)
@@ -814,7 +814,7 @@ func TestDeclaredEndpointsDecodeGRPCRequestsAsGRPC(t *testing.T) {
 
 func TestDeclaredEndpointsDecodeProtobufRequestsAsProtobuf(t *testing.T) {
 	comparator := newScriptsComparator(t, map[string]string{
-		"weather.ts": module(`spectre.ingress<v1.Response>("http", "POST /v1/forecast");`),
+		"weather.ts": module(`spectre.ingress.match<v1.Response>("http", "POST /v1/forecast");`),
 	})
 	reference := protobufResponse(responseProto("first", "", nil))
 	candidate := protobufResponse(responseProto("second", "", nil))
@@ -831,7 +831,7 @@ func TestDeclaredEndpointsDoNotRequireUnaryMethods(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			comparator := newScriptsComparator(t, map[string]string{
-				"test.ts": module(`spectre.ingress<v1.Response>("http", "POST ` + path + `");`),
+				"test.ts": module(`spectre.ingress.match<v1.Response>("http", "POST ` + path + `");`),
 			})
 			reference := grpcResponse(t, responseProto("first", "", nil), false)
 			candidate := grpcResponse(t, responseProto("second", "", nil), false)
@@ -851,7 +851,7 @@ func TestLoadsEveryScriptAsOneSet(t *testing.T) {
 		`),
 		"weather.ts": module(`
 			import {lower} from "./helpers/strings";
-			spectre.ingress<v1.Response>("http", "GET /v1/forecast");
+			spectre.ingress.match<v1.Response>("http", "GET /v1/forecast");
 			spectre.field<v1.Response, "stable">((stable) => stable === undefined ? undefined : lower(stable));
 		`),
 		"helpers/strings.ts": `export const lower = (value: string) => value.toLowerCase();`,
@@ -890,24 +890,24 @@ func TestRejectsInvalidEndpointDeclarations(t *testing.T) {
 		message string
 	}{
 		"Host": {
-			scripts: map[string]string{"weather.ts": module(`spectre.ingress<v1.Response>("http", "GET weather.example/v1/forecast");`)},
+			scripts: map[string]string{"weather.ts": module(`spectre.ingress.match<v1.Response>("http", "GET weather.example/v1/forecast");`)},
 			message: `must have the form "<METHOD> /<path>"`,
 		},
 		"NoMethod": {
-			scripts: map[string]string{"weather.ts": module(`spectre.ingress<v1.Response>("http", "/v1/forecast");`)},
+			scripts: map[string]string{"weather.ts": module(`spectre.ingress.match<v1.Response>("http", "/v1/forecast");`)},
 			message: `must have the form "<METHOD> /<path>"`,
 		},
 		"Conflict": {
 			scripts: map[string]string{
-				"a.ts": module(`spectre.ingress<v1.Response>("http", "GET /v1/{location}/forecast");`),
-				"b.ts": module(`spectre.ingress<v1.Response>("http", "GET /v1/units/{fee}");`),
+				"a.ts": module(`spectre.ingress.match<v1.Response>("http", "GET /v1/{location}/forecast");`),
+				"b.ts": module(`spectre.ingress.match<v1.Response>("http", "GET /v1/units/{fee}");`),
 			},
 			message: `route endpoint "GET /v1/units/{fee}": invalid route pattern`,
 		},
 		"DuplicateAcrossScripts": {
 			scripts: map[string]string{
-				"a.ts": module(`spectre.ingress<v1.Response>("http", "GET /v1/forecast");`),
-				"b.ts": module(`spectre.ingress<v1.Response>("http", "GET /v1/forecast");`),
+				"a.ts": module(`spectre.ingress.match<v1.Response>("http", "GET /v1/forecast");`),
+				"b.ts": module(`spectre.ingress.match<v1.Response>("http", "GET /v1/forecast");`),
 			},
 			message: `duplicate endpoint "GET /v1/forecast"`,
 		},
@@ -937,7 +937,7 @@ func TestRejectsEndpointsAbsentFromSchema(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			config := newConfig(t, map[string]string{
 				// The cast skips type checking, so the type reaches Configure.
-				"weather.ts": module(`(spectre.ingress as any)("` + typeName + `", "http", "GET /v1/forecast");`),
+				"weather.ts": module(`(spectre.ingress.match as any)("` + typeName + `", "http", "GET /v1/forecast");`),
 			})
 			comparator, err := comparison.New(t.Context(), config, slog.New(slog.DiscardHandler))
 			assert.NoError(t, err)
@@ -1007,7 +1007,7 @@ func newComparator(t *testing.T, script string) *comparison.Comparator {
 
 // forecastScript declares GET /v1/forecast as a raw HTTP endpoint typed by test.v1.Response.
 func forecastScript(body string) string {
-	return module(`spectre.ingress<v1.Response>("http", "GET /v1/forecast");` + body)
+	return module(`spectre.ingress.match<v1.Response>("http", "GET /v1/forecast");` + body)
 }
 
 // module imports the spectre API and the test schema modules, so body can name their types.

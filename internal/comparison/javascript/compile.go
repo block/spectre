@@ -117,17 +117,22 @@ func typeArguments(checker *ts.Checker, loaded *schema.Schema, call *ts.Node) (*
 	if function == string(targetField) {
 		expected = 2
 	}
+	// display names the call the way a script writes it, e.g. "ingress.match".
+	display := function
+	if owner := ts.MemberOwnerName(declaration); owner != "" {
+		display = owner + "." + function
+	}
 	types := call.TypeArguments()
 	if len(types) != expected {
-		return nil, errors.Errorf("%s: spectre.%s needs %d explicit type argument(s)", ts.Location(call), function, expected)
+		return nil, errors.Errorf("%s: spectre.%s needs %d explicit type argument(s)", ts.Location(call), display, expected)
 	}
 	resolved := checker.GetTypeFromTypeNode(types[0])
 	name, err := schema.TypeName(resolved)
 	if err != nil {
-		return nil, errors.Errorf("%s: spectre.%s type argument %s: %v", ts.Location(types[0]), function, checker.TypeToString(resolved), err)
+		return nil, errors.Errorf("%s: spectre.%s type argument %s: %v", ts.Location(types[0]), display, checker.TypeToString(resolved), err)
 	}
 	if _, err := loaded.Type(name); err != nil {
-		return nil, errors.Errorf("%s: spectre.%s type argument: %v", ts.Location(types[0]), function, err)
+		return nil, errors.Errorf("%s: spectre.%s type argument: %v", ts.Location(types[0]), display, err)
 	}
 	values := []string{name}
 	if function == string(targetField) {
