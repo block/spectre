@@ -35,7 +35,12 @@
 
 - Always use Conventional Commits for commit messages and pull request titles.
 - Keep commit messages and pull request titles and descriptions succinct and in plain English. Avoid jargon.
-- Explain why the change is needed, not what changed.
+- In commit messages, explain why the change is needed, not what changed.
+- In pull request descriptions, explain why the change is needed and the high-level approach taken.
+- Write pull request descriptions as plain paragraphs when the explanation is straightforward. Use bullet lists for more complex explanations.
+- Add Mermaid diagrams to pull request descriptions for very complex changes.
+- Do not use Markdown headers in pull request descriptions. Other Markdown, such as code blocks, is fine.
+- To auto-merge a pull request, create it first, then run `gh pr merge <number> --auto --squash`.
 
 # Go conventions
 
