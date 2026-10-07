@@ -10,6 +10,14 @@ import (
 
 type value struct{}
 
+type named interface {
+	name() string
+}
+
+func (*value) name() string { return "" }
+
+var _ named = (*value)(nil)
+
 type node struct {
 	next *node
 }
@@ -22,6 +30,10 @@ type holder struct {
 
 func find() *value {
 	return nil // want `nil returned; use Option`
+}
+
+func converted() (*value, *value) {
+	return (*value)(nil), (nil) // want `nil returned; use Option` `nil returned; use Option`
 }
 
 func findWithoutError() (*value, error) {
@@ -79,6 +91,7 @@ func stores(h *holder, message *generated.Message) {
 func arguments() {
 	use(nil) // want `nil passed to use; use Option`
 	useAll(nil) // want `nil passed to useAll; use Option`
+	use((*value)(nil)) // want `nil passed to use; use Option`
 	generated.Send(nil)
 	_, _ = http.NewRequest(http.MethodGet, "/", nil)
 }

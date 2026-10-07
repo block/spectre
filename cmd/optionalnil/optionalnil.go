@@ -84,7 +84,7 @@ func newChecker(pass *analysis.Pass, root inspector.Cursor) *checker {
 // checkNil reports a nil literal whose destination is a first-party slot for a
 // value that may be absent.
 func (c *checker) checkNil(cur inspector.Cursor) {
-	for cur.ParentEdgeKind() == edge.ParenExpr_X {
+	for c.keepsNil(cur.Parent().Node()) {
 		cur = cur.Parent()
 	}
 	kind, index := cur.ParentEdge()
@@ -134,7 +134,7 @@ func (c *checker) checkReturn(ret inspector.Cursor, index int) {
 func (c *checker) isPlaceholder(stmt *ast.ReturnStmt, index int) bool {
 	for i, result := range stmt.Results {
 		value := c.pass.TypesInfo.Types[result]
-		if i == index || value.IsNil() {
+		if i == index || c.isNil(result) {
 			continue
 		}
 		if value.Value == nil || (value.Value.Kind() == constant.Bool && !constant.BoolVal(value.Value)) {
@@ -144,9 +144,32 @@ func (c *checker) isPlaceholder(stmt *ast.ReturnStmt, index int) bool {
 	return false
 }
 
+// keepsNil reports whether a node passes a nil operand through unchanged, as
+// parentheses and conversions such as (*T)(nil) do.
+func (c *checker) keepsNil(node ast.Node) bool {
+	switch node := node.(type) {
+	case *ast.ParenExpr:
+		return true
+	case *ast.CallExpr:
+		return len(node.Args) == 1 && c.pass.TypesInfo.Types[node.Fun].IsType()
+	}
+	return false
+}
+
+func (c *checker) isNil(expr ast.Expr) bool {
+	for {
+		expr = ast.Unparen(expr)
+		call, ok := expr.(*ast.CallExpr)
+		if !ok || !c.keepsNil(call) {
+			return c.pass.TypesInfo.Types[expr].IsNil()
+		}
+		expr = call.Args[0]
+	}
+}
+
 func (c *checker) checkStore(cur inspector.Cursor, target Option[*types.Var]) {
 	variable, ok := target.Get()
-	if ok && c.isFirstParty(variable) && c.mayBeAbsent(variable.Type(), false) {
+	if ok && variable.Name() != "_" && c.isFirstParty(variable) && c.mayBeAbsent(variable.Type(), false) {
 		c.report(cur.Node(), "nil stored in "+variable.Name())
 	}
 }
