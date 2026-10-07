@@ -115,7 +115,7 @@ func typeArguments(checker *ts.Checker, loaded *schema.Schema, call *ts.Node) (O
 	}
 	function := declaration.Name().Text()
 	if function == ignoreMethod {
-		return nil, nil //nolint:nilnil // ignore takes no type arguments, so nothing is inserted.
+		return None[insertion](), nil // ignore takes no type arguments, so nothing is inserted.
 	}
 	expected := 1
 	if function == string(targetField) {
