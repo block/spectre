@@ -46,6 +46,7 @@ type DescriptorLoader interface {
 // ResponseComparator compares paired backend responses against a shared schema.
 type ResponseComparator interface {
 	MaxResponseBytes() int
+	Ignored(requestMethod, requestPath string) bool
 	Configure(ctx context.Context, set *descriptorpb.FileDescriptorSet) error
 	Compare(
 		ctx context.Context,
@@ -126,7 +127,8 @@ func New(
 		comparator:  comparator,
 		candidates:  proxy.NewCandidates(config.CandidateMaxInFlight, log),
 	}
-	requestHandler := logging.New(http.HandlerFunc(handler.serveProxy), log, logger.EventIngressReceived)
+	requestHandler := logging.NewDemoting(http.HandlerFunc(handler.serveProxy), log, logger.EventIngressReceived,
+		func(request *http.Request) bool { return comparator.Ignored(request.Method, request.URL.Path) })
 	handler.health = health.New(requestHandler)
 	return handler, nil
 }

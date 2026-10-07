@@ -137,6 +137,13 @@ func (s *scriptSet) resolve(configured *configuredScripts, method, host, path, c
 	return root, identity, selected, wildcards, newEmptyResult()
 }
 
+// ignored reports whether the request matches an endpoint declared ignored, so its
+// traffic is skipped during comparison and logged at debug level.
+func (s *scriptSet) ignored(requestMethod, requestPath string) bool {
+	endpoint, _, matched := s.routes.Match(requestMethod, "", requestPath)
+	return matched && endpoint.Ignore()
+}
+
 // normalise gives each payload a fresh evaluator, so script state cannot carry
 // between payloads and a payload's normalised form depends only on its content.
 func (s *scriptSet) normalise(ctx context.Context, configured *configuredScripts, root *schema.Type,

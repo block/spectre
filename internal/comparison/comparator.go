@@ -40,6 +40,12 @@ func (c *Comparator) MaxResponseBytes() int {
 	return c.maxResponseBytes
 }
 
+// Ignored reports whether the request matches an endpoint declared ignored, so
+// callers can log its noisy health-check traffic at debug level.
+func (c *Comparator) Ignored(requestMethod, requestPath string) bool {
+	return c.scripts.ignored(requestMethod, requestPath)
+}
+
 // Configure activates the comparator against the wire descriptors.
 func (c *Comparator) Configure(ctx context.Context, set *descriptorpb.FileDescriptorSet) error {
 	configured, err := c.scripts.prepare(ctx, set)
@@ -60,6 +66,7 @@ func (c *Comparator) Compare(
 	reference Response,
 	candidate Response,
 ) (result Result) {
+	ignored := c.scripts.ignored(requestMethod, requestPath)
 	defer func() {
 		attributes := []any{"event", logger.EventCorrelation, "path", requestPath, "outcome", result.Outcome()}
 		differences := result.Differences()
@@ -69,7 +76,11 @@ func (c *Comparator) Compare(
 		if result.Reason() != "" {
 			attributes = append(attributes, "reason", result.Reason())
 		}
-		c.log.InfoContext(ctx, "Response comparison completed", attributes...)
+		level := slog.LevelInfo
+		if ignored {
+			level = slog.LevelDebug
+		}
+		c.log.Log(ctx, level, "Response comparison completed", attributes...)
 	}()
 	if excludedRequestPath(requestPath) {
 		return Resultf(Skipped, "gRPC namespace is excluded from response comparison")

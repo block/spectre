@@ -589,6 +589,21 @@ func TestIgnoredEndpointSkipsComparison(t *testing.T) {
 	assert.Equal(t, comparison.Skipped, result.Outcome())
 }
 
+func TestIgnoredEndpointLogsAtDebug(t *testing.T) {
+	var output bytes.Buffer
+	log := slog.New(slog.NewJSONHandler(&output, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	config := newConfig(t, map[string]string{"status.ts": module(`spectre.ingress.ignore("http", "GET /_status");`)})
+	comparator, err := comparison.New(t.Context(), config, log)
+	assert.NoError(t, err)
+	assert.NoError(t, comparator.Configure(t.Context(), descriptorSet()))
+	response := httpJSONResponse(http.StatusBadGateway, "text/html", `<html>502 Bad Gateway</html>`)
+
+	result := comparator.Compare(t.Context(), http.MethodGet, "/_status", "", response, response)
+
+	assert.Equal(t, comparison.Skipped, result.Outcome())
+	assert.Contains(t, output.String(), `"level":"DEBUG","msg":"Response comparison completed","event":"correlation","path":"/_status","outcome":"skipped","reason":"endpoint \"GET /_status\" is ignored"`)
+}
+
 func TestRejectsHTTPJSONWithUnknownFields(t *testing.T) {
 	comparator := newScriptsComparator(t, map[string]string{"weather.ts": forecastScript("")})
 	reference := httpJSONResponse(http.StatusOK, "application/json", `{"stable":"same","roles":[],"users":[],"count":"0","labels":{}}`)

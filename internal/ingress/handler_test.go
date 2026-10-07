@@ -1143,6 +1143,7 @@ type responseComparator struct {
 		comparison.Response,
 	) comparison.Result
 	configure Option[func(set *descriptorpb.FileDescriptorSet)]
+	ignored   Option[func(requestMethod, requestPath string) bool]
 }
 
 func newResponseComparator(compare func(
@@ -1158,6 +1159,13 @@ func newResponseComparator(compare func(
 
 func (c *responseComparator) MaxResponseBytes() int {
 	return 1024
+}
+
+func (c *responseComparator) Ignored(requestMethod, requestPath string) bool {
+	if ignored, ok := c.ignored.Get(); ok {
+		return ignored(requestMethod, requestPath)
+	}
+	return false
 }
 
 func (c *responseComparator) Configure(ctx context.Context, set *descriptorpb.FileDescriptorSet) error {

@@ -51,6 +51,36 @@ func TestLogsRequests(t *testing.T) {
 	}
 }
 
+func TestDemotesMatchingRequests(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		path  string
+		level string
+	}{
+		{name: "Ignored", path: "/_status", level: "DEBUG"},
+		{name: "Compared", path: "/users", level: "INFO"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var output bytes.Buffer
+			log := slog.New(slog.NewJSONHandler(&output, &slog.HandlerOptions{Level: slog.LevelDebug}))
+			handler := logging.NewDemoting(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+				_, err := writer.Write([]byte("ok"))
+				assert.NoError(t, err)
+			}), log, "ingress_received", func(request *http.Request) bool {
+				return request.URL.Path == "/_status"
+			})
+			handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, test.path, nil))
+
+			var record map[string]any
+			assert.NoError(t, json.Unmarshal(output.Bytes(), &record))
+			level, _ := record["level"].(string)
+			assert.Equal(t, test.level, level)
+			assert.Equal(t, "HTTP request", record["msg"])
+			assert.Equal(t, "ingress_received", record["event"])
+		})
+	}
+}
+
 func TestPreservesFlushing(t *testing.T) {
 	response := httptest.NewRecorder()
 	log := slog.New(slog.DiscardHandler)
