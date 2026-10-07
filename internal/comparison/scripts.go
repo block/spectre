@@ -72,6 +72,9 @@ func (s *scriptSet) prepare(ctx context.Context, set *descriptorpb.FileDescripto
 	}
 	loaded := s.program.Schema()
 	for _, endpoint := range s.endpoints() {
+		if endpoint.Ignore() {
+			continue
+		}
 		if _, err := loaded.Type(endpoint.Type()); err != nil {
 			return nil, errors.Wrapf(err, "resolve endpoint %q", endpoint.Pattern())
 		}
@@ -103,6 +106,9 @@ func (s *scriptSet) active() *configuredScripts {
 func (s *scriptSet) resolve(configured *configuredScripts, method, host, path, contentType string,
 ) (root *schema.Type, identity string, selected protocol, wildcards map[string]string, result Result) {
 	endpoint, wildcards, declared := s.routes.Match(method, host, path)
+	if declared && endpoint.Ignore() {
+		return nil, endpoint.Pattern(), 0, nil, Resultf(Skipped, "endpoint %q is ignored", endpoint.Pattern())
+	}
 	selected, result = requestProtocol(contentType)
 	if declared && selected != protocolGRPC && selected != protocolProtobuf {
 		selected, result = protocolHTTPJSON, newEmptyResult()

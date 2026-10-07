@@ -46,6 +46,27 @@ func TestProgramOwnsDeclarations(t *testing.T) {
 	assert.Equal(t, "test.v1.User", operation.Request)
 }
 
+func TestIgnoreRegistersIgnoredEndpoint(t *testing.T) {
+	program, err := compile(t, fstest.MapFS{
+		"status.ts": script(`
+			spectre.ingress.match<v1.Response>("http", "GET /v1/forecast");
+			spectre.ingress.ignore("http", "GET /_status");
+		`),
+	})
+	assert.NoError(t, err)
+
+	got := program.Endpoints(javascript.Ingress)
+	assert.Equal(t, 2, len(got))
+	// The matched endpoint keeps its type and is compared.
+	assert.Equal(t, "GET /v1/forecast", got[0].Pattern())
+	assert.Equal(t, "test.v1.Response", got[0].Type())
+	assert.False(t, got[0].Ignore())
+	// The ignored endpoint carries no type and is skipped.
+	assert.Equal(t, "GET /_status", got[1].Pattern())
+	assert.Equal(t, "", got[1].Type())
+	assert.True(t, got[1].Ignore())
+}
+
 func TestLoadsEmptyScriptsDirectory(t *testing.T) {
 	program, err := compile(t, fstest.MapFS{"README.md": {Data: []byte("Not a script.")}})
 	assert.NoError(t, err)
@@ -88,6 +109,10 @@ func TestRejectsUncheckedRegistrations(t *testing.T) {
 		"MissingTypeArgument": {
 			files:   fstest.MapFS{"test.ts": script(`spectre.ingress.match("http", "GET /v1/forecast");`)},
 			message: "scripts/test.ts:1:72: spectre.ingress.match needs 1 explicit type argument(s)",
+		},
+		"IgnoreTypeArgument": {
+			files:   fstest.MapFS{"test.ts": script(`spectre.ingress.ignore<v1.Response>("http", "GET /_status");`)},
+			message: "Expected 0 type arguments, but got 1.",
 		},
 		"MissingPath": {
 			files:   fstest.MapFS{"test.ts": script(`spectre.field<v1.Response>((value) => value);`)},
@@ -194,6 +219,26 @@ func TestRejectsInvalidEndpointDeclarations(t *testing.T) {
 		"EgressWithoutMethod": {
 			body:    `spectre.egress.match<v1.Response>("http", "weather.example/v1/forecast");`,
 			message: `must have the form "<METHOD> <host>/<path>"`,
+		},
+		"IgnoreNoArguments": {body: `ingress.ignore();`, message: "spectre.ingress.ignore requires a protocol and a pattern"},
+		"IgnoreOneArgument": {body: `ingress.ignore("http");`, message: "requires a protocol and a pattern"},
+		"IgnoreThreeArguments": {
+			body:    `ingress.ignore("http", "GET /_status", 1);`,
+			message: "requires a protocol and a pattern",
+		},
+		"IgnoreEmptyProtocol": {body: `ingress.ignore("", "GET /_status");`, message: "protocol must be a non-empty string"},
+		"IgnoreEmptyPattern":  {body: `ingress.ignore("http", "");`, message: "pattern must be a non-empty string"},
+		"IgnoreWithHost": {
+			body:    `ingress.ignore("http", "GET weather.example/_status");`,
+			message: `spectre.ingress.ignore pattern "GET weather.example/_status" must have the form "<METHOD> /<path>"`,
+		},
+		"IgnoreDuplicate": {
+			body:    `ingress.ignore("http", "GET /_status"); ingress.ignore("http", "GET /_status");`,
+			message: `duplicate endpoint "GET /_status"`,
+		},
+		"IgnoreCollidesWithMatch": {
+			body:    `spectre.ingress.match<v1.Response>("http", "GET /_status"); ingress.ignore("http", "GET /_status");`,
+			message: `duplicate endpoint "GET /_status"`,
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -598,7 +643,7 @@ func endpoints(program *javascript.Program, direction javascript.Direction) []en
 
 // untyped bypasses the checker so tests can reach the runtime's own argument checks.
 const untyped = `
-	const { ingress, egress } = spectre as unknown as Record<string, { match: (...args: unknown[]) => void }>;
+	const { ingress, egress } = spectre as unknown as Record<string, { match: (...args: unknown[]) => void; ignore: (...args: unknown[]) => void }>;
 	const { field, message } = spectre as unknown as Record<string, (...args: unknown[]) => void>;
 `
 

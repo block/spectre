@@ -576,6 +576,19 @@ func TestComparesHTTPJSONAsDeclaredType(t *testing.T) {
 	}
 }
 
+func TestIgnoredEndpointSkipsComparison(t *testing.T) {
+	comparator := newScriptsComparator(t, map[string]string{
+		"status.ts": module(`spectre.ingress.ignore("http", "GET /_status");`),
+	})
+	// An unready upstream answers /_status with a non-JSON 502; the ignored endpoint is
+	// skipped rather than decoded as a type and quarantined.
+	response := httpJSONResponse(http.StatusBadGateway, "text/html", `<html>502 Bad Gateway</html>`)
+
+	result := comparator.Compare(t.Context(), http.MethodGet, "/_status", "", response, response)
+
+	assert.Equal(t, comparison.Skipped, result.Outcome())
+}
+
 func TestRejectsHTTPJSONWithUnknownFields(t *testing.T) {
 	comparator := newScriptsComparator(t, map[string]string{"weather.ts": forecastScript("")})
 	reference := httpJSONResponse(http.StatusOK, "application/json", `{"stable":"same","roles":[],"users":[],"count":"0","labels":{}}`)
