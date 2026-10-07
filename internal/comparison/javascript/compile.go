@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/alecthomas/errors"
+	. "github.com/alecthomas/types/optional"
 	ts "github.com/microsoft/TypeScript/tsc/shim/typescript"
 
 	"github.com/block/spectre/internal/schema"
@@ -77,13 +78,13 @@ func passTypeArguments(program *ts.Program, loaded *schema.Schema, file *ts.Sour
 	var visit func(node *ts.Node) bool
 	visit = func(node *ts.Node) bool {
 		if node.Kind == ts.KindCallExpression {
-			inserted, err := typeArguments(program.Checker(), loaded, node)
+			found, err := typeArguments(program.Checker(), loaded, node)
 			if err != nil {
 				rewriteErr = err
 				return true
 			}
-			if inserted != nil {
-				insertions = append(insertions, *inserted)
+			if inserted, ok := found.Get(); ok {
+				insertions = append(insertions, inserted)
 			}
 		}
 		return node.ForEachChild(visit)
@@ -102,15 +103,15 @@ func passTypeArguments(program *ts.Program, loaded *schema.Schema, file *ts.Sour
 }
 
 // typeArguments returns the arguments to insert after a spectre call's opening
-// parenthesis, or nil for any other call.
-func typeArguments(checker *ts.Checker, loaded *schema.Schema, call *ts.Node) (*insertion, error) {
+// parenthesis, or None for any other call.
+func typeArguments(checker *ts.Checker, loaded *schema.Schema, call *ts.Node) (Option[insertion], error) {
 	signature := checker.GetResolvedSignature(call)
 	if signature == nil || signature.Declaration() == nil {
-		return nil, nil //nolint:nilnil // Most calls are not registrations.
+		return None[insertion](), nil // Most calls are not registrations.
 	}
 	declaration := signature.Declaration()
 	if ts.SourceFileOf(declaration).FileName() != moduleDeclarationFile || declaration.Name() == nil {
-		return nil, nil //nolint:nilnil // Only spectre functions take type arguments at runtime.
+		return None[insertion](), nil // Only spectre functions take type arguments at runtime.
 	}
 	function := declaration.Name().Text()
 	if function == ignoreMethod {
@@ -127,21 +128,21 @@ func typeArguments(checker *ts.Checker, loaded *schema.Schema, call *ts.Node) (*
 	}
 	types := call.TypeArguments()
 	if len(types) != expected {
-		return nil, errors.Errorf("%s: spectre.%s needs %d explicit type argument(s)", ts.Location(call), display, expected)
+		return None[insertion](), errors.Errorf("%s: spectre.%s needs %d explicit type argument(s)", ts.Location(call), display, expected)
 	}
 	resolved := checker.GetTypeFromTypeNode(types[0])
 	name, err := schema.TypeName(resolved)
 	if err != nil {
-		return nil, errors.Errorf("%s: spectre.%s type argument %s: %v", ts.Location(types[0]), display, checker.TypeToString(resolved), err)
+		return None[insertion](), errors.Errorf("%s: spectre.%s type argument %s: %v", ts.Location(types[0]), display, checker.TypeToString(resolved), err)
 	}
 	if _, err := loaded.Type(name); err != nil {
-		return nil, errors.Errorf("%s: spectre.%s type argument: %v", ts.Location(types[0]), display, err)
+		return None[insertion](), errors.Errorf("%s: spectre.%s type argument: %v", ts.Location(types[0]), display, err)
 	}
 	values := []string{name}
 	if function == string(targetField) {
 		path, ok := ts.StringLiteral(checker.GetTypeFromTypeNode(types[1]))
 		if !ok {
-			return nil, errors.Errorf("%s: spectre.field path must be one string literal type", ts.Location(types[1]))
+			return None[insertion](), errors.Errorf("%s: spectre.field path must be one string literal type", ts.Location(types[1]))
 		}
 		values = append(values, path)
 	}
@@ -154,5 +155,5 @@ func typeArguments(checker *ts.Checker, loaded *schema.Schema, call *ts.Node) (*
 	if len(call.Arguments()) > 0 {
 		encoded = append(encoded, "")
 	}
-	return &insertion{offset: call.AsCallExpression().Arguments.Loc.Pos(), text: strings.Join(encoded, ", ")}, nil
+	return Some(insertion{offset: call.AsCallExpression().Arguments.Loc.Pos(), text: strings.Join(encoded, ", ")}), nil
 }
