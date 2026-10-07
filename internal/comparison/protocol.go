@@ -2,7 +2,9 @@ package comparison
 
 import (
 	"bytes"
+	"compress/gzip"
 	"encoding/json"
+	"io"
 	"mime"
 	"net/http"
 	"strconv"
@@ -298,8 +300,12 @@ func decodePayload(codec *httpcodec.Codec, root *schema.Type, selected protocol,
 		if !hasJSONMediaType(header) {
 			return nil, errors.Errorf("body is not JSON: %q", header.Get("Content-Type"))
 		}
+		decompressed, err := decompressHTTPBody(header, body, maxBodyBytes)
+		if err != nil {
+			return nil, err
+		}
 		var payload any
-		if err := json.Unmarshal(body, &payload); err != nil {
+		if err = json.Unmarshal(decompressed, &payload); err != nil {
 			return nil, errors.Wrap(err, "decode JSON")
 		}
 		return payload, nil
@@ -319,6 +325,34 @@ func decodePayload(codec *httpcodec.Codec, root *schema.Type, selected protocol,
 	}
 	payload, err := codec.Decode(root.Name, format, header, body, maxBodyBytes)
 	return payload, errors.Wrap(err, "decode wire payload")
+}
+
+// decompressHTTPBody returns the body decoded per its Content-Encoding: identity
+// passes through, gzip is inflated under the size limit, others are rejected.
+func decompressHTTPBody(header http.Header, body []byte, maxBodyBytes int) ([]byte, error) {
+	switch encoding := strings.ToLower(strings.TrimSpace(header.Get("Content-Encoding"))); encoding {
+	case "", "identity":
+		return body, nil
+	case "gzip", "x-gzip":
+		reader, err := gzip.NewReader(bytes.NewReader(body))
+		if err != nil {
+			return nil, errors.Wrap(err, "open gzip body")
+		}
+		decompressed, err := io.ReadAll(io.LimitReader(reader, int64(maxBodyBytes)+1))
+		closeErr := reader.Close()
+		if err != nil {
+			return nil, errors.Wrap(err, "decompress gzip body")
+		}
+		if closeErr != nil {
+			return nil, errors.Wrap(closeErr, "close gzip body")
+		}
+		if len(decompressed) > maxBodyBytes {
+			return nil, errors.New("decompressed body exceeds the size limit")
+		}
+		return decompressed, nil
+	default:
+		return nil, errors.Errorf("unsupported Content-Encoding: %q", encoding)
+	}
 }
 
 func hasJSONMediaType(header http.Header) bool {

@@ -706,6 +706,54 @@ func TestComparesHTTPJSONWithoutDescriptors(t *testing.T) {
 	}
 }
 
+func TestDecompressesGzipHTTPResponses(t *testing.T) {
+	config := newSchemaConfig(t,
+		map[string]string{"response.d.ts": `declare module "raw" { interface Response { stable: string } }`},
+		map[string]string{"raw.ts": `
+			import * as spectre from "spectre";
+			import type { Response } from "raw";
+			spectre.ingress.match<Response>("http", "GET /raw");
+		`})
+	comparator, err := comparison.New(t.Context(), config, slog.New(slog.DiscardHandler))
+	assert.NoError(t, err)
+	assert.NoError(t, comparator.Configure(t.Context(), &descriptorpb.FileDescriptorSet{}))
+
+	gzipResponse := func(body string) comparison.Response {
+		var buffer bytes.Buffer
+		writer := gzip.NewWriter(&buffer)
+		_, err := writer.Write([]byte(body))
+		assert.NoError(t, err)
+		assert.NoError(t, writer.Close())
+		return comparison.Response{
+			StatusCode: http.StatusOK,
+			Header: http.Header{
+				"Content-Type":     []string{"application/json"},
+				"Content-Encoding": []string{"gzip"},
+			},
+			Body: buffer.Bytes(),
+		}
+	}
+	identity := httpJSONResponse(http.StatusOK, "application/json", `{"stable":"same"}`)
+
+	// A gzipped reference and an identity candidate decode to the same model, as do
+	// two gzipped bodies.
+	for _, reference := range []comparison.Response{gzipResponse(`{"stable":"same"}`), identity} {
+		result := comparator.Compare(t.Context(), http.MethodGet, "/raw", "", reference, gzipResponse(`{"stable":"same"}`))
+		assert.Equal(t, comparison.Resultf(comparison.Equivalent, ""), result)
+	}
+
+	// An unsupported encoding surfaces clearly instead of a decode failure on the
+	// still-encoded bytes.
+	brotli := comparison.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}, "Content-Encoding": []string{"br"}},
+		Body:       []byte("not decodable"),
+	}
+	result := comparator.Compare(t.Context(), http.MethodGet, "/raw", "", brotli, identity)
+	assert.Equal(t, comparison.Unable, result.Outcome())
+	assert.Contains(t, result.Reason(), `unsupported Content-Encoding: "br"`)
+}
+
 func TestUndeclaredRequestsFallBackToRPCPaths(t *testing.T) {
 	comparator := newScriptsComparator(t, map[string]string{
 		"weather.ts": forecastScript(`spectre.field<v1.Response, "ignored">(() => undefined);`),
