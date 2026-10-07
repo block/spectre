@@ -397,7 +397,7 @@ func newHasher(t *testing.T) *comparison.RequestHasher {
 	assert.NoError(t, os.WriteFile(filepath.Join(scripts, "egress.ts"), []byte(`
 import * as spectre from "spectre";
 import type { GetForecastRequest } from "spectre.sample.v1";
-spectre.egress<GetForecastRequest>("http", "POST weather.example/spectre.sample.v1.WeatherService/GetForecast");
+spectre.egress.match<GetForecastRequest>("http", "POST weather.example/spectre.sample.v1.WeatherService/GetForecast");
 `), 0o600))
 	config := comparison.NewConfig()
 	config.ScriptsDir = scripts

@@ -71,6 +71,23 @@ func SourceFileOf(node *Node) *SourceFile {
 	return ast.GetSourceFileOfNode(node)
 }
 
+// MemberOwnerName returns the name of the variable owning a member declaration, e.g.
+// "ingress" for `const ingress`'s match method, or "" for a top-level declaration.
+func MemberOwnerName(declaration *Node) string {
+	for node := declaration.Parent; node != nil; node = node.Parent {
+		if node.Kind == ast.KindVariableDeclaration {
+			if name := node.Name(); name != nil && name.Kind == ast.KindIdentifier {
+				return name.Text()
+			}
+			return ""
+		}
+		if node.Kind == ast.KindSourceFile {
+			return ""
+		}
+	}
+	return ""
+}
+
 // IsTupleType reports whether t is a tuple, which also satisfies array checks.
 func IsTupleType(t *Type) bool {
 	return checker.IsTupleType(t)

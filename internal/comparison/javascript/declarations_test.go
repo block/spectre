@@ -44,8 +44,8 @@ declare module "test" {
 	}{
 		"Valid": {
 			body: `
-				ingress<Root>("http", "GET /root");
-				egress<Root>("http", "GET example/root");
+				ingress.match<Root>("http", "GET /root");
+				egress.match<Root>("http", "GET example/root");
 				field<Root, "count">((value: number) => value + 1);
 				field<Root, "address.postalCode">((value: string | undefined) => value?.trim());
 				field<Root, "addresses[].postalCode">((value: string) => value.trim());
@@ -58,8 +58,8 @@ declare module "test" {
 			valid: true,
 		},
 		"InferredTypes":         {body: `field<Root, "addresses[].postalCode">((value) => value.trim()); field<Root, "address">((value) => value && { ...value });`, valid: true},
-		"UnknownProtocol":       {body: `ingress<Root>("sql", "query");`},
-		"NotObject":             {body: `ingress<string>("http", "GET /root");`},
+		"UnknownProtocol":       {body: `ingress.match<Root>("sql", "query");`},
+		"NotObject":             {body: `ingress.match<string>("http", "GET /root");`},
 		"UnknownPath":           {body: `field<Root, "missing">((value) => value);`},
 		"OtherTypePath":         {body: `field<Root, "enabled">((value) => value);`},
 		"LiteralDotKey":         {body: `field<Root, "literal.key">((value) => value);`},

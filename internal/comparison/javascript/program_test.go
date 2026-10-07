@@ -28,9 +28,9 @@ declare module "test" {
 func TestProgramOwnsDeclarations(t *testing.T) {
 	program, err := compile(t, fstest.MapFS{
 		"weather.ts": script(`
-			spectre.ingress<v1.Response>("http", "GET /v1/forecast");
-			spectre.ingress<v1.Response>("http", "GET /v2/forecast");
-			spectre.egress<v1.Response>("http", "GET weather.example/v1/forecast");
+			spectre.ingress.match<v1.Response>("http", "GET /v1/forecast");
+			spectre.ingress.match<v1.Response>("http", "GET /v2/forecast");
+			spectre.egress.match<v1.Response>("http", "GET weather.example/v1/forecast");
 			spectre.field<v1.Response, "value">(() => "fixed");
 		`),
 		"users/user.ts": script(`spectre.message<v1.User>((user) => user);`),
@@ -86,8 +86,8 @@ func TestRejectsUncheckedRegistrations(t *testing.T) {
 			message: "scripts/test.ts(1,78): error TS2322: Type 'string' is not assignable to type 'number'.",
 		},
 		"MissingTypeArgument": {
-			files:   fstest.MapFS{"test.ts": script(`spectre.ingress("http", "GET /v1/forecast");`)},
-			message: "scripts/test.ts:1:72: spectre.ingress needs 1 explicit type argument(s)",
+			files:   fstest.MapFS{"test.ts": script(`spectre.ingress.match("http", "GET /v1/forecast");`)},
+			message: "scripts/test.ts:1:72: spectre.ingress.match needs 1 explicit type argument(s)",
 		},
 		"MissingPath": {
 			files:   fstest.MapFS{"test.ts": script(`spectre.field<v1.Response>((value) => value);`)},
@@ -159,40 +159,40 @@ func TestRejectsInvalidEndpointDeclarations(t *testing.T) {
 		body    string
 		message string
 	}{
-		"NoArguments": {body: `ingress();`, message: "requires a type name, a protocol, and a pattern"},
+		"NoArguments": {body: `ingress.match();`, message: "requires a type name, a protocol, and a pattern"},
 		"TwoArguments": {
-			body:    `ingress("test.v1.Response", "http");`,
+			body:    `ingress.match("test.v1.Response", "http");`,
 			message: "requires a type name, a protocol, and a pattern",
 		},
 		"FourArguments": {
-			body:    `ingress("test.v1.Response", "http", "GET /v1/forecast", 1);`,
+			body:    `ingress.match("test.v1.Response", "http", "GET /v1/forecast", 1);`,
 			message: "requires a type name, a protocol, and a pattern",
 		},
-		"EmptyType":         {body: `ingress("", "http", "GET /v1/forecast");`, message: "type name must be a non-empty string"},
-		"NonStringType":     {body: `ingress({}, "http", "GET /v1/forecast");`, message: "type name must be a non-empty string"},
-		"EmptyProtocol":     {body: `ingress("test.v1.Response", "", "GET /v1/forecast");`, message: "protocol must be a non-empty string"},
-		"NonStringProtocol": {body: `ingress("test.v1.Response", 1, "GET /v1/forecast");`, message: "protocol must be a non-empty string"},
-		"EmptyPattern":      {body: `ingress("test.v1.Response", "http", "");`, message: "pattern must be a non-empty string"},
-		"NonStringPattern":  {body: `ingress("test.v1.Response", "http", 1);`, message: "pattern must be a non-empty string"},
+		"EmptyType":         {body: `ingress.match("", "http", "GET /v1/forecast");`, message: "type name must be a non-empty string"},
+		"NonStringType":     {body: `ingress.match({}, "http", "GET /v1/forecast");`, message: "type name must be a non-empty string"},
+		"EmptyProtocol":     {body: `ingress.match("test.v1.Response", "", "GET /v1/forecast");`, message: "protocol must be a non-empty string"},
+		"NonStringProtocol": {body: `ingress.match("test.v1.Response", 1, "GET /v1/forecast");`, message: "protocol must be a non-empty string"},
+		"EmptyPattern":      {body: `ingress.match("test.v1.Response", "http", "");`, message: "pattern must be a non-empty string"},
+		"NonStringPattern":  {body: `ingress.match("test.v1.Response", "http", 1);`, message: "pattern must be a non-empty string"},
 		"Duplicate": {
-			body:    `spectre.ingress<v1.Response>("http", "GET /v1/forecast"); spectre.ingress<v1.User>("http", "GET /v1/forecast");`,
+			body:    `spectre.ingress.match<v1.Response>("http", "GET /v1/forecast"); spectre.ingress.match<v1.User>("http", "GET /v1/forecast");`,
 			message: `duplicate endpoint "GET /v1/forecast"`,
 		},
 		"IngressWithHost": {
-			body:    `spectre.ingress<v1.Response>("http", "GET weather.example/v1/forecast");`,
-			message: `spectre.ingress pattern "GET weather.example/v1/forecast" must have the form "<METHOD> /<path>"`,
+			body:    `spectre.ingress.match<v1.Response>("http", "GET weather.example/v1/forecast");`,
+			message: `spectre.ingress.match pattern "GET weather.example/v1/forecast" must have the form "<METHOD> /<path>"`,
 		},
 		"IngressWithoutMethod": {
-			body:    `spectre.ingress<v1.Response>("http", "/v1/forecast");`,
+			body:    `spectre.ingress.match<v1.Response>("http", "/v1/forecast");`,
 			message: `must have the form "<METHOD> /<path>"`,
 		},
-		"EgressNoArguments": {body: `egress();`, message: "spectre.egress requires a type name, a protocol, and a pattern"},
+		"EgressNoArguments": {body: `egress.match();`, message: "spectre.egress.match requires a type name, a protocol, and a pattern"},
 		"EgressWithoutHost": {
-			body:    `spectre.egress<v1.Response>("http", "GET /v1/forecast");`,
-			message: `spectre.egress pattern "GET /v1/forecast" must have the form "<METHOD> <host>/<path>"`,
+			body:    `spectre.egress.match<v1.Response>("http", "GET /v1/forecast");`,
+			message: `spectre.egress.match pattern "GET /v1/forecast" must have the form "<METHOD> <host>/<path>"`,
 		},
 		"EgressWithoutMethod": {
-			body:    `spectre.egress<v1.Response>("http", "weather.example/v1/forecast");`,
+			body:    `spectre.egress.match<v1.Response>("http", "weather.example/v1/forecast");`,
 			message: `must have the form "<METHOD> <host>/<path>"`,
 		},
 	} {
@@ -462,7 +462,7 @@ func TestTranspilesTypeScriptModules(t *testing.T) {
 			import { prefix, suffix } from "./lib/helpers";
 			import type { Greeting } from "./lib/types";
 			const greet = (value: Greeting): Greeting => prefix + value + suffix;
-			spectre.ingress<v1.Response>("http", "GET /v1/forecast");
+			spectre.ingress.match<v1.Response>("http", "GET /v1/forecast");
 			spectre.field<v1.Response, "value">(greet);
 		`),
 		"lib/helpers.ts": {Data: []byte(`export const prefix: string = "hello "; export const suffix: string = "!";`)},
@@ -539,7 +539,7 @@ func TestRejectsScriptSymlinks(t *testing.T) {
 }
 
 func TestProtocolsAreNotValidatedUntilConfigure(t *testing.T) {
-	program, err := newProgram(t, untyped+`ingress("test.v1.Response", "sql", "query");`)
+	program, err := newProgram(t, untyped+`ingress.match("test.v1.Response", "sql", "query");`)
 	assert.NoError(t, err)
 	assert.Equal(t, []endpoint{{"sql", "query", "test.v1.Response"}}, endpoints(program, javascript.Ingress))
 }
@@ -598,7 +598,8 @@ func endpoints(program *javascript.Program, direction javascript.Direction) []en
 
 // untyped bypasses the checker so tests can reach the runtime's own argument checks.
 const untyped = `
-	const { ingress, egress, field, message } = spectre as unknown as Record<string, (...args: unknown[]) => void>;
+	const { ingress, egress } = spectre as unknown as Record<string, { match: (...args: unknown[]) => void }>;
+	const { field, message } = spectre as unknown as Record<string, (...args: unknown[]) => void>;
 `
 
 // script is a module with the spectre module and the test.v1 types imported.

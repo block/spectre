@@ -130,8 +130,8 @@ func (m *spectreModule) Evaluate(runtime *sobek.Runtime) *sobek.Promise {
 	return promise
 }
 
-// callbackRegistry is one runtime's module instance and owns all callable values.
-// Evaluator access stays on the runtime's single caller, so it needs no locking.
+// callbackRegistry is one runtime's module instance and owns the module's exported
+// values. Evaluator access stays on the runtime's single caller, so it needs no locking.
 type callbackRegistry struct {
 	runtime   *sobek.Runtime
 	functions map[string]sobek.Value
@@ -147,28 +147,43 @@ func newCallbackRegistry(runtime *sobek.Runtime) *callbackRegistry {
 		messages: map[string]sobek.Callable{},
 	}
 	registry.functions = map[string]sobek.Value{
-		string(Ingress):       runtime.ToValue(registry.endpointRegistration(Ingress)),
-		string(Egress):        runtime.ToValue(registry.endpointRegistration(Egress)),
+		string(Ingress):       registry.directionObject(Ingress),
+		string(Egress):        registry.directionObject(Egress),
 		string(targetField):   runtime.ToValue(registry.registration(targetField)),
 		string(targetMessage): runtime.ToValue(registry.registration(targetMessage)),
 	}
 	return registry
 }
 
+// matchMethod names the method on the ingress and egress namespace objects that
+// registers an endpoint for that direction.
+const matchMethod = "match"
+
+// directionObject builds the ingress or egress namespace object; its match method
+// registers an endpoint for that direction.
+func (r *callbackRegistry) directionObject(direction Direction) sobek.Value {
+	object := r.runtime.NewObject()
+	if err := object.Set(matchMethod, r.endpointRegistration(direction)); err != nil {
+		panic(r.runtime.NewTypeError("define spectre.%s.%s: %v", direction, matchMethod, err))
+	}
+	return object
+}
+
 // endpointRegistration receives the type name compile inserts before the script's arguments.
 func (r *callbackRegistry) endpointRegistration(direction Direction) func(sobek.FunctionCall) sobek.Value {
+	qualified := string(direction) + "." + matchMethod
 	return func(call sobek.FunctionCall) sobek.Value {
 		if len(call.Arguments) != 3 {
-			panic(r.runtime.NewTypeError("spectre.%s requires a type name, a protocol, and a pattern", direction))
+			panic(r.runtime.NewTypeError("spectre.%s requires a type name, a protocol, and a pattern", qualified))
 		}
-		typeName := r.stringArgument(call, 0, string(direction), "type name")
-		protocol := r.stringArgument(call, 1, string(direction), "protocol")
-		pattern := r.stringArgument(call, 2, string(direction), "pattern")
+		typeName := r.stringArgument(call, 0, qualified, "type name")
+		protocol := r.stringArgument(call, 1, qualified, "protocol")
+		pattern := r.stringArgument(call, 2, qualified, "pattern")
 		if protocol == "http" && direction == Ingress && !hasForm(pattern, false) {
-			panic(r.runtime.NewTypeError("spectre.ingress pattern %q must have the form \"<METHOD> /<path>\"", pattern))
+			panic(r.runtime.NewTypeError("spectre.%s pattern %q must have the form \"<METHOD> /<path>\"", qualified, pattern))
 		}
 		if protocol == "http" && direction == Egress && !hasForm(pattern, true) {
-			panic(r.runtime.NewTypeError("spectre.egress pattern %q must have the form \"<METHOD> <host>/<path>\"", pattern))
+			panic(r.runtime.NewTypeError("spectre.%s pattern %q must have the form \"<METHOD> <host>/<path>\"", qualified, pattern))
 		}
 		if slices.ContainsFunc(r.endpoints, func(endpoint Endpoint) bool {
 			return endpoint.Direction() == direction && endpoint.Protocol() == protocol && endpoint.Pattern() == pattern

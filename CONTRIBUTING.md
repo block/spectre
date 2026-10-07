@@ -63,7 +63,7 @@ spectre-egress \
   --descriptors-dir=dist/descriptors
 ```
 
-Scripts declare dependency endpoints with `egress<Type>("http", pattern)`.
+Scripts declare dependency endpoints with `egress.match<Type>("http", pattern)`.
 Types come from `--schema-dir`; descriptors are only needed for protobuf traffic. A candidate call waits up to `--match-window` for an
 equivalent reference call and receives its recorded response. A candidate call
 without a match gets a `502` and stops all later candidate calls until the process
@@ -166,7 +166,7 @@ schema with the TypeScript 7 checker, and any error stops it.
 import { field, ingress } from "spectre";
 import type { GetForecastV2Response } from "weather";
 
-ingress<GetForecastV2Response>("http", "GET /v2/forecast");
+ingress.match<GetForecastV2Response>("http", "GET /v2/forecast");
 field<GetForecastV2Response, "alerts">((alerts) =>
   alerts?.sort((a, b) => (a.id ?? "").localeCompare(b.id ?? "")),
 );

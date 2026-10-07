@@ -82,7 +82,7 @@ Generated declarations are checked in alongside generated Go bindings.
 
 ## Script API
 
-Scripts are TypeScript only. The first argument of `ingress` and `egress` is the
+Scripts are TypeScript only. The first argument of `ingress.match` and `egress.match` is the
 protocol key from the protocol abstraction.
 
 ```ts
@@ -91,8 +91,8 @@ import type { User } from "spectre.sample.v1";
 import type { GetForecastV2Response } from "weather";
 import type { FetchForecastRequest } from "forecasts";
 
-ingress<GetForecastV2Response>("http", "GET /v2/forecast");
-egress<FetchForecastRequest>("http", "GET forecasts.example/v1/forecasts/{location}");
+ingress.match<GetForecastV2Response>("http", "GET /v2/forecast");
+egress.match<FetchForecastRequest>("http", "GET forecasts.example/v1/forecasts/{location}");
 
 field<GetForecastV2Response, "alerts">((alerts) => alerts?.sort(byID));
 message<User>((user) =>
@@ -100,11 +100,11 @@ message<User>((user) =>
 );
 ```
 
-`ingress` names the response type and `egress` the request type. gRPC and Connect
+`ingress.match` names the response type and `egress.match` the request type. gRPC and Connect
 requests resolve through the service interfaces by path. The normaliser argument is
 typed from the type and the path, and is `undefined` when absent. Before
 transpiling, the host inserts the resolved names, so the runtime receives
-`ingress("weather.GetForecastV2Response", "http", "GET /v2/forecast")`.
+`ingress.match("weather.GetForecastV2Response", "http", "GET /v2/forecast")`.
 
 ## Implementation checklist
 
