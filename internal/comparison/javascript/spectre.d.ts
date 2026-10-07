@@ -50,6 +50,8 @@ declare module "spectre" {
   export const ingress: {
     /** Types the service's responses for requests matching "<METHOD> /<path>". */
     match<T extends object>(protocol: "http", pattern: string): void;
+    /** Skips comparison for requests matching "<METHOD> /<path>"; they are never quarantined. */
+    ignore(protocol: "http", pattern: string): void;
   };
   /** The service's outbound calls to its dependencies. */
   export const egress: {

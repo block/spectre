@@ -27,16 +27,23 @@ const (
 	Egress Direction = "egress"
 )
 
-// Endpoint maps a protocol-specific request pattern to a payload type.
+// Endpoint maps a protocol-specific request pattern to a payload type, or marks it
+// ignored so matching requests are skipped instead of compared.
 type Endpoint struct {
 	direction Direction
 	protocol  string
 	pattern   string
 	typeName  string
+	ignore    bool
 }
 
 func newEndpoint(direction Direction, protocol, pattern, typeName string) Endpoint {
 	return Endpoint{direction: direction, protocol: protocol, pattern: pattern, typeName: typeName}
+}
+
+// newIgnoredEndpoint marks a pattern as never compared; it carries no payload type.
+func newIgnoredEndpoint(direction Direction, protocol, pattern string) Endpoint {
+	return Endpoint{direction: direction, protocol: protocol, pattern: pattern, ignore: true}
 }
 
 // Direction returns the proxy that uses the endpoint.
@@ -57,6 +64,11 @@ func (e Endpoint) Pattern() string {
 // Type returns the fully qualified name of the endpoint's payload type.
 func (e Endpoint) Type() string {
 	return e.typeName
+}
+
+// Ignore reports whether matching requests are skipped instead of compared.
+func (e Endpoint) Ignore() bool {
+	return e.ignore
 }
 
 // FieldTarget identifies a JSON field path relative to an explicitly named type.
@@ -155,18 +167,32 @@ func newCallbackRegistry(runtime *sobek.Runtime) *callbackRegistry {
 	return registry
 }
 
-// matchMethod names the method on the ingress and egress namespace objects that
-// registers an endpoint for that direction.
-const matchMethod = "match"
+// matchMethod and ignoreMethod name the methods on the direction namespace objects:
+// match registers a typed endpoint; ignore skips matching requests entirely.
+const (
+	matchMethod  = "match"
+	ignoreMethod = "ignore"
+)
 
-// directionObject builds the ingress or egress namespace object; its match method
-// registers an endpoint for that direction.
+// httpProtocol is the only protocol key an endpoint pattern currently uses.
+const httpProtocol = "http"
+
+// directionObject builds the ingress or egress namespace object. Its match method
+// registers an endpoint for that direction; ingress also gets an ignore method.
 func (r *callbackRegistry) directionObject(direction Direction) sobek.Value {
 	object := r.runtime.NewObject()
-	if err := object.Set(matchMethod, r.endpointRegistration(direction)); err != nil {
-		panic(r.runtime.NewTypeError("define spectre.%s.%s: %v", direction, matchMethod, err))
+	r.defineMethod(object, direction, matchMethod, r.endpointRegistration(direction))
+	if direction == Ingress {
+		r.defineMethod(object, direction, ignoreMethod, r.ignoreRegistration(direction))
 	}
 	return object
+}
+
+// defineMethod binds one namespace-object method, panicking if sobek rejects it.
+func (r *callbackRegistry) defineMethod(object *sobek.Object, direction Direction, method string, fn func(sobek.FunctionCall) sobek.Value) {
+	if err := object.Set(method, fn); err != nil {
+		panic(r.runtime.NewTypeError("define spectre.%s.%s: %v", direction, method, err))
+	}
 }
 
 // endpointRegistration receives the type name compile inserts before the script's arguments.
@@ -179,10 +205,10 @@ func (r *callbackRegistry) endpointRegistration(direction Direction) func(sobek.
 		typeName := r.stringArgument(call, 0, qualified, "type name")
 		protocol := r.stringArgument(call, 1, qualified, "protocol")
 		pattern := r.stringArgument(call, 2, qualified, "pattern")
-		if protocol == "http" && direction == Ingress && !hasForm(pattern, false) {
+		if protocol == httpProtocol && direction == Ingress && !hasForm(pattern, false) {
 			panic(r.runtime.NewTypeError("spectre.%s pattern %q must have the form \"<METHOD> /<path>\"", qualified, pattern))
 		}
-		if protocol == "http" && direction == Egress && !hasForm(pattern, true) {
+		if protocol == httpProtocol && direction == Egress && !hasForm(pattern, true) {
 			panic(r.runtime.NewTypeError("spectre.%s pattern %q must have the form \"<METHOD> <host>/<path>\"", qualified, pattern))
 		}
 		if slices.ContainsFunc(r.endpoints, func(endpoint Endpoint) bool {
@@ -191,6 +217,29 @@ func (r *callbackRegistry) endpointRegistration(direction Direction) func(sobek.
 			panic(r.runtime.NewTypeError("duplicate endpoint %q", pattern))
 		}
 		r.endpoints = append(r.endpoints, newEndpoint(direction, protocol, pattern, typeName))
+		return sobek.Undefined()
+	}
+}
+
+// ignoreRegistration marks an endpoint as never compared, so the comparator skips
+// matching requests instead of quarantining on them. It takes no payload type.
+func (r *callbackRegistry) ignoreRegistration(direction Direction) func(sobek.FunctionCall) sobek.Value {
+	qualified := string(direction) + "." + ignoreMethod
+	return func(call sobek.FunctionCall) sobek.Value {
+		if len(call.Arguments) != 2 {
+			panic(r.runtime.NewTypeError("spectre.%s requires a protocol and a pattern", qualified))
+		}
+		protocol := r.stringArgument(call, 0, qualified, "protocol")
+		pattern := r.stringArgument(call, 1, qualified, "pattern")
+		if protocol == httpProtocol && direction == Ingress && !hasForm(pattern, false) {
+			panic(r.runtime.NewTypeError("spectre.%s pattern %q must have the form \"<METHOD> /<path>\"", qualified, pattern))
+		}
+		if slices.ContainsFunc(r.endpoints, func(endpoint Endpoint) bool {
+			return endpoint.Direction() == direction && endpoint.Protocol() == protocol && endpoint.Pattern() == pattern
+		}) {
+			panic(r.runtime.NewTypeError("duplicate endpoint %q", pattern))
+		}
+		r.endpoints = append(r.endpoints, newIgnoredEndpoint(direction, protocol, pattern))
 		return sobek.Undefined()
 	}
 }

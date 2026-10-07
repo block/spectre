@@ -179,6 +179,16 @@ with `[]`, such as `users[].name`. `message<T>(callback)` applies wherever that
 object type occurs. Missing optional values arrive as `undefined`; returning
 `undefined` removes them.
 
+`ingress.ignore("http", pattern)` skips comparison for matching requests, so they
+are never quarantined. Use it for health and status endpoints, whose non-JSON error
+during an unready upstream would otherwise fail decoding and quarantine the candidate:
+
+```ts
+import { ingress } from "spectre";
+
+ingress.ignore("http", "GET /_status");
+```
+
 For protobuf traffic, generate declarations with
 `spectre-gen proto --descriptors-dir=dist/descriptors --output=internal/sample/schema`.
 Wire descriptors must agree with those declarations. ProtoJSON defaults are emitted
