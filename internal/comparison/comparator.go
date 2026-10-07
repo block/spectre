@@ -61,7 +61,7 @@ func (c *Comparator) Compare(
 	candidate Response,
 ) (result Result) {
 	defer func() {
-		attributes := []any{"event", logger.EventCorrelation, "path", requestPath, "outcome", result.Outcome()}
+		attributes := []any{"event", logger.EventCorrelation, "method", requestMethod, "path", requestPath, "outcome", result.Outcome()}
 		differences := result.Differences()
 		if len(differences) > 0 {
 			attributes = append(attributes, "differences", differences)

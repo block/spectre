@@ -45,10 +45,9 @@ const Component = "spectre"
 
 // Event names for the notable proxy events, used as the event tag value.
 const (
-	EventQuarantine      = "quarantine"
-	EventIngressReceived = "ingress_received"
-	EventEgressReceived  = "egress_received"
-	EventCorrelation     = "correlation"
+	EventQuarantine  = "quarantine"
+	EventReceived    = "received"
+	EventCorrelation = "correlation"
 )
 
 // Tagged returns log with the SPECTRE component tag attached to every line.

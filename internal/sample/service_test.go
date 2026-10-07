@@ -59,7 +59,7 @@ func TestServerHealthAndGRPC(t *testing.T) {
 	path, handler := samplepbconnect.NewUserServiceHandler(service)
 	mux.Handle(path, handler)
 	var logs bytes.Buffer
-	server := sample.NewServer(mux, slog.New(slog.NewJSONHandler(&logs, nil)))
+	server := sample.NewServer(mux, slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
 	assertHealthStatus(t, server, "/livez", http.StatusNoContent)
 	assertHealthStatus(t, server, "/readyz", http.StatusServiceUnavailable)
 	assert.Equal(t, "", logs.String())

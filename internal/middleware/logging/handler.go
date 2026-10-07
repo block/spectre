@@ -17,12 +17,13 @@ type Handler struct {
 }
 
 // New constructs request logging middleware around the next handler. event names
-// the SPECTRE event each request is logged under, e.g. "ingress_received".
+// the SPECTRE event each request is logged under, e.g. "received".
 func New(next http.Handler, log *slog.Logger, event string) *Handler {
 	return &Handler{next: next, log: log, event: event}
 }
 
 // ServeHTTP logs the event, method, path, response status, and elapsed time.
+// Per-request logging is verbose, so it is emitted at debug level.
 func (h *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	start := time.Now()
 	response := newResponseWriter(writer)
@@ -31,7 +32,7 @@ func (h *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	if status == 0 {
 		status = http.StatusOK
 	}
-	h.log.InfoContext(request.Context(), "HTTP request",
+	h.log.DebugContext(request.Context(), "HTTP request",
 		"event", h.event,
 		"method", request.Method,
 		"path", request.URL.Path,

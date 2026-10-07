@@ -117,8 +117,8 @@ func New(config Config, transport http.RoundTripper, hasher RequestHasher, log *
 		requests:     make(chan struct{}, config.MaxInFlightRequests),
 		health:       health.New(http.NotFoundHandler()),
 	}
-	egress.reference = logging.New(http.HandlerFunc(egress.serveReference), log, logger.EventEgressReceived)
-	egress.candidate = logging.New(http.HandlerFunc(egress.serveCandidate), log, logger.EventEgressReceived)
+	egress.reference = logging.New(http.HandlerFunc(egress.serveReference), log, logger.EventReceived)
+	egress.candidate = logging.New(http.HandlerFunc(egress.serveCandidate), log, logger.EventReceived)
 	return egress, nil
 }
 
@@ -263,6 +263,7 @@ func (p *Proxy) serveCandidate(writer http.ResponseWriter, request *http.Request
 	defer recorded.release()
 	p.log.InfoContext(ctx, "Candidate request matched a reference request",
 		"event", logger.EventCorrelation,
+		"method", request.Method,
 		"host", request.Host,
 		"path", request.URL.EscapedPath(),
 	)

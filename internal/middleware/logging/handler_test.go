@@ -23,7 +23,7 @@ func TestLogsRequests(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			var output bytes.Buffer
-			log := slog.New(slog.NewJSONHandler(&output, nil))
+			log := slog.New(slog.NewJSONHandler(&output, &slog.HandlerOptions{Level: slog.LevelDebug}))
 			handler := logging.New(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 				if test.status == http.StatusOK {
 					_, err := writer.Write([]byte("ok"))
@@ -31,15 +31,15 @@ func TestLogsRequests(t *testing.T) {
 					return
 				}
 				writer.WriteHeader(test.status)
-			}), log, "ingress_received")
+			}), log, "received")
 			response := httptest.NewRecorder()
 			handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/users?id=1", nil))
 
 			var record map[string]any
 			assert.NoError(t, json.Unmarshal(output.Bytes(), &record))
-			assert.Equal(t, "INFO", record["level"])
+			assert.Equal(t, "DEBUG", record["level"])
 			assert.Equal(t, "HTTP request", record["msg"])
-			assert.Equal(t, "ingress_received", record["event"])
+			assert.Equal(t, "received", record["event"])
 			assert.Equal(t, http.MethodPost, record["method"])
 			assert.Equal(t, "/users", record["path"])
 			status, hasStatus := record["status"].(float64)
@@ -56,7 +56,7 @@ func TestPreservesFlushing(t *testing.T) {
 	log := slog.New(slog.DiscardHandler)
 	handler := logging.New(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 		writer.(http.Flusher).Flush()
-	}), log, "egress_received")
+	}), log, "received")
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/stream", nil))
 	assert.True(t, response.Flushed)
 	assert.Equal(t, http.StatusOK, response.Code)
