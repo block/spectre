@@ -12,6 +12,13 @@ sample-proto = exec {
 # Concurrent cold builds each compile the TypeScript compiler, so warm the cache once first.
 typescript-compiler = go.build { package = "./internal/schema" }
 
+# Analyzers report a compile error once per dependent package, so compile first.
+build-go[go-module] = go.build {
+  package = "./..."
+  dir = go-module
+  depends_on = [sample-proto, typescript-compiler]
+}
+
 # Keep protobuf declarations checked in, like the generated Go bindings.
 sample-schema = exec {
   command = "spectre-gen proto --descriptors-dir=dist/descriptors --output=internal/sample/schema"
@@ -66,7 +73,13 @@ lint-encapsulation[go-module] = exec.test {
   command = "encapsulation-linter -allow-generated-construction ./..."
   dir = go-module
   inputs = ["#{go-module}/**/*.go", "#{go-module}/go.mod", "#{go-module}/go.sum", "bin/.encapsulation-linter-0.2.0.pkg"]
-  depends_on = [sample-proto]
+  depends_on = [build-go]
+}
+lint-optional[go-module] = exec.test {
+  command = "optionalnil ./..."
+  dir = go-module
+  inputs = ["#{go-module}/**/*.go", "#{go-module}/go.mod", "#{go-module}/go.sum", "go.mod", "go.sum", "cmd/optionalnil/*.go", "scripts/optionalnil", "scripts/spectre-ingress"]
+  depends_on = [build-go]
 }
 lint-proto = exec.test {
   command = "buf lint"
@@ -136,7 +149,7 @@ target publish-container(registry : string, image-tag : string, version : string
 target test = [test-go, test-comment-length, test-launcher, test-response-comparison-integration, test-release-version, test-container-publisher]
 
 # Lint everything
-target lint = [lint-go, lint-encapsulation, lint-proto, lint-actions, lint-action-pins, lint-dockerfile, lint-release, lint-scripts, fmt-check-go]
+target lint = [lint-go, lint-encapsulation, lint-optional, lint-proto, lint-actions, lint-action-pins, lint-dockerfile, lint-release, lint-scripts, fmt-check-go]
 
 # Format everything
 target fmt = [fmt-go, fmt-action-pins]

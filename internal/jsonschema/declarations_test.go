@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/alecthomas/assert/v2"
+	. "github.com/alecthomas/types/optional"
 
 	"github.com/block/spectre/internal/jsonschema"
 	"github.com/block/spectre/internal/schema"
@@ -40,7 +41,7 @@ func TestDeclarationsSchemaModel(t *testing.T) {
 			{Name: "severity", Optional: true, Value: schema.Value{Kind: schema.KindEnum, Literals: []string{"major", "minor"}, Type: "weather.Severity"}},
 		}},
 		{Name: "weather.Forecast", Fields: []schema.Field{
-			{Name: "days", Value: schema.Value{Kind: schema.KindList, Element: new(object("weather.Forecast.Days"))}},
+			{Name: "days", Value: schema.Value{Kind: schema.KindList, Element: Some(new(object("weather.Forecast.Days")))}},
 			{Name: "location", Value: text},
 			{Name: "next", Optional: true, Value: object("weather.Forecast")},
 		}},
@@ -50,10 +51,10 @@ func TestDeclarationsSchemaModel(t *testing.T) {
 			{Name: "precipitation_percent", Optional: true, Value: number},
 		}},
 		{Name: "weather.GetForecastResponse", Fields: []schema.Field{
-			{Name: "alerts", Optional: true, Value: schema.Value{Kind: schema.KindList, Element: new(object("weather.Alert"))}},
+			{Name: "alerts", Optional: true, Value: schema.Value{Kind: schema.KindList, Element: Some(new(object("weather.Alert")))}},
 			{Name: "content-type", Optional: true, Value: schema.Value{Kind: schema.KindEnum, Literals: []string{"application/json"}}},
 			{Name: "forecast", Value: object("weather.Forecast")},
-			{Name: "labels", Optional: true, Value: schema.Value{Kind: schema.KindMap, Element: &text}},
+			{Name: "labels", Optional: true, Value: schema.Value{Kind: schema.KindMap, Element: Some(&text)}},
 			{Name: "success", Optional: true, Value: schema.Value{Kind: schema.KindBoolean}},
 		}},
 		{Name: "weather.Temperature", Fields: []schema.Field{

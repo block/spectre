@@ -18,6 +18,7 @@ import (
 
 	"github.com/alecthomas/assert/v2"
 	"github.com/alecthomas/errors"
+	. "github.com/alecthomas/types/optional"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/descriptorpb"
 
@@ -121,7 +122,7 @@ func TestUsesConfiguredH2CProtocol(t *testing.T) {
 	config := newTestConfig(t, "h2c://"+listener.Addr().String(), candidate.URL)
 	transport := proxy.NewTransport(config.Config)
 	t.Cleanup(transport.CloseIdleConnections)
-	handler, err := ingress.New(config, transport, matchingDescriptorLoader(), newTestComparator(t), slog.New(slog.DiscardHandler))
+	handler, err := ingress.New(config, transport, Some[ingress.DescriptorLoader](matchingDescriptorLoader()), newTestComparator(t), slog.New(slog.DiscardHandler))
 	assert.NoError(t, err)
 	proxy := httptest.NewServer(handler)
 	t.Cleanup(proxy.Close)
@@ -161,7 +162,7 @@ func TestForwardsToUnixSocketBackends(t *testing.T) {
 	config := newTestConfig(t, "http+unix:"+referenceSocket, "http+unix:"+candidateSocket)
 	transport := proxy.NewTransport(config.Config)
 	t.Cleanup(transport.CloseIdleConnections)
-	handler, err := ingress.New(config, transport, matchingDescriptorLoader(), newTestComparator(t), slog.New(slog.DiscardHandler))
+	handler, err := ingress.New(config, transport, Some[ingress.DescriptorLoader](matchingDescriptorLoader()), newTestComparator(t), slog.New(slog.DiscardHandler))
 	assert.NoError(t, err)
 	proxy := httptest.NewServer(handler)
 	t.Cleanup(proxy.Close)
@@ -305,7 +306,7 @@ func TestComparisonDoesNotDelayReferenceAndDivergenceQuarantines(t *testing.T) {
 	})
 	messages := make(chan string, 8)
 	config := newTestConfig(t, "http://127.0.0.1:50051", "http://127.0.0.1:50052")
-	handler, err := ingress.New(config, transport, matchingDescriptorLoader(), comparator, slog.New(newObservedLogHandler(messages)))
+	handler, err := ingress.New(config, transport, Some[ingress.DescriptorLoader](matchingDescriptorLoader()), comparator, slog.New(newObservedLogHandler(messages)))
 	assert.NoError(t, err)
 	firstDone := make(chan struct{})
 	go func() {
@@ -389,7 +390,7 @@ func TestHealthEndpointsAreLocalAndTrackReadiness(t *testing.T) {
 	})
 	var logs bytes.Buffer
 	config := newTestConfig(t, "http://127.0.0.1:50051", "http://127.0.0.1:50052")
-	handler, err := ingress.New(config, transport, matchingDescriptorLoader(), newTestComparator(t), slog.New(slog.NewJSONHandler(&logs, nil)))
+	handler, err := ingress.New(config, transport, Some[ingress.DescriptorLoader](matchingDescriptorLoader()), newTestComparator(t), slog.New(slog.NewJSONHandler(&logs, nil)))
 	assert.NoError(t, err)
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/livez", nil))
@@ -467,7 +468,7 @@ func TestDescriptorMismatchKeepsServerUnreadyAndLogs(t *testing.T) {
 			config := newTestConfig(t, "http://127.0.0.1:50051", "http://127.0.0.1:50052")
 			config.Descriptors.DescriptorsDir = test.static
 			messages := make(chan string, 2)
-			handler, err := ingress.New(config, http.DefaultTransport, test.descriptors, newTestComparator(t), slog.New(newObservedLogHandler(messages)))
+			handler, err := ingress.New(config, http.DefaultTransport, Some[ingress.DescriptorLoader](test.descriptors), newTestComparator(t), slog.New(newObservedLogHandler(messages)))
 			assert.NoError(t, err)
 			listener, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
 			assert.NoError(t, err)
@@ -503,7 +504,7 @@ func TestDescriptorMismatchKeepsServerUnreadyAndLogs(t *testing.T) {
 
 func TestReflectionRequiresDescriptorLoader(t *testing.T) {
 	config := newTestConfig(t, "http://127.0.0.1:50051", "http://127.0.0.1:50052")
-	_, err := ingress.New(config, http.DefaultTransport, nil, newTestComparator(t), slog.New(slog.DiscardHandler))
+	_, err := ingress.New(config, http.DefaultTransport, None[ingress.DescriptorLoader](), newTestComparator(t), slog.New(slog.DiscardHandler))
 	assert.EqualError(t, err, "descriptor loader is required")
 }
 
@@ -533,15 +534,15 @@ func TestConfiguresComparatorWithStaticAndReflectedSchemas(t *testing.T) {
 			if test.static {
 				config.Descriptors.DescriptorsDir = writeDescriptorsDir(t, static)
 			}
-			var loader ingress.DescriptorLoader
+			loader := None[ingress.DescriptorLoader]()
 			if test.reflection {
-				loader = matchingDescriptorLoader()
+				loader = Some[ingress.DescriptorLoader](matchingDescriptorLoader())
 			}
 			configured := make(chan *descriptorpb.FileDescriptorSet, 1)
 			comparator := newResponseComparator(nil)
-			comparator.configure = func(set *descriptorpb.FileDescriptorSet) {
+			comparator.configure = Some(func(set *descriptorpb.FileDescriptorSet) {
 				configured <- set
-			}
+			})
 			handler, err := ingress.New(config, http.DefaultTransport, loader, comparator, slog.New(slog.DiscardHandler))
 			assert.NoError(t, err)
 			listener, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
@@ -585,7 +586,7 @@ func TestServeDrainsReferenceAfterContextCancellation(t *testing.T) {
 	t.Cleanup(candidate.Close)
 	config := newTestConfig(t, reference.URL, candidate.URL)
 	config.ShutdownTimeout = time.Second
-	handler, err := ingress.New(config, http.DefaultTransport, matchingDescriptorLoader(), newTestComparator(t), slog.New(slog.DiscardHandler))
+	handler, err := ingress.New(config, http.DefaultTransport, Some[ingress.DescriptorLoader](matchingDescriptorLoader()), newTestComparator(t), slog.New(slog.DiscardHandler))
 	assert.NoError(t, err)
 	listener, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
 	assert.NoError(t, err)
@@ -717,7 +718,7 @@ func TestCandidateBufferOverflowQuarantinesCandidate(t *testing.T) {
 	})
 	config := newTestConfig(t, "http://127.0.0.1:50051", "http://127.0.0.1:50052")
 	config.CandidateBufferBytes = 4
-	handler, err := ingress.New(config, transport, matchingDescriptorLoader(), newTestComparator(t), slog.New(slog.DiscardHandler))
+	handler, err := ingress.New(config, transport, Some[ingress.DescriptorLoader](matchingDescriptorLoader()), newTestComparator(t), slog.New(slog.DiscardHandler))
 	assert.NoError(t, err)
 	request := httptest.NewRequest(http.MethodPost, "http://proxy.example/overflow", strings.NewReader("12345"))
 	response := httptest.NewRecorder()
@@ -762,7 +763,7 @@ func TestDefaultBufferSupportsCandidateConcurrencyLimit(t *testing.T) {
 	})
 	config := newTestConfig(t, "http://127.0.0.1:50051", "http://127.0.0.1:50052")
 	config.CandidateTimeout = 10 * time.Second
-	handler, err := ingress.New(config, transport, matchingDescriptorLoader(), newTestComparator(t), slog.New(slog.DiscardHandler))
+	handler, err := ingress.New(config, transport, Some[ingress.DescriptorLoader](matchingDescriptorLoader()), newTestComparator(t), slog.New(slog.DiscardHandler))
 	assert.NoError(t, err)
 
 	for range config.CandidateMaxInFlight {
@@ -832,7 +833,7 @@ func TestAbortedCandidateResponseQuarantinesCandidate(t *testing.T) {
 	})
 	messages := make(chan string, 16)
 	config := newTestConfig(t, "http://127.0.0.1:50051", "http://127.0.0.1:50052")
-	handler, err := ingress.New(config, transport, matchingDescriptorLoader(), newTestComparator(t), slog.New(newObservedLogHandler(messages)))
+	handler, err := ingress.New(config, transport, Some[ingress.DescriptorLoader](matchingDescriptorLoader()), newTestComparator(t), slog.New(newObservedLogHandler(messages)))
 	assert.NoError(t, err)
 	// ReverseProxy only panics to abort a copy when the request comes from an HTTP server.
 	serverRequest := func(path string) *http.Request {
@@ -926,7 +927,7 @@ func TestCandidateConcurrencyLimitQuarantinesAllRequests(t *testing.T) {
 	})
 	config := newTestConfig(t, "http://127.0.0.1:50051", "http://127.0.0.1:50052")
 	config.CandidateMaxInFlight = 2
-	handler, err := ingress.New(config, transport, matchingDescriptorLoader(), newTestComparator(t), slog.New(slog.DiscardHandler))
+	handler, err := ingress.New(config, transport, Some[ingress.DescriptorLoader](matchingDescriptorLoader()), newTestComparator(t), slog.New(slog.DiscardHandler))
 	assert.NoError(t, err)
 
 	for _, path := range []string{"first", "second"} {
@@ -964,7 +965,7 @@ func TestRejectsIngressRequestsOverCapacity(t *testing.T) {
 	})
 	config := newTestConfig(t, "http://127.0.0.1:50051", "http://127.0.0.1:50052")
 	config.MaxInFlightRequests = 1
-	handler, err := ingress.New(config, transport, matchingDescriptorLoader(), newTestComparator(t), slog.New(slog.DiscardHandler))
+	handler, err := ingress.New(config, transport, Some[ingress.DescriptorLoader](matchingDescriptorLoader()), newTestComparator(t), slog.New(slog.DiscardHandler))
 	assert.NoError(t, err)
 	firstDone := make(chan struct{})
 	go func() {
@@ -1055,7 +1056,7 @@ func TestRejectsUnsafeConfiguration(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			config := newTestConfig(t, "http://127.0.0.1:50051", "http://127.0.0.1:50052")
 			test.update(&config)
-			_, err := ingress.New(config, http.DefaultTransport, matchingDescriptorLoader(), newTestComparator(t), slog.New(slog.DiscardHandler))
+			_, err := ingress.New(config, http.DefaultTransport, Some[ingress.DescriptorLoader](matchingDescriptorLoader()), newTestComparator(t), slog.New(slog.DiscardHandler))
 			assert.Error(t, err)
 			assert.Contains(t, err.Error(), test.message)
 		})
@@ -1070,7 +1071,7 @@ func newTestHandler(t *testing.T, reference, candidate string) *ingress.Handler 
 func newTestHandlerWithTransport(t *testing.T, reference, candidate string, transport http.RoundTripper) *ingress.Handler {
 	t.Helper()
 	config := newTestConfig(t, reference, candidate)
-	handler, err := ingress.New(config, transport, matchingDescriptorLoader(), newTestComparator(t), slog.New(slog.DiscardHandler))
+	handler, err := ingress.New(config, transport, Some[ingress.DescriptorLoader](matchingDescriptorLoader()), newTestComparator(t), slog.New(slog.DiscardHandler))
 	assert.NoError(t, err)
 	return handler
 }
@@ -1141,7 +1142,7 @@ type responseComparator struct {
 		comparison.Response,
 		comparison.Response,
 	) comparison.Result
-	configure func(set *descriptorpb.FileDescriptorSet)
+	configure Option[func(set *descriptorpb.FileDescriptorSet)]
 }
 
 func newResponseComparator(compare func(
@@ -1161,8 +1162,8 @@ func (c *responseComparator) MaxResponseBytes() int {
 
 func (c *responseComparator) Configure(ctx context.Context, set *descriptorpb.FileDescriptorSet) error {
 	_ = ctx
-	if c.configure != nil {
-		c.configure(set)
+	if configure, ok := c.configure.Get(); ok {
+		configure(set)
 	}
 	return nil
 }

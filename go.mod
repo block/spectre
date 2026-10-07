@@ -9,12 +9,14 @@ require (
 	github.com/alecthomas/errors v0.9.1
 	github.com/alecthomas/kong v1.16.1
 	github.com/alecthomas/kong-toml v0.4.1
+	github.com/alecthomas/types v0.20.1
 	github.com/grafana/sobek v0.0.0-20260915160442-8a431c44cd7b
 	github.com/lmittmann/tint v1.2.0
 	github.com/microsoft/TypeScript/tsc/shim/typescript v0.0.0
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
-	golang.org/x/net v0.58.0
+	golang.org/x/net v0.59.0
 	golang.org/x/sync v0.23.0
+	golang.org/x/tools v0.51.0
 	google.golang.org/protobuf v1.36.12
 )
 
@@ -30,6 +32,7 @@ require (
 	github.com/microsoft/TypeScript/tsc v0.0.0-20261001235638-09b1db061731 // indirect
 	github.com/pelletier/go-toml v1.9.5 // indirect
 	github.com/zeebo/xxh3 v1.1.0 // indirect
+	golang.org/x/mod v0.41.0 // indirect
 	golang.org/x/sys v0.48.0 // indirect
 	golang.org/x/text v0.42.0 // indirect
 )

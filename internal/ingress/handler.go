@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/alecthomas/errors"
+	. "github.com/alecthomas/types/optional"
 	"google.golang.org/protobuf/types/descriptorpb"
 
 	"github.com/block/spectre/internal/comparison"
@@ -31,7 +32,7 @@ type Handler struct {
 	buffer      *proxy.Budget
 	requests    chan struct{}
 	health      *health.Handler
-	descriptors DescriptorLoader
+	descriptors Option[DescriptorLoader]
 	static      *descriptorpb.FileDescriptorSet
 	comparator  ResponseComparator
 	candidates  *proxy.Candidates
@@ -56,11 +57,12 @@ type ResponseComparator interface {
 	) comparison.Result
 }
 
-// New constructs an ingress handler from its parsed configuration.
+// New constructs an ingress handler from its parsed configuration. The descriptor
+// loader is required only when reflection is enabled.
 func New(
 	config Config,
 	transport http.RoundTripper,
-	loader DescriptorLoader,
+	loader Option[DescriptorLoader],
 	comparator ResponseComparator,
 	log *slog.Logger,
 ) (*Handler, error) {
@@ -70,7 +72,7 @@ func New(
 	if transport == nil {
 		return nil, errors.New("transport is required")
 	}
-	if config.Reflection && loader == nil {
+	if config.Reflection && !loader.Ok() {
 		return nil, errors.New("descriptor loader is required")
 	}
 	if comparator == nil {
@@ -104,9 +106,17 @@ func New(
 	if err != nil {
 		return nil, errors.Wrap(err, "load static descriptors")
 	}
+	referenceProxy, err := proxy.NewReverseProxy(reference, transport, log, false)
+	if err != nil {
+		return nil, errors.Wrap(err, "proxy reference backend")
+	}
+	candidateProxy, err := proxy.NewReverseProxy(candidate, transport, log, true)
+	if err != nil {
+		return nil, errors.Wrap(err, "proxy candidate backend")
+	}
 	handler := &Handler{
-		reference:   proxy.NewReverseProxy(reference, transport, log, false),
-		candidate:   proxy.NewReverseProxy(candidate, transport, log, true),
+		reference:   referenceProxy,
+		candidate:   candidateProxy,
 		config:      config,
 		log:         log,
 		buffer:      proxy.NewBudget(config.CandidateBufferBytes),
@@ -138,24 +148,25 @@ func (h *Handler) serveProxy(writer http.ResponseWriter, request *http.Request) 
 	// Candidate work may outlive reference delivery, but its own timeout bounds its lifetime.
 	candidateContext := context.WithoutCancel(request.Context())
 	candidateContext, cancel := context.WithTimeout(candidateContext, h.config.CandidateTimeout)
-	candidateRun := h.candidates.Start(candidateContext, cancel)
-	var candidateBody *streamBody
+	candidateRun, admitted := h.candidates.Start(candidateContext, cancel).Get()
+	candidateBody := None[*streamBody]()
 	// A buffered handoff keeps candidate timeout from blocking the reference path.
 	referenceResponse := make(chan comparison.Response, 1)
-	if candidateRun != nil {
-		candidateBody = newStreamBody(h.buffer, func(err error) {
+	if admitted {
+		body := newStreamBody(h.buffer, func(err error) {
 			h.candidates.Quarantine(candidateContext, err)
 		})
+		candidateBody = Some(body)
 		candidateRequest := request.Clone(candidateContext)
-		candidateRequest.Body = candidateBody
+		candidateRequest.Body = body
 		candidateRequest.GetBody = nil
 		if request.Body == nil || request.Body == http.NoBody {
-			candidateBody.closeWriter(io.EOF)
+			body.closeWriter(io.EOF)
 		}
 		go func() {
 			defer cancel()
 			defer h.candidates.Finish(candidateRun)
-			defer candidateBody.closeReader()
+			defer body.closeReader()
 			candidateWriter := newCaptureResponseWriter(newDiscardResponseWriter(), h.comparator.MaxResponseBytes())
 			if h.serveCandidate(candidateWriter, candidateRequest) {
 				// Cancellation already explains an aborted copy; otherwise the response is incomplete.
@@ -185,11 +196,11 @@ func (h *Handler) serveProxy(writer http.ResponseWriter, request *http.Request) 
 	}
 
 	referenceRequest := request.Clone(request.Context())
-	if candidateRun != nil && request.Body != nil && request.Body != http.NoBody {
-		referenceRequest.Body = newMirrorBody(request.Body, candidateBody, cancel)
+	if body, ok := candidateBody.Get(); ok && request.Body != nil && request.Body != http.NoBody {
+		referenceRequest.Body = newMirrorBody(request.Body, body, cancel)
 	}
 	referenceRequest.GetBody = nil
-	if candidateRun == nil {
+	if !admitted {
 		h.reference.ServeHTTP(writer, referenceRequest)
 		return
 	}

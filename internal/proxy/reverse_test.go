@@ -32,7 +32,8 @@ func TestReverseProxyPreservesHostForUnixBackend(t *testing.T) {
 
 	target, err := netaddr.ParseBackend("http+unix:" + socket)
 	assert.NoError(t, err)
-	reverse := proxy.NewReverseProxy(target, proxy.NewTransport(proxy.NewConfig()), slog.New(slog.DiscardHandler), false)
+	reverse, err := proxy.NewReverseProxy(target, proxy.NewTransport(proxy.NewConfig()), slog.New(slog.DiscardHandler), false)
+	assert.NoError(t, err)
 
 	request := httptest.NewRequest(http.MethodGet, "http://upstream.example/path", nil)
 	reverse.ServeHTTP(httptest.NewRecorder(), request)
@@ -56,15 +57,21 @@ func TestReverseProxyUsesTargetHostForTCPBackend(t *testing.T) {
 
 	target, err := netaddr.ParseBackend(backend.URL)
 	assert.NoError(t, err)
-	reverse := proxy.NewReverseProxy(target, proxy.NewTransport(proxy.NewConfig()), slog.New(slog.DiscardHandler), false)
+	reverse, err := proxy.NewReverseProxy(target, proxy.NewTransport(proxy.NewConfig()), slog.New(slog.DiscardHandler), false)
+	assert.NoError(t, err)
 
 	request := httptest.NewRequest(http.MethodGet, "http://inbound.example/path", nil)
 	reverse.ServeHTTP(httptest.NewRecorder(), request)
 
 	select {
 	case host := <-gotHost:
-		assert.Equal(t, target.URL().Host, host)
+		assert.Equal(t, target.URL().MustGet().Host, host)
 	case <-time.After(time.Second):
 		t.Fatal("backend never received the forwarded request")
 	}
+}
+
+func TestReverseProxyRejectsListenerTarget(t *testing.T) {
+	_, err := proxy.NewReverseProxy(netaddr.ParseListen("127.0.0.1:0"), http.DefaultTransport, slog.New(slog.DiscardHandler), false)
+	assert.EqualError(t, err, "reverse proxy target is not a backend")
 }

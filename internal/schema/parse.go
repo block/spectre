@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/alecthomas/errors"
+	. "github.com/alecthomas/types/optional"
 	ts "github.com/microsoft/TypeScript/tsc/shim/typescript"
 )
 
@@ -351,7 +352,7 @@ func (r *reader) object(t *ts.Type, at *ts.Node) (Value, error) {
 		if err != nil {
 			return Value{}, err
 		}
-		return Value{Kind: KindList, Element: &element}, nil
+		return Value{Kind: KindList, Element: Some(&element)}, nil
 	}
 	if indexes := r.checker.GetIndexInfosOfType(t); len(indexes) > 0 {
 		if len(indexes) != 1 || indexes[0].KeyType().Flags()&ts.TypeFlagsString == 0 || len(r.checker.GetPropertiesOfType(t)) > 0 {
@@ -361,7 +362,7 @@ func (r *reader) object(t *ts.Type, at *ts.Node) (Value, error) {
 		if err != nil {
 			return Value{}, err
 		}
-		return Value{Kind: KindMap, Element: &element}, nil
+		return Value{Kind: KindMap, Element: Some(&element)}, nil
 	}
 	name, err := TypeName(t)
 	if err != nil {

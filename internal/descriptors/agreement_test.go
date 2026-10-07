@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/alecthomas/assert/v2"
+	. "github.com/alecthomas/types/optional"
 	"google.golang.org/protobuf/types/descriptorpb"
 	"google.golang.org/protobuf/types/known/anypb"
 	"google.golang.org/protobuf/types/known/structpb"
@@ -124,11 +125,11 @@ func TestAgreementRejectsMismatchedFields(t *testing.T) {
 		"Signed64":          {typeName: "ListUsersResponse", fieldName: "totalCount", mutate: func(field *schema.Field) { field.Value = schema.Value{Kind: schema.KindNumber} }, message: `field "totalCount" has type number, expected string`},
 		"Timestamp":         {typeName: "User", fieldName: "createdAt", mutate: func(field *schema.Field) { field.Value = schema.Value{Kind: schema.KindNumber} }, message: `field "createdAt" has type number, expected string`},
 		"Enum": {typeName: "User", fieldName: "roles", mutate: func(field *schema.Field) {
-			value := *field.Value.Element
+			value := *field.Value.Element.MustGet()
 			value.Literals = value.Literals[:1]
-			field.Value.Element = &value
+			field.Value.Element = Some(&value)
 		}, message: `field "roles" has type`},
-		"MapElement":       {typeName: "User", fieldName: "labels", mutate: func(field *schema.Field) { field.Value.Element = &schema.Value{Kind: schema.KindBoolean} }, message: `field "labels" has type Record<string, boolean>, expected Record<string, string>`},
+		"MapElement":       {typeName: "User", fieldName: "labels", mutate: func(field *schema.Field) { field.Value.Element = Some(&schema.Value{Kind: schema.KindBoolean}) }, message: `field "labels" has type Record<string, boolean>, expected Record<string, string>`},
 		"NestedCollection": {typeName: "User.Profile", fieldName: "addresses", mutate: func(field *schema.Field) { field.Value.Kind = schema.KindMap }, message: `field "addresses" has type Record<string, spectre.sample.v1.Address>, expected spectre.sample.v1.Address[]`},
 		"ObjectReference":  {typeName: "User", fieldName: "profile", mutate: func(field *schema.Field) { field.Value.Type = "spectre.sample.v1.Phone" }, message: `field "profile" has type spectre.sample.v1.Phone, expected spectre.sample.v1.User.Profile`},
 	} {
@@ -191,11 +192,11 @@ func TestAgreementAcceptsEquivalentEnumUnion(t *testing.T) {
 		for index := range declared.Fields {
 			field := &declared.Fields[index]
 			if field.Name == "roles" {
-				value := *field.Value.Element
+				value := *field.Value.Element.MustGet()
 				value.Type = ""
 				value.Literals = slices.Clone(value.Literals)
 				slices.Reverse(value.Literals)
-				field.Value.Element = &value
+				field.Value.Element = Some(&value)
 			}
 		}
 	}

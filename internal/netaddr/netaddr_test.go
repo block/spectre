@@ -3,11 +3,13 @@ package netaddr_test
 import (
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/alecthomas/assert/v2"
+	. "github.com/alecthomas/types/optional"
 
 	"github.com/block/spectre/internal/netaddr"
 )
@@ -32,9 +34,7 @@ func TestParseBackendTCP(t *testing.T) {
 			assert.False(t, backend.IsUnix())
 			assert.Equal(t, "", backend.Socket())
 			assert.Equal(t, test.h2c, backend.IsH2C())
-			assert.Equal(t, test.scheme, backend.URL().Scheme)
-			assert.Equal(t, test.host, backend.URL().Host)
-			assert.Equal(t, "", backend.URL().Path)
+			assert.Equal(t, Some(&url.URL{Scheme: test.scheme, Host: test.host}), backend.URL())
 			assert.Equal(t, test.port, backend.Port())
 		})
 	}
@@ -56,7 +56,7 @@ func TestParseBackendUnix(t *testing.T) {
 			assert.True(t, backend.IsUnix())
 			assert.Equal(t, test.socket, backend.Socket())
 			assert.Equal(t, test.h2c, backend.IsH2C())
-			assert.Equal(t, "http://localhost", backend.URL().String())
+			assert.Equal(t, Some(&url.URL{Scheme: "http", Host: "localhost"}), backend.URL())
 		})
 	}
 }
@@ -96,6 +96,16 @@ func TestParseBackendLoopback(t *testing.T) {
 	assert.False(t, socket.IsLoopback())
 }
 
+func TestListenerHasNoDestination(t *testing.T) {
+	listener := netaddr.ParseListen("127.0.0.1:8080")
+	backend, err := netaddr.ParseBackend("http://127.0.0.1:8080")
+	assert.NoError(t, err)
+	assert.False(t, listener.SameDestination(listener))
+	assert.False(t, backend.SameDestination(listener))
+	assert.False(t, listener.TargetsListener(listener))
+	assert.True(t, backend.TargetsListener(listener))
+}
+
 func TestParseListenLoopback(t *testing.T) {
 	for address, loopback := range map[string]bool{
 		"127.0.0.1:50050":  true,
@@ -114,6 +124,7 @@ func TestParseListen(t *testing.T) {
 	assert.Equal(t, "tcp", tcp.Network())
 	assert.Equal(t, "127.0.0.1:50050", tcp.Address())
 	assert.False(t, tcp.IsUnix())
+	assert.Equal(t, None[*url.URL](), tcp.URL())
 
 	unix := netaddr.ParseListen("unix:/tmp/ingress.sock")
 	assert.Equal(t, "unix", unix.Network())

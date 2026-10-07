@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/alecthomas/errors"
+	. "github.com/alecthomas/types/optional"
 
 	"github.com/block/spectre/internal/logger"
 )
@@ -50,9 +51,9 @@ func (r *CandidateRun) cancel() {
 	r.cancelContext()
 }
 
-// Start admits candidate work that cancel stops, returning nil when it is refused.
+// Start admits candidate work that cancel stops, returning None when it is refused.
 // Exceeding the concurrency limit quarantines the candidate.
-func (c *Candidates) Start(ctx context.Context, cancel context.CancelFunc) *CandidateRun {
+func (c *Candidates) Start(ctx context.Context, cancel context.CancelFunc) Option[*CandidateRun] {
 	run, capacityExceeded := c.admit(cancel)
 	if capacityExceeded {
 		c.Quarantine(ctx, errors.New("candidate concurrency limit exceeded"))
@@ -60,22 +61,22 @@ func (c *Candidates) Start(ctx context.Context, cancel context.CancelFunc) *Cand
 	return run
 }
 
-func (c *Candidates) admit(cancel context.CancelFunc) (run *CandidateRun, capacityExceeded bool) {
+func (c *Candidates) admit(cancel context.CancelFunc) (run Option[*CandidateRun], capacityExceeded bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closing || c.quarantined {
-		return nil, false
+		return None[*CandidateRun](), false
 	}
 	if len(c.runs) >= c.maxInFlight {
-		return nil, true
+		return None[*CandidateRun](), true
 	}
 	// Replacing the closed channel before registration keeps Shutdown's snapshot valid.
 	if len(c.runs) == 0 {
 		c.idle = make(chan struct{})
 	}
-	run = newCandidateRun(cancel)
-	c.runs[run] = struct{}{}
-	return run, false
+	admitted := newCandidateRun(cancel)
+	c.runs[admitted] = struct{}{}
+	return Some(admitted), false
 }
 
 // Finish releases an admitted run once all of its work has stopped.

@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/alecthomas/errors"
+	. "github.com/alecthomas/types/optional"
 	"google.golang.org/protobuf/types/descriptorpb"
 
 	comparisoninternal "github.com/block/spectre/internal/comparison/internal"
@@ -31,7 +32,7 @@ type scriptSet struct {
 	routes    *route.Map[javascript.Endpoint]
 
 	mu         sync.RWMutex
-	configured *configuredScripts
+	configured Option[*configuredScripts]
 }
 
 func newScriptSet(ctx context.Context, config Config, direction javascript.Direction, log *slog.Logger) (*scriptSet, error) {
@@ -92,11 +93,11 @@ func (s *scriptSet) prepare(ctx context.Context, set *descriptorpb.FileDescripto
 
 func (s *scriptSet) activate(configured *configuredScripts) {
 	s.mu.Lock()
-	s.configured = configured
+	s.configured = Some(configured)
 	s.mu.Unlock()
 }
 
-func (s *scriptSet) active() *configuredScripts {
+func (s *scriptSet) active() Option[*configuredScripts] {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.configured

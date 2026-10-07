@@ -10,6 +10,7 @@ import (
 	"github.com/alecthomas/errors"
 	"github.com/alecthomas/kong"
 	kongtoml "github.com/alecthomas/kong-toml"
+	. "github.com/alecthomas/types/optional"
 
 	"github.com/block/spectre/internal"
 	"github.com/block/spectre/internal/comparison"
@@ -50,7 +51,7 @@ func (c *cli) Run(runtime *commandContext) error {
 	if err != nil {
 		return errors.Wrap(err, "configure response comparison")
 	}
-	handler, err := ingress.New(c.Ingress, transport, descriptors.NewReflectionLoader(), comparator, runtime.log)
+	handler, err := ingress.New(c.Ingress, transport, Some[ingress.DescriptorLoader](descriptors.NewReflectionLoader()), comparator, runtime.log)
 	if err != nil {
 		return errors.Wrap(err, "configure ingress")
 	}

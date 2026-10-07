@@ -8,6 +8,7 @@ import (
 	"testing/fstest"
 
 	"github.com/alecthomas/assert/v2"
+	. "github.com/alecthomas/types/optional"
 
 	"github.com/block/spectre/internal/schema"
 )
@@ -63,10 +64,10 @@ declare module "audit" {
 			{Name: "age", Optional: true, Value: schema.Value{Kind: schema.KindNumber}},
 			{Name: "ratio", Value: schema.Value{Kind: schema.KindNumber, Literals: []string{"Infinity", "NaN"}}},
 			{Name: "active", Value: schema.Value{Kind: schema.KindBoolean}},
-			{Name: "roles", Value: schema.Value{Kind: schema.KindList, Element: &role}},
-			{Name: "tags", Value: schema.Value{Kind: schema.KindList, Element: &schema.Value{Kind: schema.KindEnum, Literals: []string{"a", "b"}}}},
-			{Name: "labels", Value: schema.Value{Kind: schema.KindMap, Element: &schema.Value{Kind: schema.KindString}}},
-			{Name: "scores", Value: schema.Value{Kind: schema.KindMap, Element: &schema.Value{Kind: schema.KindNumber}}},
+			{Name: "roles", Value: schema.Value{Kind: schema.KindList, Element: Some(&role)}},
+			{Name: "tags", Value: schema.Value{Kind: schema.KindList, Element: Some(&schema.Value{Kind: schema.KindEnum, Literals: []string{"a", "b"}})}},
+			{Name: "labels", Value: schema.Value{Kind: schema.KindMap, Element: Some(&schema.Value{Kind: schema.KindString})}},
+			{Name: "scores", Value: schema.Value{Kind: schema.KindMap, Element: Some(&schema.Value{Kind: schema.KindNumber})}},
 			{Name: "profile", Optional: true, Value: schema.Value{Kind: schema.KindObject, Type: "example.users.v1.User.Profile"}},
 			{Name: "@type", Optional: true, Value: schema.Value{Kind: schema.KindString}},
 		}},
@@ -223,15 +224,31 @@ func TestRendersValues(t *testing.T) {
 	text := schema.Value{Kind: schema.KindString}
 	for expected, value := range map[string]schema.Value{
 		"string":                  text,
-		`("a" | "b")[]`:           {Kind: schema.KindList, Element: &schema.Value{Kind: schema.KindEnum, Literals: []string{"a", "b"}}},
-		"Role[]":                  {Kind: schema.KindList, Element: &schema.Value{Kind: schema.KindEnum, Literals: []string{"a", "b"}, Type: "Role"}},
-		"Record<string, a.B[]>":   {Kind: schema.KindMap, Element: &schema.Value{Kind: schema.KindList, Element: &schema.Value{Kind: schema.KindObject, Type: "a.B"}}},
-		`Record<string, "a\"b">`:  {Kind: schema.KindMap, Element: &schema.Value{Kind: schema.KindEnum, Literals: []string{`a"b`}}},
-		"Record<string, boolean>": {Kind: schema.KindMap, Element: &schema.Value{Kind: schema.KindBoolean}},
+		`("a" | "b")[]`:           {Kind: schema.KindList, Element: Some(&schema.Value{Kind: schema.KindEnum, Literals: []string{"a", "b"}})},
+		"Role[]":                  {Kind: schema.KindList, Element: Some(&schema.Value{Kind: schema.KindEnum, Literals: []string{"a", "b"}, Type: "Role"})},
+		"Record<string, a.B[]>":   {Kind: schema.KindMap, Element: Some(&schema.Value{Kind: schema.KindList, Element: Some(&schema.Value{Kind: schema.KindObject, Type: "a.B"})})},
+		`Record<string, "a\"b">`:  {Kind: schema.KindMap, Element: Some(&schema.Value{Kind: schema.KindEnum, Literals: []string{`a"b`}})},
+		"Record<string, boolean>": {Kind: schema.KindMap, Element: Some(&schema.Value{Kind: schema.KindBoolean})},
 		`number | "NaN"`:          {Kind: schema.KindNumber, Literals: []string{"NaN"}},
-		`(number | "NaN")[]`:      {Kind: schema.KindList, Element: &schema.Value{Kind: schema.KindNumber, Literals: []string{"NaN"}}},
-		"number[]":                {Kind: schema.KindList, Element: &schema.Value{Kind: schema.KindNumber}},
+		`(number | "NaN")[]`:      {Kind: schema.KindList, Element: Some(&schema.Value{Kind: schema.KindNumber, Literals: []string{"NaN"}})},
+		"number[]":                {Kind: schema.KindList, Element: Some(&schema.Value{Kind: schema.KindNumber})},
 	} {
 		assert.Equal(t, expected, value.String())
 	}
+}
+
+func TestRejectsCollectionsWithoutElement(t *testing.T) {
+	for _, kind := range []schema.Kind{schema.KindList, schema.KindMap} {
+		t.Run(string(kind), func(t *testing.T) {
+			_, err := schema.New([]*schema.Type{{Name: "m.A", Fields: []schema.Field{{Name: "a", Value: schema.Value{Kind: kind}}}}}, nil)
+			assert.EqualError(t, err, `field "a" of type "m.A": `+string(kind)+" has no element type")
+		})
+	}
+}
+
+func TestValueEqualComparesElementPresence(t *testing.T) {
+	text := schema.Value{Kind: schema.KindList, Element: Some(&schema.Value{Kind: schema.KindString})}
+	assert.True(t, text.Equal(schema.Value{Kind: schema.KindList, Element: Some(&schema.Value{Kind: schema.KindString})}))
+	assert.False(t, text.Equal(schema.Value{Kind: schema.KindList}))
+	assert.True(t, schema.Value{Kind: schema.KindList}.Equal(schema.Value{Kind: schema.KindList}))
 }

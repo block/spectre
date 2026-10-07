@@ -90,10 +90,10 @@ func (n *Normalised) CanonicalJSON() ([]byte, error) {
 // Diff returns the paths at which two normalised payloads differ, without values.
 func Diff(reference, candidate *Normalised) (differences []string) {
 	root := newDocumentPath(nil)
-	referenceRoot := reference.document().Value(root)
-	candidateRoot := candidate.document().Value(root)
-	if referenceRoot.isPresent() != candidateRoot.isPresent() {
+	referenceRoot, referencePresent := reference.document().Export().Get()
+	candidateRoot, candidatePresent := candidate.document().Export().Get()
+	if referencePresent != candidatePresent {
 		return []string{root.String()}
 	}
-	return diffValues(reference.document().Export(), candidate.document().Export(), root, []string{})
+	return diffValues(referenceRoot, candidateRoot, root, []string{})
 }

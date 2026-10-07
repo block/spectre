@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/alecthomas/errors"
+	. "github.com/alecthomas/types/optional"
 )
 
 const (
@@ -28,12 +29,12 @@ const (
 type Endpoint struct {
 	network string
 	address string
-	url     *url.URL
+	url     Option[*url.URL]
 	h2c     bool
 	port    uint16
 }
 
-func newEndpoint(network string, address string, target *url.URL, h2c bool, port uint16) *Endpoint {
+func newEndpoint(network string, address string, target Option[*url.URL], h2c bool, port uint16) *Endpoint {
 	return &Endpoint{network: network, address: address, url: target, h2c: h2c, port: port}
 }
 
@@ -41,9 +42,9 @@ func newEndpoint(network string, address string, target *url.URL, h2c bool, port
 // (absolute path or "@" abstract name); anything else is a TCP host:port.
 func ParseListen(value string) *Endpoint {
 	if socket, ok := strings.CutPrefix(value, unixPrefix); ok {
-		return newEndpoint(networkUnix, socket, nil, false, 0)
+		return newEndpoint(networkUnix, socket, None[*url.URL](), false, 0)
 	}
-	return newEndpoint(networkTCP, value, nil, false, 0)
+	return newEndpoint(networkTCP, value, None[*url.URL](), false, 0)
 }
 
 // ParseBackend parses a backend URL: http, https, or h2c over TCP, or
@@ -74,7 +75,7 @@ func ParseBackend(value string) (*Endpoint, error) {
 	if err != nil {
 		return nil, err
 	}
-	return newEndpoint(networkTCP, parsed.Host, parsed, h2c, port), nil
+	return newEndpoint(networkTCP, parsed.Host, Some(parsed), h2c, port), nil
 }
 
 // parseUnixBackend builds a backend reached over a unix socket. The socket must
@@ -84,7 +85,7 @@ func parseUnixBackend(scheme string, socket string, value string) (*Endpoint, er
 		return nil, errors.Errorf("unix backend socket must be an absolute path or an abstract name beginning with @: %q", value)
 	}
 	target := &url.URL{Scheme: schemeHTTP, Host: hostLocalhost}
-	return newEndpoint(networkUnix, socket, target, scheme == schemeH2C, 0), nil
+	return newEndpoint(networkUnix, socket, Some(target), scheme == schemeH2C, 0), nil
 }
 
 // splitUnixScheme reports the scheme and socket for the "<scheme>+unix:" forms.
@@ -164,8 +165,8 @@ func (e *Endpoint) Socket() string {
 	return ""
 }
 
-// URL returns the backend target URL, or nil for a listener endpoint.
-func (e *Endpoint) URL() *url.URL {
+// URL returns the backend target URL, or None for a listener endpoint.
+func (e *Endpoint) URL() Option[*url.URL] {
 	return e.url
 }
 
@@ -177,9 +178,10 @@ func (e *Endpoint) Port() uint16 {
 // IsLoopback reports whether the backend or TCP listener host is a loopback IP address.
 func (e *Endpoint) IsLoopback() bool {
 	var host string
+	target, isBackend := e.url.Get()
 	switch {
-	case e.url != nil:
-		host = e.url.Hostname()
+	case isBackend:
+		host = target.Hostname()
 	case e.network == networkTCP:
 		listenHost, _, err := net.SplitHostPort(e.address)
 		if err != nil {
@@ -193,26 +195,37 @@ func (e *Endpoint) IsLoopback() bool {
 	return err == nil && address.Unmap().IsLoopback()
 }
 
-// SameDestination reports whether two backends reach the same destination,
-// comparing unix sockets exactly and TCP by scheme, canonical host, and port.
+// SameDestination reports whether two backends reach the same unix socket or TCP
+// scheme, canonical host, and port. A listener reaches no destination.
 func (e *Endpoint) SameDestination(other *Endpoint) bool {
-	return e.identity() == other.identity()
+	identity, ok := e.identity()
+	otherIdentity, otherOK := other.identity()
+	return ok && otherOK && identity == otherIdentity
 }
 
-func (e *Endpoint) identity() string {
-	if e.IsUnix() {
-		return "unix://" + e.Socket()
+// identity is not ok for a listener, which has no destination.
+func (e *Endpoint) identity() (identity string, ok bool) {
+	target, ok := e.url.Get()
+	if !ok {
+		return "", false
 	}
-	host := strings.ToLower(e.URL().Hostname())
+	if e.IsUnix() {
+		return "unix://" + e.Socket(), true
+	}
+	host := strings.ToLower(target.Hostname())
 	if address, err := netip.ParseAddr(host); err == nil {
 		host = address.Unmap().String()
 	}
-	return strings.ToLower(e.URL().Scheme) + "://" + net.JoinHostPort(host, strconv.Itoa(int(e.Port())))
+	return strings.ToLower(target.Scheme) + "://" + net.JoinHostPort(host, strconv.Itoa(int(e.Port()))), true
 }
 
 // TargetsListener reports whether the backend would loop traffic back to the
-// listener, matching unix sockets exactly and TCP by host and port.
+// listener, matching unix sockets exactly and TCP by host and port. A listener targets nothing.
 func (e *Endpoint) TargetsListener(listener *Endpoint) bool {
+	targetURL, ok := e.url.Get()
+	if !ok {
+		return false
+	}
 	if listener.IsUnix() || e.IsUnix() {
 		return listener.IsUnix() && e.IsUnix() && e.Socket() == listener.Address()
 	}
@@ -229,8 +242,9 @@ func (e *Endpoint) TargetsListener(listener *Endpoint) bool {
 	if portNumber != e.Port() {
 		return false
 	}
-	target, targetError := netip.ParseAddr(e.URL().Hostname())
-	targetIsLocalhost := strings.EqualFold(e.URL().Hostname(), hostLocalhost)
+	targetHost := targetURL.Hostname()
+	target, targetError := netip.ParseAddr(targetHost)
+	targetIsLocalhost := strings.EqualFold(targetHost, hostLocalhost)
 	if targetError != nil && !targetIsLocalhost {
 		return false
 	}

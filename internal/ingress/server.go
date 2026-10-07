@@ -59,11 +59,15 @@ func (h *Handler) loadDescriptors(ctx context.Context) (*descriptorpb.FileDescri
 		set  *descriptorpb.FileDescriptorSet
 		err  error
 	}
+	loader, ok := h.descriptors.Get()
+	if !ok {
+		return nil, nil, errors.New("descriptor loader is required")
+	}
 	results := make(chan descriptorResult, 2)
 	// Both loads share one deadline and each goroutine publishes exactly one result.
 	for name, endpoint := range map[string]string{"reference": h.config.Reference, "candidate": h.config.Candidate} {
 		go func() {
-			set, err := h.descriptors.Load(ctx, endpoint)
+			set, err := loader.Load(ctx, endpoint)
 			results <- descriptorResult{name: name, set: set, err: err}
 		}()
 	}

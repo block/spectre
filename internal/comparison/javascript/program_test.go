@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/alecthomas/assert/v2"
+	. "github.com/alecthomas/types/optional"
 
 	"github.com/block/spectre/internal/comparison/javascript"
 )
@@ -271,10 +272,9 @@ func TestEvaluatesEachScriptOnce(t *testing.T) {
 	evaluator, err := program.NewEvaluator(t.Context())
 	assert.NoError(t, err)
 	defer evaluator.Close()
-	normalised, present, err := evaluator.NormaliseMessage("test.v1.User", "alice", true)
+	normalised, err := evaluator.NormaliseMessage("test.v1.User", Some[any]("alice"))
 	assert.NoError(t, err)
-	assert.True(t, present)
-	assert.Equal(t, any("alice"), normalised)
+	assert.Equal(t, Some[any]("alice"), normalised)
 }
 
 func TestTimeoutBoundsOnlyEvaluation(t *testing.T) {
@@ -345,40 +345,37 @@ func TestEvaluatorPreservesMissingAndNullArguments(t *testing.T) {
 	assert.NoError(t, err)
 	defer evaluator.Close()
 	tests := map[string]struct {
-		value    any
-		present  bool
+		value    Option[any]
 		expected any
 	}{
-		"Missing": {expected: "missing"},
-		"Null":    {present: true, expected: "null"},
-		"Value":   {value: "value", present: true, expected: "other"},
+		"Missing": {value: None[any](), expected: "missing"},
+		"Null":    {value: Some[any](nil), expected: "null"},
+		"Value":   {value: Some[any]("value"), expected: "other"},
 	}
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
-			normalised, present, err := evaluator.NormaliseField(javascript.NewFieldTarget("test.v1.Response", "owner"), test.value, test.present)
+			normalised, err := evaluator.NormaliseField(javascript.NewFieldTarget("test.v1.Response", "owner"), test.value)
 
 			assert.NoError(t, err)
-			assert.True(t, present)
-			assert.Equal(t, test.expected, normalised)
+			assert.Equal(t, Some(test.expected), normalised)
 		})
 	}
 }
 
 func TestNormaliserResults(t *testing.T) {
 	type result struct {
-		Normalised any
-		Present    bool
+		Normalised Option[any]
 		Failed     bool
 	}
 	tests := map[string]struct {
 		normaliser string
 		expected   result
 	}{
-		"Sorted":                   {normaliser: `(value) => value.sort()`, expected: result{Normalised: []any{"a", "b"}, Present: true}},
-		"Constant":                 {normaliser: `() => true`, expected: result{Normalised: true, Present: true}},
-		"Null":                     {normaliser: `() => null`, expected: result{Present: true}},
+		"Sorted":                   {normaliser: `(value) => value.sort()`, expected: result{Normalised: Some[any]([]any{"a", "b"})}},
+		"Constant":                 {normaliser: `() => true`, expected: result{Normalised: Some[any](true)}},
+		"Null":                     {normaliser: `() => null`, expected: result{Normalised: Some[any](nil)}},
 		"UndefinedRemoves":         {normaliser: `() => undefined`},
-		"UndefinedPropertyOmitted": {normaliser: `() => ({kept: 1, dropped: undefined})`, expected: result{Normalised: map[string]any{"kept": float64(1)}, Present: true}},
+		"UndefinedPropertyOmitted": {normaliser: `() => ({kept: 1, dropped: undefined})`, expected: result{Normalised: Some[any](map[string]any{"kept": float64(1)})}},
 		"UndefinedElement":         {normaliser: `() => [undefined]`, expected: result{Failed: true}},
 		"Function":                 {normaliser: `() => () => true`, expected: result{Failed: true}},
 		"NestedFunction":           {normaliser: `() => ({nested: () => true})`, expected: result{Failed: true}},
@@ -397,9 +394,9 @@ func TestNormaliserResults(t *testing.T) {
 			assert.NoError(t, err)
 			defer evaluator.Close()
 
-			normalised, present, err := evaluator.NormaliseField(javascript.NewFieldTarget("test.v1.Response", "values"), []any{"b", "a"}, true)
+			normalised, err := evaluator.NormaliseField(javascript.NewFieldTarget("test.v1.Response", "values"), Some[any]([]any{"b", "a"}))
 
-			assert.Equal(t, test.expected, result{Normalised: normalised, Present: present, Failed: err != nil})
+			assert.Equal(t, test.expected, result{Normalised: normalised, Failed: err != nil})
 		})
 	}
 }
@@ -415,11 +412,10 @@ func TestNormalisersCannotReplaceJSONHelpers(t *testing.T) {
 	assert.NoError(t, err)
 	defer evaluator.Close()
 
-	normalised, present, err := evaluator.NormaliseField(javascript.NewFieldTarget("test.v1.Response", "value"), "original", true)
+	normalised, err := evaluator.NormaliseField(javascript.NewFieldTarget("test.v1.Response", "value"), Some[any]("original"))
 
 	assert.NoError(t, err)
-	assert.True(t, present)
-	assert.Equal(t, any("original"), normalised)
+	assert.Equal(t, Some[any]("original"), normalised)
 }
 
 func TestRejectsInvalidNormaliserDeclarations(t *testing.T) {
@@ -458,11 +454,10 @@ func TestEvaluatorProtectsArgumentsFromMutation(t *testing.T) {
 	defer evaluator.Close()
 	value := map[string]any{"value": "original"}
 
-	normalised, present, err := evaluator.NormaliseMessage("test.v1.Response", value, true)
+	normalised, err := evaluator.NormaliseMessage("test.v1.Response", Some[any](value))
 
 	assert.NoError(t, err)
-	assert.True(t, present)
-	assert.Equal(t, any(map[string]any{"value": "changed"}), normalised)
+	assert.Equal(t, Some[any](map[string]any{"value": "changed"}), normalised)
 	assert.Equal(t, map[string]any{"value": "original"}, value)
 }
 
@@ -475,7 +470,7 @@ func TestEvaluatorsKeepConcurrentRuntimesIsolated(t *testing.T) {
 
 	const evaluatorCount = 8
 	type result struct {
-		normalised any
+		normalised Option[any]
 		err        error
 	}
 	results := make(chan result, evaluatorCount)
@@ -488,7 +483,7 @@ func TestEvaluatorsKeepConcurrentRuntimesIsolated(t *testing.T) {
 				return
 			}
 			defer evaluator.Close()
-			normalised, _, err := evaluator.NormaliseField(javascript.NewFieldTarget("test.v1.Response", "value"), "same", true)
+			normalised, err := evaluator.NormaliseField(javascript.NewFieldTarget("test.v1.Response", "value"), Some[any]("same"))
 			results <- result{normalised: normalised, err: err}
 		})
 	}
@@ -497,7 +492,7 @@ func TestEvaluatorsKeepConcurrentRuntimesIsolated(t *testing.T) {
 
 	for result := range results {
 		assert.NoError(t, result.err)
-		assert.Equal(t, any("same:1"), result.normalised)
+		assert.Equal(t, Some[any]("same:1"), result.normalised)
 	}
 }
 
@@ -518,10 +513,9 @@ func TestTranspilesTypeScriptModules(t *testing.T) {
 	evaluator, err := program.NewEvaluator(t.Context())
 	assert.NoError(t, err)
 	defer evaluator.Close()
-	normalised, present, err := evaluator.NormaliseField(javascript.NewFieldTarget("test.v1.Response", "value"), "world", true)
+	normalised, err := evaluator.NormaliseField(javascript.NewFieldTarget("test.v1.Response", "value"), Some[any]("world"))
 	assert.NoError(t, err)
-	assert.True(t, present)
-	assert.Equal(t, any("hello world!"), normalised)
+	assert.Equal(t, Some[any]("hello world!"), normalised)
 }
 
 func TestEvaluatorsUseStartupModuleGraph(t *testing.T) {
@@ -540,10 +534,9 @@ func TestEvaluatorsUseStartupModuleGraph(t *testing.T) {
 	evaluator, err := program.NewEvaluator(t.Context())
 	assert.NoError(t, err)
 	defer evaluator.Close()
-	value, present, err := evaluator.NormaliseField(javascript.NewFieldTarget("test.v1.Response", "value"), "original", true)
+	value, err := evaluator.NormaliseField(javascript.NewFieldTarget("test.v1.Response", "value"), Some[any]("original"))
 	assert.NoError(t, err)
-	assert.True(t, present)
-	assert.Equal(t, any("original!"), value)
+	assert.Equal(t, Some[any]("original!"), value)
 }
 
 func TestExplicitTypeScriptImportsShareModuleRecord(t *testing.T) {
@@ -619,10 +612,9 @@ func TestFieldRegistrationsPreserveExplicitTypeAndPath(t *testing.T) {
 		"Second": {target: second, expected: "second"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			value, present, err := evaluator.NormaliseField(test.target, "original", true)
+			value, err := evaluator.NormaliseField(test.target, Some[any]("original"))
 			assert.NoError(t, err)
-			assert.True(t, present)
-			assert.Equal(t, any(test.expected), value)
+			assert.Equal(t, Some[any](test.expected), value)
 		})
 	}
 }
