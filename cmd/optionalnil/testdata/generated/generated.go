@@ -8,4 +8,6 @@ type Message struct {
 	Field *string
 }
 
+type Registry map[string]*Message
+
 func Send(message *Message) {}

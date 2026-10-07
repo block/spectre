@@ -84,6 +84,11 @@ func stores(h *holder, message *generated.Message) {
 	var unset *value = nil // want `nil stored in unset; use Option`
 	_ = unset
 	h.items = nil
+	_ = map[string]*value{"missing": nil} // want `nil stored in map; use Option`
+	values := map[string]*value{}
+	values["missing"] = nil // want `nil stored in map; use Option`
+	_ = map[string][]int{"empty": nil}
+	_ = generated.Registry{"missing": nil}
 	message.Field = nil
 	_ = http.Server{Handler: nil}
 }

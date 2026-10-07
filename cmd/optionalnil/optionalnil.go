@@ -94,7 +94,12 @@ func (c *checker) checkNil(cur inspector.Cursor) {
 		c.checkReturn(parent, index)
 	case edge.AssignStmt_Rhs:
 		assign := parent.Node().(*ast.AssignStmt)
-		if len(assign.Lhs) == len(assign.Rhs) {
+		if len(assign.Lhs) != len(assign.Rhs) {
+			break
+		}
+		if element, ok := assign.Lhs[index].(*ast.IndexExpr); ok {
+			c.checkMapValue(cur, c.pass.TypesInfo.TypeOf(element.X))
+		} else {
 			c.checkStore(cur, c.referencedVar(assign.Lhs[index]))
 		}
 	case edge.ValueSpec_Values:
@@ -103,9 +108,15 @@ func (c *checker) checkNil(cur inspector.Cursor) {
 			c.checkStore(cur, c.referencedVar(spec.Names[index]))
 		}
 	case edge.KeyValueExpr_Value:
-		key := parent.Node().(*ast.KeyValueExpr).Key
-		if parent.ParentEdgeKind() == edge.CompositeLit_Elts && c.isStruct(parent.Parent()) {
-			c.checkStore(cur, c.referencedVar(key))
+		if parent.ParentEdgeKind() != edge.CompositeLit_Elts {
+			break
+		}
+		literalType := c.pass.TypesInfo.TypeOf(parent.Parent().Node().(*ast.CompositeLit))
+		switch literalType.Underlying().(type) {
+		case *types.Struct:
+			c.checkStore(cur, c.referencedVar(parent.Node().(*ast.KeyValueExpr).Key))
+		case *types.Map:
+			c.checkMapValue(cur, literalType)
 		}
 	case edge.CompositeLit_Elts:
 		if structType, ok := c.pass.TypesInfo.TypeOf(parent.Node().(*ast.CompositeLit)).Underlying().(*types.Struct); ok {
@@ -164,6 +175,21 @@ func (c *checker) isNil(expr ast.Expr) bool {
 			return c.pass.TypesInfo.Types[expr].IsNil()
 		}
 		expr = call.Args[0]
+	}
+}
+
+// checkMapValue reports nil stored as a map value, where a missing key already
+// means absent. Tests skip it, as their tables pass nil inputs deliberately.
+func (c *checker) checkMapValue(cur inspector.Cursor, mapType types.Type) {
+	underlying, isMap := mapType.Underlying().(*types.Map)
+	if !isMap || c.inTestFile(cur.Node()) {
+		return
+	}
+	if named, ok := types.Unalias(mapType).(*types.Named); ok && !c.isFirstParty(named.Obj()) {
+		return // A map type declared elsewhere keeps its package's conventions.
+	}
+	if c.mayBeAbsent(underlying.Elem(), false) {
+		c.report(cur.Node(), "nil stored in map")
 	}
 }
 
@@ -295,11 +321,6 @@ func (c *checker) isFirstParty(object types.Object) bool {
 		return false
 	}
 	return !c.pass.ImportPackageFact(pkg, new(generatedPackage))
-}
-
-func (c *checker) isStruct(lit inspector.Cursor) bool {
-	_, ok := c.pass.TypesInfo.TypeOf(lit.Node().(*ast.CompositeLit)).Underlying().(*types.Struct)
-	return ok
 }
 
 func (c *checker) referencedVar(expr ast.Expr) Option[*types.Var] {
