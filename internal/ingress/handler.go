@@ -126,7 +126,7 @@ func New(
 		comparator:  comparator,
 		candidates:  proxy.NewCandidates(config.CandidateMaxInFlight, log),
 	}
-	requestHandler := logging.New(http.HandlerFunc(handler.serveProxy), log, logger.EventIngressReceived)
+	requestHandler := logging.New(http.HandlerFunc(handler.serveProxy), log, logger.EventReceived)
 	handler.health = health.New(requestHandler)
 	return handler, nil
 }
