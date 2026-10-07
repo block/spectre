@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 
 	"github.com/alecthomas/errors"
+	. "github.com/alecthomas/types/optional"
 	"github.com/grafana/sobek"
 )
 
@@ -15,7 +16,8 @@ type Evaluator struct {
 	parse     sobek.Callable
 	stringify sobek.Callable
 	registry  *callbackRegistry
-	stop      func()
+	// stop is None once Close has released the context watcher.
+	stop Option[func()]
 }
 
 // JSON helpers are captured before the script runs so it cannot replace them. The
@@ -45,7 +47,7 @@ func newEvaluator(
 ) (*Evaluator, registrations, error) {
 	runtime := sobek.New()
 	runtime.SetMaxCallStackSize(1024)
-	evaluator := &Evaluator{runtime: runtime, stop: watchRuntime(ctx, runtime)}
+	evaluator := &Evaluator{runtime: runtime, stop: Some(watchRuntime(ctx, runtime))}
 	helpers, err := runtime.RunString(jsonHelpers)
 	if err != nil {
 		evaluator.Close()
@@ -69,64 +71,56 @@ func newEvaluator(
 
 // Close releases the evaluator's context watcher.
 func (e *Evaluator) Close() {
-	if e.stop == nil {
+	stop, ok := e.stop.Get()
+	if !ok {
 		return
 	}
-	e.stop()
-	e.stop = nil
+	stop()
+	e.stop = None[func()]()
 }
 
-// NormaliseField invokes the normaliser registered for a JSON field path.
-func (e *Evaluator) NormaliseField(
-	target FieldTarget,
-	value any,
-	present bool,
-) (normalised any, normalisedPresent bool, err error) {
+// NormaliseField invokes the normaliser registered for a JSON field path. None
+// stands for an absent field in both the argument and the result.
+func (e *Evaluator) NormaliseField(target FieldTarget, value Option[any]) (Option[any], error) {
 	callback, ok := e.registry.field(target)
 	if !ok {
-		return nil, false, errors.Errorf("JavaScript field normaliser (%q, %q) is unavailable", target.Type(), target.Path())
+		return None[any](), errors.Errorf("JavaScript field normaliser (%q, %q) is unavailable", target.Type(), target.Path())
 	}
-	return e.normalise(callback, value, present)
+	return e.normalise(callback, value)
 }
 
-// NormaliseMessage invokes the normaliser registered for an object type.
-func (e *Evaluator) NormaliseMessage(
-	target string,
-	value any,
-	present bool,
-) (normalised any, normalisedPresent bool, err error) {
+// NormaliseMessage invokes the normaliser registered for an object type. None
+// stands for an absent message in both the argument and the result.
+func (e *Evaluator) NormaliseMessage(target string, value Option[any]) (Option[any], error) {
 	callback, ok := e.registry.message(target)
 	if !ok {
-		return nil, false, errors.Errorf("JavaScript message normaliser %q is unavailable", target)
+		return None[any](), errors.Errorf("JavaScript message normaliser %q is unavailable", target)
 	}
-	return e.normalise(callback, value, present)
+	return e.normalise(callback, value)
 }
 
-// normalise returns an undefined result as absent so callers can remove the node.
-func (e *Evaluator) normalise(
-	callback sobek.Callable,
-	value any,
-	present bool,
-) (normalised any, normalisedPresent bool, err error) {
-	argument, err := e.argument(value, present)
+// normalise returns an undefined result as None so callers can remove the node.
+func (e *Evaluator) normalise(callback sobek.Callable, value Option[any]) (Option[any], error) {
+	argument, err := e.argument(value)
 	if err != nil {
-		return nil, false, errors.Wrap(err, "clone normaliser argument")
+		return None[any](), errors.Wrap(err, "clone normaliser argument")
 	}
 	result, err := callback(sobek.Undefined(), argument)
 	if err != nil {
-		return nil, false, errors.New("JavaScript normaliser threw an exception")
+		return None[any](), errors.New("JavaScript normaliser threw an exception")
 	}
 	if sobek.IsUndefined(result) {
-		return nil, false, nil
+		return None[any](), nil
 	}
-	normalised, err = e.result(result)
+	normalised, err := e.result(result)
 	if err != nil {
-		return nil, false, err
+		return None[any](), err
 	}
-	return normalised, true, nil
+	return Some(normalised), nil
 }
 
-func (e *Evaluator) argument(value any, present bool) (sobek.Value, error) {
+func (e *Evaluator) argument(optionalValue Option[any]) (sobek.Value, error) {
+	value, present := optionalValue.Get()
 	if !present {
 		return sobek.Undefined(), nil
 	}

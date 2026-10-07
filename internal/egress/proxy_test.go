@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/alecthomas/assert/v2"
+	. "github.com/alecthomas/types/optional"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/descriptorpb"
 
@@ -51,7 +52,7 @@ func TestReplaysReferenceResponseToCandidate(t *testing.T) {
 		writer.Header().Set("X-Checksum", "abc")
 	})
 	harness := newHarness(t, upstream)
-	harness.Start(t, nil)
+	harness.Start(t, None[chan<- struct{}]())
 
 	reference := send(t, harness.Reference, dependencyHost, london)
 	candidate := send(t, harness.Candidate, dependencyHost, london)
@@ -69,7 +70,7 @@ func TestReplaysRawJSONWithoutDescriptors(t *testing.T) {
 	})
 	harness := newHarness(t, upstream)
 	harness.Config.Descriptors.DescriptorsDir = ""
-	harness.Start(t, nil)
+	harness.Start(t, None[chan<- struct{}]())
 
 	reference := send(t, harness.Reference, dependencyHost, london)
 	candidate := send(t, harness.Candidate, dependencyHost, london)
@@ -84,7 +85,7 @@ func TestCandidateWaitsForReference(t *testing.T) {
 	})
 	harness := newHarness(t, upstream)
 	hashed := make(chan struct{}, 2)
-	harness.Start(t, hashed)
+	harness.Start(t, Some[chan<- struct{}](hashed))
 
 	candidate := make(chan responseView, 1)
 	go func() { candidate <- send(t, harness.Candidate, dependencyHost, london) }()
@@ -112,7 +113,7 @@ func TestForwardsReferenceTrafficItCannotIdentify(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			calls.Store(0)
 			harness := newHarness(t, upstream)
-			harness.Start(t, nil)
+			harness.Start(t, None[chan<- struct{}]())
 
 			response := send(t, harness.Reference, test.host, test.body)
 
@@ -157,7 +158,7 @@ func TestQuarantinesUnmatchedCandidate(t *testing.T) {
 			calls.Store(0)
 			harness := newHarness(t, upstream)
 			test.update(&harness.Config)
-			harness.Start(t, nil)
+			harness.Start(t, None[chan<- struct{}]())
 			if test.reference {
 				send(t, harness.Reference, dependencyHost, london)
 			}
@@ -183,7 +184,7 @@ func TestPairsDuplicateRequestsOneToOne(t *testing.T) {
 	})
 	harness := newHarness(t, upstream)
 	harness.Config.MatchWindow = time.Second
-	harness.Start(t, nil)
+	harness.Start(t, None[chan<- struct{}]())
 
 	send(t, harness.Reference, dependencyHost, london)
 	send(t, harness.Reference, dependencyHost, london)
@@ -205,7 +206,7 @@ func TestServeShutsDownWhileCandidateWaits(t *testing.T) {
 	harness := newHarness(t, upstream)
 	harness.Config.MatchWindow = time.Minute
 	hashed := make(chan struct{}, 1)
-	stop := harness.Start(t, hashed)
+	stop := harness.Start(t, Some[chan<- struct{}](hashed))
 
 	candidate := make(chan responseView, 1)
 	go func() { candidate <- send(t, harness.Candidate, dependencyHost, london) }()
@@ -223,7 +224,7 @@ func TestForwardsDependencyHealthPaths(t *testing.T) {
 		_, _ = io.WriteString(writer, "dependency")
 	})
 	harness := newHarness(t, upstream)
-	harness.Start(t, nil)
+	harness.Start(t, None[chan<- struct{}]())
 
 	for _, path := range []string{"/livez", "/readyz"} {
 		assert.Equal(t, "dependency", get(t, harness.Reference, dependencyHost, path).Body)
@@ -300,13 +301,13 @@ func newHarness(t *testing.T, upstream string) *harness {
 	return &harness{Config: config, Reference: reference, Candidate: candidate, Health: health, Logs: &syncBuffer{}}
 }
 
-// Start serves until the returned function stops it. A non-nil hashed channel
+// Start serves until the returned function stops it. A hashed channel, if any,
 // receives a value after each request hash.
-func (h *harness) Start(t *testing.T, hashed chan<- struct{}) (stop func() error) {
+func (h *harness) Start(t *testing.T, hashed Option[chan<- struct{}]) (stop func() error) {
 	t.Helper()
 	var hasher egress.RequestHasher = newHasher(t)
-	if hashed != nil {
-		hasher = newSignallingHasher(hasher, hashed)
+	if signal, ok := hashed.Get(); ok {
+		hasher = newSignallingHasher(hasher, signal)
 	}
 	log := slog.New(slog.NewJSONHandler(h.Logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	egressProxy, err := egress.New(h.Config, http.DefaultTransport, hasher, log)

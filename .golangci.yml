@@ -434,6 +434,17 @@ linters:
         # Omit embedded fields from selector expression.
         # https://staticcheck.dev/docs/checks/#QF1008
         - -QF1008
+      # Option reads as a language feature, so it is the only dot import allowed.
+      dot-import-whitelist:
+        - github.com/alecthomas/types/optional
+
+    revive:
+      enable-default-rules: true
+      rules:
+        - name: dot-imports
+          arguments:
+            - allowed-packages:
+                - github.com/alecthomas/types/optional
 
     usetesting:
       # Enable/disable `os.TempDir()` detections.
@@ -453,6 +464,10 @@ linters:
           msg: "Use github.com/alecthomas/errors.Errorf instead"
         - pkg: "^errors$"
           msg: "Use github.com/alecthomas/errors instead"
+        - pkg: ^github\.com/alecthomas/types/optional$
+          pattern: \.MustGet$
+          msg: "Use Get or Default and handle the absent case instead of MustGet"
+        # MustGet is allowed in tests; see the _test.go exclusion below.
 
   exclusions:
     # Predefined exclusion rules.
@@ -503,3 +518,7 @@ linters:
           - gosec
           - noctx
           - wrapcheck
+      # A panic in a test is a clear failure, so tests may use MustGet.
+      - path: '_test\.go'
+        text: "MustGet"
+        linters: [forbidigo]

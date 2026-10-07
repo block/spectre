@@ -97,6 +97,10 @@ func reflectionClient(endpoint string) (*grpcreflect.Client, func(), error) {
 	if err != nil {
 		return nil, nil, errors.Wrap(err, "parse reflection endpoint")
 	}
+	target, ok := backend.URL().Get()
+	if !ok {
+		return nil, nil, errors.New("reflection endpoint is not a backend")
+	}
 	protocols := new(http.Protocols)
 	protocols.SetHTTP2(true)
 	transport := &http.Transport{Protocols: protocols}
@@ -106,12 +110,12 @@ func reflectionClient(endpoint string) (*grpcreflect.Client, func(), error) {
 			protocols.SetUnencryptedHTTP2(true)
 		}
 		transport.DialContext = backend.DialContext
-	case backend.URL().Scheme == schemeHTTPS:
+	case target.Scheme == schemeHTTPS:
 		transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12}
 	default:
 		protocols.SetUnencryptedHTTP2(true)
 	}
-	return newReflectionClient(transport, backend.URL().String()), transport.CloseIdleConnections, nil
+	return newReflectionClient(transport, target.String()), transport.CloseIdleConnections, nil
 }
 
 func newReflectionClient(transport *http.Transport, baseURL string) *grpcreflect.Client {

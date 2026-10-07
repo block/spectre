@@ -69,9 +69,13 @@ func bindField(loaded *schema.Schema, root *schema.Type, object map[string]any, 
 		object[field.Name] = value
 		return nil
 	}
+	element, hasElement := field.Value.Element.Get()
+	if !hasElement {
+		return errors.Errorf("field %q has no element type", name)
+	}
 	list := make([]any, 0, len(values))
 	for _, raw := range values {
-		value, err := parseScalar(*field.Value.Element, raw)
+		value, err := parseScalar(*element, raw)
 		if err != nil {
 			return errors.Wrapf(err, "parse field %q", name)
 		}
@@ -110,7 +114,11 @@ func resolveBinding(loaded *schema.Schema, root *schema.Type, name string, repea
 		if !repeatable {
 			return nil, errors.Errorf("field %q is repeated", name)
 		}
-		value = *value.Element
+		element, hasElement := value.Element.Get()
+		if !hasElement {
+			return nil, errors.Errorf("field %q has no element type", name)
+		}
+		value = *element
 	}
 	switch value.Kind {
 	case schema.KindString, schema.KindNumber, schema.KindBoolean, schema.KindEnum:

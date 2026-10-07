@@ -9,6 +9,7 @@ require (
 	github.com/alecthomas/errors v0.9.1
 	github.com/alecthomas/kong v1.16.1
 	github.com/alecthomas/kong-toml v0.4.1
+	github.com/alecthomas/types v0.20.1
 	github.com/grafana/sobek v0.0.0-20260915160442-8a431c44cd7b
 	github.com/lmittmann/tint v1.2.0
 	github.com/microsoft/TypeScript/tsc/shim/typescript v0.0.0

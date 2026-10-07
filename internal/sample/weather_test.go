@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/alecthomas/assert/v2"
+	. "github.com/alecthomas/types/optional"
 
 	"github.com/block/spectre/internal/sample"
 )
@@ -31,7 +32,7 @@ const testWeather = `{
 }`
 
 func TestWeatherEndpoints(t *testing.T) {
-	weather, err := sample.NewWeather([]byte(testWeather), "rev-1", nil)
+	weather, err := sample.NewWeather([]byte(testWeather), "rev-1", None[*sample.ForecastClient]())
 	assert.NoError(t, err)
 	london := `{"location": "london", "days": [{"date": "2026-10-01", "high": {"degrees": 17.5, "unit": "C"}, "low": {"degrees": 9, "unit": "C"}, "precipitation_percent": 80, "wind": {"speed_kph": 32, "direction": "SW"}}]}`
 	for name, test := range map[string]struct {
@@ -156,7 +157,7 @@ func newRemoteWeather(t *testing.T, provider string) *sample.Weather {
 	target, err := url.Parse(provider)
 	assert.NoError(t, err)
 	client := sample.NewForecastClient(target, "forecasts.example", http.DefaultTransport, slog.New(slog.DiscardHandler))
-	weather, err := sample.NewWeather([]byte(testWeather), "rev-1", client)
+	weather, err := sample.NewWeather([]byte(testWeather), "rev-1", Some(client))
 	assert.NoError(t, err)
 	return weather
 }
@@ -174,7 +175,7 @@ func assertJSONResponse(t *testing.T, response *httptest.ResponseRecorder, statu
 func TestLoadsSampleWeather(t *testing.T) {
 	data, err := os.ReadFile("testdata/weather.json")
 	assert.NoError(t, err)
-	_, err = sample.NewWeather(data, "", nil)
+	_, err = sample.NewWeather(data, "", None[*sample.ForecastClient]())
 	assert.NoError(t, err)
 }
 
@@ -191,14 +192,14 @@ func TestRejectsInvalidWeather(t *testing.T) {
 		"UnknownAlertField":       `{"london": {"alerts": [{"unknown": true}]}}`,
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, err := sample.NewWeather([]byte(data), "", nil)
+			_, err := sample.NewWeather([]byte(data), "", None[*sample.ForecastClient]())
 			assert.Error(t, err)
 		})
 	}
 }
 
 func TestWeatherOmitsEmptyRevision(t *testing.T) {
-	weather, err := sample.NewWeather([]byte(testWeather), "", nil)
+	weather, err := sample.NewWeather([]byte(testWeather), "", None[*sample.ForecastClient]())
 	assert.NoError(t, err)
 	response := httptest.NewRecorder()
 
@@ -212,10 +213,11 @@ func TestWeatherJSONOptionalScalars(t *testing.T) {
 		value    any
 		expected map[string]any
 	}{
-		"Forecast":   {value: sample.GetForecastResponse{Success: new(false), Message: new("")}, expected: map[string]any{"success": false, "message": ""}},
-		"ForecastV2": {value: sample.GetForecastV2Response{Success: new(false), Message: new("")}, expected: map[string]any{"success": false, "message": ""}},
-		"Status":     {value: sample.GetStatusResponse{Message: new("")}, expected: map[string]any{"message": ""}},
-		"Provider":   {value: sample.FetchForecastResponse{Message: new("")}, expected: map[string]any{"message": ""}},
+		"Forecast":   {value: sample.GetForecastResponse{Success: Some(false), Message: Some("")}, expected: map[string]any{"success": false, "message": ""}},
+		"ForecastV2": {value: sample.GetForecastV2Response{Success: Some(false), Message: Some("")}, expected: map[string]any{"success": false, "message": ""}},
+		"Status":     {value: sample.GetStatusResponse{Message: Some("")}, expected: map[string]any{"message": ""}},
+		"Provider":   {value: sample.FetchForecastResponse{Message: Some("")}, expected: map[string]any{"message": ""}},
+		"Absent":     {value: sample.GetForecastResponse{}, expected: map[string]any{}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			body, err := json.Marshal(test.value)

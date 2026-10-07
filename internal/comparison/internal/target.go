@@ -68,9 +68,8 @@ func (t *fieldTarget) occurrences(loaded *schema.Schema, root *schema.Type, payl
 }
 
 func (t *fieldTarget) normalise(evaluator *javascript.Evaluator, value documentValue) (documentValue, error) {
-	argument, present := value.normaliserArgument()
-	normalised, normalisedPresent, err := evaluator.NormaliseField(t.declared, argument, present)
-	return newDocumentValue(normalised, normalisedPresent), errors.Wrap(err, "invoke field normaliser")
+	normalised, err := evaluator.NormaliseField(t.declared, value.normaliserArgument())
+	return newDocumentValue(normalised), errors.Wrap(err, "invoke field normaliser")
 }
 
 // messageTarget normalises every nested occurrence of one object type.
@@ -105,9 +104,8 @@ func (t *messageTarget) occurrences(loaded *schema.Schema, root *schema.Type, pa
 }
 
 func (t *messageTarget) normalise(evaluator *javascript.Evaluator, value documentValue) (documentValue, error) {
-	argument, present := value.normaliserArgument()
-	normalised, normalisedPresent, err := evaluator.NormaliseMessage(t.name(), argument, present)
-	return newDocumentValue(normalised, normalisedPresent), errors.Wrap(err, "invoke message normaliser")
+	normalised, err := evaluator.NormaliseMessage(t.name(), value.normaliserArgument())
+	return newDocumentValue(normalised), errors.Wrap(err, "invoke message normaliser")
 }
 
 // fieldStep marks repeated intermediate fields that must expand into element paths.
@@ -168,7 +166,11 @@ func resolveField(loaded *schema.Schema, declared javascript.FieldTarget) (*sche
 			if !elements {
 				return nil, nil, errors.Errorf("list field %q requires [] before a child field", fieldName)
 			}
-			value = *value.Element
+			element, hasElement := value.Element.Get()
+			if !hasElement {
+				return nil, nil, errors.Errorf("list field %q has no element type", fieldName)
+			}
+			value = *element
 		}
 		if value.Kind != schema.KindObject {
 			return nil, nil, errors.Errorf("field %q does not contain an object", fieldName)

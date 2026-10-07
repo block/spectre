@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/alecthomas/errors"
+	. "github.com/alecthomas/types/optional"
 )
 
 // Kind is the JSON shape of a value.
@@ -40,8 +41,8 @@ type Value struct {
 	// Literals are an enum's permitted strings, or strings a number also accepts, as
 	// in ProtoJSON's non-finite floats and open enums. Their order is not significant.
 	Literals []string
-	// Element is the element type of a list or the value type of a map.
-	Element *Value
+	// Element is the element type of a list or the value type of a map, and None otherwise.
+	Element Option[*Value]
 	// Type names an object's type, or the alias a literal union was declared with, if any.
 	Type string
 }
@@ -67,13 +68,21 @@ func (v Value) Format(reference func(name string) string) string {
 	case KindObject:
 		return reference(v.Type)
 	case KindList:
-		element := v.Element.Format(reference)
-		if v.Element.isUnion() {
-			element = "(" + element + ")"
+		element, hasElement := v.Element.Get()
+		if !hasElement {
+			break
 		}
-		return element + "[]"
+		formatted := element.Format(reference)
+		if element.isUnion() {
+			formatted = "(" + formatted + ")"
+		}
+		return formatted + "[]"
 	case KindMap:
-		return "Record<string, " + v.Element.Format(reference) + ">"
+		element, hasElement := v.Element.Get()
+		if !hasElement {
+			break
+		}
+		return "Record<string, " + element.Format(reference) + ">"
 	case KindString, KindBoolean:
 	}
 	return string(v.Kind)
@@ -140,7 +149,12 @@ func (v Value) Equal(other Value) bool {
 	case KindObject:
 		return v.Type == other.Type
 	case KindList, KindMap:
-		return v.Element.Equal(*other.Element)
+		element, hasElement := v.Element.Get()
+		otherElement, otherHasElement := other.Element.Get()
+		if !hasElement || !otherHasElement {
+			return hasElement == otherHasElement
+		}
+		return element.Equal(*otherElement)
 	case KindString, KindBoolean:
 	}
 	return true
@@ -236,10 +250,11 @@ func (s *Schema) checkValue(value Value) error {
 			return errors.Errorf("type %q is not declared", value.Type)
 		}
 	case KindList, KindMap:
-		if value.Element == nil {
+		element, hasElement := value.Element.Get()
+		if !hasElement {
 			return errors.Errorf("%s has no element type", value.Kind)
 		}
-		return s.checkValue(*value.Element)
+		return s.checkValue(*element)
 	case KindEnum:
 		if len(value.Literals) == 0 {
 			return errors.New("enum has no literals")
@@ -320,18 +335,26 @@ func (s *Schema) validate(expected Value, value any, path string) error {
 			return errors.Errorf("%s: value is not one of %s", path, expected)
 		}
 	case KindList:
+		element, hasElement := expected.Element.Get()
+		if !hasElement {
+			return errors.Errorf("%s: list has no element type", path)
+		}
 		if items, ok := value.([]any); ok {
 			for index, item := range items {
-				if err := s.validate(*expected.Element, item, path+"["+strconv.Itoa(index)+"]"); err != nil {
+				if err := s.validate(*element, item, path+"["+strconv.Itoa(index)+"]"); err != nil {
 					return err
 				}
 			}
 			return nil
 		}
 	case KindMap:
+		element, hasElement := expected.Element.Get()
+		if !hasElement {
+			return errors.Errorf("%s: map has no element type", path)
+		}
 		if entries, ok := value.(map[string]any); ok {
 			for _, key := range slices.Sorted(maps.Keys(entries)) {
-				if err := s.validate(*expected.Element, entries[key], path+"["+strconv.Quote(key)+"]"); err != nil {
+				if err := s.validate(*element, entries[key], path+"["+strconv.Quote(key)+"]"); err != nil {
 					return err
 				}
 			}

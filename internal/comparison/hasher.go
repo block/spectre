@@ -64,8 +64,8 @@ func (h *RequestHasher) Configure(ctx context.Context, set *descriptorpb.FileDes
 // Hash returns SHA-256 over the endpoint or method name and the canonical JSON of the
 // normalised input. An error means the request cannot be identified.
 func (h *RequestHasher) Hash(ctx context.Context, request Request) (RequestHash, error) {
-	configured := h.scripts.active()
-	if configured == nil {
+	configured, ok := h.scripts.active().Get()
+	if !ok {
 		return RequestHash{}, errors.New("comparison schema is not ready")
 	}
 	if request.Overflow {

@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/alecthomas/errors"
+	. "github.com/alecthomas/types/optional"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/descriptorpb"
 
@@ -409,13 +410,13 @@ func messageType(name protoreflect.FullName, fields []protoreflect.FieldDescript
 func fieldValue(field protoreflect.FieldDescriptor) (schema.Value, error) {
 	if field.IsMap() {
 		element, err := singularValue(field.MapValue())
-		return schema.Value{Kind: schema.KindMap, Element: &element}, err
+		return schema.Value{Kind: schema.KindMap, Element: Some(&element)}, err
 	}
 	element, err := singularValue(field)
 	if err != nil || !field.IsList() {
 		return element, err
 	}
-	return schema.Value{Kind: schema.KindList, Element: &element}, nil
+	return schema.Value{Kind: schema.KindList, Element: Some(&element)}, nil
 }
 
 func singularValue(field protoreflect.FieldDescriptor) (schema.Value, error) {

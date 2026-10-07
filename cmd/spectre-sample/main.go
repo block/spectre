@@ -10,6 +10,7 @@ import (
 	"connectrpc.com/grpcreflect"
 	"github.com/alecthomas/errors"
 	"github.com/alecthomas/kong"
+	. "github.com/alecthomas/types/optional"
 
 	"github.com/block/spectre/internal"
 	"github.com/block/spectre/internal/logger"
@@ -43,13 +44,17 @@ func main() {
 	kctx.FatalIfErrorf(err)
 	weatherData, err := os.ReadFile(cli.Weather)
 	kctx.FatalIfErrorf(errors.Wrap(err, "read sample weather"))
-	var forecasts *sample.ForecastClient
+	forecasts := None[*sample.ForecastClient]()
 	if cli.Forecasts != "" {
 		provider, err := netaddr.ParseBackend(cli.Forecasts)
 		kctx.FatalIfErrorf(errors.Wrap(err, "parse forecast provider"))
+		target, ok := provider.URL().Get()
+		if !ok {
+			kctx.Fatalf("forecast provider %q is not a backend", cli.Forecasts)
+		}
 		transport := proxy.NewTransport(proxy.NewConfig())
 		defer transport.CloseIdleConnections()
-		forecasts = sample.NewForecastClient(provider.URL(), cli.ForecastsHost, transport.ForBackend(provider), log)
+		forecasts = Some(sample.NewForecastClient(target, cli.ForecastsHost, transport.ForBackend(provider), log))
 	}
 	weather, err := sample.NewWeather(weatherData, cli.Revision, forecasts)
 	kctx.FatalIfErrorf(err)

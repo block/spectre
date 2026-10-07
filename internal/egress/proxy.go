@@ -93,7 +93,11 @@ func New(config Config, transport http.RoundTripper, hasher RequestHasher, log *
 		if targetsListener(endpoint, listeners) {
 			return nil, errors.Errorf("destination %q must not target an egress listener", host)
 		}
-		destinations[name] = proxy.NewReverseProxy(endpoint, transport, log, false)
+		destination, err := proxy.NewReverseProxy(endpoint, transport, log, false)
+		if err != nil {
+			return nil, errors.Wrapf(err, "proxy destination %q", host)
+		}
+		destinations[name] = destination
 	}
 	static, err := descriptors.LoadDescriptorSets(config.Descriptors)
 	if err != nil {
@@ -225,12 +229,16 @@ func (p *Proxy) forwardAsReceived(writer http.ResponseWriter, request *http.Requ
 	if err == nil && targetsListener(endpoint, p.listeners) {
 		err = errors.New("host targets an egress listener")
 	}
+	var destination *httputil.ReverseProxy
+	if err == nil {
+		destination, err = proxy.NewReverseProxy(endpoint, p.transport, p.log, false)
+	}
 	if err != nil {
 		p.log.ErrorContext(request.Context(), "Reference request has no usable destination", "host", request.Host, "error", err)
 		writer.WriteHeader(http.StatusBadGateway)
 		return
 	}
-	proxy.NewReverseProxy(endpoint, p.transport, p.log, false).ServeHTTP(writer, request)
+	destination.ServeHTTP(writer, request)
 }
 
 // serveCandidate replays the matching reference response. A request that cannot
@@ -238,8 +246,8 @@ func (p *Proxy) forwardAsReceived(writer http.ResponseWriter, request *http.Requ
 func (p *Proxy) serveCandidate(writer http.ResponseWriter, request *http.Request) {
 	ctx, cancel := context.WithCancel(request.Context())
 	defer cancel()
-	run := p.candidates.Start(ctx, cancel)
-	if run == nil {
+	run, admitted := p.candidates.Start(ctx, cancel).Get()
+	if !admitted {
 		http.Error(writer, "candidate requests are refused", http.StatusServiceUnavailable)
 		return
 	}

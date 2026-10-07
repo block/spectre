@@ -5,90 +5,81 @@ import (
 	"strings"
 
 	"github.com/alecthomas/errors"
+	. "github.com/alecthomas/types/optional"
 )
 
 // document is one mutable normalisation copy; changing it never mutates captured data.
+// Its root is None once a normaliser removes it.
 type document struct {
-	root    any
-	present bool
+	root Option[any]
 }
 
 func newDocument(root any) *document {
-	return &document{root: root, present: true}
+	return &document{root: Some(root)}
 }
 
 func (d *document) Value(path documentPath) documentValue {
-	return path.value(d.root, d.present)
+	return path.value(d.root)
 }
 
 func (d *document) Delete(path documentPath) error {
-	if !d.present {
+	root, present := d.root.Get()
+	if !present {
 		return nil
 	}
 	if path.empty() {
-		d.root = nil
-		d.present = false
+		d.root = None[any]()
 		return nil
 	}
-	updated, err := path.delete(d.root)
+	updated, err := path.delete(root)
 	if err != nil {
 		return err
 	}
-	d.root = updated
+	d.root = Some(updated)
 	return nil
 }
 
 // Set replaces the value at path, whose parent must already exist.
 func (d *document) Set(path documentPath, value any) error {
 	if path.empty() {
-		d.root = value
-		d.present = true
+		d.root = Some(value)
 		return nil
 	}
-	if !d.present {
+	root, present := d.root.Get()
+	if !present {
 		return errors.New("normalisation path parent is absent")
 	}
-	return path.set(d.root, value)
+	return path.set(root, value)
 }
 
-func (d *document) Export() any {
-	if !d.present {
-		return nil
-	}
+func (d *document) Export() Option[any] {
 	return d.root
 }
 
-// documentValue distinguishes an absent path from a present JSON null value.
+// documentValue distinguishes an absent path, None, from a present JSON null value.
 type documentValue struct {
-	value   any
-	present bool
+	value Option[any]
 }
 
-func newDocumentValue(value any, present bool) documentValue {
-	return documentValue{value: value, present: present}
+func newDocumentValue(value Option[any]) documentValue {
+	return documentValue{value: value}
 }
 
 func (v documentValue) isPresent() bool {
-	return v.present
+	return v.value.Ok()
 }
 
-func (v documentValue) normaliserArgument() (value any, present bool) {
-	return v.value, v.present
+func (v documentValue) normaliserArgument() Option[any] {
+	return v.value
 }
 
 func (v documentValue) array() ([]any, bool) {
-	if !v.present || v.value == nil {
-		return nil, false
-	}
-	array, ok := v.value.([]any)
+	array, ok := v.value.Default(nil).([]any)
 	return array, ok
 }
 
 func (v documentValue) object() (map[string]any, bool) {
-	if !v.present || v.value == nil {
-		return nil, false
-	}
-	object, ok := v.value.(map[string]any)
+	object, ok := v.value.Default(nil).(map[string]any)
 	return object, ok
 }
 
@@ -136,35 +127,36 @@ func (p documentPath) indexedSiblingBefore(other documentPath) bool {
 	return leftIndex > rightIndex
 }
 
-func (p documentPath) value(root any, present bool) documentValue {
+func (p documentPath) value(root Option[any]) documentValue {
+	absent := newDocumentValue(None[any]())
+	value, present := root.Get()
 	if !present {
-		return newDocumentValue(nil, false)
+		return absent
 	}
-	value := root
 	for _, part := range p.parts {
 		if index, indexed := part.arrayIndex(); indexed {
 			array, ok := value.([]any)
 			if !ok || index < 0 || index >= len(array) {
-				return newDocumentValue(nil, false)
+				return absent
 			}
 			value = array[index]
 			continue
 		}
 		name, named := part.fieldName()
 		if !named {
-			return newDocumentValue(nil, false)
+			return absent
 		}
 		object, ok := value.(map[string]any)
 		if !ok {
-			return newDocumentValue(nil, false)
+			return absent
 		}
 		var found bool
 		value, found = object[name]
 		if !found {
-			return newDocumentValue(nil, false)
+			return absent
 		}
 	}
-	return newDocumentValue(value, true)
+	return newDocumentValue(Some(value))
 }
 
 func (p documentPath) delete(root any) (any, error) {
@@ -172,7 +164,7 @@ func (p documentPath) delete(root any) (any, error) {
 }
 
 func (p documentPath) set(root any, value any) error {
-	parent := p.parent().value(root, true)
+	parent := p.parent().value(Some(root))
 	if !parent.isPresent() {
 		return errors.New("normalisation path parent is absent")
 	}

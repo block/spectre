@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/alecthomas/errors"
+	. "github.com/alecthomas/types/optional"
 	compiled "github.com/santhosh-tekuri/jsonschema/v6"
 
 	"github.com/block/spectre/internal/schema"
@@ -153,7 +154,7 @@ func (c *converter) declareDocument(compiler *compiled.Compiler, path string, do
 		return errors.Wrapf(err, "compile %q", path)
 	}
 	if root.Title != "" {
-		if err := c.declare(root, nil, root.Title); err != nil {
+		if err := c.declare(root, None[*declaration](), root.Title); err != nil {
 			return err
 		}
 	}
@@ -166,7 +167,7 @@ func (c *converter) declareDocument(compiler *compiled.Compiler, path string, do
 			if err != nil {
 				return errors.Wrapf(err, "compile %q", path)
 			}
-			if err := c.declare(definition, nil, key); err != nil {
+			if err := c.declare(definition, None[*declaration](), key); err != nil {
 				return err
 			}
 		}
@@ -190,14 +191,14 @@ func pointerToken(key string) string {
 }
 
 // declare names source after text, inside parent's namespace or at the top level.
-func (c *converter) declare(source *compiled.Schema, parent *declaration, text string) error {
+func (c *converter) declare(source *compiled.Schema, parent Option[*declaration], text string) error {
 	local, err := typeName(text)
 	if err != nil {
 		return errors.Wrap(err, source.Location)
 	}
 	name, siblings := c.module+"."+local, &c.top
-	if parent != nil {
-		name, siblings = parent.name+"."+local, &parent.nested
+	if scope, ok := parent.Get(); ok {
+		name, siblings = scope.name+"."+local, &scope.nested
 	}
 	if existing, declared := c.declarations[source]; declared {
 		return errors.Errorf("%s: schema is declared as both %q and %q", source.Location, existing.name, name)
@@ -249,7 +250,7 @@ func (c *converter) value(source *compiled.Schema, scope *declaration, suggested
 		return schema.Value{}, err
 	}
 	if shape.kind == schema.KindObject {
-		if err := c.declare(source, scope, suggested); err != nil {
+		if err := c.declare(source, Some(scope), suggested); err != nil {
 			return schema.Value{}, err
 		}
 		return c.namedValue(source)
@@ -326,11 +327,15 @@ func (c *converter) inlineValue(shape shape, scope *declaration, suggested strin
 		} else if suggested == "" {
 			suggested = "Value"
 		}
-		element, err := c.value(shape.element, scope, suggested)
+		element, hasElement := shape.element.Get()
+		if !hasElement {
+			return schema.Value{}, errors.Errorf("%s shape has no element schema", shape.kind)
+		}
+		value, err := c.value(element, scope, suggested)
 		if err != nil {
 			return schema.Value{}, err
 		}
-		return schema.Value{Kind: shape.kind, Element: &element}, nil
+		return schema.Value{Kind: shape.kind, Element: Some(&value)}, nil
 	case schema.KindEnum:
 		return schema.Value{Kind: schema.KindEnum, Literals: shape.literals}, nil
 	case schema.KindString, schema.KindNumber, schema.KindBoolean, schema.KindObject:
@@ -372,7 +377,7 @@ func checkRef(source *compiled.Schema) error {
 type shape struct {
 	kind     schema.Kind
 	literals []string
-	element  *compiled.Schema
+	element  Option[*compiled.Schema]
 }
 
 // shapeOf checks that a resolved schema is inside the TypeScript schema subset.
@@ -446,7 +451,8 @@ func jsonType(source *compiled.Schema) (kind string, err error) {
 			types[name] = true
 		}
 	case source.Const != nil || source.Enum != nil:
-		for _, literal := range constants(source) {
+		literals, _ := constants(source).Get()
+		for _, literal := range literals {
 			types[literalType(literal)] = true
 		}
 	case source.Properties != nil || source.AdditionalProperties != nil:
@@ -472,14 +478,15 @@ func jsonType(source *compiled.Schema) (kind string, err error) {
 	return kind, nil
 }
 
-func constants(source *compiled.Schema) []any {
+// constants returns None when the schema permits any value, rather than a fixed set.
+func constants(source *compiled.Schema) Option[[]any] {
 	if source.Const != nil {
-		return []any{*source.Const}
+		return Some([]any{*source.Const})
 	}
 	if source.Enum != nil {
-		return source.Enum.Values
+		return Some(source.Enum.Values)
 	}
-	return nil
+	return None[[]any]()
 }
 
 func literalType(literal any) string {
@@ -500,8 +507,8 @@ func literalType(literal any) string {
 }
 
 func stringShape(source *compiled.Schema) (shape, error) {
-	values := constants(source)
-	if values == nil {
+	values, constrained := constants(source).Get()
+	if !constrained {
 		return shape{kind: schema.KindString}, nil
 	}
 	literals := make([]string, 0, len(values))
@@ -517,10 +524,10 @@ func stringShape(source *compiled.Schema) (shape, error) {
 
 func arrayShape(source *compiled.Schema) (shape, error) {
 	if items, ok := source.Items.(*compiled.Schema); ok {
-		return shape{kind: schema.KindList, element: items}, nil
+		return shape{kind: schema.KindList, element: Some(items)}, nil
 	}
 	if source.Items2020 != nil {
-		return shape{kind: schema.KindList, element: source.Items2020}, nil
+		return shape{kind: schema.KindList, element: Some(source.Items2020)}, nil
 	}
 	return shape{}, errors.Errorf("%s: arrays must declare items", source.Location)
 }
@@ -540,7 +547,7 @@ func objectShape(source *compiled.Schema) (shape, error) {
 		if !isSchema {
 			return shape{}, errors.Errorf("%s: objects must declare properties or an additionalProperties schema", source.Location)
 		}
-		return shape{kind: schema.KindMap, element: additional}, nil
+		return shape{kind: schema.KindMap, element: Some(additional)}, nil
 	}
 	if isSchema {
 		return shape{}, errors.Errorf("%s: objects cannot declare both properties and an additionalProperties schema", source.Location)

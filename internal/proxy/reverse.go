@@ -6,18 +6,24 @@ import (
 	"net/http/httputil"
 	"strings"
 
+	"github.com/alecthomas/errors"
+
 	"github.com/block/spectre/internal/netaddr"
 )
 
-// NewReverseProxy forwards requests to target with trusted forwarding headers.
+// NewReverseProxy forwards requests to a backend target with trusted forwarding headers.
 // A discarding proxy logs failures as candidate failures and writes no response.
-func NewReverseProxy(target *netaddr.Endpoint, transport http.RoundTripper, log *slog.Logger, discard bool) *httputil.ReverseProxy {
+func NewReverseProxy(target *netaddr.Endpoint, transport http.RoundTripper, log *slog.Logger, discard bool) (*httputil.ReverseProxy, error) {
+	targetURL, isBackend := target.URL().Get()
+	if !isBackend {
+		return nil, errors.New("reverse proxy target is not a backend")
+	}
 	if configured, ok := transport.(*Transport); ok {
 		transport = configured.ForBackend(target)
 	}
 	return &httputil.ReverseProxy{
 		Rewrite: func(request *httputil.ProxyRequest) {
-			request.SetURL(target.URL())
+			request.SetURL(targetURL)
 			// A unix-socket backend is a mesh socket that routes by authority over
 			// a fixed connection, so the inbound Host selects the upstream.
 			if target.IsUnix() {
@@ -43,5 +49,5 @@ func NewReverseProxy(target *netaddr.Endpoint, transport http.RoundTripper, log 
 			log.ErrorContext(request.Context(), "Reference request failed", "error", err)
 			writer.WriteHeader(http.StatusBadGateway)
 		},
-	}
+	}, nil
 }

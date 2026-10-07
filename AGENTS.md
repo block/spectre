@@ -49,6 +49,23 @@
 - Keep every comment to at most two lines.
 - Document every public symbol.
 
+# Optional values
+
+- Use `github.com/alecthomas/types/optional.Option[T]` for any value that may be
+  semantically absent, instead of a nil pointer, interface, func, channel,
+  slice, or map, or a separate `present` flag.
+- Use a plain slice or map when absent and empty mean the same thing.
+- Dot-import it as `. "github.com/alecthomas/types/optional"` and write
+  `Option[T]`, `Some(value)`, and `None[T]()`. It is the only allowed dot import.
+- Keep Go's `(value, ok)` return idiom for lookups instead of returning `Option`.
+- Keep nil checks on required arguments; those values are not optional.
+- Read values with `Get()` or `Default()` and handle the absent case. Never call
+  `MustGet()` outside tests; the linter rejects it.
+- Tag optional JSON fields with `omitzero`, not `omitempty`.
+- `Option` decodes JSON with `json.Unmarshal`, ignoring decoder settings such as
+  `DisallowUnknownFields`. A type held in an `Option` must enforce strict
+  decoding in its own `UnmarshalJSON`.
+
 # Go testing
 
 - Use `github.com/alecthomas/assert/v2` for assertions. Remember that

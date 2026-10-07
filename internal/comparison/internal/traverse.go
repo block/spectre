@@ -37,7 +37,7 @@ func (o occurrence) normalise(evaluator *javascript.Evaluator, value documentVal
 }
 
 func (o occurrence) apply(payload *document, normalised documentValue) error {
-	if value, present := normalised.normaliserArgument(); present {
+	if value, present := normalised.normaliserArgument().Get(); present {
 		return errors.Wrap(payload.Set(o.path, value), "replace normalised value")
 	}
 	return errors.Wrap(payload.Delete(o.path), "remove normalised value")
@@ -144,12 +144,20 @@ func findMessages(
 				walk(field.Value, fieldPath, payload.Value(fieldPath).isPresent())
 			}
 		case schema.KindList:
+			element, hasElement := value.Element.Get()
+			if !hasElement {
+				return // The schema has already checked every element type.
+			}
 			for index := range arrayLength(payload, path) {
-				walk(*value.Element, path.appendIndex(index), true)
+				walk(*element, path.appendIndex(index), true)
 			}
 		case schema.KindMap:
+			element, hasElement := value.Element.Get()
+			if !hasElement {
+				return // The schema has already checked every element type.
+			}
 			for _, key := range objectKeys(payload, path) {
-				walk(*value.Element, path.appendField(key), true)
+				walk(*element, path.appendField(key), true)
 			}
 		case schema.KindString, schema.KindNumber, schema.KindBoolean, schema.KindEnum:
 			return

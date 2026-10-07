@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/alecthomas/assert/v2"
+	. "github.com/alecthomas/types/optional"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protodesc"
@@ -56,11 +57,11 @@ func TestDeclarationsSampleRoundTrip(t *testing.T) {
 		{Name: "id", Value: text},
 		{Name: "name", Value: text},
 		{Name: "nickname", Optional: true, Value: text},
-		{Name: "roles", Value: schema.Value{Kind: schema.KindList, Element: &schema.Value{
+		{Name: "roles", Value: schema.Value{Kind: schema.KindList, Element: Some(&schema.Value{
 			Kind: schema.KindNumber, Type: "spectre.sample.v1.Role",
 			Literals: []string{"ROLE_ADMIN", "ROLE_EDITOR", "ROLE_READER", "ROLE_UNSPECIFIED"},
-		}}},
-		{Name: "labels", Value: schema.Value{Kind: schema.KindMap, Element: &text}},
+		})}},
+		{Name: "labels", Value: schema.Value{Kind: schema.KindMap, Element: Some(&text)}},
 		{Name: "profile", Optional: true, Value: schema.Value{Kind: schema.KindObject, Type: "spectre.sample.v1.User.Profile"}},
 		{Name: "avatar", Value: text},
 		{Name: "revision", Value: text},
@@ -71,9 +72,9 @@ func TestDeclarationsSampleRoundTrip(t *testing.T) {
 	profile, err := loaded.Type("spectre.sample.v1.User.Profile")
 	assert.NoError(t, err)
 	assert.Equal(t, &schema.Type{Name: "spectre.sample.v1.User.Profile", Fields: []schema.Field{
-		{Name: "addresses", Value: schema.Value{Kind: schema.KindList, Element: &schema.Value{Kind: schema.KindObject, Type: "spectre.sample.v1.Address"}}},
+		{Name: "addresses", Value: schema.Value{Kind: schema.KindList, Element: Some(&schema.Value{Kind: schema.KindObject, Type: "spectre.sample.v1.Address"})}},
 		{Name: "marketingConsent", Optional: true, Value: schema.Value{Kind: schema.KindBoolean}},
-		{Name: "preferences", Value: schema.Value{Kind: schema.KindMap, Element: &schema.Value{Kind: schema.KindObject, Type: "spectre.sample.v1.Preference"}}},
+		{Name: "preferences", Value: schema.Value{Kind: schema.KindMap, Element: Some(&schema.Value{Kind: schema.KindObject, Type: "spectre.sample.v1.Preference"})}},
 	}}, profile)
 	assert.Equal(t, []schema.Operation{
 		{Name: "spectre.sample.v1.UserService.GetUser", Request: "spectre.sample.v1.GetUserRequest", Response: "spectre.sample.v1.GetUserResponse"},
@@ -234,7 +235,7 @@ func TestDeclarationsAcceptExtensions(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, &schema.Type{Name: "example.Payload", Fields: []schema.Field{
 		{Name: "[example.Holder.note]", Optional: true, Value: schema.Value{Kind: schema.KindString}},
-		{Name: "[example.tags]", Optional: true, Value: schema.Value{Kind: schema.KindList, Element: &schema.Value{Kind: schema.KindString}}},
+		{Name: "[example.tags]", Optional: true, Value: schema.Value{Kind: schema.KindList, Element: Some(&schema.Value{Kind: schema.KindString})}},
 	}}, declared)
 
 	registry, err := descriptors.NewRegistry(set)

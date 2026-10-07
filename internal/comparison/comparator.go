@@ -74,8 +74,8 @@ func (c *Comparator) Compare(
 	if excludedRequestPath(requestPath) {
 		return Resultf(Skipped, "gRPC namespace is excluded from response comparison")
 	}
-	configured := c.scripts.active()
-	if configured == nil {
+	configured, ok := c.scripts.active().Get()
+	if !ok {
 		return Resultf(Skipped, "comparison schema is not ready")
 	}
 	if reference.Overflow || candidate.Overflow {
