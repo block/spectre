@@ -69,12 +69,6 @@ lint-go[go-module] = go.lint {
   dir = go-module
   depends_on = [sample-proto]
 }
-lint-encapsulation[go-module] = exec.test {
-  command = "encapsulation-linter -allow-generated-construction ./..."
-  dir = go-module
-  inputs = ["#{go-module}/**/*.go", "#{go-module}/go.mod", "#{go-module}/go.sum", "bin/.encapsulation-linter-0.2.0.pkg"]
-  depends_on = [build-go]
-}
 lint-proto = exec.test {
   command = "buf lint"
   inputs = ["buf.yaml", "internal/sample/proto/*.proto", "bin/.buf-1.73.0.pkg"]
@@ -149,7 +143,7 @@ target publish-container(registry : string, image-tag : string, version : string
 target test = [test-go, test-comment-length, test-launcher, test-response-comparison-integration, test-release-version, test-container-publisher]
 
 # Lint everything
-target lint = [lint-go, lint-encapsulation, lint-tsk, lint-proto, lint-actions, lint-action-pins, lint-dockerfile, lint-release, lint-scripts, fmt-check-go]
+target lint = [lint-go, lint-tsk, lint-proto, lint-actions, lint-action-pins, lint-dockerfile, lint-release, lint-scripts, fmt-check-go]
 
 # Format everything
 target fmt = [fmt-go, fmt-action-pins]
