@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
+	"time"
 )
 
 // Outcome describes whether a response pair could be compared and matched.
@@ -32,6 +33,8 @@ type Response struct {
 	Body []byte
 	// Overflow reports that Body is truncated and must not be compared.
 	Overflow bool
+	// Latency is the backend's time to first response byte, or zero if unmeasured.
+	Latency time.Duration
 }
 
 // Result is the value-safe result of comparing two responses.

@@ -348,6 +348,44 @@ quarantine:
 	assert.NoError(t, handler.Shutdown(t.Context()))
 }
 
+func TestCapturesBackendLatenciesForComparison(t *testing.T) {
+	type latencies struct {
+		reference time.Duration
+		candidate time.Duration
+	}
+	captured := make(chan latencies, 1)
+	comparator := newResponseComparator(
+		func(
+			ctx context.Context,
+			requestMethod string,
+			requestPath string,
+			requestContentType string,
+			reference comparison.Response,
+			candidate comparison.Response,
+		) comparison.Result {
+			_, _, _, _ = ctx, requestMethod, requestPath, requestContentType
+			captured <- latencies{reference: reference.Latency, candidate: candidate.Latency}
+			return comparison.Resultf(comparison.Equivalent, "")
+		},
+	)
+	transport := roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+		return noContentResponse(request), nil
+	})
+	config := newTestConfig(t, "http://127.0.0.1:50051", "http://127.0.0.1:50052")
+	handler, err := ingress.New(config, transport, Some[ingress.DescriptorLoader](matchingDescriptorLoader()), comparator, slog.New(slog.DiscardHandler))
+	assert.NoError(t, err)
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "http://proxy.example/forecast", nil))
+
+	select {
+	case got := <-captured:
+		assert.True(t, got.reference > 0, "reference latency should be measured")
+		assert.True(t, got.candidate > 0, "candidate latency should be measured")
+	case <-time.After(time.Second):
+		t.Fatal("response comparison did not run")
+	}
+	assert.NoError(t, handler.Shutdown(t.Context()))
+}
+
 func TestServeStopsAfterContextCancellation(t *testing.T) {
 	reference := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 		writer.WriteHeader(http.StatusNoContent)

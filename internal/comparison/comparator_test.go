@@ -316,6 +316,45 @@ func TestLogsComparisonAndIndividualNormaliserResults(t *testing.T) {
 	assert.Contains(t, logs, `"level":"INFO","msg":"Response comparison completed","event":"correlation","method":"POST","path":"/test.v1.Service/Get","outcome":"divergent","differences":["$.stable"]`)
 }
 
+func TestLogsLatencyDeltaWhenBothResponsesAreTimed(t *testing.T) {
+	var output bytes.Buffer
+	log := slog.New(slog.NewJSONHandler(&output, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	config := newConfig(t, map[string]string{"test.ts": module(`
+		spectre.field<v1.Response, "stable">((value) => value);
+	`)})
+	comparator, err := comparison.New(t.Context(), config, log)
+	assert.NoError(t, err)
+	assert.NoError(t, comparator.Configure(t.Context(), descriptorSet()))
+	reference := connectResponse(`{"stable":"same"}`)
+	reference.Latency = 243 * time.Millisecond
+	candidate := connectResponse(`{"stable":"same"}`)
+	candidate.Latency = 100 * time.Millisecond
+
+	result := comparator.Compare(t.Context(), http.MethodPost, "/test.v1.Service/Get", "application/json", reference, candidate)
+
+	assert.Equal(t, comparison.Resultf(comparison.Equivalent, ""), result)
+	// Candidate was 143ms faster, so dt is that negative delta in nanoseconds.
+	assert.Contains(t, output.String(), `"outcome":"equivalent","dt":-143000000`)
+}
+
+func TestOmitsLatencyDeltaWhenEitherResponseIsUntimed(t *testing.T) {
+	var output bytes.Buffer
+	log := slog.New(slog.NewJSONHandler(&output, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	config := newConfig(t, map[string]string{"test.ts": module(`
+		spectre.field<v1.Response, "stable">((value) => value);
+	`)})
+	comparator, err := comparison.New(t.Context(), config, log)
+	assert.NoError(t, err)
+	assert.NoError(t, comparator.Configure(t.Context(), descriptorSet()))
+	reference := connectResponse(`{"stable":"same"}`)
+	candidate := connectResponse(`{"stable":"same"}`)
+	candidate.Latency = 100 * time.Millisecond
+
+	comparator.Compare(t.Context(), http.MethodPost, "/test.v1.Service/Get", "application/json", reference, candidate)
+
+	assert.NotContains(t, output.String(), `"dt":`)
+}
+
 func TestAppliesFieldNormaliserToRepeatedMessageElements(t *testing.T) {
 	comparator := newComparator(t, `
 		spectre.field<v1.Response, "users[].name">((name) => name.toLowerCase());
