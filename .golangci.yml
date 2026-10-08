@@ -345,7 +345,7 @@ linters:
     inamedparam:
       # Skips check for interface methods with only a single parameter.
       # Default: false
-      skip-single-param: true
+      skip-single-param: false
 
     mnd:
       # List of function patterns to exclude from analysis.
@@ -370,7 +370,8 @@ linters:
     nakedret:
       # Make an issue if func has more lines of code than this setting, and it has naked returns.
       # Default: 30
-      max-func-lines: 30
+      # Naked returns are banned in functions of any length.
+      max-func-lines: 0
 
     nolintlint:
       # Exclude following linters from requiring an explanation.
@@ -468,6 +469,9 @@ linters:
           pattern: \.MustGet$
           msg: "Use Get or Default and handle the absent case instead of MustGet"
         # MustGet is allowed in tests; see the _test.go exclusion below.
+        - pkg: ^(os|syscall)$
+          pattern: ^(os|syscall)\.(Getenv|LookupEnv|Environ|ExpandEnv|Setenv|Unsetenv|Clearenv)$
+          msg: "Read environment variables through Kong env tags instead"
 
   exclusions:
     # Predefined exclusion rules.

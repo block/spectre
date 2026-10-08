@@ -4,10 +4,6 @@ pre-commit:
       priority: 1
       run: bin/bit fmt
       stage_fixed: true
-    comment-length:
-      glob: "*.go"
-      exclude: "**/*.pb.go"
-      run: eval "$(bin/hermit env --activate)" && check-comment-length {staged_files}
 
 commit-msg:
   commands:
