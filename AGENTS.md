@@ -53,6 +53,9 @@
   do not convey their meaning. Do not use naked returns.
 - Keep every comment to at most two lines.
 - Document every public symbol.
+- `bit lint-tsk` runs the `tsk` linters; `tsk config` lists them. Keep an
+  intentional finding with a `//nolint:<linter> <reason>` comment at the end of
+  its line or on its own line above the statement.
 
 # Optional values
 
@@ -66,8 +69,6 @@
 - Keep nil checks on required arguments; those values are not optional.
 - Read values with `Get()` or `Default()` and handle the absent case. Never call
   `MustGet()` outside tests; the linter rejects it.
-- `bit lint-optional` reports nil used as an absent value. Keep an intentional
-  nil with an `//optionalnil:allow <reason>` comment on or above its line.
 - Tag optional JSON fields with `omitzero`, not `omitempty`.
 - `Option` decodes JSON with `json.Unmarshal`, ignoring decoder settings such as
   `DisallowUnknownFields`. A type held in an `Option` must enforce strict
