@@ -96,7 +96,7 @@ lint-scripts = exec {
 lint-tsk[go-module] = exec.test {
   command = "tsk"
   dir = go-module
-  inputs = ["#{go-module}/**/*.go", "#{go-module}/go.mod", "#{go-module}/go.sum"]
+  inputs = ["#{go-module}/**/*.go", "#{go-module}/go.mod", "#{go-module}/go.sum", ".tsk.toml", "bin/.tsktsk-0.2.0.pkg"]
   depends_on = [build-go]
 }
 
