@@ -106,7 +106,7 @@ func StringLiteral(t *Type) (value string, ok bool) {
 // relative to the program root.
 func Location(node *Node) string {
 	file := SourceFileOf(node)
-	//optionalnil:allow The shim mirrors the compiler, whose nodes may have no file.
+	//nolint:optionalnil The shim mirrors the compiler, whose nodes may have no file.
 	if file == nil {
 		return "<unknown>"
 	}
