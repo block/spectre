@@ -69,6 +69,11 @@ func (c *Comparator) Compare(
 		if result.Reason() != "" {
 			attributes = append(attributes, "reason", result.Reason())
 		}
+		// dt is the candidate's latency minus the reference's: negative when the
+		// candidate was faster, positive when it was slower.
+		if reference.Latency > 0 && candidate.Latency > 0 {
+			attributes = append(attributes, "dt", candidate.Latency-reference.Latency)
+		}
 		c.log.InfoContext(ctx, "Response comparison completed", attributes...)
 	}()
 	if excludedRequestPath(requestPath) {
