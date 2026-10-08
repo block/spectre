@@ -1,2 +1,6 @@
 [encapsulation]
 allow-generated-construction = true
+
+[layout]
+# The TypeScript shim is a separate module whose path mimics TypeScript's own.
+allow = ["github.com/microsoft/TypeScript/tsc/shim/typescript"]

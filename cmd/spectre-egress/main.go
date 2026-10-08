@@ -66,7 +66,7 @@ func (c *cli) Run(runtime *commandContext) error {
 	return errors.Wrap(handler.Serve(runtime.ctx, listeners[0], listeners[1], listeners[2]), "run egress")
 }
 
-func closeListeners(listeners []net.Listener) error {
+func closeListeners(listeners []net.Listener) error { //nolint:mainlogic releases listeners opened during startup
 	closeErrors := make([]error, 0, len(listeners))
 	for _, listener := range listeners {
 		closeErrors = append(closeErrors, listener.Close())

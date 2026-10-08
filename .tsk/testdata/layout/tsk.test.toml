@@ -1,0 +1,9 @@
+[[case]]
+name = "default"
+packages = ["./cmd/...", "./internal/...", "./tools", "./pkg"]
+
+[[case]]
+name = "allow"
+packages = ["./shim"]
+[case.config]
+allow = ["example.com/layout/shim"]
