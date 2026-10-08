@@ -6,6 +6,8 @@ import (
 	"io"
 	"log/slog"
 
+	"github.com/alecthomas/errors"
+	"github.com/alecthomas/kong"
 	"github.com/lmittmann/tint"
 )
 
@@ -19,7 +21,11 @@ type Config struct {
 
 // NewConfig returns the default logging configuration: info-level text output.
 func NewConfig() Config {
-	return Config{Level: slog.LevelInfo}
+	config := Config{}
+	if err := kong.ApplyDefaults(&config); err != nil {
+		panic(errors.Wrap(err, "apply logger defaults"))
+	}
+	return config
 }
 
 // New constructs a logger that writes to output using the supplied configuration.

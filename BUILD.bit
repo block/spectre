@@ -35,10 +35,6 @@ test-go[go-module](package = "./...", run = ".") = go.test {
   flags = ["-timeout=30s", "-run=#{run}"]
   depends_on = [sample-schema, typescript-compiler]
 }
-test-comment-length = exec.test {
-  command = "sh scripts/check-comment-length.test.sh"
-  inputs = ["scripts/check-comment-length", "scripts/check-comment-length.test.sh"]
-}
 test-launcher = exec.test {
   command = "scripts/spectre-ingress.test.sh"
   inputs = ["scripts/spectre-ingress", "scripts/spectre-ingress.test.sh"]
@@ -148,7 +144,7 @@ target container = [local-image]
 target publish-container(registry : string, image-tag : string, version : string) = [publish-release-image(registry = registry, image-tag = image-tag, version = version)]
 
 # Run all tests
-target test = [test-go, test-comment-length, test-launcher, test-response-comparison-integration, test-release-version, test-container-publisher, test-tsk]
+target test = [test-go, test-launcher, test-response-comparison-integration, test-release-version, test-container-publisher, test-tsk]
 
 # Lint everything
 target lint = [lint-go, lint-tsk, lint-proto, lint-actions, lint-action-pins, lint-dockerfile, lint-release, lint-scripts, fmt-check-go]

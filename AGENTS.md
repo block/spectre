@@ -7,11 +7,16 @@
   allows only `main` and `Run` methods there. Keep a bootstrap helper with
   `//nolint:mainlogic <reason>`.
 - Do not use global state outside main entry points.
-- Read environment variables only in main entry points, then pass configuration explicitly.
+- Read environment variables only through Kong `env:` tags, then pass
+  configuration explicitly. `forbidigo` rejects the `os` and `syscall` environment functions.
 - Each package that exposes command-line options owns its Kong-tagged `Config` type.
+- Give every Kong flag, argument, and command a `help:"..."` tag. The `konghelp`
+  linter enforces this.
 - Embed package configs in CLI commands with `embed:""`; do not pre-initialise CLI defaults because Kong resets them.
+  The `kongembed` linter enforces the tag.
 - Pass the complete parsed config to the package constructor instead of unpacking individual fields.
 - Use `kong.ApplyDefaults()` in config constructors so Kong tags remain the single source of default values.
+  The `configdefaults` linter enforces this.
 - Define config validation as a `Validate()` method on the package-owned `Config` type.
 - Put all other code in the top-level `internal` directory unless it is explicitly part of a public API.
 - The `layout` linter enforces where packages live and the `./scripts`
@@ -50,12 +55,13 @@
 
 - Use `log/slog` for logging.
 - Keep a type and all of its methods in the same file. Do not split a type's
-  methods across multiple files.
+  methods across multiple files. The `methodfile` linter enforces this.
 - Wrap errors with `github.com/alecthomas/errors`.
 - Name every input parameter in function, method, and interface signatures.
 - Name result parameters when intrinsic types such as `bool`, `int`, or `string`
   do not convey their meaning. Do not use naked returns.
-- Keep every comment to at most two lines.
+- Keep every comment to at most two lines. The `commentlength` linter enforces
+  this.
 - Document every public symbol.
 
 # Linters
@@ -93,11 +99,13 @@
 - Use a plain slice or map when absent and empty mean the same thing.
 - Dot-import it as `. "github.com/alecthomas/types/optional"` and write
   `Option[T]`, `Some(value)`, and `None[T]()`. It is the only allowed dot import.
+  The `optionalstyle` linter enforces the dot import.
 - Keep Go's `(value, ok)` return idiom for lookups instead of returning `Option`.
 - Keep nil checks on required arguments; those values are not optional.
 - Read values with `Get()` or `Default()` and handle the absent case. Never call
   `MustGet()` outside tests; the linter rejects it.
-- Tag optional JSON fields with `omitzero`, not `omitempty`.
+- Tag optional JSON fields with `omitzero`, not `omitempty`. The
+  `optionalstyle` linter enforces this.
 - `Option` decodes JSON with `json.Unmarshal`, ignoring decoder settings such as
   `DisallowUnknownFields`. A type held in an `Option` must enforce strict
   decoding in its own `UnmarshalJSON`.
