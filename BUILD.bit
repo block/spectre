@@ -3,6 +3,8 @@
 # The TypeScript shim is a separate module, so Go tools skip it from the root.
 let go-module = [".", "internal/typescript"]
 
+let tsk-inputs = [".tsk.toml", ".tsk/**/*.ts", "bin/.tsktsk-0.2.0.pkg"]
+
 sample-proto = exec {
   command = "mkdir -p internal/sample/pb dist/descriptors && buf generate && buf build --as-file-descriptor-set -o dist/descriptors/sample.pb"
   inputs = ["buf.yaml", "buf.gen.yaml", "internal/sample/proto/*.proto", "bin/.buf-1.73.0.pkg", "bin/.protoc-gen-go-1.36.12.pkg", "bin/.protoc-gen-connect-go-1.21.0.pkg"]
@@ -50,6 +52,11 @@ test-release-version = exec.test {
   command = "scripts/release-version.test.sh"
   inputs = [".gitsv/config.yml", "scripts/release-version.test.sh", "bin/.git-sv-3.0.2.pkg"]
 }
+# tsk test fails when no linter has test data.
+test-tsk = exec.test {
+  command = "test ! -d .tsk/testdata || tsk test"
+  inputs = tsk-inputs + [".tsk/testdata/**/*"]
+}
 test-container-publisher = exec.test {
   command = "sh scripts/publish-container-images.test.sh"
   inputs = ["scripts/publish-container-images", "scripts/publish-container-images.test.sh"]
@@ -93,10 +100,11 @@ lint-scripts = exec {
   command = "shellcheck scripts/*"
   inputs = ["scripts/*", "bin/.shellcheck-0.11.0.pkg"]
 }
+# tsk looks for linters beside the nearest go.mod, so point every module at the root.
 lint-tsk[go-module] = exec.test {
-  command = "tsk"
+  command = "tsk --dir=#{project_dir()}/.tsk"
   dir = go-module
-  inputs = ["#{go-module}/**/*.go", "#{go-module}/go.mod", "#{go-module}/go.sum", ".tsk.toml", "bin/.tsktsk-0.2.0.pkg"]
+  inputs = tsk-inputs + ["#{go-module}/**/*.go", "#{go-module}/go.mod", "#{go-module}/go.sum"]
   depends_on = [build-go]
 }
 
@@ -140,7 +148,7 @@ target container = [local-image]
 target publish-container(registry : string, image-tag : string, version : string) = [publish-release-image(registry = registry, image-tag = image-tag, version = version)]
 
 # Run all tests
-target test = [test-go, test-comment-length, test-launcher, test-response-comparison-integration, test-release-version, test-container-publisher]
+target test = [test-go, test-comment-length, test-launcher, test-response-comparison-integration, test-release-version, test-container-publisher, test-tsk]
 
 # Lint everything
 target lint = [lint-go, lint-tsk, lint-proto, lint-actions, lint-action-pins, lint-dockerfile, lint-release, lint-scripts, fmt-check-go]

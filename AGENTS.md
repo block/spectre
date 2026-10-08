@@ -3,7 +3,9 @@
 - Put each executable entry point in `cmd/<command>`.
 - For each binary, add a symlink named after the binary in `./scripts` pointing to `spectre-ingress`.
 - Keep all initialisation and bootstrap code in the main entry point.
-- Do not put application logic in main entry points.
+- Do not put application logic in main entry points. The `mainlogic` linter
+  allows only `main` and `Run` methods there. Keep a bootstrap helper with
+  `//nolint:mainlogic <reason>`.
 - Do not use global state outside main entry points.
 - Read environment variables only in main entry points, then pass configuration explicitly.
 - Each package that exposes command-line options owns its Kong-tagged `Config` type.
@@ -12,6 +14,8 @@
 - Use `kong.ApplyDefaults()` in config constructors so Kong tags remain the single source of default values.
 - Define config validation as a `Validate()` method on the package-owned `Config` type.
 - Put all other code in the top-level `internal` directory unless it is explicitly part of a public API.
+- The `layout` linter enforces where packages live and the `./scripts`
+  symlinks. List public API packages in its `allow` option in `.tsk.toml`.
 
 # Compatibility
 
@@ -53,9 +57,33 @@
   do not convey their meaning. Do not use naked returns.
 - Keep every comment to at most two lines.
 - Document every public symbol.
+
+# Linters
+
 - `bit lint-tsk` runs the `tsk` linters; `tsk config` lists them. Keep an
   intentional finding with a `//nolint:<linter> <reason>` comment at the end of
   its line or on its own line above the statement.
+- When the user corrects you, check whether the correction is a general rule
+  that a `tsk` linter could enforce. Offer a linter only when all of these hold:
+  - The rule applies across the codebase, not only to the current change.
+  - The rule is likely to come up again.
+  - A linter can detect violations from Go syntax and types with few false
+    positives.
+  - No existing linter in `.golangci.yml` or `tsk config` already enforces it.
+- For example, "use `Option` instead of nil for absent values" justified the
+  `optionalnil` linter. "Rename this variable" does not justify a linter.
+- Do not interrupt the current task to offer a linter. Make the offer once in
+  your final response for that task.
+- Offer each rule at most once per conversation. If the user declines, do not
+  raise it again.
+- Write a linter only after the user agrees. Follow the `tsk` README at
+  https://github.com/alecthomas/tsk:
+  - Put the linter in `.tsk/<name>.ts` and its test data in
+    `.tsk/testdata/<name>/`. `bit test-tsk` runs the tests.
+  - Fix existing violations in the same change, or keep intentional ones with
+    `//nolint:<name> <reason>`.
+  - Add or update the matching rule in this file, and note that the linter
+    enforces it.
 
 # Optional values
 
