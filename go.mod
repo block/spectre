@@ -3,7 +3,8 @@ module github.com/block/spectre
 go 1.27.1
 
 require (
-	connectrpc.com/connect v1.21.0
+	connectrpc.com/connect v1.11.0
+	connectrpc.com/connect/v2 v2.0.0
 	connectrpc.com/grpcreflect v1.3.0
 	github.com/alecthomas/assert/v2 v2.11.0
 	github.com/alecthomas/errors v0.9.1
