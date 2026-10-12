@@ -74,7 +74,7 @@ func WriteDeclarations(ctx context.Context, config Config, output string) error 
 }
 
 func readDocument(path string) (any, error) {
-	file, err := os.Open(path) //nolint:gosec // The path is a schema the user asked to read.
+	file, err := os.Open(path)
 	if err != nil {
 		return nil, errors.Wrap(err, "open schema")
 	}
