@@ -66,6 +66,16 @@ linters = ['forbidigo']
 path = '_test\.go'
 text = 'MustGet'
 
+[[exclude]]
+linters = ['forbidigo']
+path = '_test\.go$'
+text = 'Use math/rand/v2 instead'
+
+[[exclude]]
+linters = ['forbidigo']
+path = '(^|/)main\.go$'
+text = 'Use log/slog instead'
+
 [cyclop]
 max-complexity = 30
 package-average = 10.0
@@ -104,6 +114,34 @@ pkg = '^github\.com/alecthomas/types/optional$'
 msg = 'Read environment variables through Kong env tags instead'
 pattern = '^(os|syscall)\.(Getenv|LookupEnv|Environ|ExpandEnv|Setenv|Unsetenv|Clearenv)$'
 pkg = '^(os|syscall)$'
+
+[[forbidigo.forbid]]
+msg = 'Use github.com/alecthomas/errors instead'
+pkg = '^github\.com/pkg/errors$'
+
+[[forbidigo.forbid]]
+msg = 'Use google.golang.org/protobuf instead, see https://developers.google.com/protocol-buffers/docs/reference/go/faq#modules'
+pkg = '^github\.com/golang/protobuf(/|$)'
+
+[[forbidigo.forbid]]
+msg = "Use github.com/google/uuid instead, satori's package is not maintained"
+pkg = '^github\.com/satori/go\.uuid(/|$)'
+
+[[forbidigo.forbid]]
+msg = 'Use github.com/gofrs/uuid/v5 or later, it was not a go module before v5'
+pkg = '^github\.com/gofrs/uuid$'
+
+[[forbidigo.forbid]]
+msg = 'Use github.com/alecthomas/assert/v2 instead'
+pkg = '^github\.com/stretchr/testify(/|$)'
+
+[[forbidigo.forbid]]
+msg = 'Use math/rand/v2 instead, see https://go.dev/blog/randv2'
+pkg = '^math/rand$'
+
+[[forbidigo.forbid]]
+msg = 'Use log/slog instead, see https://go.dev/blog/slog'
+pkg = '^log$'
 
 [funcorder]
 struct-method = false
