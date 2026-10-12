@@ -10,7 +10,7 @@ require (
 	github.com/alecthomas/kong v1.16.1
 	github.com/alecthomas/kong-toml v0.4.1
 	github.com/alecthomas/types v0.20.1
-	github.com/grafana/sobek v0.0.0-20260915160442-8a431c44cd7b
+	github.com/grafana/sobek v0.0.0-20261005111419-f56574604191
 	github.com/lmittmann/tint v1.2.0
 	github.com/microsoft/TypeScript/tsc/shim/typescript v0.0.0
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
@@ -22,7 +22,7 @@ require (
 require (
 	github.com/Microsoft/go-winio v0.6.2 // indirect
 	github.com/alecthomas/repr v0.5.2 // indirect
-	github.com/dlclark/regexp2/v2 v2.8.0 // indirect
+	github.com/dlclark/regexp2/v2 v2.8.1 // indirect
 	github.com/go-sourcemap/sourcemap v2.1.4+incompatible // indirect
 	github.com/google/pprof v0.0.0-20230207041349-798e818bf904 // indirect
 	github.com/hexops/gotextdiff v1.0.3 // indirect
