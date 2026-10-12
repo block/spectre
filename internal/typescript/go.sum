@@ -16,6 +16,8 @@ github.com/klauspost/cpuid/v2 v2.2.10 h1:tBs3QSyvjDyFTq3uoc/9xFpCuOsJQFNPiAhYdw2
 github.com/klauspost/cpuid/v2 v2.2.10/go.mod h1:hqwkgyIinND0mEev00jJYCxPNVRVXFQeu1XKlok6oO0=
 github.com/microsoft/TypeScript/tsc v0.0.0-20261001235638-09b1db061731 h1:5EQE6fJ3aVLZn2c16fcFZaeSBCOlSesRbyvsgb0/PWA=
 github.com/microsoft/TypeScript/tsc v0.0.0-20261001235638-09b1db061731/go.mod h1:28hWKaTYwRARPm0T9Y0XvdvYpU2HtjONzsMqAdYLucY=
+github.com/microsoft/TypeScript/tsc v0.0.0-20261009234202-aa8149273b23 h1:x4anlHiP+AgnqeuyeQBGYN6eA+kYlGzQK8tv81zBCns=
+github.com/microsoft/TypeScript/tsc v0.0.0-20261009234202-aa8149273b23/go.mod h1:28hWKaTYwRARPm0T9Y0XvdvYpU2HtjONzsMqAdYLucY=
 github.com/peter-evans/patience v0.3.0 h1:rX0JdJeepqdQl1Sk9c9uvorjYYzL2TfgLX1adqYm9cA=
 github.com/peter-evans/patience v0.3.0/go.mod h1:Kmxu5sY1NmBLFSStvXjX1wS9mIv7wMcP/ubucyMOAu0=
 github.com/zeebo/assert v1.3.0 h1:g7C04CbJuIDKNPFHmsk4hwZDO5O+kntRxzaUoNXj+IQ=
