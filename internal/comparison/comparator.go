@@ -90,7 +90,7 @@ func (c *Comparator) Compare(
 		requestContentType = jsonMediaType
 	}
 	// Ingress endpoints never name a host.
-	root, _, protocol, _, result := c.scripts.resolve(configured, requestMethod, "", requestPath, requestContentType)
+	root, _, selected, _, result := c.scripts.resolve(configured, requestMethod, "", requestPath, requestContentType)
 	if result.Outcome() != "" {
 		return result
 	}
@@ -98,7 +98,7 @@ func (c *Comparator) Compare(
 		configured.plan.Schema(),
 		configured.codec,
 		root,
-		protocol,
+		selected,
 		requestMethod,
 		reference,
 		candidate,
@@ -108,7 +108,7 @@ func (c *Comparator) Compare(
 		return result
 	}
 	// Connect errors are protocol envelopes, not instances of the RPC output message.
-	runNormalisers := protocol != protocolConnectJSON || reference.StatusCode == http.StatusOK
+	runNormalisers := selected != protocolConnectJSON || reference.StatusCode == http.StatusOK
 	comparisonContext, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
 	normalisedReference, err := c.scripts.normalise(comparisonContext, configured, root, runNormalisers, "reference", referencePayload)

@@ -3,7 +3,10 @@
 # The TypeScript shim is a separate module, so Go tools skip it from the root.
 let go-module = [".", "internal/typescript"]
 
-let tsk-inputs = [".tsk.toml", ".tsk/**/*.ts", "bin/.tsktsk-0.2.0.pkg"]
+# Files within a Go module that its checks depend on.
+let go-inputs = ["**/*.go", "go.mod", "go.sum"]
+
+let tsk-inputs = [".tsk/config.toml", ".tsk/lock.toml", ".tsk/**/*.ts", "bin/.tsk-0.12.1.pkg"]
 
 sample-proto = exec {
   command = "mkdir -p internal/sample/pb dist/descriptors && buf generate && buf build --as-file-descriptor-set -o dist/descriptors/sample.pb"
@@ -67,11 +70,6 @@ fmt-action-pins = exec {
   command = "ratchet pin .github/workflows/*.yml"
   inputs = [".github/workflows/*.yml", "bin/.ratchet-0.12.0.pkg"]
 }
-lint-go[go-module] = go.lint {
-  concurrency = 1 # golangci-lint refuses to run while another instance holds its lock.
-  dir = go-module
-  depends_on = [sample-proto]
-}
 lint-proto = exec.test {
   command = "buf lint"
   inputs = ["buf.yaml", "internal/sample/proto/*.proto", "bin/.buf-1.73.0.pkg"]
@@ -96,11 +94,10 @@ lint-scripts = exec {
   command = "shellcheck scripts/*"
   inputs = ["scripts/*", "bin/.shellcheck-0.11.0.pkg"]
 }
-# tsk looks for linters beside the nearest go.mod, so point every module at the root.
 lint-tsk[go-module] = exec.test {
-  command = "tsk --dir=#{project_dir()}/.tsk"
+  command = "tsk lint ./..."
   dir = go-module
-  inputs = tsk-inputs + ["#{go-module}/**/*.go", "#{go-module}/go.mod", "#{go-module}/go.sum"]
+  inputs = tsk-inputs + prefix(go-inputs, "#{go-module}/")
   depends_on = [build-go]
 }
 
@@ -147,7 +144,7 @@ target publish-container(registry : string, image-tag : string, version : string
 target test = [test-go, test-launcher, test-response-comparison-integration, test-release-version, test-container-publisher, test-tsk]
 
 # Lint everything
-target lint = [lint-go, lint-tsk, lint-proto, lint-actions, lint-action-pins, lint-dockerfile, lint-release, lint-scripts, fmt-check-go]
+target lint = [lint-tsk, lint-proto, lint-actions, lint-action-pins, lint-dockerfile, lint-release, lint-scripts, fmt-check-go]
 
 # Format everything
 target fmt = [fmt-go, fmt-action-pins]

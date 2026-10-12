@@ -66,7 +66,7 @@
 
 # Linters
 
-- `bit lint-tsk` runs the `tsk` linters; `tsk config` lists them. Keep an
+- `bit lint-tsk` runs the `tsk` linters; `tsk list` lists them. Keep an
   intentional finding with a `//nolint:<linter> <reason>` comment at the end of
   its line or on its own line above the statement.
 - When the user corrects you, check whether the correction is a general rule
@@ -75,7 +75,7 @@
   - The rule is likely to come up again.
   - A linter can detect violations from Go syntax and types with few false
     positives.
-  - No existing linter in `.golangci.yml` or `tsk config` already enforces it.
+  - No existing linter in `tsk list` already enforces it.
 - For example, "use `Option` instead of nil for absent values" justified the
   `optionalnil` linter. "Rename this variable" does not justify a linter.
 - Do not interrupt the current task to offer a linter. Make the offer once in
