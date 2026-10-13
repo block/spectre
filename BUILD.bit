@@ -125,6 +125,11 @@ explicit egress-bin = go.exe {
   output = "dist/spectre-egress"
   depends_on = [typescript-compiler]
 }
+explicit supervisor-bin = go.exe {
+  package = "./cmd/spectre-supervisor"
+  output = "dist/spectre-supervisor"
+  depends_on = [typescript-compiler]
+}
 explicit local-image(version = "dev") = docker.image {
   tag = "spectre:#{version}"
   build_args = { VERSION = version }
