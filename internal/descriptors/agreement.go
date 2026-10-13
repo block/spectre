@@ -65,7 +65,7 @@ func checkMessages(registry *Registry, messages protoreflect.MessageDescriptors,
 		if err != nil {
 			return errors.Wrapf(err, "model message %q", message.FullName())
 		}
-		declared, err := loaded.Type(string(message.FullName()))
+		declared, err := loaded.Type(schema.TypeRef(message.FullName()))
 		if err != nil {
 			return errors.Wrapf(err, "protobuf message %q needs a declaration", message.FullName())
 		}
@@ -87,7 +87,7 @@ func checkMethod(method protoreflect.MethodDescriptor, loaded *schema.Schema) er
 	if err != nil {
 		return errors.Wrapf(err, "protobuf method %q needs a declaration", method.FullName())
 	}
-	if string(method.Input().FullName()) != operation.Request || string(method.Output().FullName()) != operation.Response {
+	if schema.TypeRef(method.Input().FullName()) != operation.Request || schema.TypeRef(method.Output().FullName()) != operation.Response {
 		return errors.Errorf(
 			"operation %q has types %s -> %s, but its protobuf method has %s -> %s",
 			operation.Name, operation.Request, operation.Response, method.Input().FullName(), method.Output().FullName(),

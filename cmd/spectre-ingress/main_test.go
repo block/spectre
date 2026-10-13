@@ -10,8 +10,8 @@ import (
 	"github.com/alecthomas/kong"
 	kongtoml "github.com/alecthomas/kong-toml"
 
-	"github.com/block/spectre/internal/comparison"
-	"github.com/block/spectre/internal/ingress"
+	"github.com/block/spectre/internal/httpserver"
+	"github.com/block/spectre/internal/protocol"
 )
 
 func TestCLIEmbedsIngressConfig(t *testing.T) {
@@ -30,16 +30,16 @@ func TestCLIEmbedsIngressConfig(t *testing.T) {
 		"--descriptors-dir=" + descriptors,
 	})
 	assert.NoError(t, err)
-	expected := ingress.NewConfig()
+	expected := httpserver.NewIngressConfig()
 	expected.Reference = "http://reference.example"
 	expected.Candidate = "http://candidate.example"
 	expected.Reflection = false
 	expected.Descriptors.DescriptorsDir = descriptors
-	expectedComparison := comparison.NewConfig()
-	expectedComparison.ScriptsDir = scripts
-	expectedComparison.Schema.SchemaDir = schema
+	expectedEngine := protocol.NewConfig()
+	expectedEngine.Comparison.ScriptsDir = scripts
+	expectedEngine.Comparison.Schema.SchemaDir = schema
 	assert.Equal(t, expected, command.Ingress)
-	assert.Equal(t, expectedComparison, command.Comparison)
+	assert.Equal(t, expectedEngine, command.Engine)
 }
 
 func TestCLIRequiresScriptsDir(t *testing.T) {
@@ -116,16 +116,16 @@ descriptors-dir = %q
 	assert.NoError(t, err)
 	_, err = parser.Parse([]string{"--config=" + path, "--candidate=http://override.example"})
 	assert.NoError(t, err)
-	expected := ingress.NewConfig()
+	expected := httpserver.NewIngressConfig()
 	expected.Reference = "http://reference.example"
 	expected.Candidate = "http://override.example"
 	expected.Reflection = false
 	expected.Descriptors.DescriptorsDir = descriptors
-	expectedComparison := comparison.NewConfig()
-	expectedComparison.ScriptsDir = scripts
-	expectedComparison.Schema.SchemaDir = schema
+	expectedEngine := protocol.NewConfig()
+	expectedEngine.Comparison.ScriptsDir = scripts
+	expectedEngine.Comparison.Schema.SchemaDir = schema
 	assert.Equal(t, expected, command.Ingress)
-	assert.Equal(t, expectedComparison, command.Comparison)
+	assert.Equal(t, expectedEngine, command.Engine)
 }
 
 func TestCLIRejectsUnknownConfigKeys(t *testing.T) {

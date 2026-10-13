@@ -117,7 +117,7 @@ func documentLocation(path string, document any) (string, error) {
 type declaration struct {
 	source *compiled.Schema
 	// name is the module name followed by the namespace path.
-	name   string
+	name   schema.TypeRef
 	local  string
 	object bool
 	fields []schema.Field
@@ -196,9 +196,9 @@ func (c *converter) declare(source *compiled.Schema, parent Option[*declaration]
 	if err != nil {
 		return errors.Wrap(err, source.Location)
 	}
-	name, siblings := c.module+"."+local, &c.top
+	name, siblings := schema.TypeRef(c.module+"."+local), &c.top
 	if scope, ok := parent.Get(); ok {
-		name, siblings = scope.name+"."+local, &scope.nested
+		name, siblings = scope.name+schema.TypeRef("."+local), &scope.nested
 	}
 	if existing, declared := c.declarations[source]; declared {
 		return errors.Errorf("%s: schema is declared as both %q and %q", source.Location, existing.name, name)
@@ -647,6 +647,6 @@ func (w *writer) declaration(declared *declaration) {
 }
 
 // reference names a type through its module, which no nested declaration can shadow.
-func (w *writer) reference(name string) string {
-	return fmt.Sprintf("import(%q).%s", w.module, strings.TrimPrefix(name, w.module+"."))
+func (w *writer) reference(name schema.TypeRef) string {
+	return fmt.Sprintf("import(%q).%s", w.module, strings.TrimPrefix(string(name), w.module+"."))
 }

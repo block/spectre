@@ -20,7 +20,7 @@ type Plan struct {
 }
 
 // NewPlan resolves and validates every declared normaliser target before activation.
-func NewPlan(loaded *schema.Schema, fields []javascript.FieldTarget, messages []string) (*Plan, error) {
+func NewPlan(loaded *schema.Schema, fields []javascript.FieldTarget, messages []schema.TypeRef) (*Plan, error) {
 	targets := make([]normalisationTarget, 0, len(fields)+len(messages))
 	for _, declared := range fields {
 		root, steps, err := resolveField(loaded, declared)
@@ -51,16 +51,11 @@ func (p *Plan) Normalise(
 	log *slog.Logger,
 	evaluator *javascript.Evaluator,
 	root *schema.Type,
-	runNormalisers bool,
 	side string,
 	payload any,
 ) (*Normalised, error) {
 	document := newDocument(payload)
-	targets := p.resolved
-	if !runNormalisers {
-		targets = nil
-	}
-	run := newNormalisationRun(p.loaded, log, evaluator, root, slices.Clone(targets), side, document)
+	run := newNormalisationRun(p.loaded, log, evaluator, root, slices.Clone(p.resolved), side, document)
 	if err := run.normalise(ctx); err != nil {
 		return nil, err
 	}
@@ -74,6 +69,11 @@ type Normalised struct {
 
 func newNormalised(payload *document) *Normalised {
 	return &Normalised{payload: payload}
+}
+
+// Raw wraps an untyped payload that no normaliser applies to.
+func Raw(payload any) *Normalised {
+	return newNormalised(newDocument(payload))
 }
 
 func (n *Normalised) document() *document {

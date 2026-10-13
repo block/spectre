@@ -24,6 +24,7 @@ require (
 	github.com/alecthomas/repr v0.5.2 // indirect
 	github.com/dlclark/regexp2/v2 v2.8.0 // indirect
 	github.com/go-sourcemap/sourcemap v2.1.4+incompatible // indirect
+	github.com/gofrs/uuid/v5 v5.2.0 // indirect
 	github.com/google/pprof v0.0.0-20230207041349-798e818bf904 // indirect
 	github.com/hexops/gotextdiff v1.0.3 // indirect
 	github.com/klauspost/compress v1.20.0 // indirect
@@ -31,6 +32,7 @@ require (
 	github.com/microsoft/TypeScript/tsc v0.0.0-20261001235638-09b1db061731 // indirect
 	github.com/pelletier/go-toml v1.9.5 // indirect
 	github.com/zeebo/xxh3 v1.1.0 // indirect
+	go.jetify.com/typeid v1.3.0 // indirect
 	golang.org/x/sys v0.48.0 // indirect
 	golang.org/x/text v0.42.0 // indirect
 )

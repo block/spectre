@@ -96,7 +96,7 @@ func FromProgram(program *ts.Program, sources map[string]string) (*Schema, error
 
 // TypeName returns the schema name of a named object type, which is how scripts and
 // the host refer to it. Types declared outside a schema module have no name.
-func TypeName(t *ts.Type) (string, error) {
+func TypeName(t *ts.Type) (TypeRef, error) {
 	symbol := t.Symbol()
 	if alias := t.Alias(); alias != nil && (symbol == nil || symbol.Flags&ts.SymbolFlagsTypeLiteral != 0) {
 		if len(alias.TypeArguments()) > 0 {
@@ -112,7 +112,7 @@ func TypeName(t *ts.Type) (string, error) {
 
 // qualifiedName walks a symbol's parents up to its ambient module, which must be
 // declared in a schema file rather than augmented by a script.
-func qualifiedName(symbol *ts.Symbol) (string, error) {
+func qualifiedName(symbol *ts.Symbol) (TypeRef, error) {
 	names := []string{}
 	for current := symbol; current != nil; current = current.Parent {
 		if len(current.Declarations) > 0 {
@@ -122,7 +122,7 @@ func qualifiedName(symbol *ts.Symbol) (string, error) {
 					break
 				}
 				slices.Reverse(names)
-				return declaration.Name().Text() + "." + strings.Join(names, "."), nil
+				return TypeRef(declaration.Name().Text() + "." + strings.Join(names, ".")), nil
 			}
 		}
 		names = append(names, current.Name)
@@ -146,7 +146,7 @@ func checkDeclaredInSchema(symbol *ts.Symbol) error {
 }
 
 type pendingType struct {
-	name string
+	name TypeRef
 	t    *ts.Type
 }
 
@@ -155,12 +155,12 @@ type pendingType struct {
 type reader struct {
 	checker    *ts.Checker
 	pending    []pendingType
-	queued     map[string]bool
+	queued     map[TypeRef]bool
 	operations []Operation
 }
 
 func newReader(checker *ts.Checker) *reader {
-	return &reader{checker: checker, queued: map[string]bool{}}
+	return &reader{checker: checker, queued: map[TypeRef]bool{}}
 }
 
 func (r *reader) read(modules map[string]bool) (*Schema, error) {
@@ -235,7 +235,7 @@ func (r *reader) interfaceDeclaration(symbol *ts.Symbol) error {
 		if err := checkDeclaredInSchema(method); err != nil {
 			return err
 		}
-		operation, err := r.operation(service, method)
+		operation, err := r.operation(string(service), method)
 		if err != nil {
 			return err
 		}
@@ -274,7 +274,7 @@ func (r *reader) operation(service string, method *ts.Symbol) (Operation, error)
 	return Operation{Name: service + "." + method.Name, Request: request, Response: response}, nil
 }
 
-func (r *reader) objectReference(t *ts.Type, at *ts.Node) (string, error) {
+func (r *reader) objectReference(t *ts.Type, at *ts.Node) (TypeRef, error) {
 	value, err := r.value(t, at)
 	if err != nil {
 		return "", err
@@ -375,7 +375,7 @@ func (r *reader) object(t *ts.Type, at *ts.Node) (Value, error) {
 	return Value{Kind: KindObject, Type: name}, nil
 }
 
-func (r *reader) objectType(name string, t *ts.Type) (*Type, error) {
+func (r *reader) objectType(name TypeRef, t *ts.Type) (*Type, error) {
 	symbol := t.Symbol()
 	if alias := t.Alias(); alias != nil {
 		symbol = alias.Symbol()

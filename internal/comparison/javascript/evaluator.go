@@ -7,6 +7,8 @@ import (
 	"github.com/alecthomas/errors"
 	. "github.com/alecthomas/types/optional"
 	"github.com/grafana/sobek"
+
+	"github.com/block/spectre/internal/schema"
 )
 
 // Evaluator owns the JavaScript runtime for one payload normalisation.
@@ -91,7 +93,7 @@ func (e *Evaluator) NormaliseField(target FieldTarget, value Option[any]) (Optio
 
 // NormaliseMessage invokes the normaliser registered for an object type. None
 // stands for an absent message in both the argument and the result.
-func (e *Evaluator) NormaliseMessage(target string, value Option[any]) (Option[any], error) {
+func (e *Evaluator) NormaliseMessage(target schema.TypeRef, value Option[any]) (Option[any], error) {
 	callback, ok := e.registry.message(target)
 	if !ok {
 		return None[any](), errors.Errorf("JavaScript message normaliser %q is unavailable", target)

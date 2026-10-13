@@ -2,12 +2,14 @@ package javascript
 
 import (
 	"cmp"
+	"maps"
 	"slices"
-	"sort"
 	"strings"
 
 	"github.com/alecthomas/errors"
 	"github.com/grafana/sobek"
+
+	"github.com/block/spectre/internal/schema"
 )
 
 type targetKind string
@@ -31,18 +33,18 @@ const (
 // ignored so matching requests are skipped instead of compared.
 type Endpoint struct {
 	direction Direction
-	protocol  string
+	protocol  Protocol
 	pattern   string
-	typeName  string
+	typeName  schema.TypeRef
 	ignore    bool
 }
 
-func newEndpoint(direction Direction, protocol, pattern, typeName string) Endpoint {
+func newEndpoint(direction Direction, protocol Protocol, pattern string, typeName schema.TypeRef) Endpoint {
 	return Endpoint{direction: direction, protocol: protocol, pattern: pattern, typeName: typeName}
 }
 
 // newIgnoredEndpoint marks a pattern as never compared; it carries no payload type.
-func newIgnoredEndpoint(direction Direction, protocol, pattern string) Endpoint {
+func newIgnoredEndpoint(direction Direction, protocol Protocol, pattern string) Endpoint {
 	return Endpoint{direction: direction, protocol: protocol, pattern: pattern, ignore: true}
 }
 
@@ -52,7 +54,7 @@ func (e Endpoint) Direction() Direction {
 }
 
 // Protocol returns the protocol key that interprets the endpoint.
-func (e Endpoint) Protocol() string {
+func (e Endpoint) Protocol() Protocol {
 	return e.protocol
 }
 
@@ -62,7 +64,7 @@ func (e Endpoint) Pattern() string {
 }
 
 // Type returns the fully qualified name of the endpoint's payload type.
-func (e Endpoint) Type() string {
+func (e Endpoint) Type() schema.TypeRef {
 	return e.typeName
 }
 
@@ -74,17 +76,17 @@ func (e Endpoint) Ignore() bool {
 // FieldTarget identifies a JSON field path relative to an explicitly named type.
 // The two components remain separate because namespace names can overlap field paths.
 type FieldTarget struct {
-	typeName string
+	typeName schema.TypeRef
 	path     string
 }
 
 // NewFieldTarget creates a target without resolving it against a schema.
-func NewFieldTarget(typeName, path string) FieldTarget {
+func NewFieldTarget(typeName schema.TypeRef, path string) FieldTarget {
 	return FieldTarget{typeName: typeName, path: path}
 }
 
 // Type returns the fully qualified name of the target's root object type.
-func (t FieldTarget) Type() string {
+func (t FieldTarget) Type() schema.TypeRef {
 	return t.typeName
 }
 
@@ -95,14 +97,14 @@ func (t FieldTarget) Path() string {
 
 // String returns a human-readable target name, not a unique identity.
 func (t FieldTarget) String() string {
-	return t.typeName + "." + t.path
+	return string(t.typeName) + "." + t.path
 }
 
 // registrations are the declarations one evaluation of a program produced.
 type registrations struct {
 	endpoints []Endpoint
 	fields    []FieldTarget
-	messages  []string
+	messages  []schema.TypeRef
 }
 
 // spectreModule is a stateless module record shared safely across isolated runtimes.
@@ -149,14 +151,14 @@ type callbackRegistry struct {
 	functions map[string]sobek.Value
 	endpoints []Endpoint
 	fields    map[FieldTarget]sobek.Callable
-	messages  map[string]sobek.Callable
+	messages  map[schema.TypeRef]sobek.Callable
 }
 
 func newCallbackRegistry(runtime *sobek.Runtime) *callbackRegistry {
 	registry := &callbackRegistry{
 		runtime:  runtime,
 		fields:   map[FieldTarget]sobek.Callable{},
-		messages: map[string]sobek.Callable{},
+		messages: map[schema.TypeRef]sobek.Callable{},
 	}
 	registry.functions = map[string]sobek.Value{
 		string(Ingress):       registry.directionObject(Ingress),
@@ -174,8 +176,11 @@ const (
 	ignoreMethod = "ignore"
 )
 
-// httpProtocol is the only protocol key an endpoint pattern currently uses.
-const httpProtocol = "http"
+// Protocol names the protocol that scripts declare endpoints for, e.g. "http".
+type Protocol string
+
+// ProtocolHTTP is the protocol of HTTP servers, including gRPC and Connect.
+const ProtocolHTTP Protocol = "http"
 
 // directionObject builds the ingress or egress namespace object. Its match method
 // registers an endpoint for that direction; ingress also gets an ignore method.
@@ -202,13 +207,13 @@ func (r *callbackRegistry) endpointRegistration(direction Direction) func(sobek.
 		if len(call.Arguments) != 3 {
 			panic(r.runtime.NewTypeError("spectre.%s requires a type name, a protocol, and a pattern", qualified))
 		}
-		typeName := r.stringArgument(call, 0, qualified, "type name")
-		protocol := r.stringArgument(call, 1, qualified, "protocol")
+		typeName := schema.TypeRef(r.stringArgument(call, 0, qualified, "type name"))
+		protocol := Protocol(r.stringArgument(call, 1, qualified, "protocol"))
 		pattern := r.stringArgument(call, 2, qualified, "pattern")
-		if protocol == httpProtocol && direction == Ingress && !hasForm(pattern, false) {
+		if protocol == ProtocolHTTP && direction == Ingress && !hasForm(pattern, false) {
 			panic(r.runtime.NewTypeError("spectre.%s pattern %q must have the form \"<METHOD> /<path>\"", qualified, pattern))
 		}
-		if protocol == httpProtocol && direction == Egress && !hasForm(pattern, true) {
+		if protocol == ProtocolHTTP && direction == Egress && !hasForm(pattern, true) {
 			panic(r.runtime.NewTypeError("spectre.%s pattern %q must have the form \"<METHOD> <host>/<path>\"", qualified, pattern))
 		}
 		if slices.ContainsFunc(r.endpoints, func(endpoint Endpoint) bool {
@@ -229,9 +234,9 @@ func (r *callbackRegistry) ignoreRegistration(direction Direction) func(sobek.Fu
 		if len(call.Arguments) != 2 {
 			panic(r.runtime.NewTypeError("spectre.%s requires a protocol and a pattern", qualified))
 		}
-		protocol := r.stringArgument(call, 0, qualified, "protocol")
+		protocol := Protocol(r.stringArgument(call, 0, qualified, "protocol"))
 		pattern := r.stringArgument(call, 1, qualified, "pattern")
-		if protocol == httpProtocol && direction == Ingress && !hasForm(pattern, false) {
+		if protocol == ProtocolHTTP && direction == Ingress && !hasForm(pattern, false) {
 			panic(r.runtime.NewTypeError("spectre.%s pattern %q must have the form \"<METHOD> /<path>\"", qualified, pattern))
 		}
 		if slices.ContainsFunc(r.endpoints, func(endpoint Endpoint) bool {
@@ -264,7 +269,7 @@ func (r *callbackRegistry) registration(kind targetKind) func(sobek.FunctionCall
 		if len(call.Arguments) != argumentCount {
 			panic(r.runtime.NewTypeError("spectre.%s requires exactly %d arguments", kind, argumentCount))
 		}
-		typeName := r.stringArgument(call, 0, string(kind), "type name")
+		typeName := schema.TypeRef(r.stringArgument(call, 0, string(kind), "type name"))
 		callback, ok := sobek.AssertFunction(call.Argument(argumentCount - 1))
 		if !ok {
 			panic(r.runtime.NewTypeError("spectre.%s normaliser must be a function", kind))
@@ -299,7 +304,7 @@ func (r *callbackRegistry) field(target FieldTarget) (sobek.Callable, bool) {
 	return callback, ok
 }
 
-func (r *callbackRegistry) message(typeName string) (sobek.Callable, bool) {
+func (r *callbackRegistry) message(typeName schema.TypeRef) (sobek.Callable, bool) {
 	callback, ok := r.messages[typeName]
 	return callback, ok
 }
@@ -315,11 +320,7 @@ func (r *callbackRegistry) registrations() registrations {
 		}
 		return cmp.Compare(left.Path(), right.Path())
 	})
-	messages := make([]string, 0, len(r.messages))
-	for typeName := range r.messages {
-		messages = append(messages, typeName)
-	}
-	sort.Strings(messages)
+	messages := slices.Sorted(maps.Keys(r.messages))
 	return registrations{endpoints: slices.Clone(r.endpoints), fields: fields, messages: messages}
 }
 

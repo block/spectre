@@ -44,16 +44,16 @@ type Value struct {
 	// Element is the element type of a list or the value type of a map, and None otherwise.
 	Element Option[*Value]
 	// Type names an object's type, or the alias a literal union was declared with, if any.
-	Type string
+	Type TypeRef
 }
 
 // String renders the value as TypeScript, naming referenced types as they are stored.
 func (v Value) String() string {
-	return v.Format(func(name string) string { return name })
+	return v.Format(func(name TypeRef) string { return string(name) })
 }
 
 // Format renders the value as TypeScript, naming each referenced type with reference.
-func (v Value) Format(reference func(name string) string) string {
+func (v Value) Format(reference func(name TypeRef) string) string {
 	switch v.Kind {
 	case KindEnum:
 		if v.Type != "" {
@@ -170,10 +170,13 @@ type Field struct {
 	Value Value
 }
 
+// TypeRef names a schema type, e.g. "weather.service.GetWeatherRequest".
+type TypeRef string
+
 // Type is a named object type, declared as an interface or an object type alias.
 type Type struct {
 	// Name is the declaring module's name followed by the type's namespace path.
-	Name string
+	Name TypeRef
 	// Fields are in declaration order.
 	Fields []Field
 }
@@ -193,22 +196,22 @@ type Operation struct {
 	// Name is the service's type name followed by the method name.
 	Name string
 	// Request names the request object type.
-	Request string
+	Request TypeRef
 	// Response names the response object type.
-	Response string
+	Response TypeRef
 }
 
 // Schema indexes types and operations whose references all resolve. Treat types
 // and their fields as immutable after construction, as comparison plans share them.
 type Schema struct {
-	types      map[string]*Type
+	types      map[TypeRef]*Type
 	operations map[string]Operation
 }
 
 // New takes ownership of types and validates their references. It rejects
 // duplicate names and references to undeclared types.
 func New(types []*Type, operations []Operation) (*Schema, error) {
-	loaded := &Schema{types: map[string]*Type{}, operations: map[string]Operation{}}
+	loaded := &Schema{types: map[TypeRef]*Type{}, operations: map[string]Operation{}}
 	for _, declared := range types {
 		if _, duplicate := loaded.types[declared.Name]; duplicate {
 			return nil, errors.Errorf("type %q is declared more than once", declared.Name)
@@ -234,7 +237,7 @@ func New(types []*Type, operations []Operation) (*Schema, error) {
 		}
 	}
 	for _, operation := range operations {
-		for _, name := range []string{operation.Request, operation.Response} {
+		for _, name := range []TypeRef{operation.Request, operation.Response} {
 			if _, ok := loaded.types[name]; !ok {
 				return nil, errors.Errorf("operation %q refers to undeclared type %q", operation.Name, name)
 			}
@@ -267,7 +270,7 @@ func (s *Schema) checkValue(value Value) error {
 }
 
 // Type returns the named object type.
-func (s *Schema) Type(name string) (*Type, error) {
+func (s *Schema) Type(name TypeRef) (*Type, error) {
 	declared, ok := s.types[name]
 	if !ok {
 		return nil, errors.Errorf("type %q is not declared", name)
@@ -306,7 +309,7 @@ func (s *Schema) Operations() []Operation {
 
 // Validate checks that a decoded JSON value is an instance of the named type. It
 // rejects unknown keys and nulls, so a valid payload holds only declared data.
-func (s *Schema) Validate(name string, value any) error {
+func (s *Schema) Validate(name TypeRef, value any) error {
 	return s.validate(Value{Kind: KindObject, Type: name}, value, "$")
 }
 
@@ -368,7 +371,7 @@ func (s *Schema) validate(expected Value, value any, path string) error {
 	return errors.Errorf("%s: expected %s, found %s", path, expected, jsonKind(value))
 }
 
-func (s *Schema) validateObject(name string, object map[string]any, path string) error {
+func (s *Schema) validateObject(name TypeRef, object map[string]any, path string) error {
 	declared, err := s.Type(name)
 	if err != nil {
 		return errors.Wrap(err, path)

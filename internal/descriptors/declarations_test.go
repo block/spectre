@@ -150,7 +150,7 @@ func TestSampleDeclarationWireJSONRoundTrip(t *testing.T) {
 			for _, data := range [][]byte{jsonData, binaryJSON, []byte(test.expected)} {
 				actual := decodeJSON(t, data)
 				assert.Equal(t, expected, actual)
-				assert.NoError(t, loaded.Validate(string(messageName), actual))
+				assert.NoError(t, loaded.Validate(schema.TypeRef(messageName), actual))
 			}
 		})
 	}

@@ -179,7 +179,7 @@ remain part of the separate protocol abstraction change.
 ## Sequencing with the protocol abstraction
 
 This change is implemented first. Protobuf wire decoding is isolated in
-`internal/httpcodec`; comparison traversal and binding use `schema.Type`.
+`internal/httpserver/codec`; comparison traversal and binding use `schema.Type`.
 Rebase the protocol abstraction onto this work, then move HTTP routing and status
 handling behind its engine boundary. Descriptor configuration remains separate
 from core schema configuration.

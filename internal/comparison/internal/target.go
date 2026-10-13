@@ -35,7 +35,7 @@ type fieldTarget struct {
 }
 
 func (t *fieldTarget) key() string {
-	return string(t.kind()) + ":" + t.declared.Type() + "\x00" + t.declared.Path()
+	return string(t.kind()) + ":" + string(t.declared.Type()) + "\x00" + t.declared.Path()
 }
 
 func (t *fieldTarget) kind() targetKind {
@@ -74,7 +74,7 @@ func (t *fieldTarget) normalise(evaluator *javascript.Evaluator, value documentV
 
 // messageTarget normalises every nested occurrence of one object type.
 type messageTarget struct {
-	targetName string
+	targetName schema.TypeRef
 	descriptor *schema.Type
 }
 
@@ -87,7 +87,7 @@ func (t *messageTarget) kind() targetKind {
 }
 
 func (t *messageTarget) name() string {
-	return t.targetName
+	return string(t.targetName)
 }
 
 func (t *messageTarget) priority() int {
@@ -104,7 +104,7 @@ func (t *messageTarget) occurrences(loaded *schema.Schema, root *schema.Type, pa
 }
 
 func (t *messageTarget) normalise(evaluator *javascript.Evaluator, value documentValue) (documentValue, error) {
-	normalised, err := evaluator.NormaliseMessage(t.name(), value.normaliserArgument())
+	normalised, err := evaluator.NormaliseMessage(t.targetName, value.normaliserArgument())
 	return newDocumentValue(normalised), errors.Wrap(err, "invoke message normaliser")
 }
 
@@ -130,7 +130,7 @@ func newFieldTarget(declared javascript.FieldTarget, root *schema.Type, steps []
 	return &fieldTarget{declared: declared, root: root, steps: steps}
 }
 
-func newMessageTarget(name string, descriptor *schema.Type) *messageTarget {
+func newMessageTarget(name schema.TypeRef, descriptor *schema.Type) *messageTarget {
 	return &messageTarget{targetName: name, descriptor: descriptor}
 }
 

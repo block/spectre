@@ -319,7 +319,7 @@ func (w *declarationWriter) renderMessage(message protoreflect.MessageDescriptor
 			optional = "?"
 		}
 		referenced := referencedType(fields[index])
-		value := field.Value.Format(func(_ string) string { return typeReference(referenced) })
+		value := field.Value.Format(func(_ schema.TypeRef) string { return typeReference(referenced) })
 		w.linef("%s%s: %s;", schema.PropertyName(field.Name), optional, value)
 	}
 	w.depth--
@@ -395,7 +395,7 @@ func messageFields(registry *Registry, message protoreflect.MessageDescriptor) [
 // messageType models the ProtoJSON object a message encodes to when default values
 // are emitted: only fields with presence and extensions, written when set, may be absent.
 func messageType(name protoreflect.FullName, fields []protoreflect.FieldDescriptor) (*schema.Type, error) {
-	declared := &schema.Type{Name: string(name), Fields: make([]schema.Field, 0, len(fields))}
+	declared := &schema.Type{Name: schema.TypeRef(name), Fields: make([]schema.Field, 0, len(fields))}
 	for _, field := range fields {
 		value, err := fieldValue(field)
 		if err != nil {
@@ -446,7 +446,7 @@ func singularValue(field protoreflect.FieldDescriptor) (schema.Value, error) {
 		if isUntypedMessage(name) {
 			return schema.Value{}, errors.Errorf("%s is not supported", name)
 		}
-		return schema.Value{Kind: schema.KindObject, Type: string(name)}, nil
+		return schema.Value{Kind: schema.KindObject, Type: schema.TypeRef(name)}, nil
 	}
 	return schema.Value{}, errors.Errorf("field kind %s is not supported", field.Kind())
 }
@@ -476,7 +476,7 @@ func enumValue(enum protoreflect.EnumDescriptor) schema.Value {
 	for index := range values.Len() {
 		literals = append(literals, string(values.Get(index).Name()))
 	}
-	value := schema.Value{Kind: schema.KindEnum, Literals: literals, Type: string(enum.FullName())}
+	value := schema.Value{Kind: schema.KindEnum, Literals: literals, Type: schema.TypeRef(enum.FullName())}
 	// Open enums keep unknown numbers, which ProtoJSON writes as JSON numbers.
 	if !enum.IsClosed() {
 		value.Kind = schema.KindNumber

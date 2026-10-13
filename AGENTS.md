@@ -19,6 +19,14 @@
   The `configdefaults` linter enforces this.
 - Define config validation as a `Validate()` method on the package-owned `Config` type.
 - Put all other code in the top-level `internal` directory unless it is explicitly part of a public API.
+- Define each type in the lowest package that owns its concept, not where it is
+  first needed. Before adding a named type, check lower packages for the same
+  concept held as a plain value, and give them the type too.
+- Treat an import cycle as a sign that a type or function is in the wrong
+  package. Move it to the package both sides can import. Do not work around the
+  cycle by passing plain values, duplicating the type, or converting at call sites.
+  The `typeboundary` linter reports a named type converted to or from its
+  underlying type to call a function in another package.
 - The `layout` linter enforces where packages live and the `./scripts`
   symlinks. List public API packages in its `allow` option in `.tsk.toml`.
 
@@ -63,6 +71,8 @@
 - Keep every comment to at most two lines. The `commentlength` linter enforces
   this.
 - Document every public symbol.
+- Mark each sum type's interface with a `//sumtype:decl` comment so the
+  `sumtype` linter checks that type switches over it are exhaustive.
 
 # Linters
 

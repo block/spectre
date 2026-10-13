@@ -1,3 +1,4 @@
+// Package proxy admits candidate work and budgets shared memory for every protocol.
 package proxy
 
 import (
@@ -25,12 +26,12 @@ type Candidates struct {
 	idle        chan struct{}
 }
 
-// NewCandidates tracks candidate work, quarantining beyond maxInFlight concurrent runs.
-func NewCandidates(maxInFlight int, log *slog.Logger) *Candidates {
+// NewCandidates tracks candidate work, quarantining beyond the configured concurrent runs.
+func NewCandidates(config CandidatesConfig, log *slog.Logger) *Candidates {
 	idle := make(chan struct{})
 	close(idle)
 	return &Candidates{
-		maxInFlight: maxInFlight,
+		maxInFlight: config.CandidateMaxInFlight,
 		log:         log,
 		runs:        make(map[*CandidateRun]struct{}),
 		idle:        idle,

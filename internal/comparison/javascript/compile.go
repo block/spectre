@@ -138,7 +138,7 @@ func typeArguments(checker *ts.Checker, loaded *schema.Schema, call *ts.Node) (O
 	if _, err := loaded.Type(name); err != nil {
 		return None[insertion](), errors.Errorf("%s: spectre.%s type argument: %v", ts.Location(types[0]), display, err)
 	}
-	values := []string{name}
+	values := []string{string(name)}
 	if function == string(targetField) {
 		path, ok := ts.StringLiteral(checker.GetTypeFromTypeNode(types[1]))
 		if !ok {
