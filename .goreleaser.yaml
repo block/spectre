@@ -25,6 +25,13 @@ builds:
     main: ./cmd/spectre-gen
     binary: spectre-gen
     id: spectre-gen
+  - <<: *build
+    main: ./cmd/spectre-supervisor
+    binary: spectre-supervisor
+    id: spectre-supervisor
+    # The supervisor's seccomp and cgroup controls are Linux-only.
+    goos:
+      - linux
 
 archives:
   - formats: [tar.gz]

@@ -1,0 +1,15 @@
+.git
+.github
+bin
+dist/*
+!dist/descriptors
+docs
+scripts
+**/*_test.go
+BUILD.bit
+GOVERNANCE.md
+LICENSE
+Procfile
+Procfile.integration
+renovate.json
+lefthook.yml

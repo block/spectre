@@ -9,6 +9,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     go mod download
 COPY cmd/spectre-ingress ./cmd/spectre-ingress
 COPY cmd/spectre-egress ./cmd/spectre-egress
+COPY cmd/spectre-supervisor ./cmd/spectre-supervisor
 COPY internal ./internal
 
 ARG TARGETOS
@@ -18,7 +19,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath \
       -ldflags="-s -w -buildid= -X github.com/block/spectre/internal.Version=${VERSION}" \
-      -o /out/ ./cmd/spectre-ingress ./cmd/spectre-egress
+      -o /out/ ./cmd/spectre-ingress ./cmd/spectre-egress ./cmd/spectre-supervisor
 
 FROM alpine:3.24.2
 
@@ -27,7 +28,7 @@ LABEL org.opencontainers.image.source="https://github.com/block/spectre"
 # Keep CA roots current within the pinned Alpine release.
 # hadolint ignore=DL3018
 RUN apk add --no-cache ca-certificates
-COPY --from=build /out/spectre-ingress /out/spectre-egress /usr/local/bin/
+COPY --from=build /out/spectre-ingress /out/spectre-egress /out/spectre-supervisor /usr/local/bin/
 
 # Run as Alpine's nobody user without requiring name resolution.
 USER 65534:65534
