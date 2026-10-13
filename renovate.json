@@ -1,4 +1,11 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["config:recommended", "helpers:pinGitHubActionDigests"]
+  "extends": ["config:recommended", "helpers:pinGitHubActionDigests"],
+  "packageRules": [
+    {
+      "description": "Local shim module provided by a replace directive in go.mod",
+      "matchPackageNames": ["github.com/microsoft/TypeScript/tsc/shim/typescript"],
+      "enabled": false
+    }
+  ]
 }
