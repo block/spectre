@@ -40,6 +40,7 @@ func ExecSandbox(command []string) error {
 	if err != nil {
 		return errors.Wrapf(err, "find %q", command[0])
 	}
+	//nolint:forbidigo // propagate the inherited environment across the sandbox re-exec
 	return errors.Wrapf(syscall.Exec(path, command, os.Environ()), "exec %q", command[0])
 }
 

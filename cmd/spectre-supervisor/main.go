@@ -24,9 +24,8 @@ type cli struct {
 }
 
 type commandContext struct {
-	ctx    context.Context
-	log    *slog.Logger
-	logCfg logger.Config
+	ctx context.Context
+	log *slog.Logger
 }
 
 func main() {
@@ -46,11 +45,11 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	ctx = logger.WithLogger(ctx, log)
-	kctx.FatalIfErrorf(kctx.Run(&commandContext{ctx: ctx, log: log, logCfg: command.Log}))
+	kctx.FatalIfErrorf(kctx.Run(&commandContext{ctx: ctx, log: log}))
 }
 
 func (c *cli) Run(runtime *commandContext) error {
-	super, err := supervisor.New(c.Supervisor, runtime.logCfg, runtime.log, os.Stdout)
+	super, err := supervisor.New(c.Supervisor, c.Log, runtime.log, os.Stdout)
 	if err != nil {
 		return errors.WithStack(err)
 	}

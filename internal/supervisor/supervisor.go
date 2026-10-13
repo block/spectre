@@ -251,7 +251,6 @@ func (s *Supervisor) egressProcess(ctx context.Context) *managedProcess {
 	}
 	args = append(args, s.sharedProxyArgs()...)
 	cmd := s.command(ctx, s.config.EgressBin, args...)
-	cmd.Env = os.Environ()
 	return newManagedProcess("egress", cmd, s.output)
 }
 
@@ -264,7 +263,6 @@ func (s *Supervisor) ingressProcess(ctx context.Context) *managedProcess {
 	}
 	args = append(args, s.sharedProxyArgs()...)
 	cmd := s.command(ctx, s.config.IngressBin, args...)
-	cmd.Env = os.Environ()
 	return newManagedProcess("ingress", cmd, s.output)
 }
 
@@ -281,7 +279,7 @@ func (s *Supervisor) serviceProcess(ctx context.Context, role string, egressURL 
 	} else {
 		cmd = s.command(ctx, "/bin/sh", "-c", shell)
 	}
-	cmd.Env = append(os.Environ(), "SPECTRE_LISTEN="+listen, "SPECTRE_EGRESS="+egressURL)
+	cmd.Env = append(cmd.Environ(), "SPECTRE_LISTEN="+listen, "SPECTRE_EGRESS="+egressURL)
 	return newManagedProcess(role, cmd, s.output)
 }
 
