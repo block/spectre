@@ -12,7 +12,7 @@ require (
 	github.com/alecthomas/types v0.20.1
 	github.com/grafana/sobek v0.0.0-20260915160442-8a431c44cd7b
 	github.com/lmittmann/tint v1.2.0
-	github.com/microsoft/TypeScript/tsc/shim/typescript v0.0.0
+	github.com/microsoft/TypeScript/tsc/shim/typescript/v7 v7.0.2
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
 	golang.org/x/net v0.59.0
 	golang.org/x/sync v0.23.0
