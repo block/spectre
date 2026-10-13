@@ -48,6 +48,9 @@ func TestEgressProcessArgs(t *testing.T) {
 	s, config := testSupervisor(t)
 	assert.NoError(t, s.prepareWiring())
 	args := s.egressProcess(t.Context()).command().Args
+	// The supervisor re-execs itself with the embedded egress subcommand.
+	assert.Equal(t, s.selfExe, args[0])
+	assert.Equal(t, EgressCommand, args[1])
 	assert.True(t, slices.Contains(args, "--reference-listen="+unixListen(filepath.Join(config.SocketDir, "egress-reference.sock"))))
 	assert.True(t, slices.Contains(args, "--candidate-listen="+unixListen(filepath.Join(config.SocketDir, "egress-candidate.sock"))))
 	assert.True(t, slices.Contains(args, "--health-listen="+unixListen(filepath.Join(config.SocketDir, "egress-health.sock"))))
@@ -61,6 +64,9 @@ func TestIngressProcessArgs(t *testing.T) {
 	s, config := testSupervisor(t)
 	assert.NoError(t, s.prepareWiring())
 	args := s.ingressProcess(t.Context()).command().Args
+	// The supervisor re-execs itself with the embedded ingress subcommand.
+	assert.Equal(t, s.selfExe, args[0])
+	assert.Equal(t, IngressCommand, args[1])
 	assert.True(t, slices.Contains(args, "--listen="+config.Listen))
 	assert.True(t, slices.Contains(args, "--reference="+h2cUnix(filepath.Join(config.SocketDir, "reference.sock"))))
 	assert.True(t, slices.Contains(args, "--candidate="+h2cUnix(filepath.Join(config.SocketDir, "candidate.sock"))))

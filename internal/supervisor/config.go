@@ -21,10 +21,6 @@ type Config struct {
 	Listen string `default:"127.0.0.1:50050" help:"Public ingress address: host:port, or unix:<path|@abstract> for a unix socket."`
 	// SocketDir holds the unix sockets wiring the proxies to the services.
 	SocketDir string `default:"dist/sockets" help:"Directory for the unix sockets wiring the proxies to the services."`
-	// EgressBin is the egress proxy executable, on PATH or an absolute path.
-	EgressBin string `default:"spectre-egress" help:"Egress proxy executable, found on PATH or given as an absolute path."`
-	// IngressBin is the ingress proxy executable, on PATH or an absolute path.
-	IngressBin string `default:"spectre-ingress" help:"Ingress proxy executable, found on PATH or given as an absolute path."`
 	// Destinations maps each request host to its upstream URL for egress.
 	Destinations map[string]string `name:"destination" placeholder:"HOST=URL" help:"Upstream URL for requests to HOST, passed to the egress proxy. Repeat for each dependency."`
 	// ScriptsDir holds the comparison scripts passed to both proxies.

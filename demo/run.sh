@@ -1,6 +1,6 @@
 #!/bin/sh
 # Build and run the SPECTRE supervisor demo in one command. Extra arguments are
-# passed through to spectre-supervisor, e.g. --candidate-cpu-weight=200.
+# passed through to "spectre run", e.g. --candidate-cpu-weight=200.
 set -eu
 
 root="$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)"

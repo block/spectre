@@ -26,6 +26,13 @@ const (
 	roleCandidate = "candidate"
 )
 
+// IngressCommand and EgressCommand are the hidden subcommands the supervisor
+// re-execs itself with to run the embedded ingress and egress proxies.
+const (
+	IngressCommand = "__ingress"
+	EgressCommand  = "__egress"
+)
+
 // Supervisor runs the candidate and reference services behind the SPECTRE
 // proxies, with the candidate's egress sandboxed and host resources split.
 type Supervisor struct {
@@ -250,7 +257,7 @@ func (s *Supervisor) egressProcess(ctx context.Context) *managedProcess {
 		args = append(args, "--destination="+host+"="+s.config.Destinations[host])
 	}
 	args = append(args, s.sharedProxyArgs()...)
-	cmd := s.command(ctx, s.config.EgressBin, args...)
+	cmd := s.command(ctx, s.selfExe, append([]string{EgressCommand}, args...)...)
 	return newManagedProcess("egress", cmd, s.output)
 }
 
@@ -262,7 +269,7 @@ func (s *Supervisor) ingressProcess(ctx context.Context) *managedProcess {
 		"--candidate=" + h2cUnix(s.candidateSock),
 	}
 	args = append(args, s.sharedProxyArgs()...)
-	cmd := s.command(ctx, s.config.IngressBin, args...)
+	cmd := s.command(ctx, s.selfExe, append([]string{IngressCommand}, args...)...)
 	return newManagedProcess("ingress", cmd, s.output)
 }
 

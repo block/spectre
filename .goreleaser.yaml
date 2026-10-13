@@ -1,10 +1,9 @@
 version: 2
 
 builds:
-  - &build
-    main: ./cmd/spectre-ingress
-    binary: spectre-ingress
-    id: spectre-ingress
+  - main: ./cmd/spectre
+    binary: spectre
+    id: spectre
     env:
       - CGO_ENABLED=0
     goos:
@@ -17,21 +16,6 @@ builds:
       - -trimpath
     ldflags:
       - -s -w -buildid= -X github.com/block/spectre/internal.Version={{ .Version }}
-  - <<: *build
-    main: ./cmd/spectre-egress
-    binary: spectre-egress
-    id: spectre-egress
-  - <<: *build
-    main: ./cmd/spectre-gen
-    binary: spectre-gen
-    id: spectre-gen
-  - <<: *build
-    main: ./cmd/spectre-supervisor
-    binary: spectre-supervisor
-    id: spectre-supervisor
-    # The supervisor's seccomp and cgroup controls are Linux-only.
-    goos:
-      - linux
 
 archives:
   - formats: [tar.gz]
