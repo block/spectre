@@ -64,6 +64,7 @@ enable = [
   'testableexamples',
   'testpackage',
   'tparallel',
+  'typeboundary',
   'unconvert',
   'unparam',
   'unused',
@@ -90,6 +91,8 @@ skip-tests = [
   'godot',
   'noctx',
   'wrapcheck',
+  'gochecknoglobals',
+  'methodfile',
 ]
 
 # golangci-lint's std-error-handling preset: these errors rarely need handling.

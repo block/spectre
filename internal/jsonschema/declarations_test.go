@@ -34,7 +34,7 @@ func TestDeclarationsSchemaModel(t *testing.T) {
 	assert.NoError(t, err)
 	text := schema.Value{Kind: schema.KindString}
 	number := schema.Value{Kind: schema.KindNumber}
-	object := func(name string) schema.Value { return schema.Value{Kind: schema.KindObject, Type: name} }
+	object := func(name schema.TypeRef) schema.Value { return schema.Value{Kind: schema.KindObject, Type: name} }
 	assert.Equal(t, []*schema.Type{
 		{Name: "weather.Alert", Fields: []schema.Field{
 			{Name: "id", Value: text},

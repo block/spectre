@@ -12,6 +12,7 @@ import (
 	. "github.com/alecthomas/types/optional"
 
 	"github.com/block/spectre/internal/comparison/javascript"
+	"github.com/block/spectre/internal/schema"
 )
 
 const testDeclarations = `
@@ -41,7 +42,7 @@ func TestProgramOwnsDeclarations(t *testing.T) {
 	assert.Equal(t, []endpoint{{"http", "GET /v1/forecast", "test.v1.Response"}, {"http", "GET /v2/forecast", "test.v1.Response"}}, endpoints(program, javascript.Ingress))
 	assert.Equal(t, []endpoint{{"http", "GET weather.example/v1/forecast", "test.v1.Response"}}, endpoints(program, javascript.Egress))
 	assert.Equal(t, []javascript.FieldTarget{javascript.NewFieldTarget("test.v1.Response", "value")}, program.Fields())
-	assert.Equal(t, []string{"test.v1.User"}, program.Messages())
+	assert.Equal(t, []schema.TypeRef{"test.v1.User"}, program.Messages())
 	operation, err := program.Schema().Operation("test.v1.UserService.GetUser")
 	assert.NoError(t, err)
 	assert.Equal(t, "test.v1.User", operation.Request)
@@ -60,11 +61,11 @@ func TestIgnoreRegistersIgnoredEndpoint(t *testing.T) {
 	assert.Equal(t, 2, len(got))
 	// The matched endpoint keeps its type and is compared.
 	assert.Equal(t, "GET /v1/forecast", got[0].Pattern())
-	assert.Equal(t, "test.v1.Response", got[0].Type())
+	assert.Equal(t, schema.TypeRef("test.v1.Response"), got[0].Type())
 	assert.False(t, got[0].Ignore())
 	// The ignored endpoint carries no type and is skipped.
 	assert.Equal(t, "GET /_status", got[1].Pattern())
-	assert.Equal(t, "", got[1].Type())
+	assert.Equal(t, schema.TypeRef(""), got[1].Type())
 	assert.True(t, got[1].Ignore())
 }
 
@@ -75,7 +76,7 @@ func TestLoadsEmptyScriptsDirectory(t *testing.T) {
 	assert.Equal(t, []endpoint{}, endpoints(program, javascript.Ingress))
 	assert.Equal(t, []endpoint{}, endpoints(program, javascript.Egress))
 	assert.Equal(t, []javascript.FieldTarget{}, program.Fields())
-	assert.Equal(t, []string{}, program.Messages())
+	assert.Equal(t, 0, len(program.Messages()))
 	evaluator, err := program.NewEvaluator(t.Context())
 	assert.NoError(t, err)
 	evaluator.Close()
@@ -94,7 +95,7 @@ func TestResolvesTypeArgumentsWithTheChecker(t *testing.T) {
 		`)},
 	})
 	assert.NoError(t, err)
-	assert.Equal(t, []string{"test.v1.User"}, program.Messages())
+	assert.Equal(t, []schema.TypeRef{"test.v1.User"}, program.Messages())
 	assert.Equal(t, []javascript.FieldTarget{javascript.NewFieldTarget("test.A", "B.value")}, program.Fields())
 }
 
@@ -268,7 +269,7 @@ func TestEvaluatesEachScriptOnce(t *testing.T) {
 	assert.NoError(t, err)
 
 	assert.Equal(t, []javascript.FieldTarget{javascript.NewFieldTarget("test.v1.Response", "owner"), javascript.NewFieldTarget("test.v1.Response", "value")}, program.Fields())
-	assert.Equal(t, []string{"test.v1.User"}, program.Messages())
+	assert.Equal(t, []schema.TypeRef{"test.v1.User"}, program.Messages())
 	evaluator, err := program.NewEvaluator(t.Context())
 	assert.NoError(t, err)
 	defer evaluator.Close()
@@ -548,7 +549,7 @@ func TestExplicitTypeScriptImportsShareModuleRecord(t *testing.T) {
 		"lib/register.ts": script(`spectre.message<v1.User>((user) => user);`),
 	})
 	assert.NoError(t, err)
-	assert.Equal(t, []string{"test.v1.User"}, program.Messages())
+	assert.Equal(t, []schema.TypeRef{"test.v1.User"}, program.Messages())
 }
 
 func TestRejectsMalformedTypeScript(t *testing.T) {
@@ -620,9 +621,9 @@ func TestFieldRegistrationsPreserveExplicitTypeAndPath(t *testing.T) {
 }
 
 type endpoint struct {
-	protocol string
+	protocol javascript.Protocol
 	pattern  string
-	typeName string
+	typeName schema.TypeRef
 }
 
 func endpoints(program *javascript.Program, direction javascript.Direction) []endpoint {

@@ -110,7 +110,7 @@ func TestAgreementRejectsMismatchedFields(t *testing.T) {
 	registry, err := descriptors.NewRegistry(set)
 	assert.NoError(t, err)
 	for name, test := range map[string]struct {
-		typeName  string
+		typeName  schema.TypeRef
 		fieldName string
 		mutate    func(field *schema.Field)
 		message   string

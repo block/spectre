@@ -121,7 +121,7 @@ func (p pathWithPresence) isPresent() bool {
 func findMessages(
 	loaded *schema.Schema,
 	descriptor *schema.Type,
-	target string,
+	target schema.TypeRef,
 	payload *document,
 ) []pathWithPresence {
 	paths := []pathWithPresence{}

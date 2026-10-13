@@ -13,19 +13,18 @@ import (
 	kongtoml "github.com/alecthomas/kong-toml"
 
 	"github.com/block/spectre/internal"
-	"github.com/block/spectre/internal/comparison"
-	"github.com/block/spectre/internal/egress"
+	"github.com/block/spectre/internal/httpserver"
 	"github.com/block/spectre/internal/logger"
 	"github.com/block/spectre/internal/netaddr"
-	"github.com/block/spectre/internal/proxy"
+	"github.com/block/spectre/internal/protocol"
 )
 
 type cli struct {
-	Log        logger.Config     `embed:""`
-	Config     kong.ConfigFlag   `placeholder:"FILE" help:"Load flag values from a TOML file. Command-line flags take precedence."`
-	Version    kong.VersionFlag  `help:"Print the version and exit."`
-	Egress     egress.Config     `embed:""`
-	Comparison comparison.Config `embed:""`
+	Log     logger.Config           `embed:""`
+	Config  kong.ConfigFlag         `placeholder:"FILE" help:"Load flag values from a TOML file. Command-line flags take precedence."`
+	Version kong.VersionFlag        `help:"Print the version and exit."`
+	Egress  httpserver.EgressConfig `embed:""`
+	Engine  protocol.Config         `embed:""`
 }
 
 type commandContext struct {
@@ -44,13 +43,9 @@ func main() {
 }
 
 func (c *cli) Run(runtime *commandContext) error {
-	transport := proxy.NewTransport(c.Egress.Config)
+	transport := httpserver.NewTransport(c.Egress.Config)
 	defer transport.CloseIdleConnections()
-	hasher, err := comparison.NewRequestHasher(runtime.ctx, c.Comparison, runtime.log)
-	if err != nil {
-		return errors.Wrap(err, "configure request hashing")
-	}
-	handler, err := egress.New(c.Egress, transport, hasher, runtime.log)
+	handler, err := httpserver.NewEgress(runtime.ctx, c.Egress, c.Engine, transport, runtime.log)
 	if err != nil {
 		return errors.Wrap(err, "configure egress")
 	}

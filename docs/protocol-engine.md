@@ -21,9 +21,9 @@ type RequestID struct{ typeid.TypeID[requestPrefix] }
 type Exchange struct{ typeid.TypeID[exchangePrefix] }
 
 type Declaration interface{ declaration() }
-type DeclarationRequest struct{ Type TypeRef }  // egress.match
-type DeclarationResponse struct{ Type TypeRef } // ingress.match
-type DeclarationIgnore struct{}                 // ingress.ignore
+type DeclarationRequest struct{ Type schema.TypeRef }  // egress.match
+type DeclarationResponse struct{ Type schema.TypeRef } // ingress.match
+type DeclarationIgnore struct{ Reason string } // ingress.ignore, or unsupported traffic
 
 type Matcher interface {
 	Declare(pattern string, declaration Declaration) error
@@ -31,43 +31,62 @@ type Matcher interface {
 
 // Message without a Type is compared raw, without normalisers.
 type Message struct {
-	Type  Option[TypeRef]
+	Type  Option[schema.TypeRef]
 	Value any
 }
 
-// Response compares Status, then Message. Raw is opaque to the engine and replayed on intercept.
+// Raw is a protocol's recorded response, opaque to the engine and replayed on intercept.
+type Raw interface{ Release() } // idempotent
+
+// Response is decoded lazily, only to compare, on the candidate's time.
 type Response struct {
-	Status  string
-	Message Option[Message]
-	Raw     any
+	Raw     Raw
 	Latency time.Duration
+	Decode  func() Content
+}
+
+// Content compares Status when both sides know it, then Failure, then Message.
+type Content struct {
+	Status  Option[string] // absent only with a Failure
+	Message Option[Message]
+	Failure Option[error]
 }
 
 type Decision interface{ decision() }
 type DecisionForward struct {
-	RequestID RequestID
+	RequestID Option[RequestID] // set only at the ingress reference
 	Exchange  Exchange
 }
-type DecisionIntercept struct{ Raw any }
+type DecisionIntercept struct{ Raw Raw }
 
-func NewEngine(ctx context.Context, config comparison.Config, matchers map[Protocol]Matcher,
+type Config struct {
+	Comparison  comparison.Config `embed:""`
+	MatchWindow time.Duration
+}
+
+func NewEngine(ctx context.Context, config Config, matchers map[javascript.Protocol]Matcher,
 	quarantine Quarantiner, log *slog.Logger) (*Engine, error)
 
-func (e *Engine) IngressReference(protocol Protocol) *Acceptor
-func (e *Engine) IngressCandidate(protocol Protocol) *Acceptor
-func (e *Engine) EgressReference(protocol Protocol) *Acceptor
-func (e *Engine) EgressCandidate(protocol Protocol) *Acceptor
+func (e *Engine) IngressReference(protocol javascript.Protocol) Acceptor
+func (e *Engine) IngressCandidate(protocol javascript.Protocol) Acceptor
+func (e *Engine) EgressReference(protocol javascript.Protocol) Acceptor
+func (e *Engine) EgressCandidate(protocol javascript.Protocol) Acceptor
 
-func (a *Acceptor) ProcessRequest(ctx context.Context, requestID Option[RequestID], route Route,
-	declaration Option[Declaration], request func(context.Context) (Message, error)) (Decision, error)
-func (a *Acceptor) ProcessResponse(ctx context.Context, exchange Exchange, response Response)
-func (a *Acceptor) Unable(ctx context.Context, exchange Exchange, reason error)
+type Acceptor interface {
+	ProcessRequest(ctx context.Context, requestID Option[RequestID], route Route,
+		ignored Option[string], request func(context.Context) (Message, error)) (Decision, error)
+	ProcessResponse(ctx context.Context, exchange Exchange, response Response)
+	Unable(ctx context.Context, exchange Exchange, reason error)
+}
 ```
 
 - `NewEngine` passes each script declaration to its protocol's matcher. A script naming an unregistered protocol fails startup.
 - Servers match routes themselves, because only they understand their pattern syntax and wildcard binding.
 - The request payload is lazy, so the engine never delays a request it forwards.
-- Every exchange ends with exactly one `ProcessResponse` or `Unable`.
+- `ignored` is the reason ingress never compares a request's responses. Other points ignore it.
+- Response decoding is lazy too, so ignored routes are never decoded and the reference handler never decodes.
+- Every exchange ends with exactly one `ProcessResponse` or `Unable`. The engine owns the `Raw` from then on.
+- Declarations and sum types carry `//sumtype:decl`, so type switches over them are checked for exhaustiveness.
 
 ## Points
 
@@ -78,37 +97,42 @@ The engine creates one acceptor per point, so servers never know whether they ca
 | Ingress reference | Assigns a RequestID; forwards. Never reads the payload. | Stored without blocking the reference. |
 | Ingress candidate | Requires the reference's RequestID, passed along by the server; forwards. | Paired by RequestID, normalised, and diffed. Ignored routes are not compared. |
 | Egress reference | Forwards immediately, then hashes route and normalised payload in the background. | Stored for candidates with the same hash. |
-| Egress candidate | Hashes, claims the oldest unused reference with the same hash, waits for its response, and intercepts with its `Raw`. | Never called. |
+| Egress candidate | Hashes, claims the earliest unused reference with the same hash, waits for its response, and intercepts with its `Raw`. | Never called. |
 
 Until RequestIDs are [propagated](context-propagation.md), egress pairs on hashes alone.
+
+Egress pairs in arrival order. Each request is numbered when it arrives, before hashing, and both unused references and waiting candidates are kept in that order. A reference that is still being hashed is not waited for, so a candidate can claim a later reference of the same hash that finished hashing first.
 
 ## Pairing windows
 
 - An unused egress reference expires after `MatchWindow` (default 5s), releasing its `Raw`.
 - An egress candidate waits up to `MatchWindow` for a matching reference.
-- An ingress reference response waits until its candidate leg ends, which the server bounds with `CandidateTimeout`. If the candidate never responds, the engine logs that comparison did not finish.
-- The engine also expires abandoned exchanges, as a guard against server bugs.
+- The server must call the ingress candidate's `ProcessRequest` before forwarding the reference. A reference that ends with no candidate joined is dropped at once.
+- An ingress candidate's response waits for the reference, bounded by the candidate's context, which the server limits with `CandidateTimeout`. If the reference never ends, or was cancelled, the engine logs that comparison did not finish.
+- There is no separate expiry for abandoned ingress exchanges.
 
-`MatchWindow` moves into `comparison.Config`.
+`MatchWindow` is part of `protocol.Config`, which both servers embed, so it is also an ingress flag.
 
 ## Quarantine
 
 Divergence, `Unable`, an unidentifiable request, and an unmatched egress candidate are all reported to the `Quarantiner`. Servers pass the same `proxy.Candidates` they use for candidate admission, cancellation, and timeouts.
 
-`Raw` values that expire unused are released through an optional `Release()` method. After an intercept, the server releases the `Raw` once replay finishes.
+- `Unable` with a cancelled context never quarantines, because the caller gave up. Nor does a comparison the candidate's context cut short.
+- Ignored routes never quarantine, even when the candidate fails. Their candidate responses are reported as skipped without waiting for the reference.
+- Known statuses are compared first, so a status difference is divergent even if a body fails to decode. Otherwise a response one side cannot decode is reported as unable.
+
+The engine releases `Raw` values that are abandoned or expire unused. After an intercept, the server releases the `Raw` once replay finishes.
+
+Comparison and match logs name traffic by `protocol` and `route`. HTTP ingress routes are `METHOD /path`. Egress routes are the declared endpoint pattern, such as `GET forecasts.example/v1/forecasts/{location}`, or `METHOD host/path` for undeclared requests.
 
 ## HTTP server
 
-Ingress and egress share one point handler: match the route, call `ProcessRequest` with a lazy payload from a bounded request capture, then forward while recording the response or replay a recording, and finally report the decoded response. One recording serves both comparison and replay.
+Ingress and egress share one point handler: match the route, call `ProcessRequest` with a lazy payload from a bounded request capture, then forward while recording the response or replay a recording, and finally report the response with a lazy decoder. One recording serves both comparison and replay. At ingress, a transport failure is reported as `Unable`. At egress, it is recorded and replayed to the candidate, so the candidate sees what the reference saw.
+
+Each server constructor builds its own candidates, route matcher, and engine from `protocol.Config`, so they cannot be wired inconsistently. The server therefore also shuts its engine down. `ComparisonMaxBodyBytes` is a server setting, because only servers capture bodies.
 
 Only assembly differs:
 
-- Ingress: one listener sends each request to two points. The reference streams to the client, and the candidate runs in the background with a mirrored body and its own timeout. Descriptors come from reflection.
-- Egress: two listeners, one point each. The reference selects its upstream by host. The candidate has no upstream, so even a wrong `Forward` cannot reach a dependency.
-
-## Stages
-
-1. Move HTTP decoding into `httpserver/message` and the HTTP packages under `httpserver`, without behaviour changes.
-2. Add the engine and the HTTP matcher, tested with a fake protocol.
-3. Build the shared HTTP point handler and move ingress and egress onto it, deleting `Comparator` and `RequestHasher`.
-4. Delete the `docs/protocol.go` sketch.
+- Ingress: one listener sends each request to two points. The candidate is admitted first; if it is refused, the reference is proxied without the engine. The reference streams to the client, and the candidate runs in the background with a mirrored body and its own timeout. Descriptors come from reflection.
+- Ingress classifies each request when it arrives. Undeclared requests without a content type are compared only as Connect GET requests, and otherwise ignored.
+- Egress: two listeners, one point each. The reference selects its upstream by host. The candidate has no upstream, so even a wrong `Forward` cannot reach a dependency. The request decoder is built at startup, so a schema that cannot decode the declared endpoints fails startup.

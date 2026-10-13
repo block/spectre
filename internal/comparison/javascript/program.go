@@ -34,7 +34,7 @@ type Program struct {
 	spectre   *spectreModule
 	endpoints []Endpoint
 	fields    []FieldTarget
-	messages  []string
+	messages  []schema.TypeRef
 }
 
 // NewProgram type-checks every TypeScript script against the schema declarations, links
@@ -126,7 +126,7 @@ func (p *Program) Fields() []FieldTarget {
 }
 
 // Messages returns the object type names declared by the scripts.
-func (p *Program) Messages() []string {
+func (p *Program) Messages() []schema.TypeRef {
 	return slices.Clone(p.messages)
 }
 

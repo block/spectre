@@ -11,8 +11,8 @@ import (
 	"github.com/alecthomas/kong"
 	kongtoml "github.com/alecthomas/kong-toml"
 
-	"github.com/block/spectre/internal/comparison"
-	"github.com/block/spectre/internal/egress"
+	"github.com/block/spectre/internal/httpserver"
+	"github.com/block/spectre/internal/protocol"
 )
 
 func TestCLIEmbedsEgressConfig(t *testing.T) {
@@ -32,19 +32,19 @@ func TestCLIEmbedsEgressConfig(t *testing.T) {
 		"--descriptors-dir=" + descriptors,
 	})
 	assert.NoError(t, err)
-	expected := egress.NewConfig()
+	expected := httpserver.NewEgressConfig()
 	expected.CandidateListen = "unix:/tmp/candidate.sock"
 	expected.Destinations = map[string]string{
 		"api.weather.example": "https://api.weather.example",
 		"users.example":       "h2c://127.0.0.1:9000",
 	}
-	expected.MatchWindow = 2 * time.Second
 	expected.Descriptors.DescriptorsDir = descriptors
-	expectedComparison := comparison.NewConfig()
-	expectedComparison.ScriptsDir = scripts
-	expectedComparison.Schema.SchemaDir = schema
+	expectedEngine := protocol.NewConfig()
+	expectedEngine.Comparison.ScriptsDir = scripts
+	expectedEngine.Comparison.Schema.SchemaDir = schema
+	expectedEngine.MatchWindow = 2 * time.Second
 	assert.Equal(t, expected, command.Egress)
-	assert.Equal(t, expectedComparison, command.Comparison)
+	assert.Equal(t, expectedEngine, command.Engine)
 }
 
 func TestCLIRequiresSchemaDir(t *testing.T) {
@@ -93,19 +93,19 @@ descriptors-dir = %q
 	assert.NoError(t, err)
 	_, err = parser.Parse([]string{"--config=" + path, "--match-window=3s"})
 	assert.NoError(t, err)
-	expected := egress.NewConfig()
+	expected := httpserver.NewEgressConfig()
 	expected.CandidateListen = "unix:/tmp/candidate.sock"
 	expected.Destinations = map[string]string{
 		"api.weather.example": "https://api.weather.example",
 		"users.example":       "h2c://127.0.0.1:9000",
 	}
-	expected.MatchWindow = 3 * time.Second
 	expected.Descriptors.DescriptorsDir = descriptors
-	expectedComparison := comparison.NewConfig()
-	expectedComparison.ScriptsDir = scripts
-	expectedComparison.Schema.SchemaDir = schema
+	expectedEngine := protocol.NewConfig()
+	expectedEngine.Comparison.ScriptsDir = scripts
+	expectedEngine.Comparison.Schema.SchemaDir = schema
+	expectedEngine.MatchWindow = 3 * time.Second
 	assert.Equal(t, expected, command.Egress)
-	assert.Equal(t, expectedComparison, command.Comparison)
+	assert.Equal(t, expectedEngine, command.Engine)
 }
 
 func writeSchemaDir(t *testing.T) string {

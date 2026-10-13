@@ -9,7 +9,7 @@ import (
 	"github.com/block/spectre/internal/schema"
 )
 
-// Config contains the command-line configuration for response comparison.
+// Config contains the command-line configuration for scripts and comparison.
 type Config struct {
 	// ScriptsDir holds the normaliser scripts, which are all loaded as one set.
 	ScriptsDir string `required:"" type:"existingdir" help:"Directory of normaliser scripts. Every .ts file in it, including subdirectories, is loaded and type-checked against the schema."`
@@ -17,8 +17,6 @@ type Config struct {
 	Schema schema.Config `embed:""`
 	// ComparisonTimeout limits one response comparison.
 	ComparisonTimeout time.Duration `default:"1s" help:"Maximum duration of one response comparison."`
-	// ComparisonMaxBodyBytes limits each captured request or response body.
-	ComparisonMaxBodyBytes int `default:"1048576" help:"Maximum captured body bytes per request or response."`
 }
 
 // NewConfig returns the default response comparison configuration.
@@ -43,9 +41,6 @@ func (c Config) Validate() error {
 	}
 	if c.ComparisonTimeout <= 0 {
 		return errors.New("comparison timeout must be positive")
-	}
-	if c.ComparisonMaxBodyBytes <= 0 {
-		return errors.New("comparison maximum body size must be positive")
 	}
 	return nil
 }
