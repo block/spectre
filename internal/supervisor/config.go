@@ -17,6 +17,12 @@ type Config struct {
 	Candidate string `required:"" help:"Shell command for the candidate service. $SPECTRE_LISTEN and $SPECTRE_EGRESS are exported to it."`
 	// Reference is the shell command for the authoritative reference service.
 	Reference string `required:"" help:"Shell command for the reference service. $SPECTRE_LISTEN and $SPECTRE_EGRESS are exported to it."`
+	// CandidateProtocol is the protocol the ingress uses to reach the candidate.
+	CandidateProtocol string `name:"candidate-protocol" enum:"h2c,http" default:"h2c" help:"Protocol the ingress uses to reach the candidate: h2c (unencrypted HTTP/2) or http (HTTP/1.1)."`
+	// ReferenceProtocol is the protocol the ingress uses to reach the reference.
+	ReferenceProtocol string `name:"reference-protocol" enum:"h2c,http" default:"h2c" help:"Protocol the ingress uses to reach the reference: h2c (unencrypted HTTP/2) or http (HTTP/1.1)."`
+	// Reflection loads and compares both backends' descriptors via gRPC reflection.
+	Reflection bool `name:"reflection" negatable:"" default:"true" help:"Load backend descriptors with gRPC reflection and require them to match; disable to compare using only the static descriptors."`
 	// Listen is the public ingress address that clients send traffic to.
 	Listen string `default:"127.0.0.1:50050" help:"Public ingress address: host:port, or unix:<path|@abstract> for a unix socket."`
 	// SocketDir holds the unix sockets wiring the proxies to the services.

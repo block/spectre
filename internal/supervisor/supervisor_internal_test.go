@@ -63,6 +63,18 @@ func TestIngressConfig(t *testing.T) {
 	assert.Equal(t, h2cUnix(filepath.Join(config.SocketDir, "candidate.sock")), ingress.Candidate)
 }
 
+func TestIngressConfigProtocols(t *testing.T) {
+	s, config := testSupervisor(t)
+	s.config.ReferenceProtocol = protocolHTTP
+	s.config.CandidateProtocol = "h2c"
+	s.config.Reflection = false
+	assert.NoError(t, s.prepareWiring())
+	ingress := s.ingressConfig()
+	assert.Equal(t, httpUnix(filepath.Join(config.SocketDir, "reference.sock")), ingress.Reference)
+	assert.Equal(t, h2cUnix(filepath.Join(config.SocketDir, "candidate.sock")), ingress.Candidate)
+	assert.False(t, ingress.Reflection)
+}
+
 func TestEngineConfig(t *testing.T) {
 	s, _ := testSupervisor(t)
 	s.config.ScriptsDir = "scripts"

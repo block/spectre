@@ -339,8 +339,9 @@ func (s *Supervisor) egressConfig() httpserver.EgressConfig {
 func (s *Supervisor) ingressConfig() httpserver.IngressConfig {
 	config := httpserver.NewIngressConfig()
 	config.Listen = s.config.Listen
-	config.Reference = h2cUnix(s.referenceSock)
-	config.Candidate = h2cUnix(s.candidateSock)
+	config.Reference = backendURL(s.config.ReferenceProtocol, s.referenceSock)
+	config.Candidate = backendURL(s.config.CandidateProtocol, s.candidateSock)
+	config.Reflection = s.config.Reflection
 	config.Descriptors = s.config.Descriptors
 	return config
 }
@@ -398,3 +399,15 @@ func waitListening(ctx context.Context, network string, address string, timeout 
 func unixListen(path string) string { return "unix:" + path }
 func httpUnix(path string) string   { return "http+unix:" + path }
 func h2cUnix(path string) string    { return "h2c+unix:" + path }
+
+// protocolHTTP selects HTTP/1.1 for a leg; any other value selects h2c.
+const protocolHTTP = "http"
+
+// backendURL builds the ingress upstream URL for a leg from its protocol: HTTP/1.1
+// over a unix socket, or unencrypted HTTP/2 (h2c) for everything else.
+func backendURL(protocol string, path string) string {
+	if protocol == protocolHTTP {
+		return httpUnix(path)
+	}
+	return h2cUnix(path)
+}
