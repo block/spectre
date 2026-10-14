@@ -8,29 +8,23 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sort"
-	"strings"
 	"syscall"
 	"time"
 
 	"github.com/alecthomas/errors"
 	. "github.com/alecthomas/types/optional"
 
+	"github.com/block/spectre/internal/descriptors"
+	"github.com/block/spectre/internal/httpserver"
 	"github.com/block/spectre/internal/logger"
 	"github.com/block/spectre/internal/netaddr"
+	"github.com/block/spectre/internal/protocol"
 )
 
 // roles name the service leaves and their wiring.
 const (
 	roleReference = "reference"
 	roleCandidate = "candidate"
-)
-
-// IngressCommand and EgressCommand are the hidden subcommands the supervisor
-// re-execs itself with to run the embedded ingress and egress proxies.
-const (
-	IngressCommand = "__ingress"
-	EgressCommand  = "__egress"
 )
 
 // Supervisor runs the candidate and reference services behind the SPECTRE
@@ -47,17 +41,16 @@ type Supervisor struct {
 	egressHealth    string
 	referenceSock   string
 	candidateSock   string
-	ingress         *netaddr.Endpoint
 
 	limits  Option[*cgroups]
-	started []*managedProcess
+	running int
 	exits   chan exit
 }
 
-// exit reports a finished process.
+// exit reports a finished component.
 type exit struct {
-	process *managedProcess
-	err     error
+	name string
+	err  error
 }
 
 // New validates config and returns a supervisor that logs to log and tags child
@@ -77,7 +70,7 @@ func New(config Config, logConfig logger.Config, log *slog.Logger, output io.Wri
 		config:    config,
 		logConfig: logConfig,
 		log:       log,
-		output:    output,
+		output:    newSyncWriter(output),
 		selfExe:   selfExe,
 		limits:    None[*cgroups](),
 		exits:     make(chan exit, 4),
@@ -85,7 +78,7 @@ func New(config Config, logConfig logger.Config, log *slog.Logger, output io.Wri
 }
 
 // Run starts the proxies and services, then runs until the context is cancelled
-// or a process exits, after which it stops the rest.
+// or a component exits, after which it stops the rest.
 func (s *Supervisor) Run(ctx context.Context) error {
 	if err := s.prepareWiring(); err != nil {
 		return err
@@ -95,7 +88,7 @@ func (s *Supervisor) Run(ctx context.Context) error {
 	}
 	defer s.cleanupLimits(ctx)
 
-	// Cancelling runCtx terminates every child via its command cancel handler.
+	// Cancelling runCtx stops the proxies and terminates the services.
 	runCtx, cancel := context.WithCancel(ctx)
 	defer s.drain()
 	defer cancel()
@@ -121,7 +114,6 @@ func (s *Supervisor) prepareWiring() error {
 	s.egressHealth = filepath.Join(socketDir, "egress-health.sock")
 	s.referenceSock = filepath.Join(socketDir, "reference.sock")
 	s.candidateSock = filepath.Join(socketDir, "candidate.sock")
-	s.ingress = netaddr.ParseListen(s.config.Listen)
 	return nil
 }
 
@@ -176,19 +168,18 @@ func (s *Supervisor) cleanupLimits(ctx context.Context) {
 	}
 }
 
-// startAll brings up the proxies and services in dependency order, each waited
-// on until it accepts connections.
+// startAll brings up the proxies and services in dependency order, waiting for
+// each service to accept connections before the next.
 func (s *Supervisor) startAll(ctx context.Context) error {
-	egress := s.egressProcess(ctx)
-	if err := s.launch(ctx, egress, "unix", s.egressHealth); err != nil {
+	if err := s.startEgress(ctx); err != nil {
 		return err
 	}
 	reference := s.serviceProcess(ctx, roleReference, httpUnix(s.egressReference), unixListen(s.referenceSock), false)
-	if err := s.launch(ctx, reference, "unix", s.referenceSock); err != nil {
+	if err := s.launchService(ctx, reference, "unix", s.referenceSock); err != nil {
 		return err
 	}
 	candidate := s.serviceProcess(ctx, roleCandidate, httpUnix(s.egressCandidate), unixListen(s.candidateSock), s.sandboxActive())
-	if err := s.launch(ctx, candidate, "unix", s.candidateSock); err != nil {
+	if err := s.launchService(ctx, candidate, "unix", s.candidateSock); err != nil {
 		return err
 	}
 	if err := s.place(reference, roleReference); err != nil {
@@ -197,17 +188,69 @@ func (s *Supervisor) startAll(ctx context.Context) error {
 	if err := s.place(candidate, roleCandidate); err != nil {
 		return err
 	}
-	ingress := s.ingressProcess(ctx)
-	return s.launch(ctx, ingress, s.ingress.Network(), s.ingress.Address())
+	return s.startIngress(ctx)
 }
 
-// launch starts a process, watches for its exit, and waits until it listens.
-func (s *Supervisor) launch(ctx context.Context, process *managedProcess, network string, address string) error {
+// startEgress builds the egress proxy, opens its listeners, and serves it.
+func (s *Supervisor) startEgress(ctx context.Context) error {
+	config := s.egressConfig()
+	transport := httpserver.NewTransport(config.Config)
+	handler, err := httpserver.NewEgress(ctx, config, s.engineConfig(), transport, s.proxyLogger("egress"))
+	if err != nil {
+		transport.CloseIdleConnections()
+		return errors.Wrap(err, "configure egress")
+	}
+	listeners, err := listenAll(ctx, config.ReferenceListen, config.CandidateListen, config.HealthListen)
+	if err != nil {
+		transport.CloseIdleConnections()
+		return errors.Wrap(err, "listen for egress")
+	}
+	s.runProxy(ctx, "egress", transport, func() error {
+		return handler.Serve(ctx, listeners[0], listeners[1], listeners[2])
+	})
+	return nil
+}
+
+// startIngress builds the ingress proxy, opens its listener, and serves it.
+func (s *Supervisor) startIngress(ctx context.Context) error {
+	config := s.ingressConfig()
+	transport := httpserver.NewTransport(config.Config)
+	loader := Some[httpserver.DescriptorLoader](descriptors.NewReflectionLoader())
+	handler, err := httpserver.NewIngress(ctx, config, s.engineConfig(), transport, loader, s.proxyLogger("ingress"))
+	if err != nil {
+		transport.CloseIdleConnections()
+		return errors.Wrap(err, "configure ingress")
+	}
+	listener, err := netaddr.ParseListen(config.Listen).Listen(ctx)
+	if err != nil {
+		transport.CloseIdleConnections()
+		return errors.Wrap(err, "listen for ingress")
+	}
+	s.runProxy(ctx, "ingress", transport, func() error {
+		return handler.Serve(ctx, listener)
+	})
+	return nil
+}
+
+// runProxy serves a proxy in the background, reporting its exit and releasing the
+// transport's idle connections when it stops.
+func (s *Supervisor) runProxy(ctx context.Context, name string, transport *httpserver.Transport, serve func() error) {
+	s.running++
+	go func() {
+		defer transport.CloseIdleConnections()
+		s.exits <- exit{name: name, err: serve()}
+	}()
+	s.log.InfoContext(ctx, "Started proxy", "name", name)
+}
+
+// launchService starts a service process, watches for its exit, and waits until
+// it listens.
+func (s *Supervisor) launchService(ctx context.Context, process *managedProcess, network string, address string) error {
 	if err := process.start(); err != nil {
 		return err
 	}
-	s.started = append(s.started, process)
-	go func() { s.exits <- exit{process: process, err: process.wait()} }()
+	s.running++
+	go func() { s.exits <- exit{name: process.Name(), err: process.wait()} }()
 	s.log.InfoContext(ctx, "Started process", "name", process.Name(), "pid", process.pid())
 	if err := waitListening(ctx, network, address, s.config.StartupTimeout); err != nil {
 		return errors.Wrapf(err, "%s did not start listening", process.Name())
@@ -224,53 +267,26 @@ func (s *Supervisor) place(process *managedProcess, role string) error {
 	return control.place(role, process.pid())
 }
 
-// waitForExit blocks until the context is cancelled or a process exits.
+// waitForExit blocks until the context is cancelled or a component exits.
 func (s *Supervisor) waitForExit(ctx context.Context) error {
 	select {
 	case <-ctx.Done():
 		s.log.InfoContext(ctx, "Shutting down after signal")
 		return nil
 	case finished := <-s.exits:
-		s.started = withoutProcess(s.started, finished.process)
-		s.log.WarnContext(ctx, "Process exited; shutting down", "name", finished.process.Name(), "error", finished.err)
-		return errors.Wrapf(finished.err, "%s exited", finished.process.Name())
+		s.running--
+		s.log.WarnContext(ctx, "Component exited; shutting down", "name", finished.name, "error", finished.err)
+		return errors.Wrapf(finished.err, "%s exited", finished.name)
 	}
 }
 
-// drain waits for the remaining processes to exit after the run context is
-// cancelled, which terminates them through their command cancel handlers.
+// drain waits for the remaining components to exit after the run context is
+// cancelled.
 func (s *Supervisor) drain() {
-	for len(s.started) > 0 {
-		finished := <-s.exits
-		s.started = withoutProcess(s.started, finished.process)
+	for s.running > 0 {
+		<-s.exits
+		s.running--
 	}
-}
-
-// egressProcess builds the egress proxy command.
-func (s *Supervisor) egressProcess(ctx context.Context) *managedProcess {
-	args := []string{
-		"--reference-listen=" + unixListen(s.egressReference),
-		"--candidate-listen=" + unixListen(s.egressCandidate),
-		"--health-listen=" + unixListen(s.egressHealth),
-	}
-	for _, host := range sortedKeys(s.config.Destinations) {
-		args = append(args, "--destination="+host+"="+s.config.Destinations[host])
-	}
-	args = append(args, s.sharedProxyArgs()...)
-	cmd := s.command(ctx, s.selfExe, append([]string{EgressCommand}, args...)...)
-	return newManagedProcess("egress", cmd, s.output)
-}
-
-// ingressProcess builds the ingress proxy command.
-func (s *Supervisor) ingressProcess(ctx context.Context) *managedProcess {
-	args := []string{
-		"--listen=" + s.config.Listen,
-		"--reference=" + h2cUnix(s.referenceSock),
-		"--candidate=" + h2cUnix(s.candidateSock),
-	}
-	args = append(args, s.sharedProxyArgs()...)
-	cmd := s.command(ctx, s.selfExe, append([]string{IngressCommand}, args...)...)
-	return newManagedProcess("ingress", cmd, s.output)
 }
 
 // serviceProcess builds a candidate or reference service command, optionally
@@ -293,29 +309,67 @@ func (s *Supervisor) serviceProcess(ctx context.Context, role string, egressURL 
 // command builds a child command that terminates gracefully on context
 // cancellation, escalating to a kill after the shutdown timeout.
 func (s *Supervisor) command(ctx context.Context, name string, arg ...string) *exec.Cmd {
-	cmd := exec.CommandContext(ctx, name, arg...) //nolint:gosec // G204: the supervisor runs operator-provided service and proxy commands by design
+	cmd := exec.CommandContext(ctx, name, arg...) //nolint:gosec // G204: the supervisor runs operator-provided service commands by design
 	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
 	cmd.WaitDelay = s.config.ShutdownTimeout
 	return cmd
 }
 
-// sharedProxyArgs returns the comparison and logging flags passed to both proxies.
-func (s *Supervisor) sharedProxyArgs() []string {
-	var args []string
-	if s.config.ScriptsDir != "" {
-		args = append(args, "--scripts-dir="+s.config.ScriptsDir)
+// engineConfig builds the comparison engine configuration shared by both proxies.
+func (s *Supervisor) engineConfig() protocol.Config {
+	config := protocol.NewConfig()
+	config.Comparison.ScriptsDir = s.config.ScriptsDir
+	config.Comparison.Schema.SchemaDir = s.config.SchemaDir
+	config.MatchWindow = s.config.MatchWindow
+	return config
+}
+
+// egressConfig builds the egress proxy configuration from the socket topology.
+func (s *Supervisor) egressConfig() httpserver.EgressConfig {
+	config := httpserver.NewEgressConfig()
+	config.ReferenceListen = unixListen(s.egressReference)
+	config.CandidateListen = unixListen(s.egressCandidate)
+	config.HealthListen = unixListen(s.egressHealth)
+	config.Destinations = s.config.Destinations
+	config.Descriptors = s.config.Descriptors
+	return config
+}
+
+// ingressConfig builds the ingress proxy configuration from the socket topology.
+func (s *Supervisor) ingressConfig() httpserver.IngressConfig {
+	config := httpserver.NewIngressConfig()
+	config.Listen = s.config.Listen
+	config.Reference = h2cUnix(s.referenceSock)
+	config.Candidate = h2cUnix(s.candidateSock)
+	config.Descriptors = s.config.Descriptors
+	return config
+}
+
+// proxyLogger returns a logger whose output lines are tagged with the proxy name.
+func (s *Supervisor) proxyLogger(name string) *slog.Logger {
+	return logger.Tagged(logger.New(s.logConfig, newPrefixWriter(s.output, name)))
+}
+
+// listenAll opens every address in order, closing any already opened on failure.
+func listenAll(ctx context.Context, addresses ...string) ([]net.Listener, error) {
+	listeners := make([]net.Listener, 0, len(addresses))
+	for _, address := range addresses {
+		listener, err := netaddr.ParseListen(address).Listen(ctx)
+		if err != nil {
+			return nil, errors.Join(errors.Wrapf(err, "listen on %s", address), closeListeners(listeners))
+		}
+		listeners = append(listeners, listener)
 	}
-	if s.config.SchemaDir != "" {
-		args = append(args, "--schema-dir="+s.config.SchemaDir)
+	return listeners, nil
+}
+
+// closeListeners closes every listener, joining any errors.
+func closeListeners(listeners []net.Listener) error {
+	closeErrors := make([]error, 0, len(listeners))
+	for _, listener := range listeners {
+		closeErrors = append(closeErrors, listener.Close())
 	}
-	if s.config.Descriptors.DescriptorsDir != "" {
-		args = append(args, "--descriptors-dir="+s.config.Descriptors.DescriptorsDir)
-	}
-	args = append(args, "--log-level="+strings.ToLower(s.logConfig.Level.String()))
-	if s.logConfig.JSON {
-		args = append(args, "--log-json")
-	}
-	return args
+	return errors.Join(closeErrors...)
 }
 
 // waitListening polls until the address accepts a connection or the timeout elapses.
@@ -339,27 +393,6 @@ func waitListening(ctx context.Context, network string, address string, timeout 
 		case <-time.After(100 * time.Millisecond):
 		}
 	}
-}
-
-// withoutProcess drops the already-exited process from the shutdown set.
-func withoutProcess(processes []*managedProcess, exited *managedProcess) []*managedProcess {
-	remaining := processes[:0]
-	for _, process := range processes {
-		if process != exited {
-			remaining = append(remaining, process)
-		}
-	}
-	return remaining
-}
-
-// sortedKeys returns the map keys in a stable order for deterministic arguments.
-func sortedKeys(values map[string]string) []string {
-	keys := make([]string, 0, len(values))
-	for key := range values {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	return keys
 }
 
 func unixListen(path string) string { return "unix:" + path }

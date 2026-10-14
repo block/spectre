@@ -133,10 +133,10 @@ explicit publish-release-image(registry : string, image-tag : string, version : 
 # Generate the sample descriptors and build its servers.
 target sample = [sample-bin, sample-forecasts-bin]
 
-# Build the ingress and egress container image.
+# Build the spectre container image.
 target container = [local-image]
 
-# Publish the ingress and egress container image.
+# Publish the spectre container image.
 target publish-container(registry : string, image-tag : string, version : string) = [publish-release-image(registry = registry, image-tag = image-tag, version = version)]
 
 # Run all tests

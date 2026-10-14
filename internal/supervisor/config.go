@@ -27,6 +27,8 @@ type Config struct {
 	ScriptsDir string `type:"existingdir" placeholder:"DIR" help:"Directory of comparison scripts passed to both proxies."`
 	// SchemaDir holds the TypeScript schema passed to both proxies.
 	SchemaDir string `type:"existingdir" placeholder:"DIR" help:"Directory of TypeScript schema passed to both proxies."`
+	// MatchWindow bounds how long a candidate call waits for a matching reference call.
+	MatchWindow time.Duration `default:"5s" help:"Maximum time a candidate egress call waits for an equivalent reference call before a 502."`
 	// Descriptors supplies protobuf descriptors to both proxies.
 	Descriptors descriptors.Config `embed:""`
 	// Limits configures the cgroup resource split between the services.
@@ -84,6 +86,9 @@ func (c Config) Validate() error {
 	}
 	if c.StartupTimeout <= 0 || c.ShutdownTimeout <= 0 {
 		return errors.New("startup and shutdown timeouts must be positive")
+	}
+	if c.MatchWindow <= 0 {
+		return errors.New("match window must be positive")
 	}
 	return errors.WithStack(c.Limits.Validate())
 }

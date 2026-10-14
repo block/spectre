@@ -8,8 +8,11 @@ egress_candidate_address=$(pwd)/dist/sockets/egress-candidate.sock
 escape=$(printf '\033')
 
 # Proctor prefixes each line with a coloured, right-aligned process name and a bar.
+# The supervisor runs the proxies and services itself, tagging their lines with
+# "<name> | ", so match those nested under the supervisor as well as top-level
+# proctor processes.
 process_log() {
-	sed "s/${escape}\[[0-9;]*m//g" "$SPECTRE_PROCTOR_LOG" | grep -E "^ *$1 │"
+	sed "s/${escape}\[[0-9;]*m//g" "$SPECTRE_PROCTOR_LOG" | grep -E "^ *$1 │|^ *supervisor │ $1 \|"
 }
 
 count_log() {

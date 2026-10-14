@@ -5,7 +5,6 @@ package main
 import (
 	"context"
 	"log/slog"
-	"net"
 	"os"
 	"os/signal"
 	"syscall"
@@ -13,16 +12,12 @@ import (
 	"github.com/alecthomas/errors"
 	"github.com/alecthomas/kong"
 	kongtoml "github.com/alecthomas/kong-toml"
-	. "github.com/alecthomas/types/optional"
 
 	"github.com/block/spectre/internal"
 	"github.com/block/spectre/internal/comparison/javascript"
 	"github.com/block/spectre/internal/descriptors"
-	"github.com/block/spectre/internal/httpserver"
 	"github.com/block/spectre/internal/jsonschema"
 	"github.com/block/spectre/internal/logger"
-	"github.com/block/spectre/internal/netaddr"
-	"github.com/block/spectre/internal/protocol"
 	"github.com/block/spectre/internal/supervisor"
 )
 
@@ -33,28 +28,11 @@ type cli struct {
 
 	Run runCommand `cmd:"" help:"Run the supervisor with the embedded proxies, splitting resources between a candidate and a reference."`
 	Gen genCommand `cmd:"" help:"Generate TypeScript schema declarations and the script API."`
-
-	// The proxies run as children of the supervisor, re-exec'd through these
-	// hidden commands rather than as separate binaries.
-	Ingress ingressCommand `cmd:"" name:"__ingress" hidden:"" help:"Run the embedded ingress proxy. Used internally by the supervisor."`
-	Egress  egressCommand  `cmd:"" name:"__egress" hidden:"" help:"Run the embedded egress proxy. Used internally by the supervisor."`
 }
 
 // runCommand supervises the candidate and reference behind the embedded proxies.
 type runCommand struct {
 	Supervisor supervisor.Config `embed:""`
-}
-
-// ingressCommand runs the embedded ingress proxy.
-type ingressCommand struct {
-	Ingress httpserver.IngressConfig `embed:""`
-	Engine  protocol.Config          `embed:""`
-}
-
-// egressCommand runs the embedded egress proxy.
-type egressCommand struct {
-	Egress httpserver.EgressConfig `embed:""`
-	Engine protocol.Config         `embed:""`
 }
 
 // genCommand groups the schema declaration generators.
@@ -113,40 +91,6 @@ func (c *runCommand) Run(runtime *commandContext, logConfig logger.Config) error
 	return errors.WithStack(super.Run(runtime.ctx))
 }
 
-func (c *ingressCommand) Run(runtime *commandContext) error {
-	transport := httpserver.NewTransport(c.Ingress.Config)
-	defer transport.CloseIdleConnections()
-	loader := Some[httpserver.DescriptorLoader](descriptors.NewReflectionLoader())
-	handler, err := httpserver.NewIngress(runtime.ctx, c.Ingress, c.Engine, transport, loader, runtime.log)
-	if err != nil {
-		return errors.Wrap(err, "configure ingress")
-	}
-	listener, err := netaddr.ParseListen(c.Ingress.Listen).Listen(runtime.ctx)
-	if err != nil {
-		return errors.Wrap(err, "listen for HTTP requests")
-	}
-	return errors.Wrap(handler.Serve(runtime.ctx, listener), "run ingress")
-}
-
-func (c *egressCommand) Run(runtime *commandContext) error {
-	transport := httpserver.NewTransport(c.Egress.Config)
-	defer transport.CloseIdleConnections()
-	handler, err := httpserver.NewEgress(runtime.ctx, c.Egress, c.Engine, transport, runtime.log)
-	if err != nil {
-		return errors.Wrap(err, "configure egress")
-	}
-	addresses := []string{c.Egress.ReferenceListen, c.Egress.CandidateListen, c.Egress.HealthListen}
-	listeners := make([]net.Listener, 0, len(addresses))
-	for _, address := range addresses {
-		listener, err := netaddr.ParseListen(address).Listen(runtime.ctx)
-		if err != nil {
-			return errors.Join(errors.Wrapf(err, "listen on %s", address), closeListeners(listeners))
-		}
-		listeners = append(listeners, listener)
-	}
-	return errors.Wrap(handler.Serve(runtime.ctx, listeners[0], listeners[1], listeners[2]), "run egress")
-}
-
 func (c *protoCommand) Run(ctx context.Context) error {
 	if c.Descriptors.DescriptorsDir == "" {
 		return errors.New("a descriptors directory is required")
@@ -164,12 +108,4 @@ func (c *jsonSchemaCommand) Run(ctx context.Context) error {
 
 func (c *moduleCommand) Run() error {
 	return errors.Wrap(javascript.WriteModuleDeclaration(c.Output), "write spectre module")
-}
-
-func closeListeners(listeners []net.Listener) error { //nolint:mainlogic releases listeners opened during startup
-	closeErrors := make([]error, 0, len(listeners))
-	for _, listener := range listeners {
-		closeErrors = append(closeErrors, listener.Close())
-	}
-	return errors.Join(closeErrors...)
 }
