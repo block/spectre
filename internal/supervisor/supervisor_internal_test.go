@@ -44,26 +44,46 @@ func TestServiceProcessCandidateSandboxed(t *testing.T) {
 	assert.True(t, slices.Contains(process.command().Env, "SPECTRE_EGRESS=http+unix:/sockets/egress-candidate.sock"))
 }
 
-func TestEgressProcessArgs(t *testing.T) {
+func TestEgressConfig(t *testing.T) {
 	s, config := testSupervisor(t)
 	assert.NoError(t, s.prepareWiring())
-	args := s.egressProcess(t.Context()).command().Args
-	assert.True(t, slices.Contains(args, "--reference-listen="+unixListen(filepath.Join(config.SocketDir, "egress-reference.sock"))))
-	assert.True(t, slices.Contains(args, "--candidate-listen="+unixListen(filepath.Join(config.SocketDir, "egress-candidate.sock"))))
-	assert.True(t, slices.Contains(args, "--health-listen="+unixListen(filepath.Join(config.SocketDir, "egress-health.sock"))))
-	// Destinations are passed in sorted order for deterministic arguments.
-	assert.True(t, slices.Contains(args, "--destination=a.example=http://a"))
-	assert.True(t, slices.Index(args, "--destination=a.example=http://a") < slices.Index(args, "--destination=b.example=http://b"))
-	assert.True(t, slices.Contains(args, "--log-level=info"))
+	egress := s.egressConfig()
+	assert.Equal(t, unixListen(filepath.Join(config.SocketDir, "egress-reference.sock")), egress.ReferenceListen)
+	assert.Equal(t, unixListen(filepath.Join(config.SocketDir, "egress-candidate.sock")), egress.CandidateListen)
+	assert.Equal(t, unixListen(filepath.Join(config.SocketDir, "egress-health.sock")), egress.HealthListen)
+	assert.Equal(t, config.Destinations, egress.Destinations)
 }
 
-func TestIngressProcessArgs(t *testing.T) {
+func TestIngressConfig(t *testing.T) {
 	s, config := testSupervisor(t)
 	assert.NoError(t, s.prepareWiring())
-	args := s.ingressProcess(t.Context()).command().Args
-	assert.True(t, slices.Contains(args, "--listen="+config.Listen))
-	assert.True(t, slices.Contains(args, "--reference="+h2cUnix(filepath.Join(config.SocketDir, "reference.sock"))))
-	assert.True(t, slices.Contains(args, "--candidate="+h2cUnix(filepath.Join(config.SocketDir, "candidate.sock"))))
+	ingress := s.ingressConfig()
+	assert.Equal(t, config.Listen, ingress.Listen)
+	assert.Equal(t, h2cUnix(filepath.Join(config.SocketDir, "reference.sock")), ingress.Reference)
+	assert.Equal(t, h2cUnix(filepath.Join(config.SocketDir, "candidate.sock")), ingress.Candidate)
+}
+
+func TestIngressConfigProtocols(t *testing.T) {
+	s, config := testSupervisor(t)
+	s.config.ReferenceProtocol = protocolHTTP
+	s.config.CandidateProtocol = "h2c"
+	s.config.Reflection = false
+	assert.NoError(t, s.prepareWiring())
+	ingress := s.ingressConfig()
+	assert.Equal(t, httpUnix(filepath.Join(config.SocketDir, "reference.sock")), ingress.Reference)
+	assert.Equal(t, h2cUnix(filepath.Join(config.SocketDir, "candidate.sock")), ingress.Candidate)
+	assert.False(t, ingress.Reflection)
+}
+
+func TestEngineConfig(t *testing.T) {
+	s, _ := testSupervisor(t)
+	s.config.ScriptsDir = "scripts"
+	s.config.SchemaDir = "schema"
+	s.config.MatchWindow = 3 * time.Second
+	engine := s.engineConfig()
+	assert.Equal(t, "scripts", engine.Comparison.ScriptsDir)
+	assert.Equal(t, "schema", engine.Comparison.Schema.SchemaDir)
+	assert.Equal(t, 3*time.Second, engine.MatchWindow)
 }
 
 func TestWaitListening(t *testing.T) {

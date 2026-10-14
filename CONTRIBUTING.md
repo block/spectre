@@ -1,14 +1,17 @@
 # Contributing
 
-The `spectre-ingress` command mirrors HTTP requests to reference and candidate
-services. It returns the reference response without waiting for the candidate response.
-The `spectre-egress` command sits between those services and their dependencies. It
-forwards reference calls and replays the recorded responses to matching candidate calls.
+The `spectre` binary supervises the whole comparison. `spectre run` starts a
+candidate and a reference service behind two embedded proxies. The ingress proxy
+mirrors HTTP requests to both services and returns the reference response without
+waiting for the candidate. The egress proxy sits between the services and their
+dependencies, forwarding reference calls and replaying the recorded responses to
+matching candidate calls. `spectre gen` generates the TypeScript schema
+declarations used for comparison.
 
 Logs default to info-level, colorized text on stderr. Use `--log-level=debug|info|warn|error`
 to change the minimum level and `--log-json` for JSON output.
 
-Both commands accept `--config=FILE` to load flag values from a TOML file. Keys are
+`spectre run` accepts `--config=FILE` to load flag values from a TOML file. Keys are
 flag names without the leading dashes, and command-line flags take precedence:
 
 ```toml
@@ -24,43 +27,24 @@ Unknown keys are rejected.
 
 ## Container image
 
-Build the local Alpine-based image with `bit container`. It contains both commands,
-its entry point is `spectre-ingress`, and it runs as a non-root user. Start the
-server with backends in the same network namespace:
-
-```sh
-docker run --rm --network=host \
-  -v "$PWD/internal/sample/scripts:/scripts:ro" \
-  -v "$PWD/internal/sample/schema:/schema:ro" \
-  -v "$PWD/dist/descriptors:/descriptors:ro" \
-  spectre:dev \
-  --listen=0.0.0.0:50050 \
-  --reference=h2c://127.0.0.1:50051 \
-  --candidate=h2c://127.0.0.1:50052 \
-  --scripts-dir=/scripts \
-  --schema-dir=/schema \
-  --descriptors-dir=/descriptors
-```
-
-Run the egress proxy from the same image with `--entrypoint spectre-egress`.
+Build the local Alpine-based image with `bit container`. It contains the single
+`spectre` binary, with the proxies embedded, and its entry point is `spectre`.
+Run `spectre run` with your candidate and reference commands to start the whole
+stack. The [demo](demo/README.md) wraps a complete supervised example around the
+sample service, including the cgroup split and egress sandbox.
 
 Releases are published for Linux AMD64 and ARM64 as `ghcr.io/block/spectre`
 and `docker.io/blockossreleases/spectre`.
 
 ## Egress proxy
 
-`spectre-egress` has three listeners. Reference services send dependency calls to
-`127.0.0.1:50060`, candidates send them to `127.0.0.1:50061`, and `/livez` and
-`/readyz` are served on `127.0.0.1:50062`. The candidate listener must use a
-loopback IP or a unix socket. Each `--destination=HOST=URL` flag sends requests
-for `HOST` to `URL`:
+The embedded egress proxy forwards each reference service's dependency calls to
+the real upstream and records the responses. `spectre run` wires it to the
+services automatically; map each dependency with a `--destination=HOST=URL` flag,
+which sends requests for `HOST` to `URL`:
 
 ```sh
-spectre-egress \
-  --destination=forecasts.example=http://127.0.0.1:50053 \
-  --scripts-dir=internal/sample/scripts \
-  --schema-dir=internal/sample/schema \
-  --descriptors-dir=dist/descriptors
+spectre run ... --destination=forecasts.example=http://127.0.0.1:50053
 ```
 
 Scripts declare dependency endpoints with `egress.match<Type>("http", pattern)`.
@@ -78,22 +62,24 @@ bit sample
 spectre-sample
 ```
 
-Run a second sample on port 50052, then start the ingress proxy:
+Run two samples as the candidate and reference behind the proxies with
+`spectre run`, which starts both services itself:
 
 ```sh
-spectre-ingress \
-  --reference=h2c://127.0.0.1:50051 \
-  --candidate=h2c://127.0.0.1:50052 \
+spectre run \
+  --reference='spectre-sample --listen=$SPECTRE_LISTEN' \
+  --candidate='spectre-sample --listen=$SPECTRE_LISTEN' \
   --scripts-dir=internal/sample/scripts \
   --schema-dir=internal/sample/schema \
-  --descriptors-dir=dist/descriptors
+  --descriptors-dir=dist/descriptors \
+  --no-limits
 ```
 
-The proxy listens on `127.0.0.1:50050` by default. It accepts HTTP/1 and unencrypted
-HTTP/2 so the sample can be called through the proxy with `grpcurl`. Use `h2c://`
-for a plaintext HTTP/2 backend. Candidate backends must use a literal loopback IP.
-If candidate buffering or concurrency reaches its limit, the proxy cancels all
-candidate requests and stops mirroring until the process restarts.
+Ingress listens on `127.0.0.1:50050` by default. It accepts HTTP/1 and unencrypted
+HTTP/2 so the sample can be called through it with `grpcurl`. The cgroup split and
+egress sandbox are Linux-only; pass `--no-limits` off Linux. If candidate buffering
+or concurrency reaches its limit, the candidate stops being mirrored until the run
+restarts.
 
 The sample serves Connect, gRPC, and gRPC-Web on `127.0.0.1:50051` with
 reflection enabled.
@@ -190,13 +176,13 @@ ingress.ignore("http", "GET /_status");
 ```
 
 For protobuf traffic, generate declarations with
-`spectre-gen proto --descriptors-dir=dist/descriptors --output=internal/sample/schema`.
+`spectre gen proto --descriptors-dir=dist/descriptors --output=internal/sample/schema`.
 Wire descriptors must agree with those declarations. ProtoJSON defaults are emitted
 so required scalar, array, and map members are present. Oneofs become optional sibling
 members. Arbitrary JSON well-known types, including `google.protobuf.Any`, are unsupported.
 
 For JSON APIs described by JSON Schema, generate one module with
-`spectre-gen json-schema --module=weather --output=schema/weather.d.ts weather.schema.json`.
+`spectre gen json-schema --module=weather --output=schema/weather.d.ts weather.schema.json`.
 Each titled root schema and each `$defs` or `definitions` entry becomes a type, and inline
 objects become nested types named after their property. Properties outside `required` are
 optional. Null, type unions, `anyOf`, `oneOf`, `allOf`, `not`, tuples, and free-form objects are
@@ -207,4 +193,4 @@ or boolean `enum`, are not enforced.
 `tsconfig.json` gives editors the host's compiler options, so they report the errors
 the host would. Keep it in step with `internal/typescript/program.go`. For scripts
 outside this repository, write the `spectre` module declaration with
-`spectre-gen module --output=spectre.d.ts`.
+`spectre gen module --output=spectre.d.ts`.

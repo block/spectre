@@ -15,7 +15,7 @@ spectre-sample-forecasts \
 
 service="spectre-sample --listen=\$SPECTRE_LISTEN --forecasts=\$SPECTRE_EGRESS --data=/spectre/testdata/users.json --weather=/spectre/testdata/weather.json"
 
-exec spectre-supervisor \
+exec spectre run \
   --listen=0.0.0.0:50050 \
   --socket-dir="$sockets" \
   --reference="$service" \

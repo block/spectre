@@ -17,20 +17,24 @@ type Config struct {
 	Candidate string `required:"" help:"Shell command for the candidate service. $SPECTRE_LISTEN and $SPECTRE_EGRESS are exported to it."`
 	// Reference is the shell command for the authoritative reference service.
 	Reference string `required:"" help:"Shell command for the reference service. $SPECTRE_LISTEN and $SPECTRE_EGRESS are exported to it."`
+	// CandidateProtocol is the protocol the ingress uses to reach the candidate.
+	CandidateProtocol string `name:"candidate-protocol" enum:"h2c,http" default:"h2c" help:"Protocol the ingress uses to reach the candidate: h2c (unencrypted HTTP/2) or http (HTTP/1.1)."`
+	// ReferenceProtocol is the protocol the ingress uses to reach the reference.
+	ReferenceProtocol string `name:"reference-protocol" enum:"h2c,http" default:"h2c" help:"Protocol the ingress uses to reach the reference: h2c (unencrypted HTTP/2) or http (HTTP/1.1)."`
+	// Reflection loads and compares both backends' descriptors via gRPC reflection.
+	Reflection bool `name:"reflection" negatable:"" default:"true" help:"Load backend descriptors with gRPC reflection and require them to match; disable to compare using only the static descriptors."`
 	// Listen is the public ingress address that clients send traffic to.
 	Listen string `default:"127.0.0.1:50050" help:"Public ingress address: host:port, or unix:<path|@abstract> for a unix socket."`
 	// SocketDir holds the unix sockets wiring the proxies to the services.
 	SocketDir string `default:"dist/sockets" help:"Directory for the unix sockets wiring the proxies to the services."`
-	// EgressBin is the egress proxy executable, on PATH or an absolute path.
-	EgressBin string `default:"spectre-egress" help:"Egress proxy executable, found on PATH or given as an absolute path."`
-	// IngressBin is the ingress proxy executable, on PATH or an absolute path.
-	IngressBin string `default:"spectre-ingress" help:"Ingress proxy executable, found on PATH or given as an absolute path."`
 	// Destinations maps each request host to its upstream URL for egress.
 	Destinations map[string]string `name:"destination" placeholder:"HOST=URL" help:"Upstream URL for requests to HOST, passed to the egress proxy. Repeat for each dependency."`
 	// ScriptsDir holds the comparison scripts passed to both proxies.
 	ScriptsDir string `type:"existingdir" placeholder:"DIR" help:"Directory of comparison scripts passed to both proxies."`
 	// SchemaDir holds the TypeScript schema passed to both proxies.
 	SchemaDir string `type:"existingdir" placeholder:"DIR" help:"Directory of TypeScript schema passed to both proxies."`
+	// MatchWindow bounds how long a candidate call waits for a matching reference call.
+	MatchWindow time.Duration `default:"5s" help:"Maximum time a candidate egress call waits for an equivalent reference call before a 502."`
 	// Descriptors supplies protobuf descriptors to both proxies.
 	Descriptors descriptors.Config `embed:""`
 	// Limits configures the cgroup resource split between the services.
@@ -88,6 +92,9 @@ func (c Config) Validate() error {
 	}
 	if c.StartupTimeout <= 0 || c.ShutdownTimeout <= 0 {
 		return errors.New("startup and shutdown timeouts must be positive")
+	}
+	if c.MatchWindow <= 0 {
+		return errors.New("match window must be positive")
 	}
 	return errors.WithStack(c.Limits.Validate())
 }

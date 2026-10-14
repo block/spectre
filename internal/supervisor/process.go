@@ -47,6 +47,26 @@ func (p *managedProcess) wait() error {
 	return errors.Wrapf(p.cmd.Wait(), "%s exited", p.name)
 }
 
+// syncWriter serialises writes from the proxies and services that share one
+// output, so their complete lines never interleave.
+type syncWriter struct {
+	mu  sync.Mutex
+	out io.Writer
+}
+
+// newSyncWriter returns a writer that serialises concurrent writes to out.
+func newSyncWriter(out io.Writer) *syncWriter {
+	return &syncWriter{out: out}
+}
+
+// Write passes data to the underlying writer under the shared lock.
+func (w *syncWriter) Write(data []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	n, err := w.out.Write(data)
+	return n, errors.WithStack(err)
+}
+
 // prefixWriter tags each line written to it with a process name before passing
 // it to the underlying writer, buffering partial lines between writes.
 type prefixWriter struct {
@@ -61,7 +81,8 @@ func newPrefixWriter(out io.Writer, name string) *prefixWriter {
 	return &prefixWriter{prefix: []byte(name + " | "), out: out}
 }
 
-// Write emits complete lines with the prefix and holds any trailing partial line.
+// Write emits each complete line as one prefixed write and holds any trailing
+// partial line.
 func (w *prefixWriter) Write(data []byte) (int, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -71,10 +92,8 @@ func (w *prefixWriter) Write(data []byte) (int, error) {
 		if index < 0 {
 			return len(data), nil
 		}
-		if _, err := w.out.Write(w.prefix); err != nil {
-			return len(data), errors.WithStack(err)
-		}
-		if _, err := w.out.Write(w.line[:index+1]); err != nil {
+		row := append(append([]byte(nil), w.prefix...), w.line[:index+1]...)
+		if _, err := w.out.Write(row); err != nil {
 			return len(data), errors.WithStack(err)
 		}
 		w.line = w.line[index+1:]

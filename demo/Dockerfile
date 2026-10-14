@@ -20,8 +20,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     CGO_ENABLED=0 go build -trimpath \
       -ldflags="-s -w -buildid= -X github.com/block/spectre/internal.Version=${VERSION}" \
       -o /out/ \
-      ./cmd/spectre-ingress ./cmd/spectre-egress ./cmd/spectre-supervisor \
-      ./cmd/spectre-sample ./cmd/spectre-sample-forecasts
+      ./cmd/spectre ./cmd/spectre-sample ./cmd/spectre-sample-forecasts
 
 FROM alpine:3.24.2
 

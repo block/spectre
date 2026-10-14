@@ -1,10 +1,11 @@
 # SPECTRE supervisor demo
 
-This demo packages the `spectre-supervisor` into a single container image. The
-supervisor starts a reference and a candidate service behind both SPECTRE
-proxies with one command: it runs the ingress and egress proxies, wires the
-services to them over unix sockets, sandboxes the candidate's egress with
-seccomp, and splits host CPU and memory between the two services with cgroups.
+This demo packages the `spectre` binary into a single container image. The
+`spectre run` supervisor starts a reference and a candidate service behind both
+SPECTRE proxies with one command: it runs the embedded ingress and egress
+proxies, wires the services to them over unix sockets, sandboxes the candidate's
+egress with seccomp, and splits host CPU and memory between the two services
+with cgroups.
 
 The services here are two copies of the builtin sample backend, standing in for
 a reference and a candidate. Mirrored client traffic is compared and the
@@ -55,10 +56,8 @@ Run `docker run --rm spectre-demo --help` for the full flag list.
 The demo image is a template for running your own services under the supervisor.
 Base your image on the same pattern as `demo/Dockerfile`:
 
-1. Build or copy the `spectre-supervisor`, `spectre-ingress`, and
-   `spectre-egress` binaries into the image. The supervisor finds the proxies on
-   `PATH`; override with `--ingress-bin` and `--egress-bin` if they live
-   elsewhere.
+1. Build or copy the `spectre` binary into the image. It embeds the ingress and
+   egress proxies, so no other components are needed.
 2. Add your reference and candidate binaries, your comparison scripts
    (`--scripts-dir`), TypeScript schema (`--schema-dir`), and protobuf
    descriptors (`--descriptors-dir`).
@@ -79,7 +78,7 @@ call to the upstream and replays the recorded response to the candidate.
 A minimal invocation:
 
 ```
-spectre-supervisor \
+spectre run \
   --listen=0.0.0.0:50050 \
   --reference='my-service --listen=$SPECTRE_LISTEN --upstream=$SPECTRE_EGRESS' \
   --candidate='my-service-v2 --listen=$SPECTRE_LISTEN --upstream=$SPECTRE_EGRESS' \
