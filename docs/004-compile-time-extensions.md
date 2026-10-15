@@ -73,6 +73,12 @@ Each new extension point adds one public contract and one `With...` option. Addi
 - `Main` binds the context and logger, so a command's `Run` receives them.
 - Extension flags work everywhere built-in flags do: environment variables, the TOML config file and `--help`.
 
+### Kong options
+
+- `WithKongOptions(options...)` passes `kong.Option` values to the parser, for example `kong.Vars` that extension flags interpolate in tags such as `default:"${registry}"`.
+- They apply after the built-in options, so `kong.Vars` adds to the built-in variables, such as `version`, instead of replacing them.
+- `kong.Option` is a third-party type, so the option needs no public mirror.
+
 ### Planned: descriptor sources
 
 A descriptor source supplies protobuf descriptors alongside the descriptors directory, for example from a schema registry.
