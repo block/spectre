@@ -28,14 +28,22 @@ type Option func(registered *extensions)
 
 // extensions collects what the options register, before the parser is built.
 type extensions struct {
-	commands []kong.Option
+	kongOptions []kong.Option
 }
 
 // WithCommand adds a top-level command. command must be a pointer to a struct,
 // because Kong parses flags into its fields.
 func WithCommand(name string, help string, command Command) Option {
 	return func(registered *extensions) {
-		registered.commands = append(registered.commands, kong.DynamicCommand(name, help, "", command))
+		registered.kongOptions = append(registered.kongOptions, kong.DynamicCommand(name, help, "", command))
+	}
+}
+
+// WithKongOptions passes options to the parser after the built-in ones, so
+// kong.Vars adds to the built-in variables, such as version.
+func WithKongOptions(options ...kong.Option) Option {
+	return func(registered *extensions) {
+		registered.kongOptions = append(registered.kongOptions, options...)
 	}
 }
 
@@ -74,7 +82,7 @@ func newParser(command *cli, options ...Option) (*kong.Kong, error) {
 	for _, option := range options {
 		option(registered)
 	}
-	kongOptions := append([]kong.Option{kong.Vars{"version": internal.Version}, kong.Configuration(kongtoml.Loader)}, registered.commands...)
+	kongOptions := append([]kong.Option{kong.Vars{"version": internal.Version}, kong.Configuration(kongtoml.Loader)}, registered.kongOptions...)
 	parser, err := kong.New(command, kongOptions...)
 	if err != nil {
 		return nil, errors.Wrap(err, "build command line")

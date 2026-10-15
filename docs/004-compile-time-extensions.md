@@ -73,6 +73,13 @@ Each new extension point adds one public contract and one `With...` option. Addi
 - `Main` binds the context and logger, so a command's `Run` receives them.
 - Extension flags work everywhere built-in flags do: environment variables, the TOML config file and `--help`.
 
+### Kong options
+
+- `WithKongOptions(options...)` passes `kong.Option` values to the parser, for example `kong.Vars` that extension flags interpolate in tags such as `default:"${registry}"`.
+- They apply after the built-in options, so `kong.Vars` adds to the built-in variables.
+- A custom binary can set its own `--version` string by passing `kong.Vars{"version": ...}`, which replaces the built-in value.
+- `kong.Option` is a third-party type, so the option needs no public mirror.
+
 ### Planned: descriptor sources
 
 A descriptor source supplies protobuf descriptors alongside the descriptors directory, for example from a schema registry.
@@ -108,7 +115,6 @@ The command-line types and startup code move from `cmd/spectre/main.go` into the
 
 ## Open questions
 
-- Should a custom binary be able to set its own `--version` string?
 - Should a golden file of exported symbols supplement the linter, so API changes show up in review?
 - What does `DescriptorSource.Load` take to identify the descriptors to load?
 - Which extension points follow descriptor sources, for example HTTP RPC formats?

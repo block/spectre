@@ -6,6 +6,9 @@ import (
 	"testing"
 
 	"github.com/alecthomas/assert/v2"
+	"github.com/alecthomas/kong"
+
+	"github.com/block/spectre/internal"
 )
 
 func TestWithCommandAddsCommand(t *testing.T) {
@@ -33,6 +36,28 @@ func TestWithCommandKeepsBuiltInCommands(t *testing.T) {
 
 	assert.Equal(t, "gen module", kctx.Command())
 }
+
+func TestWithKongOptionsAddsVars(t *testing.T) {
+	extension := &pushCommand{}
+	parser, err := newParser(&cli{},
+		WithCommand("push", "Push an image.", extension),
+		WithKongOptions(kong.Vars{"registry": "registry.example.com"}),
+	)
+	assert.NoError(t, err)
+
+	_, err = parser.Parse([]string{"push"})
+	assert.NoError(t, err)
+
+	assert.Equal(t, &pushCommand{Image: "registry.example.com/spectre:" + internal.Version}, extension)
+}
+
+// pushCommand's default needs both a variable from WithKongOptions and the
+// built-in version variable.
+type pushCommand struct {
+	Image string `help:"Image to push." default:"${registry}/spectre:${version}"`
+}
+
+func (c *pushCommand) Run(_ context.Context, _ *slog.Logger) error { return nil }
 
 // imageCommand records the logger it ran with. Kong fails to call Run unless
 // both arguments are bound.
