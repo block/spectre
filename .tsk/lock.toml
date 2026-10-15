@@ -2,6 +2,6 @@
 
 [[import]]
 repository = 'github.com/alecthomas/tsk'
-version = 'v0.12.0'
+version = 'v0.14.0'
 dir = 'linters'
-commit = 'dce41edba935d64923415621a878aeb8bc072cbb'
+commit = 'f0ff19037f31ca3e750977dcdac1b0c9967dfb58'
