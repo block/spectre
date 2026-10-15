@@ -4,16 +4,23 @@ import * as ast from "go/ast";
 // Matches Go directives, such as //go:build and //nolint:x, but not spaced prose.
 const directive = /^(line |extern |export |[a-z0-9]+:[a-z0-9])/;
 
-const maxLines = 2;
-const maxPackageDocLines = 10;
+interface Config {
+  /** Maximum prose lines in a comment other than a package doc comment. */
+  maxLines: number;
+  /** Maximum prose lines in a package doc comment. */
+  maxPackageDocLines: number;
+}
 
-export default defineAnalyzer({
+export default defineAnalyzer<Config>({
   name: "commentlength",
-  doc: `report comments longer than two lines
+  doc: `report comments longer than the configured number of lines
 
-Package doc comments may have up to ten lines. Blank comment lines and
-directives such as //go:build and //nolint do not count. Generated files are skipped.`,
+The max-lines option limits most comments, and max-package-doc-lines limits
+package doc comments. Blank comment lines and directives such as //go:build
+and //nolint do not count. Generated files are skipped.`,
+  config: { maxLines: 2, maxPackageDocLines: 10 },
   run(pass) {
+    const { maxLines, maxPackageDocLines } = pass.config;
     for (const file of pass.files) {
       if (ast.isGenerated(file)) {
         continue;
@@ -37,10 +44,10 @@ directives such as //go:build and //nolint do not count. Generated files are ski
         }
         if (group?.pos() === packageDocPos) {
           if (lines > maxPackageDocLines) {
-            pass.report({ pos: start.pos(), message: "package doc comment exceeds ten lines" });
+            pass.report({ pos: start.pos(), message: `package doc comment exceeds ${maxPackageDocLines} lines` });
           }
         } else if (lines > maxLines) {
-          pass.report({ pos: start.pos(), message: "comment exceeds two lines" });
+          pass.report({ pos: start.pos(), message: `comment exceeds ${maxLines} lines` });
         }
       }
     }

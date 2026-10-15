@@ -32,21 +32,21 @@ var blankLines = 1
 // Second line.
 var directives = 1
 
-// First line. // want "comment exceeds two lines"
+// First line. // want "comment exceeds 2 lines"
 //
 //go:generate tool
 // Second line.
 // Third line.
 var exclusionsDoNotResetCount = 1
 
-// First line. // want "comment exceeds two lines"
+// First line. // want "comment exceeds 2 lines"
 // go:generate is described here.
 // Third line.
 var spacedDirectiveIsProse = 1
 
 //
 //go:generate tool
-// First line. // want "comment exceeds two lines"
+// First line. // want "comment exceeds 2 lines"
 // Second line.
 // Third line.
 var leadingExclusions = 1
@@ -62,12 +62,12 @@ var blockBlanks = 1
 /* First line.
 
  * Second line.
- * Third line. // want "comment exceeds two lines" */
+ * Third line. // want "comment exceeds 2 lines" */
 var blockTooLong = 1
 
 /* First line.
 //go:generate tool
-Third line. // want "comment exceeds two lines" */
+Third line. // want "comment exceeds 2 lines" */
 var directiveInsideBlockIsProse = 1
 
 // First line.

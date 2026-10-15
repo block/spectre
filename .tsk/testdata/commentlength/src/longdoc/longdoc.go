@@ -1,4 +1,4 @@
-// Package longdoc has a package doc over the limit. // want "package doc comment exceeds ten lines"
+// Package longdoc has a package doc over the limit. // want "package doc comment exceeds 10 lines"
 // Line 2.
 // Line 3.
 // Line 4.
