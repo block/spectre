@@ -1,7 +1,7 @@
 # Architecture
 
 - Put each executable entry point in `cmd/<command>`.
-- For each binary, add a symlink named after the binary in `./scripts` pointing to `spectre`.
+- `scripts/spectre` is the launcher. For each other binary, add a symlink named after the binary in `./scripts` pointing to `spectre`.
 - Keep all initialisation and bootstrap code in the main entry point.
 - Do not put application logic in main entry points. The `mainlogic` linter
   allows only `main` and `Run` methods there. Keep a bootstrap helper with
