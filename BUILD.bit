@@ -27,7 +27,7 @@ build-go[go-module] = go.build {
 # Keep protobuf declarations checked in, like the generated Go bindings.
 sample-schema = exec {
   command = "spectre gen proto --descriptors-dir=dist/descriptors --output=internal/sample/schema"
-  inputs = ["internal/descriptors/*.go", "internal/schema/*.go", "internal/typescript/**/*.go", "internal/typescript/go.mod", "cmd/spectre/*.go", "go.mod", "go.sum", "scripts/spectre", "scripts/spectre-ingress"]
+  inputs = ["internal/descriptors/*.go", "internal/schema/*.go", "internal/typescript/**/*.go", "internal/typescript/go.mod", "cmd/spectre/*.go", "go.mod", "go.sum", "scripts/spectre"]
   output = ["internal/sample/schema/users.d.ts", "internal/sample/schema/service.d.ts"]
   depends_on = [sample-proto, typescript-compiler]
 }
@@ -39,12 +39,12 @@ test-go[go-module](package = "./...", run = ".") = go.test {
   depends_on = [sample-schema, typescript-compiler]
 }
 test-launcher = exec.test {
-  command = "scripts/spectre-ingress.test.sh"
-  inputs = ["scripts/spectre-ingress", "scripts/spectre-ingress.test.sh"]
+  command = "spectre.test.sh"
+  inputs = ["scripts/spectre", "scripts/spectre.test.sh"]
 }
 test-response-comparison-integration = exec.test {
   command = "response-comparison.integration.test.sh"
-  inputs = ["Procfile.integration", "scripts/response-comparison.integration.test.sh", "scripts/spectre", "scripts/spectre-ingress", "scripts/spectre-sample", "scripts/spectre-sample-forecasts", "internal/**/*.ts", "internal/sample/testdata/*.json"]
+  inputs = ["Procfile.integration", "scripts/response-comparison.integration.test.sh", "scripts/spectre", "scripts/spectre-sample", "scripts/spectre-sample-forecasts", "internal/**/*.ts", "internal/sample/testdata/*.json"]
   depends_on = [spectre-bin, sample-bin, sample-forecasts-bin, sample-schema]
 }
 test-release-version = exec.test {

@@ -9,7 +9,7 @@ interface Config {
 }
 
 // Every other binary's scripts/ entry is a symlink to this launcher, which builds the binary its name selects.
-const launcher = "spectre-ingress";
+const launcher = "spectre";
 
 export default defineAnalyzer<Config>({
   name: "layout",
