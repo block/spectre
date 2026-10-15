@@ -1194,7 +1194,7 @@ func newTestHandlerWithLogs(t *testing.T, transport http.RoundTripper, logs *syn
 	return handler
 }
 
-// newIngress builds an ingress as the spectre-ingress command does.
+// newIngress builds an ingress as the supervisor does.
 func newIngress(
 	t *testing.T,
 	config httpserver.IngressConfig,

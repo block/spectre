@@ -6,8 +6,8 @@ source_root=$(CDPATH='' cd -- "$(dirname "$0")/.." && pwd)
 test_root=$(mktemp -d)
 trap 'rm -rf "$test_root"' EXIT
 mkdir -p "$test_root/bin" "$test_root/cmd/spectre-sample" "$test_root/scripts" "$test_root/sync"
-cp "$source_root/scripts/spectre-ingress" "$test_root/scripts/spectre-ingress"
-ln -s spectre-ingress "$test_root/scripts/spectre-sample"
+cp "$source_root/scripts/spectre" "$test_root/scripts/spectre"
+ln -s spectre "$test_root/scripts/spectre-sample"
 
 export SPECTRE_LAUNCHER_TEST_LOG="$test_root/builds"
 export SPECTRE_LAUNCHER_TEST_SYNC="$test_root/sync"
