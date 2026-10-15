@@ -1,17 +1,16 @@
 # Protocol engine
 
-Spectre only understands HTTP and gRPC. To support other protocols, such as MySQL, Redis, and Kafka, protocol servers report traffic to a protocol-agnostic engine that decides what happens to each request and owns pairing, comparison, and quarantine.
+**Status:** Implemented
 
-## Packages
+## Problem
 
-- `internal/protocol`: the engine. No protocol-specific code.
-- `internal/comparison`: scripts, normalisation, diffing, and canonical hashing. HTTP decoding moves out.
-- `internal/httpserver`: one HTTP proxy implementation shared by ingress and egress, with subpackages:
-  - `message`: decodes captured HTTP requests and responses into engine messages (Connect, gRPC, protobuf, JSON, wildcard and query binding, status handling).
-  - `codec`, `route`, `middleware`: moved from `internal/httpcodec`, `internal/route`, and `internal/middleware`. `route` implements `protocol.Matcher`.
-- `internal/proxy`: keeps only the protocol-agnostic `Candidates` (admission and quarantine) and `Budget`.
+Spectre only understands HTTP and gRPC. It needs to support other protocols, such as MySQL, Redis, and Kafka.
 
-## Engine API
+## Decision
+
+Protocol servers report traffic to a protocol-agnostic engine that decides what happens to each request and owns pairing, comparison, and quarantine.
+
+### Engine API
 
 ```go
 type Route string // canonical; equal routes have identical text
@@ -88,7 +87,7 @@ type Acceptor interface {
 - Every exchange ends with exactly one `ProcessResponse` or `Unable`. The engine owns the `Raw` from then on.
 - Declarations and sum types carry `//sumtype:decl`, so type switches over them are checked for exhaustiveness.
 
-## Points
+### Points
 
 The engine creates one acceptor per point, so servers never know whether they carry reference or candidate traffic.
 
@@ -99,11 +98,9 @@ The engine creates one acceptor per point, so servers never know whether they ca
 | Egress reference | Forwards immediately, then hashes route and normalised payload in the background. | Stored for candidates with the same hash. |
 | Egress candidate | Hashes, claims the earliest unused reference with the same hash, waits for its response, and intercepts with its `Raw`. | Never called. |
 
-Until RequestIDs are [propagated](context-propagation.md), egress pairs on hashes alone.
-
 Egress pairs in arrival order. Each request is numbered when it arrives, before hashing, and both unused references and waiting candidates are kept in that order. A reference that is still being hashed is not waited for, so a candidate can claim a later reference of the same hash that finished hashing first.
 
-## Pairing windows
+### Pairing windows
 
 - An unused egress reference expires after `MatchWindow` (default 5s), releasing its `Raw`.
 - An egress candidate waits up to `MatchWindow` for a matching reference.
@@ -113,7 +110,7 @@ Egress pairs in arrival order. Each request is numbered when it arrives, before 
 
 `MatchWindow` is part of `protocol.Config`, which both servers embed, so it is also an ingress flag.
 
-## Quarantine
+### Quarantine
 
 Divergence, `Unable`, an unidentifiable request, and an unmatched egress candidate are all reported to the `Quarantiner`. Servers pass the same `proxy.Candidates` they use for candidate admission, cancellation, and timeouts.
 
@@ -125,7 +122,7 @@ The engine releases `Raw` values that are abandoned or expire unused. After an i
 
 Comparison and match logs name traffic by `protocol` and `route`. HTTP ingress routes are `METHOD /path`. Egress routes are the declared endpoint pattern, such as `GET forecasts.example/v1/forecasts/{location}`, or `METHOD host/path` for undeclared requests.
 
-## HTTP server
+### HTTP server
 
 Ingress and egress share one point handler: match the route, call `ProcessRequest` with a lazy payload from a bounded request capture, then forward while recording the response or replay a recording, and finally report the response with a lazy decoder. One recording serves both comparison and replay. At ingress, a transport failure is reported as `Unable`. At egress, it is recorded and replayed to the candidate, so the candidate sees what the reference saw.
 
@@ -136,3 +133,20 @@ Only assembly differs:
 - Ingress: one listener sends each request to two points. The candidate is admitted first; if it is refused, the reference is proxied without the engine. The reference streams to the client, and the candidate runs in the background with a mirrored body and its own timeout. Descriptors come from reflection.
 - Ingress classifies each request when it arrives. Undeclared requests without a content type are compared only as Connect GET requests, and otherwise ignored.
 - Egress: two listeners, one point each. The reference selects its upstream by host. The candidate has no upstream, so even a wrong `Forward` cannot reach a dependency. The request decoder is built at startup, so a schema that cannot decode the declared endpoints fails startup.
+
+## Consequences
+
+- Until RequestIDs are [propagated](002-context-propagation.md), egress pairs on hashes alone.
+
+### Packages
+
+- `internal/protocol`: the engine. No protocol-specific code.
+- `internal/comparison`: scripts, normalisation, diffing, and canonical hashing. HTTP decoding moves out.
+- `internal/httpserver`: one HTTP proxy implementation shared by ingress and egress, with subpackages:
+  - `message`: decodes captured HTTP requests and responses into engine messages (Connect, gRPC, protobuf, JSON, wildcard and query binding, status handling).
+  - `codec`, `route`, `middleware`: moved from `internal/httpcodec`, `internal/route`, and `internal/middleware`. `route` implements `protocol.Matcher`.
+- `internal/proxy`: keeps only the protocol-agnostic `Candidates` (admission and quarantine) and `Budget`.
+
+## Open questions
+
+None.

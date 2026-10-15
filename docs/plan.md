@@ -86,14 +86,14 @@ timestamp. Default comparison still checks user IDs, names, and user ordering.
 - [x] Handle unsupported and unknown data explicitly without silently dropping it.
 - [ ] Generate TypeScript declarations matching the decoded objects and directly
   typed normaliser arguments. Superseded by the
-  [TypeScript schema plan](typescript-schema-plan.md).
+  [TypeScript schema ADR](001-typescript-schema.md).
 - [ ] Test the host's binary/JSON decoding equivalence, presence, precision,
   nested collections, and unsupported or unknown data handling.
 
 ### 3. Load and execute normaliser scripts
 
 - [ ] Embed esbuild to compile a TypeScript entry file and optional helper imports
-  at load time. Superseded by the [TypeScript schema plan](typescript-schema-plan.md).
+  at load time. Superseded by the [TypeScript schema ADR](001-typescript-schema.md).
 - [x] Run plain JavaScript modules in Sobek and provide `field`, `message`, and
   `ingress` registration functions from the imported `spectre` module.
 - [ ] Validate targets against the schema and reject unresolved targets and
@@ -106,7 +106,7 @@ timestamp. Default comparison still checks user IDs, names, and user ordering.
 - [x] Bound comparison work and payload sizes, and enforce execution deadlines.
 - [ ] Add TS7 type-checking to development and CI through `bit`; keep esbuild
   responsible only for transpilation. Superseded by the
-  [TypeScript schema plan](typescript-schema-plan.md).
+  [TypeScript schema ADR](001-typescript-schema.md).
 - [ ] Test script loading, invalid registrations, runtime isolation, immutable
   inputs, callback failures, deadlines, and capacity limits.
 

@@ -35,7 +35,7 @@
 
 - The root package, `github.com/block/spectre`, is the only public API. Custom
   binaries call its `Main` with options that add extensions to the built-in
-  command line. See `docs/compile-time-extensions.md`.
+  command line. See `docs/004-compile-time-extensions.md`.
 - Expose only extension points that have been explicitly agreed. Add each as one
   public contract and one `With...` option.
 - Never expose an internal type in the public API, even through an alias. Mirror
@@ -47,7 +47,7 @@
 
 - The root package, `github.com/block/spectre`, is the only public API. Custom
   binaries call its `Main` with options that add extensions to the built-in
-  command line. See `docs/compile-time-extensions.md`.
+  command line. See `docs/004-compile-time-extensions.md`.
 - Expose only extension points that have been explicitly agreed. Add each as one
   public contract and one `With...` option.
 - Never expose an internal type in the public API, even through an alias. Mirror
@@ -72,6 +72,11 @@
 - Do not modify `README.md` unless the user explicitly requests it.
 - Put developer workflow documentation, such as building, testing, and running locally, in `CONTRIBUTING.md`.
 - Put design documents, implementation plans, and other documents that fit neither `README.md` nor `CONTRIBUTING.md` in `docs/`.
+- Write each design decision as an ADR that follows `docs/adr-template.md`:
+  - Name it `docs/NNN-<slug>.md`, using the next unused three-digit number.
+  - Never change or reuse a number, even when an ADR is renamed or superseded.
+  - Update its status as the decision moves from proposed to implemented.
+  - To replace an ADR, write a new one and mark the old one superseded with a link to it.
 
 # Commits and pull requests
 
