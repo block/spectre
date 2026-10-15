@@ -27,7 +27,7 @@ build-go[go-module] = go.build {
 # Keep protobuf declarations checked in, like the generated Go bindings.
 sample-schema = exec {
   command = "spectre gen proto --descriptors-dir=dist/descriptors --output=internal/sample/schema"
-  inputs = ["internal/descriptors/*.go", "internal/schema/*.go", "internal/typescript/**/*.go", "internal/typescript/go.mod", "cmd/spectre/*.go", "go.mod", "go.sum", "scripts/spectre"]
+  inputs = ["internal/descriptors/*.go", "internal/schema/*.go", "internal/typescript/**/*.go", "internal/typescript/go.mod", "*.go", "cmd/spectre/*.go", "go.mod", "go.sum", "scripts/spectre"]
   output = ["internal/sample/schema/users.d.ts", "internal/sample/schema/service.d.ts"]
   depends_on = [sample-proto, typescript-compiler]
 }

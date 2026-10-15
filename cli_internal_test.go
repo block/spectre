@@ -1,4 +1,4 @@
-package main
+package spectre
 
 import (
 	"fmt"
@@ -8,8 +8,6 @@ import (
 	"time"
 
 	"github.com/alecthomas/assert/v2"
-	"github.com/alecthomas/kong"
-	kongtoml "github.com/alecthomas/kong-toml"
 
 	"github.com/block/spectre/internal/supervisor"
 )
@@ -19,7 +17,7 @@ func TestRunCommandEmbedsConfig(t *testing.T) {
 	schema := writeSchemaDir(t)
 	descriptors := t.TempDir()
 	command := &cli{}
-	parser, err := kong.New(command)
+	parser, err := newParser(command)
 	assert.NoError(t, err)
 	_, err = parser.Parse([]string{
 		"run",
@@ -46,7 +44,7 @@ func TestRunCommandEmbedsConfig(t *testing.T) {
 }
 
 func TestRunCommandRequiresCandidateAndReference(t *testing.T) {
-	parser, err := kong.New(&cli{})
+	parser, err := newParser(&cli{})
 	assert.NoError(t, err)
 
 	_, err = parser.Parse([]string{"run", "--scripts-dir=" + t.TempDir(), "--schema-dir=" + writeSchemaDir(t)})
@@ -72,7 +70,7 @@ descriptors-dir = %q
 `, scripts, schema, descriptors)), 0o600)
 	assert.NoError(t, err)
 	command := &cli{}
-	parser, err := kong.New(command, kong.Configuration(kongtoml.Loader))
+	parser, err := newParser(command)
 	assert.NoError(t, err)
 	_, err = parser.Parse([]string{"run", "--config=" + path, "--match-window=3s"})
 	assert.NoError(t, err)
@@ -90,7 +88,7 @@ descriptors-dir = %q
 func TestRunCommandRejectsUnknownConfigKeys(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "spectre.toml")
 	assert.NoError(t, os.WriteFile(path, []byte(`canddate = "run-candidate"`), 0o600))
-	parser, err := kong.New(&cli{}, kong.Configuration(kongtoml.Loader))
+	parser, err := newParser(&cli{})
 	assert.NoError(t, err)
 
 	_, err = parser.Parse([]string{
@@ -107,7 +105,7 @@ func TestRunCommandRejectsUnknownConfigKeys(t *testing.T) {
 
 func TestProxySubcommandsRemoved(t *testing.T) {
 	for _, name := range []string{"__ingress", "__egress"} {
-		parser, err := kong.New(&cli{})
+		parser, err := newParser(&cli{})
 		assert.NoError(t, err)
 		_, err = parser.Parse([]string{name})
 		assert.Error(t, err)

@@ -54,6 +54,7 @@ enable = [
   'predeclared',
   'promlinter',
   'protogetter',
+  'publicapi',
   'reassign',
   'recvcheck',
   'revive',
@@ -267,5 +268,9 @@ ignore-package-globs = ['github.com/alecthomas/errors']
 allow-generated-construction = true
 
 [layout]
-# The TypeScript shim is a separate module whose path mimics TypeScript's own.
-allow = ["github.com/microsoft/TypeScript/tsc/shim/typescript"]
+# The module root is the public API for custom binaries. The TypeScript shim is a
+# separate module whose path mimics TypeScript's own.
+allow = [
+  "github.com/block/spectre",
+  "github.com/microsoft/TypeScript/tsc/shim/typescript",
+]

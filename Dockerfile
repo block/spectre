@@ -7,6 +7,7 @@ COPY go.mod go.sum ./
 COPY internal/typescript ./internal/typescript
 RUN --mount=type=cache,target=/go/pkg/mod \
     go mod download
+COPY *.go ./
 COPY cmd/spectre ./cmd/spectre
 COPY internal ./internal
 
