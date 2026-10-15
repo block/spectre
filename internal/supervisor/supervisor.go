@@ -303,7 +303,7 @@ func (s *Supervisor) serviceProcess(ctx context.Context, role string, egressURL 
 		cmd = s.command(ctx, "/bin/sh", "-c", shell)
 	}
 	cmd.Env = append(cmd.Environ(), "SPECTRE_LISTEN="+listen, "SPECTRE_EGRESS="+egressURL)
-	return newManagedProcess(role, cmd, s.output)
+	return newManagedProcess(role, cmd, s.output, s.logConfig.JSON)
 }
 
 // command builds a child command that terminates gracefully on context
@@ -348,7 +348,7 @@ func (s *Supervisor) ingressConfig() httpserver.IngressConfig {
 
 // proxyLogger returns a logger whose output lines are tagged with the proxy name.
 func (s *Supervisor) proxyLogger(name string) *slog.Logger {
-	return logger.Tagged(logger.New(s.logConfig, newPrefixWriter(s.output, name)))
+	return logger.Tagged(logger.New(s.logConfig, newTagWriter(s.output, name, s.logConfig.JSON)))
 }
 
 // listenAll opens every address in order, closing any already opened on failure.

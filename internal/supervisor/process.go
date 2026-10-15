@@ -16,9 +16,9 @@ type managedProcess struct {
 }
 
 // newManagedProcess wraps cmd, tagging its output with name.
-func newManagedProcess(name string, cmd *exec.Cmd, output io.Writer) *managedProcess {
-	cmd.Stdout = newPrefixWriter(output, name)
-	cmd.Stderr = newPrefixWriter(output, name)
+func newManagedProcess(name string, cmd *exec.Cmd, output io.Writer, json bool) *managedProcess {
+	cmd.Stdout = newTagWriter(output, name, json)
+	cmd.Stderr = newTagWriter(output, name, json)
 	return &managedProcess{name: name, cmd: cmd}
 }
 
@@ -67,23 +67,32 @@ func (w *syncWriter) Write(data []byte) (int, error) {
 	return n, errors.WithStack(err)
 }
 
-// prefixWriter tags each line written to it with a process name before passing
-// it to the underlying writer, buffering partial lines between writes.
-type prefixWriter struct {
-	prefix []byte
-	out    io.Writer
-	mu     sync.Mutex
-	line   []byte
+// tagWriter tags each line with its process name before writing it on, buffering
+// partial lines: a "name | " prefix for text, a "process" field for JSON.
+type tagWriter struct {
+	prefix  []byte
+	jsonTag []byte
+	json    bool
+	out     io.Writer
+	mu      sync.Mutex
+	line    []byte
 }
 
-// newPrefixWriter returns a writer that prefixes each line with name.
-func newPrefixWriter(out io.Writer, name string) *prefixWriter {
-	return &prefixWriter{prefix: []byte(name + " | "), out: out}
+// newTagWriter returns a writer that tags each line with name, as a text prefix
+// or a JSON "process" field depending on json.
+func newTagWriter(out io.Writer, name string, json bool) *tagWriter {
+	// Process names are fixed identifiers, so they need no JSON escaping.
+	return &tagWriter{
+		prefix:  []byte(name + " | "),
+		jsonTag: []byte(`"process":"` + name + `"`),
+		json:    json,
+		out:     out,
+	}
 }
 
-// Write emits each complete line as one prefixed write and holds any trailing
+// Write emits each complete line as one tagged write and holds any trailing
 // partial line.
-func (w *prefixWriter) Write(data []byte) (int, error) {
+func (w *tagWriter) Write(data []byte) (int, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.line = append(w.line, data...)
@@ -92,10 +101,33 @@ func (w *prefixWriter) Write(data []byte) (int, error) {
 		if index < 0 {
 			return len(data), nil
 		}
-		row := append(append([]byte(nil), w.prefix...), w.line[:index+1]...)
-		if _, err := w.out.Write(row); err != nil {
+		if _, err := w.out.Write(w.tag(w.line[:index+1])); err != nil {
 			return len(data), errors.WithStack(err)
 		}
 		w.line = w.line[index+1:]
 	}
+}
+
+// tag returns line with its process name attached: a "name | " prefix for text,
+// or a "process" field for a JSON object. Other lines pass through unchanged.
+func (w *tagWriter) tag(line []byte) []byte {
+	if !w.json {
+		return append(append([]byte(nil), w.prefix...), line...)
+	}
+	trimmed := bytes.TrimLeft(line, " \t")
+	if len(trimmed) == 0 || trimmed[0] != '{' {
+		return line
+	}
+	brace := len(line) - len(trimmed)
+	rest := line[brace+1:]
+	// Omit the separator for an empty object so "{}" stays valid JSON.
+	separator := []byte(",")
+	if next := bytes.TrimLeft(rest, " \t\r\n"); len(next) > 0 && next[0] == '}' {
+		separator = nil
+	}
+	row := make([]byte, 0, len(line)+len(w.jsonTag)+len(separator))
+	row = append(row, line[:brace+1]...)
+	row = append(row, w.jsonTag...)
+	row = append(row, separator...)
+	return append(row, rest...)
 }
