@@ -4,17 +4,21 @@ import * as ast from "go/ast";
 // Matches Go directives, such as //go:build and //nolint:x, but not spaced prose.
 const directive = /^(line |extern |export |[a-z0-9]+:[a-z0-9])/;
 
+const maxLines = 2;
+const maxPackageDocLines = 10;
+
 export default defineAnalyzer({
   name: "commentlength",
   doc: `report comments longer than two lines
 
-Blank comment lines and directives such as //go:build and //nolint do not
-count. Generated files are skipped.`,
+Package doc comments may have up to ten lines. Blank comment lines and
+directives such as //go:build and //nolint do not count. Generated files are skipped.`,
   run(pass) {
     for (const file of pass.files) {
       if (ast.isGenerated(file)) {
         continue;
       }
+      const packageDocPos = file.doc?.pos() ?? null;
       for (const group of file.comments) {
         let lines = 0;
         let start: ast.Comment | null = null;
@@ -28,7 +32,14 @@ count. Generated files are skipped.`,
           }
           lines += counted;
         }
-        if (start !== null && lines > 2) {
+        if (start === null) {
+          continue;
+        }
+        if (group?.pos() === packageDocPos) {
+          if (lines > maxPackageDocLines) {
+            pass.report({ pos: start.pos(), message: "package doc comment exceeds ten lines" });
+          }
+        } else if (lines > maxLines) {
           pass.report({ pos: start.pos(), message: "comment exceeds two lines" });
         }
       }

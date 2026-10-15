@@ -98,7 +98,8 @@
 - Name every input parameter in function, method, and interface signatures.
 - Name result parameters when intrinsic types such as `bool`, `int`, or `string`
   do not convey their meaning. Do not use naked returns.
-- Keep every comment to at most two lines. The `commentlength` linter enforces
+- Keep every comment to at most two lines. A package doc comment may have up to
+  ten lines, not counting blank `//` lines. The `commentlength` linter enforces
   this.
 - Document every public symbol.
 - Mark each sum type's interface with a `//sumtype:decl` comment so the
