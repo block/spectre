@@ -4,17 +4,28 @@ import * as ast from "go/ast";
 // Matches Go directives, such as //go:build and //nolint:x, but not spaced prose.
 const directive = /^(line |extern |export |[a-z0-9]+:[a-z0-9])/;
 
-export default defineAnalyzer({
-  name: "commentlength",
-  doc: `report comments longer than two lines
+interface Config {
+  /** Maximum prose lines in a comment other than a package doc comment. */
+  maxLines: number;
+  /** Maximum prose lines in a package doc comment. */
+  maxPackageDocLines: number;
+}
 
-Blank comment lines and directives such as //go:build and //nolint do not
-count. Generated files are skipped.`,
+export default defineAnalyzer<Config>({
+  name: "commentlength",
+  doc: `report comments longer than the configured number of lines
+
+The max-lines option limits most comments, and max-package-doc-lines limits
+package doc comments. Blank comment lines and directives such as //go:build
+and //nolint do not count. Generated files are skipped.`,
+  config: { maxLines: 2, maxPackageDocLines: 10 },
   run(pass) {
+    const { maxLines, maxPackageDocLines } = pass.config;
     for (const file of pass.files) {
       if (ast.isGenerated(file)) {
         continue;
       }
+      const packageDocPos = file.doc?.pos() ?? null;
       for (const group of file.comments) {
         let lines = 0;
         let start: ast.Comment | null = null;
@@ -28,8 +39,15 @@ count. Generated files are skipped.`,
           }
           lines += counted;
         }
-        if (start !== null && lines > 2) {
-          pass.report({ pos: start.pos(), message: "comment exceeds two lines" });
+        if (start === null) {
+          continue;
+        }
+        if (group?.pos() === packageDocPos) {
+          if (lines > maxPackageDocLines) {
+            pass.report({ pos: start.pos(), message: `package doc comment exceeds ${maxPackageDocLines} lines` });
+          }
+        } else if (lines > maxLines) {
+          pass.report({ pos: start.pos(), message: `comment exceeds ${maxLines} lines` });
         }
       }
     }

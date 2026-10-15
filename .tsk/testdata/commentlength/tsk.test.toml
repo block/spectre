@@ -1,0 +1,10 @@
+[[case]]
+name = "default"
+packages = ["comments", "longdoc"]
+
+[[case]]
+name = "limits"
+packages = ["limits"]
+[case.config]
+max-lines = 3
+max-package-doc-lines = 1
