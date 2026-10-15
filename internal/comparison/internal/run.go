@@ -2,9 +2,9 @@ package comparisoninternal
 
 import (
 	"context"
-	"log/slog"
 
 	"github.com/block/spectre/internal/comparison/javascript"
+	"github.com/block/spectre/internal/logger"
 	"github.com/block/spectre/internal/schema"
 )
 
@@ -12,7 +12,6 @@ import (
 // It is single-use because normalisers destructively rewrite the document.
 type normalisationRun struct {
 	loaded    *schema.Schema
-	log       *slog.Logger
 	evaluator *javascript.Evaluator
 	root      *schema.Type
 	targets   []normalisationTarget
@@ -22,7 +21,6 @@ type normalisationRun struct {
 
 func newNormalisationRun(
 	loaded *schema.Schema,
-	log *slog.Logger,
 	evaluator *javascript.Evaluator,
 	root *schema.Type,
 	targets []normalisationTarget,
@@ -31,7 +29,6 @@ func newNormalisationRun(
 ) *normalisationRun {
 	return &normalisationRun{
 		loaded:    loaded,
-		log:       log,
 		evaluator: evaluator,
 		root:      root,
 		targets:   targets,
@@ -57,7 +54,7 @@ func (r *normalisationRun) normalise(ctx context.Context) error {
 			return err
 		}
 	}
-	r.log.DebugContext(ctx, "Payload normalisation completed",
+	logger.FromContext(ctx).DebugContext(ctx, "Payload normalisation completed",
 		"message", r.root.Name,
 		"side", r.side,
 		"normalisers", len(occurrences),
@@ -70,5 +67,5 @@ func (r *normalisationRun) logResult(ctx context.Context, occurrence occurrence,
 	if reason != "" {
 		attributes = append(attributes, "outcome", "unable", "reason", reason)
 	}
-	r.log.DebugContext(ctx, "Payload normaliser completed", attributes...)
+	logger.FromContext(ctx).DebugContext(ctx, "Payload normaliser completed", attributes...)
 }

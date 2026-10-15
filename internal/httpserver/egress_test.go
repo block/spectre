@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"io"
-	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -298,7 +297,7 @@ func TestEgressRejectsUnsafeConfiguration(t *testing.T) {
 			_, config.Descriptors.DescriptorsDir = writeSchemaAndDescriptors(t)
 			engineConfig := newEgressEngineConfig(t)
 			test.update(&config, &engineConfig)
-			_, err := newEgress(t, config, engineConfig, slog.New(slog.DiscardHandler))
+			_, err := newEgress(t, config, engineConfig)
 			assert.Error(t, err)
 			assert.Contains(t, err.Error(), test.message)
 		})
@@ -332,7 +331,7 @@ func TestEgressRejectsUndecodableEndpoints(t *testing.T) {
 				harness.Config.Descriptors.DescriptorsDir = writeDescriptorsDir(t, set)
 			}
 
-			_, err := newEgress(t, harness.Config, harness.Engine, slog.New(slog.DiscardHandler))
+			_, err := newEgress(t, harness.Config, harness.Engine)
 
 			assert.Error(t, err)
 			assert.Contains(t, err.Error(), test.message)
@@ -374,9 +373,9 @@ func newHarness(t *testing.T, upstream string) *harness {
 // Start serves until the returned function stops it.
 func (h *harness) Start(t *testing.T) (stop func() error) {
 	t.Helper()
-	egressProxy, err := newEgress(t, h.Config, h.Engine, newLogger(h.Logs))
+	ctx, cancel := context.WithCancel(withLogs(t, h.Logs))
+	egressProxy, err := httpserver.NewEgress(ctx, h.Config, h.Engine, http.DefaultTransport)
 	assert.NoError(t, err)
-	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
 	go func() { done <- egressProxy.Serve(ctx, h.Reference, h.Candidate, h.Health) }()
 	stop = sync.OnceValue(func() error {
@@ -427,9 +426,9 @@ func (h *harness) WaitForCandidateHash(t *testing.T) {
 }
 
 // newEgress builds an egress as the spectre-egress command does.
-func newEgress(t *testing.T, config httpserver.EgressConfig, engineConfig protocol.Config, log *slog.Logger) (*httpserver.Egress, error) {
+func newEgress(t *testing.T, config httpserver.EgressConfig, engineConfig protocol.Config) (*httpserver.Egress, error) {
 	t.Helper()
-	return errors.WithStack2(httpserver.NewEgress(t.Context(), config, engineConfig, http.DefaultTransport, log))
+	return errors.WithStack2(httpserver.NewEgress(t.Context(), config, engineConfig, http.DefaultTransport))
 }
 
 // quarantineRecord is a "Candidate quarantined" log record.

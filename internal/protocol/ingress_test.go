@@ -145,8 +145,8 @@ func TestIngressComparesResponses(t *testing.T) {
 			test.reference.Raw, test.candidate.Raw = referenceRaw, candidateRaw
 			reference, candidate := h.mirror(t, route, ignored)
 
-			h.engine.IngressReference(fake).ProcessResponse(t.Context(), reference, test.reference)
-			h.engine.IngressCandidate(fake).ProcessResponse(t.Context(), candidate, test.candidate)
+			h.engine.IngressReference(fake).ProcessResponse(h.ctx, reference, test.reference)
+			h.engine.IngressCandidate(fake).ProcessResponse(h.ctx, candidate, test.candidate)
 
 			assert.Equal(t, test.quarantined, h.quarantine.Reasons())
 			assert.Equal(t, []map[string]any{comparisonRecord(route, test.logged)}, h.records(t, "Response comparison completed"))
@@ -206,9 +206,9 @@ func TestIngressReportsUnableExchanges(t *testing.T) {
 			if test.route != "" {
 				route, ignored = test.route, test.ignored
 			}
-			failing := t.Context()
+			failing := h.ctx
 			if test.cancelled {
-				cancelled, cancel := context.WithCancel(t.Context())
+				cancelled, cancel := context.WithCancel(h.ctx)
 				cancel()
 				failing = cancelled
 			}
@@ -219,12 +219,12 @@ func TestIngressReportsUnableExchanges(t *testing.T) {
 			if test.referenceFails {
 				h.engine.IngressReference(fake).Unable(failing, reference, reason)
 			} else {
-				h.engine.IngressReference(fake).ProcessResponse(t.Context(), reference, protocol.Response{Decode: statusOnly("OK"), Raw: referenceRaw})
+				h.engine.IngressReference(fake).ProcessResponse(h.ctx, reference, protocol.Response{Decode: statusOnly("OK"), Raw: referenceRaw})
 			}
 			if test.candidateFails {
 				h.engine.IngressCandidate(fake).Unable(failing, candidate, reason)
 			} else {
-				h.engine.IngressCandidate(fake).ProcessResponse(t.Context(), candidate, protocol.Response{Decode: statusOnly("OK"), Raw: candidateRaw})
+				h.engine.IngressCandidate(fake).ProcessResponse(h.ctx, candidate, protocol.Response{Decode: statusOnly("OK"), Raw: candidateRaw})
 			}
 
 			assert.Equal(t, test.quarantined, h.quarantine.Reasons())
@@ -268,24 +268,24 @@ func TestIngressCandidateMustJoinAReference(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			h := newHarness(t, time.Second)
-			decision, err := h.engine.IngressReference(fake).ProcessRequest(t.Context(), None[protocol.RequestID](), "compared", notIgnored, unreadPayload(t))
+			decision, err := h.engine.IngressReference(fake).ProcessRequest(h.ctx, None[protocol.RequestID](), "compared", notIgnored, unreadPayload(t))
 			assert.NoError(t, err)
 			forward := decision.(protocol.DecisionForward)
 			requestID, ok := forward.RequestID.Get()
 			assert.True(t, ok)
 			for range test.joins {
-				_, err := h.engine.IngressCandidate(fake).ProcessRequest(t.Context(), forward.RequestID, "compared", notIgnored, unreadPayload(t))
+				_, err := h.engine.IngressCandidate(fake).ProcessRequest(h.ctx, forward.RequestID, "compared", notIgnored, unreadPayload(t))
 				assert.NoError(t, err)
 			}
 			if test.referenceEnded {
-				h.engine.IngressReference(fake).ProcessResponse(t.Context(), forward.Exchange, protocol.Response{Decode: statusOnly("OK"), Raw: newRaw("reference")})
+				h.engine.IngressReference(fake).ProcessResponse(h.ctx, forward.Exchange, protocol.Response{Decode: statusOnly("OK"), Raw: newRaw("reference")})
 			}
 			joining := forward.RequestID
 			if test.withoutRequestID {
 				joining = None[protocol.RequestID]()
 			}
 
-			decision, err = h.engine.IngressCandidate(test.candidate).ProcessRequest(t.Context(), joining, "compared", notIgnored, unreadPayload(t))
+			decision, err = h.engine.IngressCandidate(test.candidate).ProcessRequest(h.ctx, joining, "compared", notIgnored, unreadPayload(t))
 
 			expected := test.expected
 			if !test.withoutRequestID {
@@ -300,11 +300,11 @@ func TestIngressCandidateMustJoinAReference(t *testing.T) {
 
 func TestIngressDropsReferenceWithoutCandidate(t *testing.T) {
 	h := newHarness(t, time.Second)
-	decision, err := h.engine.IngressReference(fake).ProcessRequest(t.Context(), None[protocol.RequestID](), "compared", notIgnored, unreadPayload(t))
+	decision, err := h.engine.IngressReference(fake).ProcessRequest(h.ctx, None[protocol.RequestID](), "compared", notIgnored, unreadPayload(t))
 	assert.NoError(t, err)
 	raw := newRaw("reference")
 
-	h.engine.IngressReference(fake).ProcessResponse(t.Context(), decision.(protocol.DecisionForward).Exchange, protocol.Response{Decode: statusOnly("OK"), Raw: raw})
+	h.engine.IngressReference(fake).ProcessResponse(h.ctx, decision.(protocol.DecisionForward).Exchange, protocol.Response{Decode: statusOnly("OK"), Raw: raw})
 
 	assert.Equal(t, 1, raw.Releases())
 	assert.Equal(t, nil, h.quarantine.Reasons())
@@ -317,11 +317,11 @@ func TestIngressCandidateWaitsForReference(t *testing.T) {
 	responded := make(chan struct{})
 	go func() {
 		defer close(responded)
-		h.engine.IngressCandidate(fake).ProcessResponse(t.Context(), candidate, protocol.Response{Decode: statusOnly("NOT_FOUND"), Raw: newRaw("candidate")})
+		h.engine.IngressCandidate(fake).ProcessResponse(h.ctx, candidate, protocol.Response{Decode: statusOnly("NOT_FOUND"), Raw: newRaw("candidate")})
 	}()
 	time.Sleep(10 * time.Millisecond)
 
-	h.engine.IngressReference(fake).ProcessResponse(t.Context(), reference, protocol.Response{Decode: statusOnly("OK"), Raw: newRaw("reference")})
+	h.engine.IngressReference(fake).ProcessResponse(h.ctx, reference, protocol.Response{Decode: statusOnly("OK"), Raw: newRaw("reference")})
 	<-responded
 
 	assert.Equal(t, []string{"response differences: $status"}, h.quarantine.Reasons())
@@ -336,7 +336,7 @@ func TestIngressIgnoredCandidateReportsWithoutReference(t *testing.T) {
 	}
 	referenceRaw, candidateRaw := newRaw("reference"), newRaw("candidate")
 	// A candidate that waited for the reference would hit this deadline.
-	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	ctx, cancel := context.WithTimeout(h.ctx, time.Second)
 	defer cancel()
 
 	h.engine.IngressCandidate(fake).ProcessResponse(ctx, candidate, protocol.Response{Raw: candidateRaw, Decode: undecoded})
@@ -347,7 +347,7 @@ func TestIngressIgnoredCandidateReportsWithoutReference(t *testing.T) {
 	assert.Equal(t, 1, candidateRaw.Releases())
 	assert.Equal(t, 0, referenceRaw.Releases())
 
-	h.engine.IngressReference(fake).ProcessResponse(t.Context(), reference, protocol.Response{Raw: referenceRaw, Decode: undecoded})
+	h.engine.IngressReference(fake).ProcessResponse(h.ctx, reference, protocol.Response{Raw: referenceRaw, Decode: undecoded})
 
 	assert.Equal(t, 1, referenceRaw.Releases())
 	assert.Equal(t, nil, h.quarantine.Reasons())
@@ -357,13 +357,13 @@ func TestIngressCandidateCancelledDuringComparisonDoesNotQuarantine(t *testing.T
 	h := newHarness(t, time.Second)
 	reference, candidate := h.mirror(t, "compared", notIgnored)
 	referenceRaw, candidateRaw := newRaw("reference"), newRaw("candidate")
-	ctx, cancel := context.WithCancel(t.Context())
+	ctx, cancel := context.WithCancel(h.ctx)
 	defer cancel()
 	interrupted := func() protocol.Content {
 		cancel()
 		return protocol.Content{Failure: Some(errors.New("read interrupted"))}
 	}
-	h.engine.IngressReference(fake).ProcessResponse(t.Context(), reference, protocol.Response{Raw: referenceRaw, Decode: statusOnly("OK")})
+	h.engine.IngressReference(fake).ProcessResponse(h.ctx, reference, protocol.Response{Raw: referenceRaw, Decode: statusOnly("OK")})
 
 	h.engine.IngressCandidate(fake).ProcessResponse(ctx, candidate, protocol.Response{Raw: candidateRaw, Decode: interrupted})
 
@@ -379,7 +379,7 @@ func TestIngressCandidateWaitIsBoundedByContext(t *testing.T) {
 	h := newHarness(t, time.Second)
 	reference, candidate := h.mirror(t, "compared", notIgnored)
 	referenceRaw, candidateRaw := newRaw("reference"), newRaw("candidate")
-	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
+	ctx, cancel := context.WithTimeout(h.ctx, 20*time.Millisecond)
 	defer cancel()
 
 	h.engine.IngressCandidate(fake).ProcessResponse(ctx, candidate, protocol.Response{Decode: statusOnly("NOT_FOUND"), Raw: candidateRaw})
@@ -387,7 +387,7 @@ func TestIngressCandidateWaitIsBoundedByContext(t *testing.T) {
 	assert.Equal(t, 1, candidateRaw.Releases())
 	assert.Equal(t, []map[string]any{unfinishedRecord("context deadline exceeded")}, h.records(t, "Response comparison did not finish"))
 
-	h.engine.IngressReference(fake).ProcessResponse(t.Context(), reference, protocol.Response{Decode: statusOnly("OK"), Raw: referenceRaw})
+	h.engine.IngressReference(fake).ProcessResponse(h.ctx, reference, protocol.Response{Decode: statusOnly("OK"), Raw: referenceRaw})
 
 	assert.Equal(t, 1, referenceRaw.Releases())
 	assert.Equal(t, nil, h.quarantine.Reasons())
@@ -402,12 +402,12 @@ func TestIngressReleasesResponsesForUnknownExchanges(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			h := newHarness(t, time.Second)
 			reference, candidate := h.mirror(t, "compared", notIgnored)
-			h.engine.IngressReference(fake).ProcessResponse(t.Context(), reference, protocol.Response{Decode: statusOnly("OK"), Raw: newRaw("reference")})
-			h.engine.IngressCandidate(fake).ProcessResponse(t.Context(), candidate, protocol.Response{Decode: statusOnly("OK"), Raw: newRaw("candidate")})
+			h.engine.IngressReference(fake).ProcessResponse(h.ctx, reference, protocol.Response{Decode: statusOnly("OK"), Raw: newRaw("reference")})
+			h.engine.IngressCandidate(fake).ProcessResponse(h.ctx, candidate, protocol.Response{Decode: statusOnly("OK"), Raw: newRaw("candidate")})
 			raw := newRaw("repeated")
 			exchange := map[string]protocol.Exchange{"Reference": reference, "Candidate": candidate}[name]
 
-			acceptor(h.engine).ProcessResponse(t.Context(), exchange, protocol.Response{Decode: statusOnly("OK"), Raw: raw})
+			acceptor(h.engine).ProcessResponse(h.ctx, exchange, protocol.Response{Decode: statusOnly("OK"), Raw: raw})
 
 			assert.Equal(t, 1, raw.Releases())
 			assert.Equal(t, []map[string]any{{"level": "ERROR", "msg": "Unknown ingress exchange", "exchange": exchange.String()}},
@@ -419,10 +419,10 @@ func TestIngressReleasesResponsesForUnknownExchanges(t *testing.T) {
 // mirror starts a reference request and joins its mirrored candidate request.
 func (h *harness) mirror(t *testing.T, route protocol.Route, ignored Option[string]) (reference, candidate protocol.Exchange) {
 	t.Helper()
-	decision, err := h.engine.IngressReference(fake).ProcessRequest(t.Context(), None[protocol.RequestID](), route, ignored, unreadPayload(t))
+	decision, err := h.engine.IngressReference(fake).ProcessRequest(h.ctx, None[protocol.RequestID](), route, ignored, unreadPayload(t))
 	assert.NoError(t, err)
 	referenceForward := decision.(protocol.DecisionForward)
-	decision, err = h.engine.IngressCandidate(fake).ProcessRequest(t.Context(), referenceForward.RequestID, route, ignored, unreadPayload(t))
+	decision, err = h.engine.IngressCandidate(fake).ProcessRequest(h.ctx, referenceForward.RequestID, route, ignored, unreadPayload(t))
 	assert.NoError(t, err)
 	candidateForward := decision.(protocol.DecisionForward)
 	assert.Equal(t, referenceForward.RequestID, candidateForward.RequestID)

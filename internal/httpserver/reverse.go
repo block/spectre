@@ -1,6 +1,7 @@
 package httpserver
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
 	"net/http/httputil"
@@ -8,12 +9,13 @@ import (
 
 	"github.com/alecthomas/errors"
 
+	"github.com/block/spectre/internal/logger"
 	"github.com/block/spectre/internal/netaddr"
 )
 
 // NewReverseProxy forwards requests to a backend target with trusted forwarding headers.
 // A discarding proxy logs failures as candidate failures and writes no response.
-func NewReverseProxy(target *netaddr.Endpoint, transport http.RoundTripper, log *slog.Logger, discard bool) (*httputil.ReverseProxy, error) {
+func NewReverseProxy(ctx context.Context, target *netaddr.Endpoint, transport http.RoundTripper, discard bool) (*httputil.ReverseProxy, error) {
 	targetURL, isBackend := target.URL().Get()
 	if !isBackend {
 		return nil, errors.New("reverse proxy target is not a backend")
@@ -40,8 +42,9 @@ func NewReverseProxy(target *netaddr.Endpoint, transport http.RoundTripper, log 
 			request.Out.Header.Del("X-Forwarded-Host")
 		},
 		Transport: transport,
-		ErrorLog:  slog.NewLogLogger(log.Handler(), slog.LevelError),
+		ErrorLog:  slog.NewLogLogger(logger.FromContext(ctx).Handler(), slog.LevelError),
 		ErrorHandler: func(writer http.ResponseWriter, request *http.Request, err error) {
+			log := logger.FromContext(request.Context())
 			if discard {
 				log.WarnContext(request.Context(), "Candidate request failed", "error", err)
 				return

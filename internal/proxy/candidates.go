@@ -3,7 +3,6 @@ package proxy
 
 import (
 	"context"
-	"log/slog"
 	"sync"
 
 	"github.com/alecthomas/errors"
@@ -16,7 +15,6 @@ import (
 // cancel everything in flight. Quarantine lasts for the process lifetime.
 type Candidates struct {
 	maxInFlight int
-	log         *slog.Logger
 
 	// mu serializes admission with quarantine and shutdown.
 	mu          sync.Mutex
@@ -27,12 +25,11 @@ type Candidates struct {
 }
 
 // NewCandidates tracks candidate work, quarantining beyond the configured concurrent runs.
-func NewCandidates(config CandidatesConfig, log *slog.Logger) *Candidates {
+func NewCandidates(config CandidatesConfig) *Candidates {
 	idle := make(chan struct{})
 	close(idle)
 	return &Candidates{
 		maxInFlight: config.CandidateMaxInFlight,
-		log:         log,
 		runs:        make(map[*CandidateRun]struct{}),
 		idle:        idle,
 	}
@@ -109,7 +106,7 @@ func (c *Candidates) Quarantine(ctx context.Context, reason error) {
 		for _, run := range runs {
 			run.cancel()
 		}
-		c.log.ErrorContext(context.WithoutCancel(ctx), "Candidate quarantined", "event", logger.EventQuarantine, "reason", reason)
+		logger.FromContext(ctx).ErrorContext(context.WithoutCancel(ctx), "Candidate quarantined", "event", logger.EventQuarantine, "reason", reason)
 	}()
 }
 

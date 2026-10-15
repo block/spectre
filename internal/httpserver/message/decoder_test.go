@@ -5,7 +5,6 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/binary"
-	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -285,7 +284,7 @@ func buildDecoder(t *testing.T, set *descriptorpb.FileDescriptorSet, declaration
 	config.Comparison.ScriptsDir = writeFiles(t, scripts)
 	routes := route.NewMatcher()
 	matchers := map[javascript.Protocol]protocol.Matcher{javascript.ProtocolHTTP: routes}
-	engine, err := protocol.NewEngine(t.Context(), config, matchers, discardQuarantine{}, slog.New(slog.DiscardHandler))
+	engine, err := protocol.NewEngine(t.Context(), config, matchers, discardQuarantine{})
 	assert.NoError(t, err)
 	return message.New(engine.Schema(), set, routes, maxBodyBytes)
 }

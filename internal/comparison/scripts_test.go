@@ -15,6 +15,7 @@ import (
 	. "github.com/alecthomas/types/optional"
 
 	"github.com/block/spectre/internal/comparison"
+	"github.com/block/spectre/internal/logger"
 	"github.com/block/spectre/internal/schema"
 )
 
@@ -68,19 +69,11 @@ func TestRejectsInvalidConfiguration(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			config := newConfig(t, map[string]string{"test.ts": module("")})
 			update(&config)
-			scripts, err := comparison.New(t.Context(), config, slog.New(slog.DiscardHandler))
+			scripts, err := comparison.New(t.Context(), config)
 			assert.Error(t, err)
 			assert.Equal(t, (*comparison.Scripts)(nil), scripts)
 		})
 	}
-}
-
-func TestRequiresLogger(t *testing.T) {
-	config := newConfig(t, map[string]string{"test.ts": module("")})
-	scripts, err := comparison.New(t.Context(), config, nil)
-
-	assert.Error(t, err)
-	assert.Equal(t, (*comparison.Scripts)(nil), scripts)
 }
 
 func TestRejectsInvalidScripts(t *testing.T) {
@@ -128,7 +121,7 @@ func TestRejectsInvalidScripts(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			scripts, err := comparison.New(t.Context(), newConfig(t, test.scripts), slog.New(slog.DiscardHandler))
+			scripts, err := comparison.New(t.Context(), newConfig(t, test.scripts))
 			assert.Error(t, err)
 			assert.Contains(t, err.Error(), test.message)
 			assert.Equal(t, (*comparison.Scripts)(nil), scripts)
@@ -152,7 +145,7 @@ func TestRejectsEndpointsAbsentFromSchema(t *testing.T) {
 			config := newConfig(t, map[string]string{
 				"weather.ts": module(`(` + test.declare + ` as any)("` + test.typeName + `", "http", "` + test.pattern + `");`),
 			})
-			_, err := comparison.New(t.Context(), config, slog.New(slog.DiscardHandler))
+			_, err := comparison.New(t.Context(), config)
 			assert.Error(t, err)
 			assert.Contains(t, err.Error(), `resolve endpoint "`+test.pattern+`"`)
 			assert.Contains(t, err.Error(), `type "`+test.typeName+`" is not declared`)
@@ -337,7 +330,7 @@ func TestInterruptsRunawayNormaliser(t *testing.T) {
 		"test.ts": module(`spectre.message<v1.Response>(() => { while (true) {} });`),
 	})
 	config.ComparisonTimeout = 10 * time.Millisecond
-	scripts, err := comparison.New(t.Context(), config, slog.New(slog.DiscardHandler))
+	scripts, err := comparison.New(t.Context(), config)
 	assert.NoError(t, err)
 
 	_, err = scripts.Compare(t.Context(), Some[schema.TypeRef]("test.v1.Response"), decode(t, `{"stable":"same"}`), decode(t, `{"stable":"same"}`))
@@ -349,15 +342,15 @@ func TestInterruptsRunawayNormaliser(t *testing.T) {
 
 func TestLogsIndividualNormaliserResults(t *testing.T) {
 	var output bytes.Buffer
-	log := slog.New(slog.NewJSONHandler(&output, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	ctx := logger.WithLogger(t.Context(), slog.New(slog.NewJSONHandler(&output, &slog.HandlerOptions{Level: slog.LevelDebug})))
 	config := newConfig(t, map[string]string{"test.ts": module(`
 		spectre.field<v1.Response, "ignored">(() => undefined);
 		spectre.field<v1.Response, "stable">((value) => value);
 	`)})
-	scripts, err := comparison.New(t.Context(), config, log)
+	scripts, err := comparison.New(ctx, config)
 	assert.NoError(t, err)
 
-	differences, err := scripts.Compare(t.Context(), Some[schema.TypeRef]("test.v1.Response"),
+	differences, err := scripts.Compare(ctx, Some[schema.TypeRef]("test.v1.Response"),
 		decode(t, `{"stable":"first","ignored":"first"}`),
 		decode(t, `{"stable":"second","ignored":"second"}`))
 
@@ -371,11 +364,11 @@ func TestLogsIndividualNormaliserResults(t *testing.T) {
 
 func TestLogsHashNormalisationWithoutNormalisers(t *testing.T) {
 	var output bytes.Buffer
-	log := slog.New(slog.NewJSONHandler(&output, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	scripts, err := comparison.New(t.Context(), newConfig(t, map[string]string{"test.ts": module("")}), log)
+	ctx := logger.WithLogger(t.Context(), slog.New(slog.NewJSONHandler(&output, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	scripts, err := comparison.New(ctx, newConfig(t, map[string]string{"test.ts": module("")}))
 	assert.NoError(t, err)
 
-	_, err = scripts.Hash(t.Context(), "identity", Some[schema.TypeRef]("test.v1.Query"), "candidate", decode(t, `{"location":"london"}`))
+	_, err = scripts.Hash(ctx, "identity", Some[schema.TypeRef]("test.v1.Query"), "candidate", decode(t, `{"location":"london"}`))
 
 	assert.NoError(t, err)
 	assert.Contains(t, output.String(), `"level":"DEBUG","msg":"Payload normalisation completed","message":"test.v1.Query","side":"candidate","normalisers":0`)
@@ -464,7 +457,7 @@ func newConfig(t *testing.T, scripts map[string]string) comparison.Config {
 
 func newScriptsFromFiles(t *testing.T, files map[string]string) *comparison.Scripts {
 	t.Helper()
-	scripts, err := comparison.New(t.Context(), newConfig(t, files), slog.New(slog.DiscardHandler))
+	scripts, err := comparison.New(t.Context(), newConfig(t, files))
 	assert.NoError(t, err)
 	return scripts
 }

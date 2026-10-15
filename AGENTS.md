@@ -92,6 +92,9 @@
 # Go conventions
 
 - Use `log/slog` for logging.
+- Construct loggers only in main entry points and tests, and attach them with
+  `logger.WithLogger`. Elsewhere, read the logger with `logger.FromContext` and
+  derive tagged loggers with `With`. `forbidigo` enforces this.
 - Keep a type and all of its methods in the same file. Do not split a type's
   methods across multiple files. The `methodfile` linter enforces this.
 - Wrap errors with `github.com/alecthomas/errors`.

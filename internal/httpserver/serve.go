@@ -2,12 +2,13 @@ package httpserver
 
 import (
 	"context"
-	"log/slog"
 	"net"
 	"net/http"
 
 	"github.com/alecthomas/errors"
 	"golang.org/x/net/netutil"
+
+	"github.com/block/spectre/internal/logger"
 )
 
 // Binding pairs a listener with the handler that serves its connections.
@@ -73,14 +74,14 @@ func (l Lifecycle) drain(ctx context.Context) error {
 
 // Serve runs every binding until the context is cancelled or any server fails,
 // then shuts all of them down before draining work that outlives requests.
-func Serve(ctx context.Context, config Config, log *slog.Logger, bindings []Binding, lifecycle Lifecycle) error {
+func Serve(ctx context.Context, config Config, bindings []Binding, lifecycle Lifecycle) error {
 	// Explicit shutdown owns request lifetime after the signal starts shutdown ordering.
 	serverContext := context.WithoutCancel(ctx)
 	serveDone := make(chan error, len(bindings))
 	servers := make([]*http.Server, 0, len(bindings))
 	for _, binding := range bindings {
 		servers = append(servers, binding.start(serverContext, config, serveDone))
-		log.InfoContext(ctx, "Proxy listening", "address", binding.address())
+		logger.FromContext(ctx).InfoContext(ctx, "Proxy listening", "address", binding.address())
 	}
 	lifecycle.start(ctx)
 

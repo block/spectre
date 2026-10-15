@@ -19,6 +19,7 @@ import (
 	"google.golang.org/protobuf/types/dynamicpb"
 
 	"github.com/block/spectre/internal/descriptors"
+	"github.com/block/spectre/internal/logger"
 	"github.com/block/spectre/internal/sample"
 	samplepb "github.com/block/spectre/internal/sample/pb"
 	"github.com/block/spectre/internal/sample/pb/samplepbconnect"
@@ -59,14 +60,15 @@ func TestServerHealthAndGRPC(t *testing.T) {
 	path, handler := samplepbconnect.NewUserServiceHandler(service)
 	mux.Handle(path, handler)
 	var logs bytes.Buffer
-	server := sample.NewServer(mux, slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	server := sample.NewServer(mux)
 	assertHealthStatus(t, server, "/livez", http.StatusNoContent)
 	assertHealthStatus(t, server, "/readyz", http.StatusServiceUnavailable)
 	assert.Equal(t, "", logs.String())
 
 	listener, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
 	assert.NoError(t, err)
-	ctx, cancel := context.WithCancel(t.Context())
+	log := slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	ctx, cancel := context.WithCancel(logger.WithLogger(t.Context(), log))
 	serveDone := make(chan error, 1)
 	go func() { serveDone <- server.Serve(ctx, listener) }()
 

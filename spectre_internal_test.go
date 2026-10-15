@@ -22,7 +22,7 @@ func TestWithCommandAddsCommand(t *testing.T) {
 	kctx.BindTo(t.Context(), (*context.Context)(nil))
 	log := slog.New(slog.DiscardHandler)
 	kctx.Bind(log)
-	assert.NoError(t, kctx.Run(command.Log))
+	assert.NoError(t, kctx.Run())
 
 	assert.Equal(t, &imageCommand{Tag: "spectre:dev", log: log}, extension)
 }

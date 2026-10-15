@@ -3,7 +3,6 @@ package httpserver
 import (
 	"context"
 	"io"
-	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -30,7 +29,6 @@ import (
 // requests never reach a dependency under any condition.
 type Egress struct {
 	config           EgressConfig
-	log              *slog.Logger
 	transport        http.RoundTripper
 	engine           *protocol.Engine
 	routes           *route.Matcher
@@ -52,16 +50,12 @@ func NewEgress(
 	config EgressConfig,
 	engineConfig protocol.Config,
 	transport http.RoundTripper,
-	log *slog.Logger,
 ) (*Egress, error) {
 	if err := config.Validate(); err != nil {
 		return nil, err
 	}
 	if transport == nil {
 		return nil, errors.New("transport is required")
-	}
-	if log == nil {
-		return nil, errors.New("logger is required")
 	}
 	candidateListen := netaddr.ParseListen(config.CandidateListen)
 	if !candidateListen.IsUnix() && !candidateListen.IsLoopback() {
@@ -72,7 +66,7 @@ func NewEgress(
 		candidateListen,
 		netaddr.ParseListen(config.HealthListen),
 	}
-	destinations, err := egressDestinations(config, transport, listeners, log)
+	destinations, err := egressDestinations(ctx, config, transport, listeners)
 	if err != nil {
 		return nil, err
 	}
@@ -80,9 +74,9 @@ func NewEgress(
 	if err != nil {
 		return nil, errors.Wrap(err, "load static descriptors")
 	}
-	candidates := proxy.NewCandidates(config.Candidates, log)
+	candidates := proxy.NewCandidates(config.Candidates)
 	routes := route.NewMatcher()
-	engine, err := protocol.NewEngine(ctx, engineConfig, map[javascript.Protocol]protocol.Matcher{javascript.ProtocolHTTP: routes}, candidates, log)
+	engine, err := protocol.NewEngine(ctx, engineConfig, map[javascript.Protocol]protocol.Matcher{javascript.ProtocolHTTP: routes}, candidates)
 	if err != nil {
 		return nil, errors.Wrap(err, "configure request hashing")
 	}
@@ -95,7 +89,6 @@ func NewEgress(
 	recordingBudget := func() *proxy.Budget { return budget }
 	egress := &Egress{
 		config:         config,
-		log:            log,
 		transport:      transport,
 		engine:         engine,
 		routes:         routes,
@@ -104,17 +97,17 @@ func NewEgress(
 		candidates:     candidates,
 		requests:       make(chan struct{}, config.MaxInFlightRequests),
 		decoder:        decoder,
-		referencePoint: newPoint(engine.EgressReference(javascript.ProtocolHTTP), log, recordingBudget, false, true),
-		candidatePoint: newPoint(engine.EgressCandidate(javascript.ProtocolHTTP), log, recordingBudget, false, true),
+		referencePoint: newPoint(engine.EgressReference(javascript.ProtocolHTTP), recordingBudget, false, true),
+		candidatePoint: newPoint(engine.EgressCandidate(javascript.ProtocolHTTP), recordingBudget, false, true),
 		health:         health.New(http.NotFoundHandler()),
 	}
-	egress.referenceHandler = logging.New(http.HandlerFunc(egress.serveReference), log, logger.EventReceived)
-	egress.candidateHandler = logging.New(http.HandlerFunc(egress.serveCandidate), log, logger.EventReceived)
+	egress.referenceHandler = logging.New(http.HandlerFunc(egress.serveReference), logger.EventReceived)
+	egress.candidateHandler = logging.New(http.HandlerFunc(egress.serveCandidate), logger.EventReceived)
 	return egress, nil
 }
 
-func egressDestinations(config EgressConfig, transport http.RoundTripper, listeners []*netaddr.Endpoint,
-	log *slog.Logger,
+func egressDestinations(ctx context.Context, config EgressConfig, transport http.RoundTripper,
+	listeners []*netaddr.Endpoint,
 ) (map[string]*httputil.ReverseProxy, error) {
 	destinations := make(map[string]*httputil.ReverseProxy, len(config.Destinations))
 	for host, upstream := range config.Destinations {
@@ -132,7 +125,7 @@ func egressDestinations(config EgressConfig, transport http.RoundTripper, listen
 		if targetsListener(endpoint, listeners) {
 			return nil, errors.Errorf("destination %q must not target an egress listener", host)
 		}
-		destination, err := NewReverseProxy(endpoint, transport, log, false)
+		destination, err := NewReverseProxy(ctx, endpoint, transport, false)
 		if err != nil {
 			return nil, errors.Wrapf(err, "proxy destination %q", host)
 		}
@@ -150,7 +143,7 @@ func (e *Egress) Serve(ctx context.Context, reference net.Listener, candidate ne
 		NewBinding(probes, e.health),
 	}
 	lifecycle := NewLifecycle(e.markReady, e.stop, e.drain)
-	return errors.Wrap(Serve(ctx, e.config.Config, e.log, bindings, lifecycle), "serve egress")
+	return errors.Wrap(Serve(ctx, e.config.Config, bindings, lifecycle), "serve egress")
 }
 
 func (e *Egress) markReady(context.Context) {
@@ -209,7 +202,7 @@ func (e *Egress) serveReference(writer http.ResponseWriter, request *http.Reques
 	}
 	decision, err := e.referencePoint.process(ctx, None[protocol.RequestID](), e.route(request), None[string](), payload)
 	if err != nil {
-		e.log.ErrorContext(ctx, "Reference request was not recorded", "error", err)
+		logger.FromContext(ctx).ErrorContext(ctx, "Reference request was not recorded", "error", err)
 		if destination, ok := upstream.Get(); ok {
 			destination.ServeHTTP(writer, outbound)
 			return
@@ -232,10 +225,10 @@ func (e *Egress) upstream(request *http.Request) Option[*httputil.ReverseProxy] 
 	}
 	var destination *httputil.ReverseProxy
 	if err == nil {
-		destination, err = NewReverseProxy(endpoint, e.transport, e.log, false)
+		destination, err = NewReverseProxy(request.Context(), endpoint, e.transport, false)
 	}
 	if err != nil {
-		e.log.ErrorContext(request.Context(), "Reference request has no usable destination", "host", request.Host, "error", err)
+		logger.FromContext(request.Context()).ErrorContext(request.Context(), "Reference request has no usable destination", "host", request.Host, "error", err)
 		return None[*httputil.ReverseProxy]()
 	}
 	return Some(destination)
