@@ -1,5 +1,7 @@
 # Compile-time extensions
 
+**Status:** Implemented
+
 ## Problem
 
 Teams need to build their own `spectre` binary that adds to the open-source one. Examples include loading protobuf descriptors from a schema registry, supporting internal RPC protocols, and adding commands. Today nothing is importable, because every package is under `internal/`.
@@ -16,7 +18,7 @@ Teams need to build their own `spectre` binary that adds to the open-source one.
 - Making `internal/` packages public.
 - Backwards compatibility while the version is 0.x.
 
-## Design
+## Decision
 
 The module root, `github.com/block/spectre`, is the only public package. It owns the command line and startup, and offers one option per extension point.
 
@@ -88,11 +90,13 @@ A descriptor source supplies protobuf descriptors alongside the descriptors dire
 - a command flag with the same name as a root flag
 - a command that is not a pointer to a struct, which panics
 
+## Consequences
+
 ### Internal changes
 
 The command-line types and startup code move from `cmd/spectre/main.go` into the root package. This includes the egress-sandbox relaunch check, which must run before flags are parsed.
 
-## Enforcement
+### Enforcement
 
 - A new `publicapi` tsk linter reports any exported declaration in the root package whose type mentions a type from `internal/`, including through an alias.
 - The `layout` linter's `allow` list gains the root package.

@@ -1,14 +1,18 @@
-# TypeScript schema implementation plan
+# TypeScript schema
 
-Replace protobuf descriptor sets as the host's schema with TypeScript declarations.
+**Status:** Implemented
+
+## Problem
+
 Protobuf was the schema because gRPC was the first protocol, so other protocols
 needed synthetic `.proto` files such as the former weather service definition.
+
+## Decision
+
+Replace protobuf descriptor sets as the host's schema with TypeScript declarations.
 With TypeScript as the schema, each protocol produces declarations in the same
 language the normaliser scripts are written in, and the host checks the scripts
-against them. This supersedes the TypeScript items in [the ingress plan](plan.md) and
-supplies the schema model for the forthcoming protocol abstraction.
-
-## Decisions
+against them.
 
 - TypeScript declaration files are the schema. They are generated from protobuf
   descriptors, written by hand for ad hoc REST, and later generated from DDL for
@@ -39,7 +43,7 @@ supplies the schema model for the forthcoming protocol abstraction.
   bundler or separate `tsc` step is needed. `tsconfig.json` mirrors the host's
   compiler options for editors.
 
-## Schema subset
+### Schema subset
 
 - Files contain only `declare module "name" { ... }` blocks, which may span files.
   A type's name is its module name followed by its namespace path. Modules share
@@ -54,7 +58,7 @@ supplies the schema model for the forthcoming protocol abstraction.
 - Rejected: generics, intersections, conditional and mapped types, index
   signatures other than `Record`, `any`, `unknown`, functions, and classes.
 
-## Protobuf mapping
+### Protobuf mapping
 
 The generator emits one `.d.ts` per proto file inside a `declare module` named
 after the proto package, so `spectre.sample.v1.User` keeps its name. Files without
@@ -80,7 +84,7 @@ names cannot shadow.
 and the arbitrary JSON well-known types (`Struct`, `Value`, `ListValue`) are rejected.
 Generated declarations are checked in alongside generated Go bindings.
 
-## Script API
+### Script API
 
 Scripts are TypeScript only. The first argument of `ingress.match` and `egress.match` is the
 protocol key from the protocol abstraction.
@@ -106,12 +110,17 @@ typed from the type and the path, and is `undefined` when absent. Before
 transpiling, the host inserts the resolved names, so the runtime receives
 `ingress.match("weather.GetForecastV2Response", "http", "GET /v2/forecast")`.
 
-## Implementation checklist
+## Consequences
+
+This supersedes the TypeScript items in [the ingress plan](plan.md) and
+supplies the schema model for the forthcoming protocol abstraction.
+
+### Implementation checklist
 
 The implementation is complete; the protocol engine and reflection ownership move
 remain part of the separate protocol abstraction change.
 
-### 1. Schema parser
+#### 1. Schema parser
 
 - [x] Add shim modules under `github.com/microsoft/TypeScript/tsc/shim/...` with
   `replace` directives, exporting only the parser, AST, and transpiler the host uses.
@@ -122,7 +131,7 @@ remain part of the separate protocol abstraction change.
 - [x] Test each accepted construct, each rejected construct, cross-file references,
   and the diagnostics from malformed files.
 
-### 2. Schema model and comparison
+#### 2. Schema model and comparison
 
 - [x] Define the model in `internal/schema`: named types, fields, scalar kinds,
   optional, list, map, literal unions, and operations with request and response
@@ -134,7 +143,7 @@ remain part of the separate protocol abstraction change.
 - [x] Port the existing comparison tests to the model and confirm hashes change only
   where the model intentionally differs.
 
-### 3. Protocol adapters
+#### 3. Protocol adapters
 
 - [x] gRPC and Connect: load wire descriptors, by reflection for
   ingress, decodes with them into JSON, and validates at configure time that every
@@ -143,7 +152,7 @@ remain part of the separate protocol abstraction change.
 - [x] Test adapter agreement on presence, 64-bit integers, bytes, enums, and nested
   collections across binary, ProtoJSON, and raw JSON inputs.
 
-### 4. Protobuf generator
+#### 4. Protobuf generator
 
 - [x] Add `cmd/spectre-gen proto` with a `scripts` symlink. It reads descriptor sets
   and writes the `.d.ts` files following the mapping table.
@@ -153,7 +162,7 @@ remain part of the separate protocol abstraction change.
   `dist/descriptors/sample.pb`.
 - [x] Test generation against the sample protos with golden files.
 
-### 5. Script loading
+#### 5. Script loading
 
 - [x] Transpile every `.ts` file in the scripts directory with the shimmed
   transpiler, and load the output through the existing Sobek module loader, which
@@ -167,7 +176,7 @@ remain part of the separate protocol abstraction change.
 - [x] Test module loading, type errors surfaced by the checker, invalid names, and that
   registrations are identical across fresh runtimes.
 
-### 6. Sample migration and cleanup
+#### 6. Sample migration and cleanup
 
 - [x] Replace `weather.proto` and `forecasts.proto` with hand-written declarations
   and convert the sample scripts to TypeScript.
@@ -176,7 +185,7 @@ remain part of the separate protocol abstraction change.
 - [x] Update `CONTRIBUTING.md` for the generator and editor workflow.
   Leave `README.md` unchanged until requested.
 
-## Sequencing with the protocol abstraction
+### Sequencing with the protocol abstraction
 
 This change is implemented first. Protobuf wire decoding is isolated in
 `internal/httpserver/codec`; comparison traversal and binding use `schema.Type`.
@@ -184,6 +193,6 @@ Rebase the protocol abstraction onto this work, then move HTTP routing and statu
 handling behind its engine boundary. Descriptor configuration remains separate
 from core schema configuration.
 
-## Open decisions
+## Open questions
 
 None.
