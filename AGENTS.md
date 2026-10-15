@@ -2,7 +2,8 @@
 
 - Put each executable entry point in `cmd/<command>`.
 - `scripts/spectre` is the launcher. For each other binary, add a symlink named after the binary in `./scripts` pointing to `spectre`.
-- Keep all initialisation and bootstrap code in the main entry point.
+- Keep all initialisation and bootstrap code in the main entry point. For
+  `spectre`, that is `Main` in the root package, which `cmd/spectre` only calls.
 - Do not put application logic in main entry points. The `mainlogic` linter
   allows only `main` and `Run` methods there. Keep a bootstrap helper with
   `//nolint:mainlogic <reason>`.
@@ -29,6 +30,30 @@
   underlying type to call a function in another package.
 - The `layout` linter enforces where packages live and the `./scripts`
   symlinks. List public API packages in its `allow` option in `.tsk.toml`.
+
+# Public API
+
+- The root package, `github.com/block/spectre`, is the only public API. Custom
+  binaries call its `Main` with options that add extensions to the built-in
+  command line. See `docs/compile-time-extensions.md`.
+- Expose only extension points that have been explicitly agreed. Add each as one
+  public contract and one `With...` option.
+- Never expose an internal type in the public API, even through an alias. Mirror
+  it in the root package instead. The `publicapi` linter enforces this.
+- A public mirror of an internal type is the one exception to the rule against
+  duplicating types.
+
+# Public API
+
+- The root package, `github.com/block/spectre`, is the only public API. Custom
+  binaries call its `Main` with options that add extensions to the built-in
+  command line. See `docs/compile-time-extensions.md`.
+- Expose only extension points that have been explicitly agreed. Add each as one
+  public contract and one `With...` option.
+- Never expose an internal type in the public API, even through an alias. Mirror
+  it in the root package instead. The `publicapi` linter enforces this.
+- A public mirror of an internal type is the one exception to the rule against
+  duplicating types.
 
 # Compatibility
 
