@@ -38,9 +38,11 @@ type EmbedsHidden struct { // want `EmbedsHidden exposes internal type example.c
 	hidden
 }
 
-type EmbedsPromoted struct { // want `EmbedsPromoted exposes internal type example.com/m/internal/lib.Thing; mirror it in this package`
+type EmbedsPromoted struct {
 	promoted
 }
+
+func Promoted() promoted { return promoted{} } // want `Promoted exposes internal type example.com/m/internal/lib.Thing; mirror it in this package`
 
 func Head() *node { return nil } // want `Head exposes internal type example.com/m/internal/lib.Name; mirror it in this package`
 
@@ -66,7 +68,7 @@ type hidden struct{ Thing lib.Thing }
 // promoted's exported method is promoted into any exported type embedding it.
 type promoted struct{}
 
-func (promoted) Thing() lib.Thing { return lib.New() }
+func (promoted) Thing() lib.Thing { return lib.New() } // want `EmbedsPromoted.Thing exposes internal type example.com/m/internal/lib.Thing; mirror it in this package`
 
 func (promoted) thing() lib.Thing { return lib.New() }
 

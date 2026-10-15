@@ -27,14 +27,30 @@ Mirror the type in the public package instead.`,
       const exposed = new Set<string>();
       // Type parameters and local types can refer to themselves, so each
       // declaration is walked once, keyed by where it is declared.
-      const visited = new Set<number>();
-      const firstVisit = (object: types.TypeName | null) => {
-        const pos = object?.pos() ?? token.NoPos;
-        if (visited.has(pos)) {
+      const visited = new Set<string>();
+      const firstVisit = (object: types.TypeName | null, key = "") => {
+        const id = `${object?.pos() ?? token.NoPos}${key}`;
+        if (visited.has(id)) {
           return false;
         }
-        visited.add(pos);
+        visited.add(id);
         return true;
+      };
+      // descend checks an unexported local type, which has no declaration of its
+      // own to check. Methods promoted by embedding are checked on the embedder.
+      const descend = (named: types.Named, withMethods: boolean) => {
+        const origin = named.origin();
+        const object = origin?.obj() ?? null;
+        if (origin === null || object?.pkg()?.path() !== importPath || object.exported() || !firstVisit(object, `:${withMethods}`)) {
+          return;
+        }
+        visitTypeParams(origin.typeParams(), visit);
+        visit(origin.underlying());
+        if (withMethods) {
+          for (const method of exportedMethods(origin)) {
+            visit(method.type());
+          }
+        }
       };
       const visit = (type: types.Type | null) => {
         switch (type?.$type) {
@@ -52,21 +68,7 @@ Mirror the type in the public package instead.`,
               return;
             }
             visitList(type.typeArgs(), visit);
-            // An exported type is checked at its declaration. An unexported local
-            // one has none, so check the members it promotes wherever it appears.
-            const origin = type.origin();
-            const object = origin?.obj() ?? null;
-            if (origin === null || object?.pkg()?.path() !== importPath || object.exported() || !firstVisit(object)) {
-              return;
-            }
-            visitTypeParams(origin.typeParams(), visit);
-            visit(origin.underlying());
-            for (let i = 0; i < origin.numMethods(); i++) {
-              const method = origin.method(i);
-              if (method?.exported()) {
-                visit(method.type());
-              }
-            }
+            descend(type, true);
             return;
           case "Pointer":
           case "Slice":
@@ -89,8 +91,16 @@ Mirror the type in the public package instead.`,
           case "Struct":
             for (let i = 0; i < type.numFields(); i++) {
               const field = type.field(i);
-              if (field?.exported() || field?.embedded()) {
-                visit(field.type());
+              const embedded = field?.embedded() ? embeddedNamed(field.type()) : null;
+              if (embedded === null) {
+                if (field?.exported()) {
+                  visit(field.type());
+                }
+              } else if (exposesInternal(embedded.obj()?.pkg() ?? null)) {
+                exposed.add(embedded.string());
+              } else {
+                visitList(embedded.typeArgs(), visit);
+                descend(embedded, false);
               }
             }
             return;
@@ -125,6 +135,19 @@ Mirror the type in the public package instead.`,
         pass.report({ pos, message: `${name} exposes internal type ${type}; mirror it in this package` });
       }
     };
+    // exportedMethods returns the exported methods declared in this package that
+    // a type has, including those promoted from embedded types.
+    const exportedMethods = (named: types.Named) => {
+      const methods: types.Func[] = [];
+      const set = types.newMethodSet(types.newPointer(named));
+      for (let i = 0; i < (set?.len() ?? 0); i++) {
+        const method = set?.at(i)?.obj() ?? null;
+        if (method?.$type === "Func" && method.exported() && method.pkg()?.path() === importPath) {
+          methods.push(method);
+        }
+      }
+      return methods;
+    };
     const scope = pass.pkg.scope();
     for (const name of scope?.names() ?? []) {
       const object = scope?.lookup(name) ?? null;
@@ -137,11 +160,8 @@ Mirror the type in the public package instead.`,
           visitTypeParams(declared.typeParams(), visit);
           visit(declared.underlying());
         });
-        for (let i = 0; i < declared.numMethods(); i++) {
-          const method = declared.method(i);
-          if (method?.exported()) {
-            report(`${name}.${method.name()}`, method.pos(), (visit) => visit(method.type()));
-          }
+        for (const method of exportedMethods(declared)) {
+          report(`${name}.${method.name()}`, method.pos(), (visit) => visit(method.type()));
         }
       } else {
         report(name, object.pos(), (visit) => visit(declared));
@@ -153,6 +173,13 @@ Mirror the type in the public package instead.`,
 // isInternal reports whether an import path is inside an internal directory.
 function isInternal(path: string): boolean {
   return path.split("/").includes("internal");
+}
+
+// embeddedNamed returns the named type an embedded field holds, through a pointer.
+function embeddedNamed(type: types.Type | null): types.Named | null {
+  const unaliased = types.unalias(type);
+  const target = unaliased?.$type === "Pointer" ? types.unalias(unaliased.elem()) : unaliased;
+  return target?.$type === "Named" ? target : null;
 }
 
 function visitList(list: types.TypeList | null, visit: (type: types.Type | null) => void) {
