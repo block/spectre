@@ -3,7 +3,6 @@ package comparisoninternal
 import (
 	"context"
 	"encoding/json"
-	"log/slog"
 	"slices"
 
 	"github.com/alecthomas/errors"
@@ -48,14 +47,13 @@ func (p *Plan) Schema() *schema.Schema {
 // ownership of and mutates. side only labels log records.
 func (p *Plan) Normalise(
 	ctx context.Context,
-	log *slog.Logger,
 	evaluator *javascript.Evaluator,
 	root *schema.Type,
 	side string,
 	payload any,
 ) (*Normalised, error) {
 	document := newDocument(payload)
-	run := newNormalisationRun(p.loaded, log, evaluator, root, slices.Clone(p.resolved), side, document)
+	run := newNormalisationRun(p.loaded, evaluator, root, slices.Clone(p.resolved), side, document)
 	if err := run.normalise(ctx); err != nil {
 		return nil, err
 	}

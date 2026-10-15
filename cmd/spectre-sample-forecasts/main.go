@@ -36,7 +36,7 @@ func main() {
 	kctx.FatalIfErrorf(errors.Wrap(err, "listen for forecast requests"))
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/forecasts/{location}", provider.FetchForecast)
-	server := sample.NewServer(mux, log)
+	server := sample.NewServer(mux)
 	log.InfoContext(ctx, "Sample forecast provider listening", "address", listener.Addr().String())
 	kctx.FatalIfErrorf(errors.Wrap(server.Serve(ctx, listener), "serve sample forecasts"))
 }

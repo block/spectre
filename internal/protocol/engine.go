@@ -3,7 +3,6 @@ package protocol
 import (
 	"context"
 	"fmt"
-	"log/slog"
 
 	"github.com/alecthomas/errors"
 	"go.jetify.com/typeid"
@@ -27,7 +26,6 @@ func NewEngine(
 	config Config,
 	matchers map[javascript.Protocol]Matcher,
 	quarantine Quarantiner,
-	log *slog.Logger,
 ) (*Engine, error) {
 	if quarantine == nil {
 		return nil, errors.New("quarantiner is required")
@@ -35,7 +33,7 @@ func NewEngine(
 	if err := config.Validate(); err != nil {
 		return nil, err
 	}
-	scripts, err := comparison.New(ctx, config.Comparison, log)
+	scripts, err := comparison.New(ctx, config.Comparison)
 	if err != nil {
 		return nil, errors.WithStack(err)
 	}
@@ -50,8 +48,8 @@ func NewEngine(
 	}
 	return &Engine{
 		scripts: scripts,
-		ingress: newIngressPairs(scripts, quarantine, log),
-		egress:  newEgressQueue(scripts, config.MatchWindow, quarantine, log),
+		ingress: newIngressPairs(scripts, quarantine),
+		egress:  newEgressQueue(scripts, config.MatchWindow, quarantine),
 	}, nil
 }
 

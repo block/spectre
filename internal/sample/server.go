@@ -2,7 +2,6 @@ package sample
 
 import (
 	"context"
-	"log/slog"
 	"net"
 	"net/http"
 	"time"
@@ -19,8 +18,8 @@ type Server struct {
 }
 
 // NewServer constructs a sample server around a configured Connect handler.
-func NewServer(connectHandler http.Handler, log *slog.Logger) *Server {
-	handler := logging.New(connectHandler, log, "request")
+func NewServer(connectHandler http.Handler) *Server {
+	handler := logging.New(connectHandler, "request")
 	return &Server{health: health.New(handler)}
 }
 

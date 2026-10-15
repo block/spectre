@@ -3,7 +3,6 @@ package comparison
 import (
 	"context"
 	"crypto/sha256"
-	"log/slog"
 	"os"
 	"time"
 
@@ -18,7 +17,6 @@ import (
 // Scripts is one immutable set of normaliser scripts and the schema they were
 // checked against. It is safe for concurrent use.
 type Scripts struct {
-	log     *slog.Logger
 	program *javascript.Program
 	plan    *comparisoninternal.Plan
 	timeout time.Duration
@@ -26,12 +24,9 @@ type Scripts struct {
 
 // New loads every script in the configured directory and checks that each
 // declared endpoint type exists.
-func New(ctx context.Context, config Config, log *slog.Logger) (*Scripts, error) {
+func New(ctx context.Context, config Config) (*Scripts, error) {
 	if err := config.Validate(); err != nil {
 		return nil, err
-	}
-	if log == nil {
-		return nil, errors.New("logger is required")
 	}
 	root, err := os.OpenRoot(config.ScriptsDir)
 	if err != nil {
@@ -43,7 +38,7 @@ func New(ctx context.Context, config Config, log *slog.Logger) (*Scripts, error)
 		return nil, errors.Wrap(err, "compile comparison scripts")
 	}
 	loaded := program.Schema()
-	scripts := &Scripts{log: log, program: program, timeout: config.ComparisonTimeout}
+	scripts := &Scripts{program: program, timeout: config.ComparisonTimeout}
 	for _, endpoint := range scripts.Endpoints() {
 		if endpoint.Ignore() {
 			continue
@@ -122,5 +117,5 @@ func (s *Scripts) normalise(ctx context.Context, typeName Option[schema.TypeRef]
 		return nil, errors.Wrap(err, "initialise JavaScript evaluator")
 	}
 	defer evaluator.Close()
-	return errors.WithStack2(s.plan.Normalise(ctx, s.log, evaluator, root, side, payload))
+	return errors.WithStack2(s.plan.Normalise(ctx, evaluator, root, side, payload))
 }

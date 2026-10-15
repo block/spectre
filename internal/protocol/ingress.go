@@ -2,7 +2,6 @@ package protocol
 
 import (
 	"context"
-	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -46,7 +45,6 @@ func newDifferenceResult(differences ...string) comparisonResult {
 type ingressPairs struct {
 	scripts    *comparison.Scripts
 	quarantine Quarantiner
-	log        *slog.Logger
 
 	// mu guards both maps and every pair's lifecycle flags.
 	mu        sync.Mutex
@@ -54,11 +52,10 @@ type ingressPairs struct {
 	exchanges map[Exchange]*ingressPair
 }
 
-func newIngressPairs(scripts *comparison.Scripts, quarantine Quarantiner, log *slog.Logger) *ingressPairs {
+func newIngressPairs(scripts *comparison.Scripts, quarantine Quarantiner) *ingressPairs {
 	return &ingressPairs{
 		scripts:    scripts,
 		quarantine: quarantine,
-		log:        log,
 		requests:   map[RequestID]*ingressPair{},
 		exchanges:  map[Exchange]*ingressPair{},
 	}
@@ -262,7 +259,7 @@ func (p *ingressPairs) take(ctx context.Context, exchange Exchange) (*ingressPai
 	defer p.mu.Unlock()
 	pair, ok := p.exchanges[exchange]
 	if !ok {
-		p.log.ErrorContext(ctx, "Unknown ingress exchange", "exchange", exchange.String())
+		logger.FromContext(ctx).ErrorContext(ctx, "Unknown ingress exchange", "exchange", exchange.String())
 		return nil, false
 	}
 	delete(p.exchanges, exchange)
@@ -321,7 +318,7 @@ func (p *ingressPairs) candidateResponse(ctx context.Context, exchange Exchange,
 }
 
 func (p *ingressPairs) unfinished(ctx context.Context, pair *ingressPair, err error) {
-	p.log.WarnContext(context.WithoutCancel(ctx), "Response comparison did not finish", append(pair.describe(), "error", err)...)
+	logger.FromContext(ctx).WarnContext(context.WithoutCancel(ctx), "Response comparison did not finish", append(pair.describe(), "error", err)...)
 }
 
 func (p *ingressPairs) candidateUnable(ctx context.Context, exchange Exchange, reason error) {
@@ -353,7 +350,7 @@ func (p *ingressPairs) report(ctx context.Context, pair *ingressPair, result com
 	if dt, ok := pair.latencyDelta(latency).Get(); ok {
 		attributes = append(attributes, "dt", dt)
 	}
-	p.log.InfoContext(ctx, "Response comparison completed", attributes...)
+	logger.FromContext(ctx).InfoContext(ctx, "Response comparison completed", attributes...)
 	switch result.outcome {
 	case outcomeEquivalent, outcomeSkipped:
 	case outcomeDivergent:

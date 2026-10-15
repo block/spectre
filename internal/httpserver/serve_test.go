@@ -3,7 +3,6 @@ package httpserver_test
 import (
 	"context"
 	"io"
-	"log/slog"
 	"net"
 	"net/http"
 	"sync"
@@ -43,7 +42,7 @@ func TestServeShutsDownEveryListenerWhenOneFails(t *testing.T) {
 	}
 	serveDone := make(chan error, 1)
 	go func() {
-		serveDone <- httpserver.Serve(t.Context(), httpserver.NewConfig(), slog.New(slog.DiscardHandler), bindings, lifecycle)
+		serveDone <- httpserver.Serve(t.Context(), httpserver.NewConfig(), bindings, lifecycle)
 	}()
 	<-started
 	client := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}

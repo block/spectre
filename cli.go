@@ -2,8 +2,6 @@ package spectre
 
 import (
 	"context"
-	"log/slog"
-	"os"
 
 	"github.com/alecthomas/errors"
 	"github.com/alecthomas/kong"
@@ -31,8 +29,8 @@ type runCommand struct {
 	Supervisor supervisor.Config `embed:""`
 }
 
-func (c *runCommand) Run(ctx context.Context, log *slog.Logger, logConfig logger.Config) error {
-	super, err := supervisor.New(c.Supervisor, logConfig, log, os.Stdout)
+func (c *runCommand) Run(ctx context.Context) error {
+	super, err := supervisor.New(ctx, c.Supervisor)
 	if err != nil {
 		return errors.WithStack(err)
 	}

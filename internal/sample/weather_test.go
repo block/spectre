@@ -2,7 +2,6 @@ package sample_test
 
 import (
 	"encoding/json"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -156,7 +155,7 @@ func newRemoteWeather(t *testing.T, provider string) *sample.Weather {
 	t.Helper()
 	target, err := url.Parse(provider)
 	assert.NoError(t, err)
-	client := sample.NewForecastClient(target, "forecasts.example", http.DefaultTransport, slog.New(slog.DiscardHandler))
+	client := sample.NewForecastClient(target, "forecasts.example", http.DefaultTransport)
 	weather, err := sample.NewWeather([]byte(testWeather), "rev-1", Some(client))
 	assert.NoError(t, err)
 	return weather

@@ -2,17 +2,17 @@ pre-commit:
   commands:
     fmt:
       priority: 1
-      run: bin/bit fmt
+      run: bit fmt
       stage_fixed: true
 
 commit-msg:
   commands:
     conventional-commit:
-      run: bin/git-sv validate-commit-message --path / --file "$(realpath "{1}")" --source message
+      run: git-sv validate-commit-message --path / --file "$(realpath "{1}")" --source message
 
 pre-push:
   commands:
     lint:
-      run: eval "$(bin/hermit env --activate)" && bit lint
+      run: bit lint
     test:
-      run: eval "$(bin/hermit env --activate)" && bit test
+      run: bit test

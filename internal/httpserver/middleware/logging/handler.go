@@ -2,24 +2,24 @@
 package logging
 
 import (
-	"log/slog"
 	"net/http"
 	"time"
 
 	"github.com/alecthomas/errors"
+
+	"github.com/block/spectre/internal/logger"
 )
 
 // Handler logs each request after delegating it to the next handler.
 type Handler struct {
 	next  http.Handler
-	log   *slog.Logger
 	event string
 }
 
-// New constructs request logging middleware around the next handler. event names
-// the SPECTRE event each request is logged under, e.g. "received".
-func New(next http.Handler, log *slog.Logger, event string) *Handler {
-	return &Handler{next: next, log: log, event: event}
+// New constructs middleware that logs to the request context's logger. event
+// names the SPECTRE event each request is logged under, e.g. "received".
+func New(next http.Handler, event string) *Handler {
+	return &Handler{next: next, event: event}
 }
 
 // ServeHTTP logs the event, method, path, response status, and elapsed time.
@@ -32,7 +32,7 @@ func (h *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	if status == 0 {
 		status = http.StatusOK
 	}
-	h.log.DebugContext(request.Context(), "HTTP request",
+	logger.FromContext(request.Context()).DebugContext(request.Context(), "HTTP request",
 		"event", h.event,
 		"method", request.Method,
 		"path", request.URL.Path,

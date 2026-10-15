@@ -2,7 +2,6 @@ package supervisor
 
 import (
 	"context"
-	"io"
 	"log/slog"
 	"net"
 	"os"
@@ -21,6 +20,9 @@ import (
 	"github.com/block/spectre/internal/protocol"
 )
 
+// subsystemKey is the log attribute naming the supervisor or proxy that wrote a line.
+const subsystemKey = "subsystem"
+
 // roles name the service leaves and their wiring.
 const (
 	roleReference = "reference"
@@ -30,11 +32,9 @@ const (
 // Supervisor runs the candidate and reference services behind the SPECTRE
 // proxies, with the candidate's egress sandboxed and host resources split.
 type Supervisor struct {
-	config    Config
-	logConfig logger.Config
-	log       *slog.Logger
-	output    io.Writer
-	selfExe   string
+	config  Config
+	log     *slog.Logger
+	selfExe string
 
 	egressReference string
 	egressCandidate string
@@ -53,9 +53,8 @@ type exit struct {
 	err  error
 }
 
-// New validates config and returns a supervisor that logs to log and tags child
-// output written to output.
-func New(config Config, logConfig logger.Config, log *slog.Logger, output io.Writer) (*Supervisor, error) {
+// New validates config and returns a supervisor that logs to ctx's logger.
+func New(ctx context.Context, config Config) (*Supervisor, error) {
 	if config.Candidate == "" || config.Reference == "" {
 		return nil, errors.New("candidate and reference commands are required")
 	}
@@ -67,13 +66,11 @@ func New(config Config, logConfig logger.Config, log *slog.Logger, output io.Wri
 		return nil, errors.Wrap(err, "find supervisor executable")
 	}
 	return &Supervisor{
-		config:    config,
-		logConfig: logConfig,
-		log:       log,
-		output:    newSyncWriter(output),
-		selfExe:   selfExe,
-		limits:    None[*cgroups](),
-		exits:     make(chan exit, 4),
+		config:  config,
+		log:     logger.FromContext(ctx).With(subsystemKey, "supervisor"),
+		selfExe: selfExe,
+		limits:  None[*cgroups](),
+		exits:   make(chan exit, 4),
 	}, nil
 }
 
@@ -195,7 +192,8 @@ func (s *Supervisor) startAll(ctx context.Context) error {
 func (s *Supervisor) startEgress(ctx context.Context) error {
 	config := s.egressConfig()
 	transport := httpserver.NewTransport(config.Config)
-	handler, err := httpserver.NewEgress(ctx, config, s.engineConfig(), transport, s.proxyLogger("egress"))
+	proxyContext := withProxyLogger(ctx, "egress")
+	handler, err := httpserver.NewEgress(proxyContext, config, s.engineConfig(), transport)
 	if err != nil {
 		transport.CloseIdleConnections()
 		return errors.Wrap(err, "configure egress")
@@ -206,7 +204,7 @@ func (s *Supervisor) startEgress(ctx context.Context) error {
 		return errors.Wrap(err, "listen for egress")
 	}
 	s.runProxy(ctx, "egress", transport, func() error {
-		return handler.Serve(ctx, listeners[0], listeners[1], listeners[2])
+		return handler.Serve(proxyContext, listeners[0], listeners[1], listeners[2])
 	})
 	return nil
 }
@@ -216,7 +214,8 @@ func (s *Supervisor) startIngress(ctx context.Context) error {
 	config := s.ingressConfig()
 	transport := httpserver.NewTransport(config.Config)
 	loader := Some[httpserver.DescriptorLoader](descriptors.NewReflectionLoader())
-	handler, err := httpserver.NewIngress(ctx, config, s.engineConfig(), transport, loader, s.proxyLogger("ingress"))
+	proxyContext := withProxyLogger(ctx, "ingress")
+	handler, err := httpserver.NewIngress(proxyContext, config, s.engineConfig(), transport, loader)
 	if err != nil {
 		transport.CloseIdleConnections()
 		return errors.Wrap(err, "configure ingress")
@@ -227,7 +226,7 @@ func (s *Supervisor) startIngress(ctx context.Context) error {
 		return errors.Wrap(err, "listen for ingress")
 	}
 	s.runProxy(ctx, "ingress", transport, func() error {
-		return handler.Serve(ctx, listener)
+		return handler.Serve(proxyContext, listener)
 	})
 	return nil
 }
@@ -303,13 +302,15 @@ func (s *Supervisor) serviceProcess(ctx context.Context, role string, egressURL 
 		cmd = s.command(ctx, "/bin/sh", "-c", shell)
 	}
 	cmd.Env = append(cmd.Environ(), "SPECTRE_LISTEN="+listen, "SPECTRE_EGRESS="+egressURL)
-	return newManagedProcess(role, cmd, s.output)
+	return newManagedProcess(role, cmd)
 }
 
-// command builds a child command that terminates gracefully on context
-// cancellation, escalating to a kill after the shutdown timeout.
+// command builds a child command that shares the supervisor's output and terminates
+// gracefully on context cancellation, escalating to a kill after the shutdown timeout.
 func (s *Supervisor) command(ctx context.Context, name string, arg ...string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, name, arg...) //nolint:gosec // G204: the supervisor runs operator-provided service commands by design
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
 	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
 	cmd.WaitDelay = s.config.ShutdownTimeout
 	return cmd
@@ -346,9 +347,9 @@ func (s *Supervisor) ingressConfig() httpserver.IngressConfig {
 	return config
 }
 
-// proxyLogger returns a logger whose output lines are tagged with the proxy name.
-func (s *Supervisor) proxyLogger(name string) *slog.Logger {
-	return logger.Tagged(logger.New(s.logConfig, newPrefixWriter(s.output, name)))
+// withProxyLogger returns a context whose logger tags every line with the proxy name.
+func withProxyLogger(ctx context.Context, name string) context.Context {
+	return logger.WithLogger(ctx, logger.FromContext(ctx).With(subsystemKey, name))
 }
 
 // listenAll opens every address in order, closing any already opened on failure.

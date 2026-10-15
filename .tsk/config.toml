@@ -152,6 +152,12 @@ linters = ['forbidigo']
 path = '(^|/)main\.go$'
 text = 'Use log/slog instead'
 
+# Main entry points construct the logger, and internal/logger implements construction.
+[[exclude]]
+linters = ['forbidigo']
+path = '((^|/)main\.go|^spectre\.go|^internal/logger/logger\.go|_test\.go)$'
+text = 'Construct loggers only in main entry points'
+
 [cyclop]
 max-complexity = 30
 package-average = 10.0
@@ -190,6 +196,21 @@ pkg = '^github\.com/alecthomas/types/optional$'
 msg = 'Read environment variables through Kong env tags instead'
 pattern = '^(os|syscall)\.(Getenv|LookupEnv|Environ|ExpandEnv|Setenv|Unsetenv|Clearenv)$'
 pkg = '^(os|syscall)$'
+
+[[forbidigo.forbid]]
+msg = 'Construct loggers only in main entry points; use logger.FromContext instead'
+pattern = '^slog\.(New|NewJSONHandler|NewTextHandler)$'
+pkg = '^log/slog$'
+
+[[forbidigo.forbid]]
+msg = 'Construct loggers only in main entry points; use logger.FromContext instead'
+pattern = '^logger\.New$'
+pkg = '^github\.com/block/spectre/internal/logger$'
+
+[[forbidigo.forbid]]
+msg = 'Construct loggers only in main entry points; use logger.FromContext instead'
+pattern = '^tint\.NewTextHandler$'
+pkg = '^github\.com/lmittmann/tint$'
 
 [[forbidigo.forbid]]
 msg = 'Use github.com/alecthomas/errors instead'

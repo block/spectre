@@ -1,7 +1,9 @@
 package supervisor
 
 import (
-	"io"
+	"bytes"
+	"context"
+	"encoding/json"
 	"log/slog"
 	"net"
 	"os"
@@ -17,14 +19,20 @@ import (
 
 func testSupervisor(t *testing.T) (*Supervisor, Config) {
 	t.Helper()
+	config := testConfig(t)
+	s, err := New(t.Context(), config)
+	assert.NoError(t, err)
+	return s, config
+}
+
+func testConfig(t *testing.T) Config {
+	t.Helper()
 	config := NewConfig()
 	config.Candidate = "run-candidate --port 1"
 	config.Reference = "run-reference --port 2"
 	config.SocketDir = t.TempDir()
 	config.Destinations = map[string]string{"b.example": "http://b", "a.example": "http://a"}
-	s, err := New(config, logger.NewConfig(), slog.New(slog.DiscardHandler), io.Discard)
-	assert.NoError(t, err)
-	return s, config
+	return config
 }
 
 func TestServiceProcessReference(t *testing.T) {
@@ -33,6 +41,7 @@ func TestServiceProcessReference(t *testing.T) {
 	assert.Equal(t, []string{"/bin/sh", "-c", "run-reference --port 2"}, process.command().Args)
 	assert.True(t, slices.Contains(process.command().Env, "SPECTRE_LISTEN=unix:/sockets/reference.sock"))
 	assert.True(t, slices.Contains(process.command().Env, "SPECTRE_EGRESS=http+unix:/sockets/egress-reference.sock"))
+	assert.True(t, process.command().Stdout == os.Stdout && process.command().Stderr == os.Stderr, "service output is not passed through")
 }
 
 func TestServiceProcessCandidateSandboxed(t *testing.T) {
@@ -94,4 +103,35 @@ func TestWaitListening(t *testing.T) {
 
 	err = waitListening(t.Context(), "tcp", "127.0.0.1:1", 200*time.Millisecond)
 	assert.Error(t, err)
+}
+
+func TestLogsTagSubsystem(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		log       func(t *testing.T, ctx context.Context)
+		subsystem string
+	}{
+		{name: "Supervisor", subsystem: "supervisor", log: func(t *testing.T, ctx context.Context) {
+			t.Helper()
+			s, err := New(ctx, testConfig(t))
+			assert.NoError(t, err)
+			s.log.InfoContext(ctx, "logged")
+		}},
+		{name: "Proxy", subsystem: "egress", log: func(t *testing.T, ctx context.Context) {
+			t.Helper()
+			proxyContext := withProxyLogger(ctx, "egress")
+			logger.FromContext(proxyContext).InfoContext(proxyContext, "logged")
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var output bytes.Buffer
+			ctx := logger.WithLogger(t.Context(), slog.New(slog.NewJSONHandler(&output, nil)))
+			test.log(t, ctx)
+			var record struct {
+				Subsystem string `json:"subsystem"`
+			}
+			assert.NoError(t, json.Unmarshal(output.Bytes(), &record))
+			assert.Equal(t, test.subsystem, record.Subsystem)
+		})
+	}
 }

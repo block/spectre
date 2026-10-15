@@ -44,7 +44,7 @@ test-launcher = exec.test {
 }
 test-response-comparison-integration = exec.test {
   command = "response-comparison.integration.test.sh"
-  inputs = ["Procfile.integration", "scripts/response-comparison.integration.test.sh", "scripts/spectre", "scripts/spectre-sample", "scripts/spectre-sample-forecasts", "internal/**/*.ts", "internal/sample/testdata/*.json"]
+  inputs = ["Procfile.integration", "scripts/response-comparison.integration.test.sh", "scripts/spectre", "scripts/spectre-sample", "scripts/spectre-sample-forecasts", "internal/**/*.ts", "internal/sample/testdata/*.json", "bin/.jq-1.8.2.pkg"]
   depends_on = [spectre-bin, sample-bin, sample-forecasts-bin, sample-schema]
 }
 test-release-version = exec.test {

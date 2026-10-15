@@ -18,6 +18,7 @@ import (
 	. "github.com/alecthomas/types/optional"
 
 	"github.com/block/spectre/internal/comparison/javascript"
+	"github.com/block/spectre/internal/logger"
 	"github.com/block/spectre/internal/protocol"
 )
 
@@ -54,7 +55,7 @@ func TestNewEngineDeclaresEndpointsToTheirMatchers(t *testing.T) {
 
 	//nolint:exhaustive the engine is tested with fake protocols, not real ones
 	_, err := protocol.NewEngine(t.Context(), config, map[javascript.Protocol]protocol.Matcher{fake: fakeMatcher, other: otherMatcher},
-		&recordingQuarantiner{}, slog.New(slog.DiscardHandler))
+		&recordingQuarantiner{})
 
 	assert.NoError(t, err)
 	assert.Equal(t, []declared{
@@ -95,7 +96,7 @@ func TestNewEngineRejectsInvalidSetup(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			_, err := protocol.NewEngine(t.Context(), newConfig(t, test.script, time.Second),
 				//nolint:exhaustive the engine is tested with fake protocols, not real ones
-				map[javascript.Protocol]protocol.Matcher{fake: test.matcher}, test.quarantine, slog.New(slog.DiscardHandler))
+				map[javascript.Protocol]protocol.Matcher{fake: test.matcher}, test.quarantine)
 			assert.EqualError(t, err, test.expected)
 		})
 	}
@@ -103,6 +104,8 @@ func TestNewEngineRejectsInvalidSetup(t *testing.T) {
 
 // harness is an engine for the fake protocol with recording collaborators.
 type harness struct {
+	// ctx carries the logger that writes to logs.
+	ctx        context.Context
 	engine     *protocol.Engine
 	quarantine *recordingQuarantiner
 	logs       *lockedBuffer
@@ -112,12 +115,12 @@ func newHarness(t *testing.T, window time.Duration) *harness {
 	t.Helper()
 	logs := &lockedBuffer{}
 	quarantine := &recordingQuarantiner{}
-	log := slog.New(slog.NewJSONHandler(logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	engine, err := protocol.NewEngine(t.Context(), newConfig(t, fakeScript, window),
+	ctx := logger.WithLogger(t.Context(), slog.New(slog.NewJSONHandler(logs, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	engine, err := protocol.NewEngine(ctx, newConfig(t, fakeScript, window),
 		//nolint:exhaustive the engine is tested with fake protocols, not real ones
-		map[javascript.Protocol]protocol.Matcher{fake: &recordingMatcher{}}, quarantine, log)
+		map[javascript.Protocol]protocol.Matcher{fake: &recordingMatcher{}}, quarantine)
 	assert.NoError(t, err)
-	return &harness{engine: engine, quarantine: quarantine, logs: logs}
+	return &harness{ctx: ctx, engine: engine, quarantine: quarantine, logs: logs}
 }
 
 // records returns every log record with msg, without its timestamp.

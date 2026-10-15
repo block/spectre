@@ -34,7 +34,8 @@ func main() {
 	}
 	cli.Log = logger.NewConfig()
 	kctx := kong.Parse(&cli, kong.Vars{"version": internal.Version})
-	log := logger.New(cli.Log, os.Stderr)
+	// The reference and candidate share this binary, so the revision tells their logs apart.
+	log := logger.New(cli.Log, os.Stderr).With("revision", cli.Revision)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	ctx = logger.WithLogger(ctx, log)
@@ -54,7 +55,7 @@ func main() {
 		}
 		transport := httpserver.NewTransport(httpserver.NewConfig())
 		defer transport.CloseIdleConnections()
-		forecasts = Some(sample.NewForecastClient(target, cli.ForecastsHost, transport.ForBackend(provider), log))
+		forecasts = Some(sample.NewForecastClient(target, cli.ForecastsHost, transport.ForBackend(provider)))
 	}
 	weather, err := sample.NewWeather(weatherData, cli.Revision, forecasts)
 	kctx.FatalIfErrorf(err)
@@ -71,7 +72,7 @@ func main() {
 	mux.Handle(path, handler)
 	path, handler = grpcreflect.NewHandlerV1Alpha(reflector)
 	mux.Handle(path, handler)
-	sampleServer := sample.NewServer(mux, log)
+	sampleServer := sample.NewServer(mux)
 	log.InfoContext(ctx, "Sample Connect server listening", "address", listener.Addr().String())
 	kctx.FatalIfErrorf(errors.Wrap(sampleServer.Serve(ctx, listener), "serve sample Connect"))
 }

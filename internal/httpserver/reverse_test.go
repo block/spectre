@@ -1,7 +1,6 @@
 package httpserver_test
 
 import (
-	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -32,7 +31,7 @@ func TestReverseProxyPreservesHostForUnixBackend(t *testing.T) {
 
 	target, err := netaddr.ParseBackend("http+unix:" + socket)
 	assert.NoError(t, err)
-	reverse, err := httpserver.NewReverseProxy(target, httpserver.NewTransport(httpserver.NewConfig()), slog.New(slog.DiscardHandler), false)
+	reverse, err := httpserver.NewReverseProxy(t.Context(), target, httpserver.NewTransport(httpserver.NewConfig()), false)
 	assert.NoError(t, err)
 
 	request := httptest.NewRequest(http.MethodGet, "http://upstream.example/path", nil)
@@ -57,7 +56,7 @@ func TestReverseProxyUsesTargetHostForTCPBackend(t *testing.T) {
 
 	target, err := netaddr.ParseBackend(backend.URL)
 	assert.NoError(t, err)
-	reverse, err := httpserver.NewReverseProxy(target, httpserver.NewTransport(httpserver.NewConfig()), slog.New(slog.DiscardHandler), false)
+	reverse, err := httpserver.NewReverseProxy(t.Context(), target, httpserver.NewTransport(httpserver.NewConfig()), false)
 	assert.NoError(t, err)
 
 	request := httptest.NewRequest(http.MethodGet, "http://inbound.example/path", nil)
@@ -72,6 +71,6 @@ func TestReverseProxyUsesTargetHostForTCPBackend(t *testing.T) {
 }
 
 func TestReverseProxyRejectsListenerTarget(t *testing.T) {
-	_, err := httpserver.NewReverseProxy(netaddr.ParseListen("127.0.0.1:0"), http.DefaultTransport, slog.New(slog.DiscardHandler), false)
+	_, err := httpserver.NewReverseProxy(t.Context(), netaddr.ParseListen("127.0.0.1:0"), http.DefaultTransport, false)
 	assert.EqualError(t, err, "reverse proxy target is not a backend")
 }

@@ -64,7 +64,7 @@ type Config struct {
 }
 
 func NewEngine(ctx context.Context, config Config, matchers map[javascript.Protocol]Matcher,
-	quarantine Quarantiner, log *slog.Logger) (*Engine, error)
+	quarantine Quarantiner) (*Engine, error)
 
 func (e *Engine) IngressReference(protocol javascript.Protocol) Acceptor
 func (e *Engine) IngressCandidate(protocol javascript.Protocol) Acceptor

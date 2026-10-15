@@ -3,7 +3,6 @@ package httpserver
 import (
 	"context"
 	"io"
-	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -36,7 +35,6 @@ type Ingress struct {
 	config         IngressConfig
 	engine         *protocol.Engine
 	routes         *route.Matcher
-	log            *slog.Logger
 	buffer         *proxy.Budget
 	requests       chan struct{}
 	health         *health.Handler
@@ -61,7 +59,6 @@ func NewIngress(
 	engineConfig protocol.Config,
 	transport http.RoundTripper,
 	loader Option[DescriptorLoader],
-	log *slog.Logger,
 ) (*Ingress, error) {
 	if err := config.Validate(); err != nil {
 		return nil, err
@@ -72,9 +69,6 @@ func NewIngress(
 	if config.Reflection && !loader.Ok() {
 		return nil, errors.New("descriptor loader is required")
 	}
-	if log == nil {
-		return nil, errors.New("logger is required")
-	}
 	reference, candidate, err := ingressBackends(config)
 	if err != nil {
 		return nil, err
@@ -83,17 +77,17 @@ func NewIngress(
 	if err != nil {
 		return nil, errors.Wrap(err, "load static descriptors")
 	}
-	referenceProxy, err := NewReverseProxy(reference, transport, log, false)
+	referenceProxy, err := NewReverseProxy(ctx, reference, transport, false)
 	if err != nil {
 		return nil, errors.Wrap(err, "proxy reference backend")
 	}
-	candidateProxy, err := NewReverseProxy(candidate, transport, log, true)
+	candidateProxy, err := NewReverseProxy(ctx, candidate, transport, true)
 	if err != nil {
 		return nil, errors.Wrap(err, "proxy candidate backend")
 	}
-	candidates := proxy.NewCandidates(config.Candidates, log)
+	candidates := proxy.NewCandidates(config.Candidates)
 	routes := route.NewMatcher()
-	engine, err := protocol.NewEngine(ctx, engineConfig, map[javascript.Protocol]protocol.Matcher{javascript.ProtocolHTTP: routes}, candidates, log)
+	engine, err := protocol.NewEngine(ctx, engineConfig, map[javascript.Protocol]protocol.Matcher{javascript.ProtocolHTTP: routes}, candidates)
 	if err != nil {
 		return nil, errors.Wrap(err, "configure response comparison")
 	}
@@ -102,19 +96,18 @@ func NewIngress(
 	ingress := &Ingress{
 		referenceProxy: referenceProxy,
 		candidateProxy: candidateProxy,
-		reference:      newPoint(engine.IngressReference(javascript.ProtocolHTTP), log, responseBudget, true, false),
-		candidate:      newPoint(engine.IngressCandidate(javascript.ProtocolHTTP), log, responseBudget, false, false),
+		reference:      newPoint(engine.IngressReference(javascript.ProtocolHTTP), responseBudget, true, false),
+		candidate:      newPoint(engine.IngressCandidate(javascript.ProtocolHTTP), responseBudget, false, false),
 		config:         config,
 		engine:         engine,
 		routes:         routes,
-		log:            log,
 		buffer:         proxy.NewBudget(config.CandidateBufferBytes),
 		requests:       make(chan struct{}, config.MaxInFlightRequests),
 		descriptors:    loader,
 		static:         static,
 		candidates:     candidates,
 	}
-	requestHandler := logging.New(http.HandlerFunc(ingress.serveProxy), log, logger.EventReceived)
+	requestHandler := logging.New(http.HandlerFunc(ingress.serveProxy), logger.EventReceived)
 	ingress.health = health.New(requestHandler)
 	return ingress, nil
 }
@@ -171,7 +164,7 @@ func (i *Ingress) serveProxy(writer http.ResponseWriter, request *http.Request) 
 	reference, err := i.reference.process(request.Context(), None[protocol.RequestID](), route, ignored, unreadRequest)
 	forward, forwarded := reference.(protocol.DecisionForward)
 	if err != nil || !forwarded {
-		i.log.ErrorContext(request.Context(), "Reference request was not paired", "error", err)
+		logger.FromContext(request.Context()).ErrorContext(request.Context(), "Reference request was not paired", "error", err)
 		cancel()
 		i.candidates.Finish(run)
 		i.referenceProxy.ServeHTTP(writer, referenceRequest)
@@ -257,7 +250,7 @@ func (i *Ingress) Shutdown(ctx context.Context) error {
 func (i *Ingress) Serve(ctx context.Context, listener net.Listener) error {
 	bindings := []Binding{NewBinding(listener, i)}
 	lifecycle := NewLifecycle(i.configureSchema, i.markUnready, i.Shutdown)
-	return errors.Wrap(Serve(ctx, i.config.Config, i.log, bindings, lifecycle), "serve ingress")
+	return errors.Wrap(Serve(ctx, i.config.Config, bindings, lifecycle), "serve ingress")
 }
 
 func (i *Ingress) markUnready() {
@@ -273,22 +266,22 @@ func (i *Ingress) configureSchema(ctx context.Context) {
 	if i.config.Reflection {
 		reference, candidate, err := i.loadDescriptors(reflectionContext)
 		if err != nil {
-			i.log.ErrorContext(ctx, "Backend descriptor loading failed", "error", err)
+			logger.FromContext(ctx).ErrorContext(ctx, "Backend descriptor loading failed", "error", err)
 			return
 		}
 		if !proto.Equal(reference, candidate) {
-			i.log.ErrorContext(ctx, "Backend descriptors differ")
+			logger.FromContext(ctx).ErrorContext(ctx, "Backend descriptors differ")
 			return
 		}
 		set, err = descriptors.Merge(reference, i.static)
 		if err != nil {
-			i.log.ErrorContext(ctx, "Backend descriptors conflict with static descriptors", "error", err)
+			logger.FromContext(ctx).ErrorContext(ctx, "Backend descriptors conflict with static descriptors", "error", err)
 			return
 		}
 	}
 	decoder, err := message.New(i.engine.Schema(), set, i.routes, i.config.ComparisonMaxBodyBytes)
 	if err != nil {
-		i.log.ErrorContext(ctx, "Response comparison setup failed", "error", err)
+		logger.FromContext(ctx).ErrorContext(ctx, "Response comparison setup failed", "error", err)
 		return
 	}
 	i.mu.Lock()

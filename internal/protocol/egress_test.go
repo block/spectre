@@ -54,7 +54,7 @@ func TestEgressCandidatePairsWithEquivalentReference(t *testing.T) {
 			raw := newRaw("reference")
 			h.reference(t, test.referenceRoute, test.referenceRequest, raw)
 
-			decision, err := h.engine.EgressCandidate(fake).ProcessRequest(t.Context(), None[protocol.RequestID](), test.candidateRoute, notIgnored, test.candidateRequest)
+			decision, err := h.engine.EgressCandidate(fake).ProcessRequest(h.ctx, None[protocol.RequestID](), test.candidateRoute, notIgnored, test.candidateRequest)
 
 			if test.matched {
 				assert.NoError(t, err)
@@ -81,9 +81,9 @@ func TestEgressPairsDuplicatesOldestFirst(t *testing.T) {
 	h.reference(t, "query", query(queryType, "london", ""), first)
 	h.reference(t, "query", query(queryType, "london", ""), second)
 
-	firstDecision, err := h.engine.EgressCandidate(fake).ProcessRequest(t.Context(), None[protocol.RequestID](), "query", notIgnored, query(queryType, "london", ""))
+	firstDecision, err := h.engine.EgressCandidate(fake).ProcessRequest(h.ctx, None[protocol.RequestID](), "query", notIgnored, query(queryType, "london", ""))
 	assert.NoError(t, err)
-	secondDecision, err := h.engine.EgressCandidate(fake).ProcessRequest(t.Context(), None[protocol.RequestID](), "query", notIgnored, query(queryType, "london", ""))
+	secondDecision, err := h.engine.EgressCandidate(fake).ProcessRequest(h.ctx, None[protocol.RequestID](), "query", notIgnored, query(queryType, "london", ""))
 	assert.NoError(t, err)
 
 	assert.Equal(t, []protocol.Decision{protocol.DecisionIntercept{Raw: first}, protocol.DecisionIntercept{Raw: second}},
@@ -100,9 +100,9 @@ func TestEgressCandidateClaimsEarliestArrivedReference(t *testing.T) {
 	// Give the second reference time to be hashed before the first.
 	time.Sleep(50 * time.Millisecond)
 	close(unblock)
-	assert.NoError(t, h.engine.Shutdown(t.Context()))
-	h.engine.EgressReference(fake).ProcessResponse(t.Context(), firstExchange, protocol.Response{Raw: first})
-	h.engine.EgressReference(fake).ProcessResponse(t.Context(), secondExchange, protocol.Response{Raw: second})
+	assert.NoError(t, h.engine.Shutdown(h.ctx))
+	h.engine.EgressReference(fake).ProcessResponse(h.ctx, firstExchange, protocol.Response{Raw: first})
+	h.engine.EgressReference(fake).ProcessResponse(h.ctx, secondExchange, protocol.Response{Raw: second})
 
 	firstDecision := <-h.candidate(t, query(queryType, "london", ""))
 	secondDecision := <-h.candidate(t, query(queryType, "london", ""))
@@ -120,7 +120,7 @@ func TestEgressCandidateDoesNotWaitForEarlierReferenceStillHashing(t *testing.T)
 	second := newRaw("second")
 	h.send(t, "query", blockedUntil(unblock, query(queryType, "london", "")))
 	secondExchange := h.send(t, "query", query(queryType, "london", ""))
-	h.engine.EgressReference(fake).ProcessResponse(t.Context(), secondExchange, protocol.Response{Raw: second})
+	h.engine.EgressReference(fake).ProcessResponse(h.ctx, secondExchange, protocol.Response{Raw: second})
 
 	decision := <-h.candidate(t, query(queryType, "london", ""))
 
@@ -146,8 +146,8 @@ func TestEgressEarliestArrivedCandidateGetsFirstReference(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	firstExchange := h.forward(t, "query", payload)
 	secondExchange := h.forward(t, "query", payload)
-	h.engine.EgressReference(fake).ProcessResponse(t.Context(), firstExchange, protocol.Response{Raw: first})
-	h.engine.EgressReference(fake).ProcessResponse(t.Context(), secondExchange, protocol.Response{Raw: second})
+	h.engine.EgressReference(fake).ProcessResponse(h.ctx, firstExchange, protocol.Response{Raw: first})
+	h.engine.EgressReference(fake).ProcessResponse(h.ctx, secondExchange, protocol.Response{Raw: second})
 
 	assert.Equal(t, []candidateDecision{
 		{decision: protocol.DecisionIntercept{Raw: first}},
@@ -169,7 +169,7 @@ func TestEgressCandidateWaitsForReference(t *testing.T) {
 			}
 			decided := make(chan protocol.Decision, 1)
 			go func() {
-				decision, err := h.engine.EgressCandidate(fake).ProcessRequest(t.Context(), None[protocol.RequestID](), "query", notIgnored, query(queryType, "london", ""))
+				decision, err := h.engine.EgressCandidate(fake).ProcessRequest(h.ctx, None[protocol.RequestID](), "query", notIgnored, query(queryType, "london", ""))
 				assert.NoError(t, err)
 				decided <- decision
 			}()
@@ -178,7 +178,7 @@ func TestEgressCandidateWaitsForReference(t *testing.T) {
 				exchange = h.forward(t, "query", query(queryType, "london", ""))
 			}
 
-			h.engine.EgressReference(fake).ProcessResponse(t.Context(), exchange, protocol.Response{Raw: raw})
+			h.engine.EgressReference(fake).ProcessResponse(h.ctx, exchange, protocol.Response{Raw: raw})
 
 			assert.Equal(t, protocol.Decision(protocol.DecisionIntercept{Raw: raw}), <-decided)
 			assert.Equal(t, nil, h.quarantine.Reasons())
@@ -200,7 +200,7 @@ func TestEgressCandidateGivesUpWhenCancelled(t *testing.T) {
 			if test.referenced {
 				exchange = h.forward(t, "query", query(queryType, "london", ""))
 			}
-			ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
+			ctx, cancel := context.WithTimeout(h.ctx, 20*time.Millisecond)
 			defer cancel()
 
 			decision, err := h.engine.EgressCandidate(fake).ProcessRequest(ctx, None[protocol.RequestID](), "query", notIgnored, query(queryType, "london", ""))
@@ -212,7 +212,7 @@ func TestEgressCandidateGivesUpWhenCancelled(t *testing.T) {
 			if test.referenced {
 				// The abandoned reference is released as soon as it completes.
 				raw := newRaw("reference")
-				h.engine.EgressReference(fake).ProcessResponse(t.Context(), exchange, protocol.Response{Raw: raw})
+				h.engine.EgressReference(fake).ProcessResponse(h.ctx, exchange, protocol.Response{Raw: raw})
 				assert.Equal(t, 1, raw.Releases())
 			}
 		})
@@ -255,13 +255,13 @@ func TestEgressQuarantinesUnreplayableRequests(t *testing.T) {
 			raw := newRaw("reference")
 			exchange := h.forward(t, "query", test.referenceRequest)
 			if test.referenceFails {
-				h.engine.EgressReference(fake).Unable(t.Context(), exchange, errors.New("connection reset"))
+				h.engine.EgressReference(fake).Unable(h.ctx, exchange, errors.New("connection reset"))
 			} else {
-				h.engine.EgressReference(fake).ProcessResponse(t.Context(), exchange, protocol.Response{Raw: raw})
+				h.engine.EgressReference(fake).ProcessResponse(h.ctx, exchange, protocol.Response{Raw: raw})
 			}
 
 			if candidateRequest, ok := test.candidateRequest.Get(); ok {
-				decision, err := h.engine.EgressCandidate(fake).ProcessRequest(t.Context(), None[protocol.RequestID](), "query", notIgnored, candidateRequest)
+				decision, err := h.engine.EgressCandidate(fake).ProcessRequest(h.ctx, None[protocol.RequestID](), "query", notIgnored, candidateRequest)
 				assert.EqualError(t, err, test.candidateError)
 				assert.Equal(t, nil, decision)
 			}
@@ -279,7 +279,7 @@ func TestEgressReleasesUnclaimedReferenceAfterWindow(t *testing.T) {
 
 	awaitReleases(t, raw, 1)
 
-	_, err := h.engine.EgressCandidate(fake).ProcessRequest(t.Context(), None[protocol.RequestID](), "query", notIgnored, query(queryType, "london", ""))
+	_, err := h.engine.EgressCandidate(fake).ProcessRequest(h.ctx, None[protocol.RequestID](), "query", notIgnored, query(queryType, "london", ""))
 	assert.EqualError(t, err, "no matching reference request within 20ms")
 }
 
@@ -287,7 +287,7 @@ func TestEgressCandidateReleasesReportedResponse(t *testing.T) {
 	h := newHarness(t, time.Second)
 	raw := newRaw("candidate")
 
-	h.engine.EgressCandidate(fake).ProcessResponse(t.Context(), protocol.Exchange{}, protocol.Response{Raw: raw})
+	h.engine.EgressCandidate(fake).ProcessResponse(h.ctx, protocol.Exchange{}, protocol.Response{Raw: raw})
 
 	assert.Equal(t, 1, raw.Releases())
 	assert.Equal(t, 1, len(h.records(t, "Egress candidate reported a response")))
@@ -297,25 +297,25 @@ func TestShutdownWaitsForReferenceHashing(t *testing.T) {
 	h := newHarness(t, time.Second)
 	unblock := make(chan struct{})
 	payload := query(queryType, "london", "")
-	_, err := h.engine.EgressReference(fake).ProcessRequest(t.Context(), None[protocol.RequestID](), "query", notIgnored,
+	_, err := h.engine.EgressReference(fake).ProcessRequest(h.ctx, None[protocol.RequestID](), "query", notIgnored,
 		func(ctx context.Context) (protocol.Message, error) {
 			<-unblock
 			return payload(ctx)
 		})
 	assert.NoError(t, err)
-	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
+	ctx, cancel := context.WithTimeout(h.ctx, 20*time.Millisecond)
 	defer cancel()
 
 	assert.EqualError(t, h.engine.Shutdown(ctx), "wait for reference hashing: context deadline exceeded")
 
 	close(unblock)
-	assert.NoError(t, h.engine.Shutdown(t.Context()))
+	assert.NoError(t, h.engine.Shutdown(h.ctx))
 }
 
 // send forwards a reference request without waiting for it to be hashed.
 func (h *harness) send(t *testing.T, route protocol.Route, request func(ctx context.Context) (protocol.Message, error)) protocol.Exchange {
 	t.Helper()
-	decision, err := h.engine.EgressReference(fake).ProcessRequest(t.Context(), None[protocol.RequestID](), route, notIgnored, request)
+	decision, err := h.engine.EgressReference(fake).ProcessRequest(h.ctx, None[protocol.RequestID](), route, notIgnored, request)
 	assert.NoError(t, err)
 	forward := decision.(protocol.DecisionForward)
 	assert.Equal(t, None[protocol.RequestID](), forward.RequestID)
@@ -326,7 +326,7 @@ func (h *harness) send(t *testing.T, route protocol.Route, request func(ctx cont
 func (h *harness) forward(t *testing.T, route protocol.Route, request func(ctx context.Context) (protocol.Message, error)) protocol.Exchange {
 	t.Helper()
 	exchange := h.send(t, route, request)
-	assert.NoError(t, h.engine.Shutdown(t.Context()))
+	assert.NoError(t, h.engine.Shutdown(h.ctx))
 	return exchange
 }
 
@@ -349,7 +349,7 @@ func (h *harness) candidate(t *testing.T, request func(ctx context.Context) (pro
 	t.Helper()
 	decided := make(chan candidateDecision, 1)
 	go func() {
-		decision, err := h.engine.EgressCandidate(fake).ProcessRequest(t.Context(), None[protocol.RequestID](), "query", notIgnored, request)
+		decision, err := h.engine.EgressCandidate(fake).ProcessRequest(h.ctx, None[protocol.RequestID](), "query", notIgnored, request)
 		decided <- candidateDecision{decision: decision, err: err}
 	}()
 	return decided
@@ -359,7 +359,7 @@ func (h *harness) candidate(t *testing.T, request func(ctx context.Context) (pro
 func (h *harness) reference(t *testing.T, route protocol.Route, request func(ctx context.Context) (protocol.Message, error), raw *countingRaw) {
 	t.Helper()
 	exchange := h.forward(t, route, request)
-	h.engine.EgressReference(fake).ProcessResponse(t.Context(), exchange, protocol.Response{Raw: raw})
+	h.engine.EgressReference(fake).ProcessResponse(h.ctx, exchange, protocol.Response{Raw: raw})
 }
 
 // query returns a fresh payload on every call, because normalisation mutates it.

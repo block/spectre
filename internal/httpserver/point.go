@@ -9,6 +9,7 @@ import (
 	"github.com/alecthomas/errors"
 	. "github.com/alecthomas/types/optional"
 
+	"github.com/block/spectre/internal/logger"
 	"github.com/block/spectre/internal/protocol"
 	"github.com/block/spectre/internal/proxy"
 )
@@ -33,7 +34,6 @@ func unreadRequest(context.Context) (protocol.Message, error) {
 // replay, and reporting. Only how requests reach it differs.
 type point struct {
 	acceptor protocol.Acceptor
-	log      *slog.Logger
 	// budget returns the budget for one recording.
 	budget func() *proxy.Budget
 	// abortCancels reports an aborted response as cancelled, because the client
@@ -44,8 +44,8 @@ type point struct {
 	replaysFailures bool
 }
 
-func newPoint(acceptor protocol.Acceptor, log *slog.Logger, budget func() *proxy.Budget, abortCancels, replaysFailures bool) *point {
-	return &point{acceptor: acceptor, log: log, budget: budget, abortCancels: abortCancels, replaysFailures: replaysFailures}
+func newPoint(acceptor protocol.Acceptor, budget func() *proxy.Budget, abortCancels, replaysFailures bool) *point {
+	return &point{acceptor: acceptor, budget: budget, abortCancels: abortCancels, replaysFailures: replaysFailures}
 }
 
 // process asks the engine what to do with a request.
@@ -125,14 +125,14 @@ func (p *point) replay(writer http.ResponseWriter, request *http.Request, raw pr
 	defer raw.Release()
 	recorded, ok := raw.(*recording)
 	if !ok {
-		p.log.ErrorContext(request.Context(), "Intercepted response is not an HTTP recording")
+		logger.FromContext(request.Context()).ErrorContext(request.Context(), "Intercepted response is not an HTTP recording")
 		writer.WriteHeader(http.StatusBadGateway)
 		return
 	}
 	replayed := request.Clone(request.Context())
 	replayed.Body = http.NoBody
 	replayed.ContentLength = 0
-	newReplayProxy(recorded, p.log).ServeHTTP(writer, replayed)
+	newReplayProxy(replayed.Context(), recorded).ServeHTTP(writer, replayed)
 }
 
 // recordingProxy copies a destination's reverse proxy so that one request's
@@ -145,7 +145,8 @@ func recordingProxy(destination *httputil.ReverseProxy, recorded *recording) *ht
 
 // newReplayProxy answers one request from its recording, reusing the reverse
 // proxy's header and trailer handling.
-func newReplayProxy(recorded *recording, log *slog.Logger) *httputil.ReverseProxy {
+func newReplayProxy(ctx context.Context, recorded *recording) *httputil.ReverseProxy {
+	log := logger.FromContext(ctx)
 	return &httputil.ReverseProxy{
 		// The recording answers without dialing, so the outbound URL is never used.
 		Rewrite:   func(*httputil.ProxyRequest) {},

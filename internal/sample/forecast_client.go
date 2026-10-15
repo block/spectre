@@ -5,12 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"io"
-	"log/slog"
 	"net/http"
 	"net/url"
 
 	"github.com/alecthomas/errors"
 	. "github.com/alecthomas/types/optional"
+
+	"github.com/block/spectre/internal/logger"
 )
 
 // maxForecastBytes bounds a provider response, which is small in practice.
@@ -22,16 +23,14 @@ type ForecastClient struct {
 	target *url.URL
 	host   string
 	client *http.Client
-	log    *slog.Logger
 }
 
 // NewForecastClient sends requests for host to target through transport.
-func NewForecastClient(target *url.URL, host string, transport http.RoundTripper, log *slog.Logger) *ForecastClient {
+func NewForecastClient(target *url.URL, host string, transport http.RoundTripper) *ForecastClient {
 	return &ForecastClient{
 		target: target,
 		host:   host,
 		client: &http.Client{Transport: transport},
-		log:    log,
 	}
 }
 
@@ -40,7 +39,7 @@ func NewForecastClient(target *url.URL, host string, transport http.RoundTripper
 func (c *ForecastClient) Fetch(ctx context.Context, location string) (forecast Option[Forecast], status int) {
 	forecast, status, err := c.fetch(ctx, location)
 	if err != nil {
-		c.log.ErrorContext(ctx, "Forecast provider request failed", "location", location, "error", err)
+		logger.FromContext(ctx).ErrorContext(ctx, "Forecast provider request failed", "location", location, "error", err)
 		return None[Forecast](), http.StatusBadGateway
 	}
 	return forecast, status

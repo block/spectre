@@ -3,7 +3,6 @@ package protocol
 import (
 	"cmp"
 	"context"
-	"log/slog"
 	"slices"
 	"sync"
 	"time"
@@ -22,7 +21,6 @@ type egressQueue struct {
 	scripts    *comparison.Scripts
 	window     time.Duration
 	quarantine Quarantiner
-	log        *slog.Logger
 	// mu guards every map. A hash never has unused references and waiting
 	// candidates at the same time, because add hands over to a waiter first.
 	mu sync.Mutex
@@ -37,12 +35,11 @@ type egressQueue struct {
 	waiting   map[comparison.Hash][]*egressWaiter
 }
 
-func newEgressQueue(scripts *comparison.Scripts, window time.Duration, quarantine Quarantiner, log *slog.Logger) *egressQueue {
+func newEgressQueue(scripts *comparison.Scripts, window time.Duration, quarantine Quarantiner) *egressQueue {
 	return &egressQueue{
 		scripts:    scripts,
 		window:     window,
 		quarantine: quarantine,
-		log:        log,
 		exchanges:  map[Exchange]*egressExchange{},
 		unused:     map[comparison.Hash][]*egressExchange{},
 		waiting:    map[comparison.Hash][]*egressWaiter{},
@@ -141,7 +138,7 @@ func (q *egressQueue) intercept(ctx context.Context, protocol javascript.Protoco
 		}
 		return nil, err
 	}
-	q.log.InfoContext(ctx, "Candidate request matched a reference request",
+	logger.FromContext(ctx).InfoContext(ctx, "Candidate request matched a reference request",
 		"event", logger.EventCorrelation, "protocol", protocol, "route", route)
 	return DecisionIntercept{Raw: raw}, nil
 }
@@ -165,10 +162,10 @@ func (q *egressQueue) match(ctx context.Context, protocol javascript.Protocol, r
 // candidate requests are never forwarded.
 func (q *egressQueue) misreported(ctx context.Context, exchange Exchange, failure Option[error]) {
 	if reason, failed := failure.Get(); failed {
-		q.log.ErrorContext(ctx, "Egress candidate reported a failed response", "exchange", exchange.String(), "error", reason)
+		logger.FromContext(ctx).ErrorContext(ctx, "Egress candidate reported a failed response", "exchange", exchange.String(), "error", reason)
 		return
 	}
-	q.log.ErrorContext(ctx, "Egress candidate reported a response", "exchange", exchange.String())
+	logger.FromContext(ctx).ErrorContext(ctx, "Egress candidate reported a response", "exchange", exchange.String())
 }
 
 // take removes an exchange, logging one the engine never issued.
@@ -177,7 +174,7 @@ func (q *egressQueue) take(ctx context.Context, exchange Exchange) (*egressExcha
 	defer q.mu.Unlock()
 	pending, ok := q.exchanges[exchange]
 	if !ok {
-		q.log.ErrorContext(ctx, "Unknown egress exchange", "exchange", exchange.String())
+		logger.FromContext(ctx).ErrorContext(ctx, "Unknown egress exchange", "exchange", exchange.String())
 		return nil, false
 	}
 	delete(q.exchanges, exchange)

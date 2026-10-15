@@ -73,7 +73,7 @@ func Main(options ...Option) {
 	ctx = logger.WithLogger(ctx, log)
 	kctx.BindTo(ctx, (*context.Context)(nil))
 	kctx.Bind(log)
-	kctx.FatalIfErrorf(kctx.Run(command.Log))
+	kctx.FatalIfErrorf(kctx.Run())
 }
 
 // newParser builds the parser for command with every registered extension.
