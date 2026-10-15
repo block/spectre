@@ -34,6 +34,16 @@ func Instance() lib.Box[string] { return lib.Box[string]{} } // want `Instance e
 
 func Argument() Wrapper[lib.Name] { return Wrapper[lib.Name]{} } // want `Argument exposes internal type example.com/m/internal/lib.Name; mirror it in this package`
 
+type EmbedsHidden struct { // want `EmbedsHidden exposes internal type example.com/m/internal/lib.Thing; mirror it in this package`
+	hidden
+}
+
+type EmbedsPromoted struct { // want `EmbedsPromoted exposes internal type example.com/m/internal/lib.Thing; mirror it in this package`
+	promoted
+}
+
+func Head() *node { return nil } // want `Head exposes internal type example.com/m/internal/lib.Name; mirror it in this package`
+
 var Value = lib.New() // want `Value exposes internal type example.com/m/internal/lib.Thing; mirror it in this package`
 
 // Mirror is a public copy of lib.Thing, converted where it crosses the boundary.
@@ -52,5 +62,21 @@ func Convert(mirror Mirror) Mirror { return Mirror{Name: lib.New().Name} }
 func Context(ctx context.Context) error { return nil }
 
 type hidden struct{ Thing lib.Thing }
+
+// promoted's exported method is promoted into any exported type embedding it.
+type promoted struct{}
+
+func (promoted) Thing() lib.Thing { return lib.New() }
+
+func (promoted) thing() lib.Thing { return lib.New() }
+
+// node refers to itself, which the walk must not follow forever.
+type node struct {
+	Next  *node
+	Value lib.Name
+}
+
+// Recursive's constraint refers to its own type parameter.
+type Recursive[T interface{ ~[]T }] []T
 
 func unexported() lib.Thing { return lib.New() }

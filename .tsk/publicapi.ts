@@ -25,6 +25,17 @@ Mirror the type in the public package instead.`,
     // report flags every internal type that walk reaches from a declaration.
     const report = (name: string, pos: token.Pos, walk: (visit: (type: types.Type | null) => void) => void) => {
       const exposed = new Set<string>();
+      // Type parameters and local types can refer to themselves, so each
+      // declaration is walked once, keyed by where it is declared.
+      const visited = new Set<number>();
+      const firstVisit = (object: types.TypeName | null) => {
+        const pos = object?.pos() ?? token.NoPos;
+        if (visited.has(pos)) {
+          return false;
+        }
+        visited.add(pos);
+        return true;
+      };
       const visit = (type: types.Type | null) => {
         switch (type?.$type) {
           case "Alias":
@@ -40,8 +51,22 @@ Mirror the type in the public package instead.`,
               exposed.add(type.string());
               return;
             }
-            // Another named type's own declaration is checked in its package.
             visitList(type.typeArgs(), visit);
+            // An exported type is checked at its declaration. An unexported local
+            // one has none, so check the members it promotes wherever it appears.
+            const origin = type.origin();
+            const object = origin?.obj() ?? null;
+            if (origin === null || object?.pkg()?.path() !== importPath || object.exported() || !firstVisit(object)) {
+              return;
+            }
+            visitTypeParams(origin.typeParams(), visit);
+            visit(origin.underlying());
+            for (let i = 0; i < origin.numMethods(); i++) {
+              const method = origin.method(i);
+              if (method?.exported()) {
+                visit(method.type());
+              }
+            }
             return;
           case "Pointer":
           case "Slice":
@@ -81,7 +106,9 @@ Mirror the type in the public package instead.`,
             }
             return;
           case "TypeParam":
-            visit(type.constraint());
+            if (firstVisit(type.obj())) {
+              visit(type.constraint());
+            }
             return;
           case "Union":
             for (let i = 0; i < type.len(); i++) {
