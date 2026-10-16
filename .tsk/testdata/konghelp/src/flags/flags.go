@@ -20,7 +20,7 @@ type Config struct {
 	} `cmd:"" help:"Run a command."`
 	Embedded Group  `embed:"" prefix:"group-"`
 	Ignored  string `kong:"-"`
-	Kept     string `default:"x"` //nolint:konghelp kept for the test
+	Kept     string `default:"x"` //nolint:konghelp // kept for the test
 	private  string
 }
 

@@ -53,7 +53,7 @@ func TestNewEngineDeclaresEndpointsToTheirMatchers(t *testing.T) {
 	fakeMatcher, otherMatcher := &recordingMatcher{}, &recordingMatcher{}
 	config := newConfig(t, fakeScript+`ingress.match("test.v1.Response", "other", "elsewhere");`, time.Second)
 
-	//nolint:exhaustive the engine is tested with fake protocols, not real ones
+	//nolint:exhaustive // the engine is tested with fake protocols, not real ones
 	_, err := protocol.NewEngine(t.Context(), config, map[javascript.Protocol]protocol.Matcher{fake: fakeMatcher, other: otherMatcher},
 		&recordingQuarantiner{})
 
@@ -95,7 +95,7 @@ func TestNewEngineRejectsInvalidSetup(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := protocol.NewEngine(t.Context(), newConfig(t, test.script, time.Second),
-				//nolint:exhaustive the engine is tested with fake protocols, not real ones
+				//nolint:exhaustive // the engine is tested with fake protocols, not real ones
 				map[javascript.Protocol]protocol.Matcher{fake: test.matcher}, test.quarantine)
 			assert.EqualError(t, err, test.expected)
 		})
@@ -117,7 +117,7 @@ func newHarness(t *testing.T, window time.Duration) *harness {
 	quarantine := &recordingQuarantiner{}
 	ctx := logger.WithLogger(t.Context(), slog.New(slog.NewJSONHandler(logs, &slog.HandlerOptions{Level: slog.LevelInfo})))
 	engine, err := protocol.NewEngine(ctx, newConfig(t, fakeScript, window),
-		//nolint:exhaustive the engine is tested with fake protocols, not real ones
+		//nolint:exhaustive // the engine is tested with fake protocols, not real ones
 		map[javascript.Protocol]protocol.Matcher{fake: &recordingMatcher{}}, quarantine)
 	assert.NoError(t, err)
 	return &harness{ctx: ctx, engine: engine, quarantine: quarantine, logs: logs}

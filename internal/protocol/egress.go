@@ -12,6 +12,7 @@ import (
 
 	"github.com/block/spectre/internal/comparison"
 	"github.com/block/spectre/internal/comparison/javascript"
+	"github.com/block/spectre/internal/future"
 	"github.com/block/spectre/internal/logger"
 )
 
@@ -296,22 +297,24 @@ func (w *egressWaiter) delivered() <-chan *egressExchange {
 	return w.ready
 }
 
-// egressExchange is one forwarded reference request. Its outcome is written once
-// before done closes, and read only after it closes.
-type egressExchange struct {
-	arrival uint64
-	done    chan struct{}
+// egressOutcome is how a reference request finished.
+type egressOutcome struct {
 	raw     Option[Raw]
 	failure Option[error]
+}
+
+// egressExchange is one forwarded reference request.
+type egressExchange struct {
+	arrival uint64
+	outcome *future.Future[egressOutcome]
 
 	mu        sync.Mutex
-	finished  bool
 	abandoned bool
 	expiry    Option[*time.Timer]
 }
 
 func newEgressExchange(arrival uint64) *egressExchange {
-	return &egressExchange{arrival: arrival, done: make(chan struct{})}
+	return &egressExchange{arrival: arrival, outcome: future.New[egressOutcome]()}
 }
 
 func (e *egressExchange) arrived() uint64 {
@@ -337,9 +340,7 @@ func (e *egressExchange) stopExpiry() {
 func (e *egressExchange) finish(raw Option[Raw], failure Option[error]) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	e.raw, e.failure = raw, failure
-	e.finished = true
-	close(e.done)
+	e.outcome.Set(egressOutcome{raw: raw, failure: failure})
 	if e.abandoned {
 		e.release()
 	}
@@ -350,30 +351,31 @@ func (e *egressExchange) abandon() {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.abandoned = true
-	if e.finished {
-		e.release()
-	}
+	e.release()
 }
 
-// release frees the recorded response. Callers hold e.mu.
+// release frees the recorded response, if there is one yet. Callers hold e.mu.
 func (e *egressExchange) release() {
-	if raw, ok := e.raw.Get(); ok {
+	outcome, finished := e.outcome.Get()
+	if !finished {
+		return
+	}
+	if raw, ok := outcome.raw.Get(); ok {
 		raw.Release()
 	}
 }
 
 // wait blocks until the reference response is complete, then returns it for replay.
 func (e *egressExchange) wait(ctx context.Context) (Raw, error) {
-	select {
-	case <-e.done:
-	case <-ctx.Done():
+	outcome, err := e.outcome.Wait(ctx)
+	if err != nil {
 		e.abandon()
-		return nil, errors.Wrap(ctx.Err(), "wait for reference response")
+		return nil, errors.Wrap(err, "wait for reference response")
 	}
-	if failure, failed := e.failure.Get(); failed {
+	if failure, failed := outcome.failure.Get(); failed {
 		return nil, errors.Wrap(failure, "reference response cannot be replayed")
 	}
-	raw, ok := e.raw.Get()
+	raw, ok := outcome.raw.Get()
 	if !ok {
 		return nil, errors.New("reference response is missing")
 	}

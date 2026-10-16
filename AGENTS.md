@@ -6,7 +6,7 @@
   `spectre`, that is `Main` in the root package, which `cmd/spectre` only calls.
 - Do not put application logic in main entry points. The `mainlogic` linter
   allows only `main` and `Run` methods there. Keep a bootstrap helper with
-  `//nolint:mainlogic <reason>`.
+  `//nolint:mainlogic // <reason>`.
 - Do not use global state outside main entry points.
 - Read environment variables only through Kong `env:` tags, then pass
   configuration explicitly. `forbidigo` rejects the `os` and `syscall` environment functions.
@@ -43,18 +43,6 @@
 - A public mirror of an internal type is the one exception to the rule against
   duplicating types.
 
-# Public API
-
-- The root package, `github.com/block/spectre`, is the only public API. Custom
-  binaries call its `Main` with options that add extensions to the built-in
-  command line. See `docs/004-compile-time-extensions.md`.
-- Expose only extension points that have been explicitly agreed. Add each as one
-  public contract and one `With...` option.
-- Never expose an internal type in the public API, even through an alias. Mirror
-  it in the root package instead. The `publicapi` linter enforces this.
-- A public mirror of an internal type is the one exception to the rule against
-  duplicating types.
-
 # Compatibility
 
 - While the version is 0.x.y, make breaking changes freely. Do not add backwards-compatibility shims, deprecation paths, or migration code.
@@ -64,6 +52,7 @@
 - Use `bit` and define tasks in `BUILD.bit` for all automation that would normally go in a Makefile, Justfile, or other build file.
 - Run `bit -s <provider>` before adding build configuration so the most specific provider and correct fields are used.
 - Run tests, linting, and formatting through `bit` targets instead of invoking the underlying commands manually.
+  Run the `tsk` linters with `bit lint-tsk` and their tests with `bit test-tsk`.
 - All tools used in build files or documentation must be installed in the repository's Hermit environment.
 - Invoke commands from `scripts` by name. Never prefix them with the repository-relative scripts path because Hermit adds that directory to `PATH`.
 
@@ -108,33 +97,6 @@
 - Mark each sum type's interface with a `//sumtype:decl` comment so the
   `sumtype` linter checks that type switches over it are exhaustive.
 
-# Linters
-
-- `bit lint-tsk` runs the `tsk` linters; `tsk list` lists them. Keep an
-  intentional finding with a `//nolint:<linter> <reason>` comment at the end of
-  its line or on its own line above the statement.
-- When the user corrects you, check whether the correction is a general rule
-  that a `tsk` linter could enforce. Offer a linter only when all of these hold:
-  - The rule applies across the codebase, not only to the current change.
-  - The rule is likely to come up again.
-  - A linter can detect violations from Go syntax and types with few false
-    positives.
-  - No existing linter in `tsk list` already enforces it.
-- For example, "use `Option` instead of nil for absent values" justified the
-  `optionalnil` linter. "Rename this variable" does not justify a linter.
-- Do not interrupt the current task to offer a linter. Make the offer once in
-  your final response for that task.
-- Offer each rule at most once per conversation. If the user declines, do not
-  raise it again.
-- Write a linter only after the user agrees. Follow the `tsk` README at
-  https://github.com/alecthomas/tsk:
-  - Put the linter in `.tsk/<name>.ts` and its test data in
-    `.tsk/testdata/<name>/`. `bit test-tsk` runs the tests.
-  - Fix existing violations in the same change, or keep intentional ones with
-    `//nolint:<name> <reason>`.
-  - Add or update the matching rule in this file, and note that the linter
-    enforces it.
-
 # Optional values
 
 - Use `github.com/alecthomas/types/optional.Option[T]` for any value that may be
@@ -166,3 +128,28 @@
   in test function names.
 - Update an existing Go test when appropriate instead of creating a new one.
 - Run necessary tests with `go test -timeout 30s`. Do not generally use `-v`.
+
+<!-- BEGIN tsk -->
+# Linters
+
+This repository enforces its conventions with `tsk` linters, configured in
+`.tsk/config.toml`. Use the `tsk` skill for how to enable, configure, and write
+them.
+
+- Run `tsk` to lint, and fix its findings before finishing a change. Keep an
+  intentional finding with a `//nolint:<linter> // <reason>` comment.
+- When the user asks you to fix a kind of issue across the codebase, check
+  `tsk list` for a linter that reports it. If one exists and is not enabled,
+  suggest enabling it so the issue stays fixed.
+- When the user asks you to apply an architectural constraint or convention,
+  enforce it with a linter: enable or configure an existing one, or write one
+  in `.tsk/`.
+- When the user corrects you, check whether the correction is a lasting rule a
+  linter could enforce. Offer a linter only when all of these hold:
+  - The rule applies across the codebase, not only to the current change.
+  - A linter can detect violations from Go syntax and types with few false
+    positives.
+  - No linter in `tsk list` already enforces it.
+- Make an offer once, in your final response for the task, and do not repeat
+  it if the user declines.
+<!-- END tsk -->
