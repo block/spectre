@@ -111,8 +111,9 @@
 # Linters
 
 - `bit lint-tsk` runs the `tsk` linters; `tsk list` lists them. Keep an
-  intentional finding with a `//nolint:<linter> <reason>` comment at the end of
-  its line or on its own line above the statement.
+  intentional finding with a `//nolint:<linter> // <reason>` comment at the end
+  of its line or on its own line above the statement. `tsk` does not honour
+  the comment if the reason does not follow `//`.
 - When the user corrects you, check whether the correction is a general rule
   that a `tsk` linter could enforce. Offer a linter only when all of these hold:
   - The rule applies across the codebase, not only to the current change.
@@ -131,7 +132,7 @@
   - Put the linter in `.tsk/<name>.ts` and its test data in
     `.tsk/testdata/<name>/`. `bit test-tsk` runs the tests.
   - Fix existing violations in the same change, or keep intentional ones with
-    `//nolint:<name> <reason>`.
+    `//nolint:<name> // <reason>`.
   - Add or update the matching rule in this file, and note that the linter
     enforces it.
 
