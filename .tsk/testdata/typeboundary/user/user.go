@@ -33,5 +33,5 @@ func Allowed(ref names.Ref) {
 	lower.Any(string(ref))
 	_ = names.Local(ref)
 	_ = names.Ref(strings.ToLower(lower.Name()))
-	lower.Lookup(string(ref)) //nolint:typeboundary kept for the test
+	lower.Lookup(string(ref)) //nolint:typeboundary // kept for the test
 }

@@ -11,6 +11,7 @@ import (
 
 	"github.com/block/spectre/internal/comparison"
 	"github.com/block/spectre/internal/comparison/javascript"
+	"github.com/block/spectre/internal/future"
 	"github.com/block/spectre/internal/logger"
 )
 
@@ -61,28 +62,33 @@ func newIngressPairs(scripts *comparison.Scripts, quarantine Quarantiner) *ingre
 	}
 }
 
-// ingressPair is one mirrored request. The reference outcome is written once
-// before done closes, and read only after it closes. ingressPairs.mu guards the rest.
+// ingressOutcome is how a reference request finished.
+type ingressOutcome struct {
+	reference Option[Response]
+	failure   Option[error]
+	// cancelled means the reference failed because it was cancelled, so its
+	// response is unknown rather than wrong.
+	cancelled bool
+}
+
+// ingressPair is one mirrored request. ingressPairs.mu guards its lifecycle flags.
 type ingressPair struct {
 	protocol  javascript.Protocol
 	route     Route
 	requestID RequestID
 	// ignoredReason explains why the responses are never compared.
 	ignoredReason Option[string]
-	done          chan struct{}
-	reference     Option[Response]
-	failure       Option[error]
-	// cancelled means the reference failed because it was cancelled, so its
-	// response is unknown rather than wrong.
-	cancelled bool
+	outcome       *future.Future[ingressOutcome]
 
 	joined        bool
-	referenceDone bool
 	candidateDone bool
 }
 
 func newIngressPair(protocol javascript.Protocol, requestID RequestID, route Route, ignored Option[string]) *ingressPair {
-	return &ingressPair{protocol: protocol, route: route, requestID: requestID, ignoredReason: ignored, done: make(chan struct{})}
+	return &ingressPair{
+		protocol: protocol, route: route, requestID: requestID, ignoredReason: ignored,
+		outcome: future.New[ingressOutcome](),
+	}
 }
 
 func (p *ingressPair) id() RequestID {
@@ -113,10 +119,12 @@ func (p *ingressPair) join(protocol javascript.Protocol) error {
 
 // finishReference publishes the reference outcome and reports whether the pair
 // is finished, because no candidate joined or the candidate already finished.
-func (p *ingressPair) finishReference(response Option[Response], failure Option[error], cancelled bool) (finished bool) {
-	p.reference, p.failure, p.cancelled = response, failure, cancelled
-	p.referenceDone = true
-	close(p.done)
+func (p *ingressPair) finishReference(outcome ingressOutcome) (finished bool) {
+	if !p.outcome.Set(outcome) {
+		// The pair already has an outcome, so this response is nobody's.
+		releaseResponse(outcome.reference)
+		return false
+	}
 	finished = p.candidateDone || !p.joined
 	if finished {
 		p.releaseReference()
@@ -126,39 +134,43 @@ func (p *ingressPair) finishReference(response Option[Response], failure Option[
 
 func (p *ingressPair) finishCandidate() {
 	p.candidateDone = true
-	if p.referenceDone {
-		p.releaseReference()
+	p.releaseReference()
+}
+
+// releaseReference frees the reference response, if there is one yet, once
+// neither side needs it.
+func (p *ingressPair) releaseReference() {
+	if outcome, finished := p.outcome.Get(); finished {
+		releaseResponse(outcome.reference)
 	}
 }
 
-// releaseReference frees the reference response once neither side needs it.
-func (p *ingressPair) releaseReference() {
-	if response, ok := p.reference.Get(); ok {
+func releaseResponse(response Option[Response]) {
+	if response, ok := response.Get(); ok {
 		response.Raw.Release()
 	}
 }
 
 // awaitReference waits for the reference outcome. An error means the outcome
 // is unknown, so the responses cannot be compared.
-func (p *ingressPair) awaitReference(ctx context.Context) error {
-	select {
-	case <-p.done:
-	case <-ctx.Done():
-		return errors.WithStack(ctx.Err())
+func (p *ingressPair) awaitReference(ctx context.Context) (ingressOutcome, error) {
+	outcome, err := p.outcome.Wait(ctx)
+	if err != nil {
+		return ingressOutcome{}, errors.WithStack(err)
 	}
-	if failure, failed := p.failure.Get(); failed && p.cancelled {
-		return errors.WithStack(failure)
+	if failure, failed := outcome.failure.Get(); failed && outcome.cancelled {
+		return ingressOutcome{}, errors.WithStack(failure)
 	}
-	return nil
+	return outcome, nil
 }
 
-// compare classifies a finished pair without exposing response values. Known
+// compareResponses classifies a finished pair without exposing response values. Known
 // statuses are compared first, so a status change is divergent even if a body fails to decode.
-func (p *ingressPair) compare(ctx context.Context, scripts *comparison.Scripts, candidate Response) comparisonResult {
-	if failure, failed := p.failure.Get(); failed {
+func compareResponses(ctx context.Context, scripts *comparison.Scripts, outcome ingressOutcome, candidate Response) comparisonResult {
+	if failure, failed := outcome.failure.Get(); failed {
 		return newComparisonResult(outcomeUnable, "reference: "+failure.Error())
 	}
-	reference, ok := p.reference.Get()
+	reference, ok := outcome.reference.Get()
 	if !ok {
 		return newComparisonResult(outcomeUnable, "reference response is missing")
 	}
@@ -201,13 +213,16 @@ func compareMessages(ctx context.Context, scripts *comparison.Scripts, reference
 	return newComparisonResult(outcomeEquivalent, "")
 }
 
-// latencyDelta returns the candidate's latency minus the reference's. A zero
-// candidate latency means the reference may still be running, so it is checked first.
+// latencyDelta returns the candidate's latency minus the reference's, if both are known.
 func (p *ingressPair) latencyDelta(candidate time.Duration) Option[time.Duration] {
 	if candidate <= 0 {
 		return None[time.Duration]()
 	}
-	if reference, ok := p.reference.Get(); ok && reference.Latency > 0 {
+	outcome, finished := p.outcome.Get()
+	if !finished {
+		return None[time.Duration]()
+	}
+	if reference, ok := outcome.reference.Get(); ok && reference.Latency > 0 {
 		return Some(candidate - reference.Latency)
 	}
 	return None[time.Duration]()
@@ -276,9 +291,10 @@ func (p *ingressPairs) finishReference(ctx context.Context, exchange Exchange, r
 		}
 		return
 	}
+	outcome := ingressOutcome{reference: response, failure: failure, cancelled: failure.Ok() && ctx.Err() != nil}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if pair.finishReference(response, failure, failure.Ok() && ctx.Err() != nil) {
+	if pair.finishReference(outcome) {
 		delete(p.requests, pair.id())
 	}
 }
@@ -304,11 +320,12 @@ func (p *ingressPairs) candidateResponse(ctx context.Context, exchange Exchange,
 		p.report(ctx, pair, newComparisonResult(outcomeSkipped, reason), 0)
 		return
 	}
-	if err := pair.awaitReference(ctx); err != nil {
+	reference, err := pair.awaitReference(ctx)
+	if err != nil {
 		p.unfinished(ctx, pair, err)
 		return
 	}
-	result := pair.compare(ctx, p.scripts, response)
+	result := compareResponses(ctx, p.scripts, reference, response)
 	// A comparison cut short by the candidate's own deadline says nothing about it.
 	if result.outcome == outcomeUnable && ctx.Err() != nil {
 		p.unfinished(ctx, pair, errors.Errorf("%s: %s", ctx.Err(), result.reason))

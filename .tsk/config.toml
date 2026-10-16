@@ -1,4 +1,4 @@
-imports = ["github.com/alecthomas/tsk@v0.14.0//linters"]
+imports = ["github.com/alecthomas/tsk//linters"]
 
 disable-all = true
 enable = [
@@ -37,6 +37,7 @@ enable = [
   'kongembed',
   'konghelp',
   'layout',
+  'lockguard',
   'loggercheck',
   'mainlogic',
   'makezero',

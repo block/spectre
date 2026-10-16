@@ -8,6 +8,7 @@ import (
 
 	"github.com/alecthomas/errors"
 
+	"github.com/block/spectre/internal/future"
 	"github.com/block/spectre/internal/proxy"
 )
 
@@ -202,25 +203,32 @@ func (b *streamBody) clearBuffer() {
 // requestCapture keeps the first limit bytes of a request body, so the engine
 // can decode the body once the upstream has read all of it.
 type requestCapture struct {
-	limit int
-	done  chan struct{}
+	limit    int
+	captured *future.Future[capturedBody]
 
+	// mu guards the body until it is captured. Appends check captured under mu,
+	// so the captured body never changes.
 	mu       sync.Mutex
 	body     []byte
 	overflow bool
-	closed   bool
-	// err is why the body is incomplete. It is published by closing done.
+}
+
+// capturedBody is a request body as the upstream finished reading it.
+type capturedBody struct {
+	body     []byte
+	overflow bool
+	// err is why the body is incomplete.
 	err error
 }
 
 func newRequestCapture(limit int) *requestCapture {
-	return &requestCapture{limit: limit, done: make(chan struct{})}
+	return &requestCapture{limit: limit, captured: future.New[capturedBody]()}
 }
 
 func (c *requestCapture) append(data []byte) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.closed {
+	if _, closed := c.captured.Get(); closed {
 		return
 	}
 	remaining := c.limit - len(c.body)
@@ -234,25 +242,20 @@ func (c *requestCapture) append(data []byte) {
 func (c *requestCapture) closeWriter(err error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.closed {
-		return
+	if errors.Is(err, io.EOF) {
+		err = nil
 	}
-	c.closed = true
-	if !errors.Is(err, io.EOF) {
-		c.err = err
-	}
-	close(c.done)
+	c.captured.Set(capturedBody{body: c.body, overflow: c.overflow, err: err})
 }
 
 // wait returns the whole captured body, which may be truncated to the limit.
 func (c *requestCapture) wait(ctx context.Context) (body []byte, overflow bool, err error) {
-	select {
-	case <-c.done:
-	case <-ctx.Done():
-		return nil, false, errors.Wrap(ctx.Err(), "wait for request body")
+	captured, err := c.captured.Wait(ctx)
+	if err != nil {
+		return nil, false, errors.Wrap(err, "wait for request body")
 	}
-	if c.err != nil {
-		return nil, false, errors.Wrap(c.err, "request body was not fully read")
+	if captured.err != nil {
+		return nil, false, errors.Wrap(captured.err, "request body was not fully read")
 	}
-	return c.body, c.overflow, nil
+	return captured.body, captured.overflow, nil
 }

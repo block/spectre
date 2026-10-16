@@ -26,7 +26,7 @@ func Pointer() (*Config, error) { // want `Pointer returns Config without callin
 	return &Config{}, nil
 }
 
-func Kept() Config { //nolint:configdefaults kept for the test
+func Kept() Config { //nolint:configdefaults // kept for the test
 	return Config{}
 }
 
