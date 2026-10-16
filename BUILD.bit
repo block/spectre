@@ -6,11 +6,11 @@ let go-module = [".", "internal/typescript"]
 # Files within a Go module that its checks depend on.
 let go-inputs = ["**/*.go", "go.mod", "go.sum"]
 
-let tsk-inputs = [".tsk/config.toml", ".tsk/lock.toml", ".tsk/**/*.ts", "bin/.tsk-0.12.1.pkg"]
+let tsk-inputs = [".tsk/config.toml", ".tsk/lock.toml", ".tsk/**/*.ts", "bin/tsk"]
 
 sample-proto = exec {
   command = "mkdir -p internal/sample/pb dist/descriptors && buf generate && buf build --as-file-descriptor-set -o dist/descriptors/sample.pb"
-  inputs = ["buf.yaml", "buf.gen.yaml", "internal/sample/proto/*.proto", "bin/.buf-1.73.0.pkg", "bin/.protoc-gen-go-1.36.12.pkg", "bin/.protoc-gen-connect-go-1.21.0.pkg"]
+  inputs = ["buf.yaml", "buf.gen.yaml", "internal/sample/proto/*.proto", "bin/buf", "bin/protoc-gen-go", "bin/protoc-gen-connect-go"]
   output = ["internal/sample/pb/users.pb.go", "internal/sample/pb/service.pb.go", "internal/sample/pb/samplepbconnect/service.connect.go", "dist/descriptors/sample.pb"]
 }
 
@@ -44,12 +44,12 @@ test-launcher = exec.test {
 }
 test-response-comparison-integration = exec.test {
   command = "response-comparison.integration.test.sh"
-  inputs = ["Procfile.integration", "scripts/response-comparison.integration.test.sh", "scripts/spectre", "scripts/spectre-sample", "scripts/spectre-sample-forecasts", "internal/**/*.ts", "internal/sample/testdata/*.json", "bin/.jq-1.8.2.pkg"]
+  inputs = ["Procfile.integration", "scripts/response-comparison.integration.test.sh", "scripts/spectre", "scripts/spectre-sample", "scripts/spectre-sample-forecasts", "internal/**/*.ts", "internal/sample/testdata/*.json", "bin/jq"]
   depends_on = [spectre-bin, sample-bin, sample-forecasts-bin, sample-schema]
 }
 test-release-version = exec.test {
   command = "scripts/release-version.test.sh"
-  inputs = [".gitsv/config.yml", "scripts/release-version.test.sh", "bin/.git-sv-3.0.2.pkg"]
+  inputs = [".gitsv/config.yml", "scripts/release-version.test.sh", "bin/git-sv"]
 }
 # tsk test fails when no linter has test data.
 test-tsk = exec.test {
@@ -68,35 +68,42 @@ fmt-go[go-module] = go.fmt { dir = go-module }
 fmt-check-go[go-module] = go.fmt-l { dir = go-module }
 fmt-action-pins = exec {
   command = "ratchet pin .github/workflows/*.yml"
-  inputs = [".github/workflows/*.yml", "bin/.ratchet-0.12.0.pkg"]
+  inputs = [".github/workflows/*.yml", "bin/ratchet"]
 }
 fmt-toml = exec {
   command = "taplo format"
   inputs = ["**/*.toml"]
 }
+# tsk init rewrites only its own section of AGENTS.md. Its outputs are agent
+# instructions, not build artefacts, so cleaning must not delete them.
+protected fmt-tsk = exec {
+  command = "tsk init"
+  inputs = tsk-inputs + ["AGENTS.md"]
+  output = ["AGENTS.md", ".tsk/.gitignore", ".agents/skills/tsk/SKILL.md", ".claude/skills/tsk/SKILL.md"]
+}
 lint-proto = exec.test {
   command = "buf lint"
-  inputs = ["buf.yaml", "internal/sample/proto/*.proto", "bin/.buf-1.73.0.pkg"]
+  inputs = ["buf.yaml", "internal/sample/proto/*.proto", "bin/buf"]
 }
 lint-actions = exec {
   command = "actionlint"
-  inputs = [".github/workflows/*.yml", "bin/.actionlint-1.7.12.pkg"]
+  inputs = [".github/workflows/*.yml", "bin/actionlint"]
 }
 lint-action-pins = exec {
   command = "ratchet lint .github/workflows/*.yml"
-  inputs = [".github/workflows/*.yml", "bin/.ratchet-0.12.0.pkg"]
+  inputs = [".github/workflows/*.yml", "bin/ratchet"]
 }
 lint-dockerfile = exec.test {
   command = "hadolint Dockerfile"
-  inputs = ["Dockerfile", "bin/.hadolint-2.15.1.pkg"]
+  inputs = ["Dockerfile", "bin/hadolint"]
 }
 lint-release = exec.test {
   command = "goreleaser check"
-  inputs = [".goreleaser.yaml", "bin/.goreleaser-2.18.2.pkg"]
+  inputs = [".goreleaser.yaml", "bin/goreleaser"]
 }
 lint-scripts = exec {
   command = "shellcheck scripts/*"
-  inputs = ["scripts/*", "bin/.shellcheck-0.11.0.pkg"]
+  inputs = ["scripts/*", "bin/shellcheck"]
 }
 lint-tsk[go-module] = exec.test {
   command = "tsk lint ./..."
@@ -146,4 +153,4 @@ target test = [test-go, test-launcher, test-response-comparison-integration, tes
 target lint = [lint-tsk, lint-proto, lint-actions, lint-action-pins, lint-dockerfile, lint-release, lint-scripts, fmt-check-go]
 
 # Format everything
-target fmt = [fmt-go, fmt-action-pins, fmt-toml]
+target fmt = [fmt-go, fmt-action-pins, fmt-toml, fmt-tsk]
