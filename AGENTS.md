@@ -66,6 +66,8 @@
   - Never change or reuse a number, even when an ADR is renamed or superseded.
   - Update its status as the decision moves from proposed to implemented.
   - To replace an ADR, write a new one and mark the old one superseded with a link to it.
+  - Record decisions and their consequences, not implementation details. Do not
+    name types, functions, fields, or files; describe behaviour instead.
 
 # Commits and pull requests
 

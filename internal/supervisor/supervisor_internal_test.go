@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"log/slog"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"testing"
@@ -41,7 +43,41 @@ func TestServiceProcessReference(t *testing.T) {
 	assert.Equal(t, []string{"/bin/sh", "-c", "run-reference --port 2"}, process.command().Args)
 	assert.True(t, slices.Contains(process.command().Env, "SPECTRE_LISTEN=unix:/sockets/reference.sock"))
 	assert.True(t, slices.Contains(process.command().Env, "SPECTRE_EGRESS=http+unix:/sockets/egress-reference.sock"))
-	assert.True(t, process.command().Stdout == os.Stdout && process.command().Stderr == os.Stderr, "service output is not passed through")
+}
+
+func TestServiceOutputLabelled(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		stream   string
+		writer   func(cmd *exec.Cmd) io.Writer
+		line     string
+		expected map[string]any
+	}{
+		{name: "Stdout", stream: "stdout", writer: func(cmd *exec.Cmd) io.Writer { return cmd.Stdout }, line: "service line",
+			expected: map[string]any{"level": "INFO", "msg": "service line"}},
+		{name: "Stderr", stream: "stderr", writer: func(cmd *exec.Cmd) io.Writer { return cmd.Stderr }, line: "service line",
+			expected: map[string]any{"level": "INFO", "msg": "service line"}},
+		// Labels override a service's own subsystem so its lines stay attributable.
+		{name: "Structured", stream: "stderr", writer: func(cmd *exec.Cmd) io.Writer { return cmd.Stderr },
+			line:     `{"level":"warn","msg":"disk full","subsystem":"db","path":"/data"}`,
+			expected: map[string]any{"level": "WARN", "msg": "disk full", "path": "/data"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var output bytes.Buffer
+			ctx := logger.WithLogger(t.Context(), slog.New(slog.NewJSONHandler(&output, nil)))
+			s, err := New(ctx, testConfig(t))
+			assert.NoError(t, err)
+			process := s.serviceProcess(ctx, roleCandidate, "http+unix:/sockets/egress-candidate.sock", "unix:/sockets/candidate.sock", false)
+			_, err = io.WriteString(test.writer(process.command()), test.line+"\n")
+			assert.NoError(t, err)
+			var record map[string]any
+			assert.NoError(t, json.Unmarshal(output.Bytes(), &record))
+			delete(record, "time")
+			test.expected["subsystem"] = roleCandidate
+			test.expected["stream"] = test.stream
+			assert.Equal(t, test.expected, record)
+		})
+	}
 }
 
 func TestServiceProcessCandidateSandboxed(t *testing.T) {

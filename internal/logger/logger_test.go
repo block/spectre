@@ -20,15 +20,17 @@ func TestKongConfig(t *testing.T) {
 		args  []string
 		level slog.Level
 		json  bool
+		remap map[string]string
 	}{
 		{name: "Default", level: slog.LevelInfo},
 		{name: "DebugJSON", args: []string{"--log-level=debug", "--log-json"}, level: slog.LevelDebug, json: true},
+		{name: "Remap", args: []string{"--log-remap=msg=message", "--log-remap=time=timestamp"}, level: slog.LevelInfo, remap: map[string]string{"msg": "message", "time": "timestamp"}},
 		{name: "Warn", args: []string{"--log-level=warn"}, level: slog.LevelWarn},
 		{name: "Error", args: []string{"--log-level=error"}, level: slog.LevelError},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			var cli struct {
-				Log logger.Config `embed:""`
+				Log logger.Config `embed:"" prefix:"log-"`
 			}
 			cli.Log = logger.NewConfig()
 			parser, err := kong.New(&cli)
@@ -38,14 +40,18 @@ func TestKongConfig(t *testing.T) {
 			expected := logger.NewConfig()
 			expected.Level = test.level
 			expected.JSON = test.json
+			expected.Remap = test.remap
 			assert.Equal(t, expected, cli.Log)
 		})
 	}
 }
 
 func TestKongRejectsInvalidLevel(t *testing.T) {
-	config := logger.NewConfig()
-	parser, err := kong.New(&config)
+	var cli struct {
+		Log logger.Config `embed:"" prefix:"log-"`
+	}
+	cli.Log = logger.NewConfig()
+	parser, err := kong.New(&cli)
 	assert.NoError(t, err)
 	_, err = parser.Parse([]string{"--log-level=invalid"})
 	assert.Error(t, err)
@@ -80,6 +86,86 @@ func TestOutput(t *testing.T) {
 			assert.Equal(t, map[string]any{"level": "INFO", "msg": "visible", "count": float64(3)}, record)
 		})
 	}
+}
+
+func TestRemap(t *testing.T) {
+	var output bytes.Buffer
+	config := logger.NewConfig()
+	config.JSON = true
+	config.Remap = map[string]string{"msg": "message", "time": "timestamp", "count": "n"}
+	log := logger.New(config, &output)
+	log.InfoContext(t.Context(), "visible", "count", 3, slog.Group("nested", "count", 4))
+	var record map[string]any
+	assert.NoError(t, json.Unmarshal(output.Bytes(), &record))
+	_, hasTime := record["timestamp"].(string)
+	assert.True(t, hasTime)
+	delete(record, "timestamp")
+	// Only top-level keys are renamed; the nested count keeps its name.
+	assert.Equal(t, map[string]any{"level": "INFO", "message": "visible", "n": float64(3), "nested": map[string]any{"count": float64(4)}}, record)
+}
+
+func TestLineWriter(t *testing.T) {
+	var output bytes.Buffer
+	writer := logger.NewLineWriter(t.Context(), timelessLogger(&output), slog.LevelWarn, slog.String("subsystem", "candidate"))
+	for _, chunk := range []string{"first ", "line\r\nsecond line\n\nthird", " line"} {
+		n, err := writer.Write([]byte(chunk))
+		assert.NoError(t, err)
+		assert.Equal(t, len(chunk), n)
+	}
+	// The unterminated third line is held back until the writer is flushed.
+	assert.Equal(t, `{"level":"WARN","msg":"first line","subsystem":"candidate"}
+{"level":"WARN","msg":"second line","subsystem":"candidate"}
+`, output.String())
+	writer.Flush()
+	assert.Equal(t, `{"level":"WARN","msg":"first line","subsystem":"candidate"}
+{"level":"WARN","msg":"second line","subsystem":"candidate"}
+{"level":"WARN","msg":"third line","subsystem":"candidate"}
+`, output.String())
+}
+
+func TestLineWriterStructured(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		line     string
+		expected string
+	}{
+		{name: "Slog", line: `{"time":"2026-01-01T00:00:00Z","level":"DEBUG","msg":"hello","count":12345678901234567890,"nested":{"a":1}}`,
+			expected: `{"level":"DEBUG","msg":"hello","subsystem":"candidate","count":12345678901234567890,"nested":{"a":1}}`},
+		{name: "Synonyms", line: `{"timestamp":"2026-01-01T00:00:00Z","severity":"warning","message":"careful"}`,
+			expected: `{"level":"WARN","msg":"careful","subsystem":"candidate"}`},
+		{name: "Fatal", line: `{"level":"fatal","msg":"gone"}`,
+			expected: `{"level":"ERROR","msg":"gone","subsystem":"candidate"}`},
+		{name: "UnknownLevel", line: `{"level":30,"msg":"pino"}`,
+			expected: `{"level":"INFO","msg":"pino","subsystem":"candidate","level":30}`},
+		{name: "NoMessage", line: `{"event":"started"}`,
+			expected: `{"level":"INFO","msg":"","subsystem":"candidate","event":"started"}`},
+		{name: "LabelWins", line: `{"msg":"x","subsystem":"theirs"}`,
+			expected: `{"level":"INFO","msg":"x","subsystem":"candidate"}`},
+		{name: "Array", line: `["not","an","object"]`,
+			expected: `{"level":"INFO","msg":"[\"not\",\"an\",\"object\"]","subsystem":"candidate"}`},
+		{name: "Malformed", line: `{"msg":"unterminated`,
+			expected: `{"level":"INFO","msg":"{\"msg\":\"unterminated","subsystem":"candidate"}`},
+		{name: "Trailing", line: `{"msg":"a"} {"msg":"b"}`,
+			expected: `{"level":"INFO","msg":"{\"msg\":\"a\"} {\"msg\":\"b\"}","subsystem":"candidate"}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var output bytes.Buffer
+			writer := logger.NewLineWriter(t.Context(), timelessLogger(&output), slog.LevelInfo, slog.String("subsystem", "candidate"))
+			_, err := writer.Write([]byte(test.line + "\n"))
+			assert.NoError(t, err)
+			assert.Equal(t, test.expected+"\n", output.String())
+		})
+	}
+}
+
+// timelessLogger writes every level as JSON without the time key, so output is comparable.
+func timelessLogger(output io.Writer) *slog.Logger {
+	return slog.New(slog.NewJSONHandler(output, &slog.HandlerOptions{Level: slog.LevelDebug, ReplaceAttr: func(groups []string, attribute slog.Attr) slog.Attr {
+		if len(groups) == 0 && attribute.Key == slog.TimeKey {
+			return slog.Attr{}
+		}
+		return attribute
+	}}))
 }
 
 func TestLevelFiltering(t *testing.T) {

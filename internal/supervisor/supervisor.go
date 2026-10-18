@@ -22,8 +22,11 @@ import (
 	"github.com/block/spectre/internal/status"
 )
 
-// subsystemKey is the log attribute naming the supervisor or proxy that wrote a line.
+// subsystemKey is the log attribute naming the supervisor, proxy or service that wrote a line.
 const subsystemKey = "subsystem"
+
+// streamKey is the log attribute naming which output stream a service line came from.
+const streamKey = "stream"
 
 // roles name the service leaves and their wiring.
 const (
@@ -349,15 +352,24 @@ func (s *Supervisor) serviceProcess(ctx context.Context, role string, egressURL 
 		cmd = s.command(ctx, "/bin/sh", "-c", shell)
 	}
 	cmd.Env = append(cmd.Environ(), "SPECTRE_LISTEN="+listen, "SPECTRE_EGRESS="+egressURL)
-	return newManagedProcess(role, cmd)
+	stdout := serviceOutput(ctx, role, "stdout")
+	stderr := serviceOutput(ctx, role, "stderr")
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+	return newManagedProcess(role, cmd, stdout, stderr)
 }
 
-// command builds a child command that shares the supervisor's output and terminates
-// gracefully on context cancellation, escalating to a kill after the shutdown timeout.
+// serviceOutput logs one output stream of a service through the supervisor's log,
+// tagged with the role so its lines are not mistaken for SPECTRE's own.
+func serviceOutput(ctx context.Context, role string, stream string) *logger.LineWriter {
+	labels := []slog.Attr{slog.String(subsystemKey, role), slog.String(streamKey, stream)}
+	return logger.NewLineWriter(ctx, logger.FromContext(ctx), slog.LevelInfo, labels...)
+}
+
+// command builds a child command that terminates gracefully on context
+// cancellation, escalating to a kill after the shutdown timeout.
 func (s *Supervisor) command(ctx context.Context, name string, arg ...string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, name, arg...) //nolint:gosec // G204: the supervisor runs operator-provided service commands by design
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
 	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
 	cmd.WaitDelay = s.config.ShutdownTimeout
 	return cmd

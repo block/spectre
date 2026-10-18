@@ -22,7 +22,7 @@ import (
 
 func main() {
 	var cli struct {
-		Log      logger.Config    `embed:""`
+		Log      logger.Config    `embed:"" prefix:"log-"`
 		Version  kong.VersionFlag `help:"Print the version and exit."`
 		Listen   string           `default:"127.0.0.1:50051" help:"Address for the plaintext Connect server: host:port, or unix:<path|@abstract>."`
 		Data     string           `default:"internal/sample/testdata/users.json" type:"existingfile" help:"ProtoJSON sample users."`

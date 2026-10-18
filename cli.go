@@ -17,7 +17,7 @@ import (
 // cli is the built-in command line. Extensions add to it, so custom binaries
 // never copy it.
 type cli struct {
-	Log     logger.Config    `embed:""`
+	Log     logger.Config    `embed:"" prefix:"log-"`
 	Config  kong.ConfigFlag  `placeholder:"FILE" help:"Load flag values from a TOML file. Command-line flags take precedence."`
 	Version kong.VersionFlag `help:"Print the version and exit."`
 
