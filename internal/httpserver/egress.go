@@ -146,6 +146,11 @@ func (e *Egress) Serve(ctx context.Context, reference net.Listener, candidate ne
 	return errors.Wrap(Serve(ctx, e.config.Config, bindings, lifecycle), "serve egress")
 }
 
+// Candidates reports the egress candidate quarantine state.
+func (e *Egress) Candidates() *proxy.Candidates {
+	return e.candidates
+}
+
 func (e *Egress) markReady(context.Context) {
 	e.health.SetReady(true)
 }

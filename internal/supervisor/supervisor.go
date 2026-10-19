@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -18,6 +19,7 @@ import (
 	"github.com/block/spectre/internal/logger"
 	"github.com/block/spectre/internal/netaddr"
 	"github.com/block/spectre/internal/protocol"
+	"github.com/block/spectre/internal/status"
 )
 
 // subsystemKey is the log attribute naming the supervisor or proxy that wrote a line.
@@ -41,6 +43,9 @@ type Supervisor struct {
 	egressHealth    string
 	referenceSock   string
 	candidateSock   string
+
+	ingress *httpserver.Ingress
+	egress  *httpserver.Egress
 
 	limits  Option[*cgroups]
 	running int
@@ -185,7 +190,47 @@ func (s *Supervisor) startAll(ctx context.Context) error {
 	if err := s.place(candidate, roleCandidate); err != nil {
 		return err
 	}
-	return s.startIngress(ctx)
+	if err := s.startIngress(ctx); err != nil {
+		return err
+	}
+	return s.startStatus(ctx)
+}
+
+// startStatus serves the SPECTRE status endpoint, aggregating both proxies'
+// quarantine state. It is best-effort: its failure never stops the mirror.
+func (s *Supervisor) startStatus(ctx context.Context) error {
+	if s.config.StatusListen == "" {
+		return nil
+	}
+	listener, err := netaddr.ParseListen(s.config.StatusListen).Listen(ctx)
+	if err != nil {
+		return errors.Wrap(err, "listen for status")
+	}
+	handler := status.NewHandler(
+		status.Source{Name: "ingress", Reporter: s.ingress.Candidates()},
+		status.Source{Name: "egress", Reporter: s.egress.Candidates()},
+	)
+	server := &http.Server{
+		Handler: handler,
+		// Guard the loopback listener against a client that stalls mid-headers.
+		ReadHeaderTimeout: 5 * time.Second,
+		BaseContext:       func(net.Listener) context.Context { return ctx },
+	}
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), s.config.ShutdownTimeout)
+		defer cancel()
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			s.log.DebugContext(ctx, "Status endpoint shutdown", "error", err)
+		}
+	}()
+	go func() {
+		if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			s.log.WarnContext(ctx, "Status endpoint stopped", "error", err)
+		}
+	}()
+	s.log.InfoContext(ctx, "Status endpoint listening", "address", listener.Addr().String())
+	return nil
 }
 
 // startEgress builds the egress proxy, opens its listeners, and serves it.
@@ -198,6 +243,7 @@ func (s *Supervisor) startEgress(ctx context.Context) error {
 		transport.CloseIdleConnections()
 		return errors.Wrap(err, "configure egress")
 	}
+	s.egress = handler
 	listeners, err := listenAll(ctx, config.ReferenceListen, config.CandidateListen, config.HealthListen)
 	if err != nil {
 		transport.CloseIdleConnections()
@@ -220,6 +266,7 @@ func (s *Supervisor) startIngress(ctx context.Context) error {
 		transport.CloseIdleConnections()
 		return errors.Wrap(err, "configure ingress")
 	}
+	s.ingress = handler
 	listener, err := netaddr.ParseListen(config.Listen).Listen(ctx)
 	if err != nil {
 		transport.CloseIdleConnections()

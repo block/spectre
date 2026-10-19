@@ -25,6 +25,8 @@ type Config struct {
 	Reflection bool `name:"reflection" negatable:"" default:"true" help:"Load backend descriptors with gRPC reflection and require them to match; disable to compare using only the static descriptors."`
 	// Listen is the public ingress address that clients send traffic to.
 	Listen string `default:"127.0.0.1:50050" help:"Public ingress address: host:port, or unix:<path|@abstract> for a unix socket."`
+	// StatusListen is the address of the SPECTRE status endpoint (/spectre/v1/status).
+	StatusListen string `name:"status-listen" default:"127.0.0.1:50051" help:"Address serving the SPECTRE status endpoint (/spectre/v1/status): host:port, or unix:<path|@abstract>. Empty disables it."`
 	// SocketDir holds the unix sockets wiring the proxies to the services.
 	SocketDir string `default:"dist/sockets" help:"Directory for the unix sockets wiring the proxies to the services."`
 	// Destinations maps each request host to its upstream URL for egress.
