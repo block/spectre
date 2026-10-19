@@ -143,6 +143,8 @@ func TestLineWriterStructured(t *testing.T) {
 			expected: map[string]any{"level": "ERROR", "msg": "gone"}},
 		{name: "SlogLevel", line: `{"level":"warn","msg":"careful"}`,
 			expected: map[string]any{"level": "WARN", "msg": "careful"}},
+		{name: "NumericTime", line: `{"time":1720000000000,"msg":"ready"}`,
+			expected: map[string]any{"level": "INFO", "msg": "ready"}},
 		{name: "NoMessage", line: `{"event":"started"}`,
 			expected: map[string]any{"level": "INFO", "msg": "", "event": "started"}},
 		{name: "LabelWins", line: `{"msg":"x","subsystem":"theirs"}`,

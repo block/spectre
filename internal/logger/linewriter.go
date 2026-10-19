@@ -85,7 +85,8 @@ func (w *LineWriter) emitStructured(fields map[string]any) {
 			delete(fields, slog.LevelKey)
 		}
 	}
-	takeString(fields, slog.TimeKey)
+	// Dropped whatever its type, so JSON output never carries two time keys.
+	delete(fields, slog.TimeKey)
 	for _, label := range w.labels {
 		delete(fields, label.Key)
 	}
