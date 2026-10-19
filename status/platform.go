@@ -12,19 +12,28 @@ type Platform interface {
 	// Mirror reports the SPECTRE mirror state for one <env>-<region> target.
 	Mirror(target string) MirrorState
 	// ResolveCommit returns the git commit for image, or "" when unknown.
-	ResolveCommit(ctx context.Context, image string) (string, error)
+	ResolveCommit(ctx context.Context, image Image) (GitCommit, error)
 	// ResolveStatus reads the live candidate quarantine status for one target.
 	ResolveStatus(ctx context.Context, target string) (QuarantineReport, error)
 }
+
+// Image is a container image reference, optionally pinned with an "@" digest.
+type Image string
+
+// Digest is an image's "@" content digest, or "" when the image carries none.
+type Digest string
+
+// GitCommit is the git commit an image was built from, or "" when unknown.
+type GitCommit string
 
 // MirrorState is a service's SPECTRE mirror state for one deploy target.
 type MirrorState struct {
 	// Enabled is true when the target deploys a SPECTRE mirror.
 	Enabled bool
 	// Image is the mirror's full image reference, including its digest.
-	Image string
+	Image Image
 	// Digest is the mirror image's "@" digest, or "" when it carries none.
-	Digest string
+	Digest Digest
 }
 
 // QuarantineReport is the live SPECTRE status read from a mirror.
@@ -50,7 +59,7 @@ type SourceStatus struct {
 // PlatformFactory builds the Platform that inspects app's SPECTRE mirror.
 type PlatformFactory func(app string) (Platform, error)
 
-// Registry maps a plan's platform name to the factory that builds it. A custom
+// Registry maps a config's platform name to the factory that builds it. A custom
 // binary populates it through spectre.WithStatusPlatform.
 type Registry struct {
 	factories map[string]PlatformFactory
@@ -66,8 +75,8 @@ func (r *Registry) Register(name string, factory PlatformFactory) {
 	r.factories[name] = factory
 }
 
-// New builds the platform named in a plan for app. An unregistered name yields a
-// dummy platform whose inspections fail, naming the platform the build lacks.
+// New builds the platform named in a config for app. An unregistered name yields
+// a dummy platform whose inspections fail, naming the platform the build lacks.
 func (r *Registry) New(name, app string) (Platform, error) {
 	factory, ok := r.factories[name]
 	if !ok {
@@ -93,7 +102,7 @@ func (d dummyPlatform) Mirror(string) MirrorState {
 }
 
 // ResolveCommit fails, because a dummy platform resolves nothing.
-func (d dummyPlatform) ResolveCommit(context.Context, string) (string, error) {
+func (d dummyPlatform) ResolveCommit(context.Context, Image) (GitCommit, error) {
 	return "", errors.Errorf("no status platform %q registered in this build", d.name)
 }
 

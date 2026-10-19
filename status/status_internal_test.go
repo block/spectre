@@ -7,13 +7,6 @@ import (
 	"github.com/alecthomas/assert/v2"
 )
 
-func TestTargets(t *testing.T) {
-	plan := Plan{Environments: []string{"staging-us-west-2", "staging-us-east-2"}}
-
-	assert.Equal(t, []string{"staging-us-west-2", "staging-us-east-2"}, targets(Config{}, plan))
-	assert.Equal(t, []string{"prod-us-west-2"}, targets(Config{Env: "prod", Region: "us-west-2"}, plan))
-}
-
 func TestRegistryNewRegistered(t *testing.T) {
 	registry := NewRegistry()
 	var want Platform = stubPlatform{}
@@ -45,7 +38,7 @@ type stubPlatform struct{}
 
 func (stubPlatform) Mirror(string) MirrorState { return MirrorState{} }
 
-func (stubPlatform) ResolveCommit(context.Context, string) (string, error) { return "", nil }
+func (stubPlatform) ResolveCommit(context.Context, Image) (GitCommit, error) { return "", nil }
 
 func (stubPlatform) ResolveStatus(context.Context, string) (QuarantineReport, error) {
 	return QuarantineReport{}, nil

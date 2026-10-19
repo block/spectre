@@ -1,5 +1,5 @@
 // Package status reports the SPECTRE migration status for a service: whether
-// each environment in its migration plan runs a SPECTRE mirror, the commit it
+// each environment in its migration config runs a SPECTRE mirror, the commit it
 // runs, and its live candidate status. The deploy platform is pluggable: a
 // custom binary registers one through spectre.WithStatusPlatform.
 package status
@@ -14,48 +14,33 @@ import (
 
 // Config configures the status command.
 type Config struct {
-	// Plan is the path to the SPECTRE migration plan TOML file.
-	Plan string `default:"spectre/migration.toml" help:"Path to the SPECTRE migration plan TOML file."`
-	// Env, together with Region, overrides the plan's environments with a single target.
-	Env string `help:"Environment to check, e.g. staging; overrides the plan's environments (requires Region)."`
-	// Region, together with Env, overrides the plan's environments with a single target.
-	Region string `help:"Region to check, e.g. us-west-2; overrides the plan's environments (requires Env)."`
-	// Live additionally queries each mirror for its live candidate quarantine status.
-	Live bool `help:"Query each SPECTRE mirror for live candidate quarantine status."`
+	// ConfigFile is the path to the SPECTRE migration config TOML file.
+	ConfigFile File `default:"spectre/migration.toml" help:"Path to the SPECTRE migration config TOML file."`
 }
 
 // Report prints each target's SPECTRE mirror status and git commit for the
-// plan's service. Per-target errors are printed; they do not abort the report.
+// config's service. Per-target errors are printed; they do not abort the report.
 func Report(ctx context.Context, cfg Config, registry *Registry) error {
-	plan, err := LoadPlan(cfg.Plan)
+	migration, err := LoadMigrationConfig(cfg.ConfigFile)
 	if err != nil {
 		return err
 	}
 
-	platform, err := registry.New(plan.Platform, plan.App)
+	platform, err := registry.New(migration.Platform, migration.App)
 	if err != nil {
 		return errors.WithStack(err)
 	}
 
 	useColor = colorEnabled(os.Stdout)
-	fmt.Println(bold(plan.App))
-	for _, target := range targets(cfg, plan) {
-		reportTarget(ctx, platform, target, cfg.Live)
+	fmt.Println(bold(migration.App))
+	for _, target := range migration.Environments {
+		reportTarget(ctx, platform, target)
 	}
 	return nil
 }
 
-// targets returns the environments to check: the single cfg.Env/cfg.Region
-// override when both are set, otherwise every environment in the plan.
-func targets(cfg Config, plan Plan) []string {
-	if cfg.Env != "" && cfg.Region != "" {
-		return []string{cfg.Env + "-" + cfg.Region}
-	}
-	return plan.Environments
-}
-
 // reportTarget prints the SPECTRE mirror status for one <env>-<region> target.
-func reportTarget(ctx context.Context, platform Platform, target string, live bool) {
+func reportTarget(ctx context.Context, platform Platform, target string) {
 	mirror := platform.Mirror(target)
 	if !mirror.Enabled {
 		fmt.Printf("  %s: %s\n", bold(target), dim("no spectre mirror configured"))
@@ -63,9 +48,7 @@ func reportTarget(ctx context.Context, platform Platform, target string, live bo
 	}
 	fmt.Printf("  %s: %s\n", bold(target), green("spectre mirror deployed"))
 	printCommit(ctx, platform, mirror)
-	if live {
-		printStatus(ctx, platform, target)
-	}
+	printStatus(ctx, platform, target)
 }
 
 // printStatus resolves and prints the live candidate quarantine status for one
@@ -107,7 +90,7 @@ func printCommit(ctx context.Context, platform Platform, mirror MirrorState) {
 	case commit == "":
 		fmt.Printf("    commit: %s\n", yellow(fmt.Sprintf("unknown (digest %s)", mirror.Digest)))
 	default:
-		fmt.Printf("    commit: %s\n", green(commit))
+		fmt.Printf("    commit: %s\n", green(string(commit)))
 	}
-	fmt.Printf("    image: %s\n", dim(mirror.Image))
+	fmt.Printf("    image: %s\n", dim(string(mirror.Image)))
 }

@@ -10,11 +10,11 @@ import (
 	"github.com/block/spectre/status"
 )
 
-func TestLoadPlan(t *testing.T) {
+func TestLoadMigrationConfig(t *testing.T) {
 	tests := []struct {
 		name    string
 		toml    string
-		want    status.Plan
+		want    status.MigrationConfig
 		wantErr string
 	}{
 		{
@@ -24,7 +24,7 @@ app          = "feeplans-fe"
 platform     = "ski"
 environments = ["staging-us-west-2"]
 `,
-			want: status.Plan{
+			want: status.MigrationConfig{
 				App:          "feeplans-fe",
 				Platform:     "ski",
 				Environments: []string{"staging-us-west-2"},
@@ -47,19 +47,19 @@ environments = ["staging-us-west-2"]
 			path := filepath.Join(dir, "migration.toml")
 			assert.NoError(t, os.WriteFile(path, []byte(test.toml), 0o600))
 
-			plan, err := status.LoadPlan(path)
+			config, err := status.LoadMigrationConfig(status.File(path))
 			if test.wantErr != "" {
 				assert.Error(t, err)
 				assert.Contains(t, err.Error(), test.wantErr)
 				return
 			}
 			assert.NoError(t, err)
-			assert.Equal(t, test.want, plan)
+			assert.Equal(t, test.want, config)
 		})
 	}
 }
 
-func TestLoadPlanMissingFile(t *testing.T) {
-	_, err := status.LoadPlan(filepath.Join(t.TempDir(), "missing.toml"))
+func TestLoadMigrationConfigMissingFile(t *testing.T) {
+	_, err := status.LoadMigrationConfig(status.File(filepath.Join(t.TempDir(), "missing.toml")))
 	assert.Error(t, err)
 }
