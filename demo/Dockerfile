@@ -4,7 +4,7 @@
 # behind both proxies, with the candidate's egress sandboxed and host resources
 # split between the services. See demo/README.md.
 
-FROM golang:1.27.1-alpine3.24 AS build
+FROM golang:1.27.2-alpine3.24 AS build
 
 WORKDIR /src
 COPY go.mod go.sum ./
