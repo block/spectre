@@ -13,9 +13,12 @@ require (
 	github.com/grafana/sobek v0.0.0-20260915160442-8a431c44cd7b
 	github.com/lmittmann/tint v1.2.0
 	github.com/microsoft/TypeScript/tsc/shim/typescript v0.0.0
+	github.com/pelletier/go-toml v1.9.5
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
+	go.jetify.com/typeid v1.3.0
 	golang.org/x/net v0.59.0
 	golang.org/x/sync v0.23.0
+	golang.org/x/sys v0.48.0
 	google.golang.org/protobuf v1.36.12
 )
 
@@ -30,10 +33,7 @@ require (
 	github.com/klauspost/compress v1.20.0 // indirect
 	github.com/klauspost/cpuid/v2 v2.2.10 // indirect
 	github.com/microsoft/TypeScript/tsc v0.0.0-20261001235638-09b1db061731 // indirect
-	github.com/pelletier/go-toml v1.9.5 // indirect
 	github.com/zeebo/xxh3 v1.1.0 // indirect
-	go.jetify.com/typeid v1.3.0 // indirect
-	golang.org/x/sys v0.48.0 // indirect
 	golang.org/x/text v0.42.0 // indirect
 )
 
