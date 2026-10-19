@@ -24,8 +24,10 @@ func TestRegistryNewUnknownIsDummy(t *testing.T) {
 	platform, err := NewRegistry().New("bogus", "feeplans-fe")
 	assert.NoError(t, err)
 
-	// A dummy reports no mirror and fails every resolution, naming the platform.
-	assert.Equal(t, MirrorState{}, platform.Mirror("staging-us-west-2"))
+	// A dummy fails every inspection, naming the platform the build lacks.
+	_, err = platform.Mirror(context.Background(), "staging-us-west-2")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), `"bogus"`)
 	_, err = platform.ResolveCommit(context.Background(), "image")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), `"bogus"`)
@@ -36,7 +38,9 @@ func TestRegistryNewUnknownIsDummy(t *testing.T) {
 // stubPlatform is a minimal Platform a test factory can return.
 type stubPlatform struct{}
 
-func (stubPlatform) Mirror(string) MirrorState { return MirrorState{} }
+func (stubPlatform) Mirror(context.Context, string) (MirrorState, error) {
+	return MirrorState{}, nil
+}
 
 func (stubPlatform) ResolveCommit(context.Context, Image) (GitCommit, error) { return "", nil }
 

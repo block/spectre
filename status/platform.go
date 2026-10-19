@@ -9,8 +9,9 @@ import (
 // Platform inspects a service's SPECTRE mirror on a specific deploy platform:
 // how the mirror is deployed, the commit it runs, and its live status.
 type Platform interface {
-	// Mirror reports the SPECTRE mirror state for one <env>-<region> target.
-	Mirror(target string) MirrorState
+	// Mirror reports the SPECTRE mirror state for one <env>-<region> target. It
+	// fails when the platform cannot tell whether the target runs a mirror.
+	Mirror(ctx context.Context, target string) (MirrorState, error)
 	// ResolveCommit returns the git commit for image, or "" when unknown.
 	ResolveCommit(ctx context.Context, image Image) (GitCommit, error)
 	// ResolveStatus reads the live candidate quarantine status for one target.
@@ -85,8 +86,8 @@ func (r *Registry) New(name, app string) (Platform, error) {
 	return factory(app)
 }
 
-// dummyPlatform is the stand-in for an unregistered platform. It reports no
-// mirror and fails every resolution, naming the platform the build lacks.
+// dummyPlatform is the stand-in for an unregistered platform. It fails every
+// inspection, naming the platform the build lacks.
 type dummyPlatform struct {
 	name string
 }
@@ -96,9 +97,9 @@ func newDummyPlatform(name string) dummyPlatform {
 	return dummyPlatform{name: name}
 }
 
-// Mirror reports no mirror, because a dummy platform cannot inspect one.
-func (d dummyPlatform) Mirror(string) MirrorState {
-	return MirrorState{}
+// Mirror fails, because a dummy platform cannot inspect a mirror.
+func (d dummyPlatform) Mirror(context.Context, string) (MirrorState, error) {
+	return MirrorState{}, errors.Errorf("no status platform %q registered in this build", d.name)
 }
 
 // ResolveCommit fails, because a dummy platform resolves nothing.
