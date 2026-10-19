@@ -11,6 +11,7 @@ import (
 	"github.com/block/spectre/internal/jsonschema"
 	"github.com/block/spectre/internal/logger"
 	"github.com/block/spectre/internal/supervisor"
+	"github.com/block/spectre/status"
 )
 
 // cli is the built-in command line. Extensions add to it, so custom binaries
@@ -20,8 +21,18 @@ type cli struct {
 	Config  kong.ConfigFlag  `placeholder:"FILE" help:"Load flag values from a TOML file. Command-line flags take precedence."`
 	Version kong.VersionFlag `help:"Print the version and exit."`
 
-	Run runCommand `cmd:"" help:"Run the supervisor with the embedded proxies, splitting resources between a candidate and a reference."`
-	Gen genCommand `cmd:"" help:"Generate TypeScript schema declarations and the script API."`
+	Run    runCommand    `cmd:"" help:"Run the supervisor with the embedded proxies, splitting resources between a candidate and a reference."`
+	Gen    genCommand    `cmd:"" help:"Generate TypeScript schema declarations and the script API."`
+	Status statusCommand `cmd:"" help:"Report the SPECTRE migration status and mirror deployment for a service."`
+}
+
+// statusCommand reports the SPECTRE migration status for a service.
+type statusCommand struct {
+	Config status.Config `embed:""`
+}
+
+func (c *statusCommand) Run(ctx context.Context, registry *status.Registry) error {
+	return errors.WithStack(status.Report(ctx, c.Config, registry))
 }
 
 // runCommand supervises the candidate and reference behind the embedded proxies.

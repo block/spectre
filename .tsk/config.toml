@@ -294,5 +294,6 @@ allow-generated-construction = true
 # separate module whose path mimics TypeScript's own.
 allow = [
   "github.com/block/spectre",
+  "github.com/block/spectre/status",
   "github.com/microsoft/TypeScript/tsc/shim/typescript",
 ]
