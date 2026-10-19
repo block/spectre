@@ -25,9 +25,6 @@ import (
 // subsystemKey is the log attribute naming the supervisor, proxy or service that wrote a line.
 const subsystemKey = "subsystem"
 
-// streamKey is the log attribute naming which output stream a service line came from.
-const streamKey = "stream"
-
 // roles name the service leaves and their wiring.
 const (
 	roleReference = "reference"
@@ -352,18 +349,17 @@ func (s *Supervisor) serviceProcess(ctx context.Context, role string, egressURL 
 		cmd = s.command(ctx, "/bin/sh", "-c", shell)
 	}
 	cmd.Env = append(cmd.Environ(), "SPECTRE_LISTEN="+listen, "SPECTRE_EGRESS="+egressURL)
-	stdout := serviceOutput(ctx, role, "stdout")
-	stderr := serviceOutput(ctx, role, "stderr")
+	// Only stdout carries the service's logs; stderr passes through untouched.
+	stdout := serviceLogs(ctx, role)
 	cmd.Stdout = stdout
-	cmd.Stderr = stderr
-	return newManagedProcess(role, cmd, stdout, stderr)
+	cmd.Stderr = os.Stderr
+	return newManagedProcess(role, cmd, stdout)
 }
 
-// serviceOutput logs one output stream of a service through the supervisor's log,
-// tagged with the role so its lines are not mistaken for SPECTRE's own.
-func serviceOutput(ctx context.Context, role string, stream string) *logger.LineWriter {
-	labels := []slog.Attr{slog.String(subsystemKey, role), slog.String(streamKey, stream)}
-	return logger.NewLineWriter(ctx, logger.FromContext(ctx), slog.LevelInfo, labels...)
+// serviceLogs logs a service's stdout through the supervisor's log, tagged with
+// the role so its lines are not mistaken for SPECTRE's own.
+func serviceLogs(ctx context.Context, role string) *logger.LineWriter {
+	return logger.NewLineWriter(ctx, logger.FromContext(ctx), slog.LevelInfo, slog.String(subsystemKey, role))
 }
 
 // command builds a child command that terminates gracefully on context

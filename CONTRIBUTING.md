@@ -13,11 +13,12 @@ to change the minimum level and `--log-json` for JSON output. `--log-remap OLD=N
 top-level JSON field for pipelines that expect other names, for example
 `--log-remap msg=message --log-remap time=timestamp`.
 
-Each line the candidate and reference write to stdout or stderr is logged as a record
-tagged `subsystem=candidate` or `subsystem=reference` and `stream=stdout|stderr`, so their
-output is distinguishable from SPECTRE's own lines, which carry `subsystem=supervisor`,
-`ingress` or `egress`. A line that is a JSON object is passed through with its fields as
-attributes and its `msg`/`message` and `level`/`severity` lifted into the record.
+Each line the candidate and reference write to stdout is logged as a record tagged
+`subsystem=candidate` or `subsystem=reference`, so their logs are distinguishable from
+SPECTRE's own lines, which carry `subsystem=supervisor`, `ingress` or `egress`. A line
+that is a JSON object is passed through with its fields as attributes and its
+`msg`/`message` and `level`/`severity` lifted into the record. Stderr passes through
+unchanged.
 
 `spectre run` accepts `--config=FILE` to load flag values from a TOML file. Keys are
 flag names without the leading dashes, and command-line flags take precedence:

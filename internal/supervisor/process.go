@@ -12,13 +12,13 @@ import (
 type managedProcess struct {
 	name   string
 	cmd    *exec.Cmd
-	output []*logger.LineWriter
+	stdout *logger.LineWriter
 }
 
-// newManagedProcess wraps cmd. output lists the writers that log its streams, so
-// their trailing partial lines are flushed once it exits.
-func newManagedProcess(name string, cmd *exec.Cmd, output ...*logger.LineWriter) *managedProcess {
-	return &managedProcess{name: name, cmd: cmd, output: output}
+// newManagedProcess wraps cmd. stdout is the writer logging its output, so a
+// trailing partial line is flushed once it exits.
+func newManagedProcess(name string, cmd *exec.Cmd, stdout *logger.LineWriter) *managedProcess {
+	return &managedProcess{name: name, cmd: cmd, stdout: stdout}
 }
 
 // Name returns the process label used in logs.
@@ -44,8 +44,6 @@ func (p *managedProcess) pid() int {
 // wait blocks until the process exits and its output has been logged.
 func (p *managedProcess) wait() error {
 	err := p.cmd.Wait()
-	for _, writer := range p.output {
-		writer.Flush()
-	}
+	p.stdout.Flush()
 	return errors.Wrapf(err, "%s exited", p.name)
 }
