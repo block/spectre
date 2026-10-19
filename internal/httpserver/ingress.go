@@ -140,6 +140,11 @@ func (i *Ingress) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	i.health.ServeHTTP(writer, request)
 }
 
+// Candidates reports the ingress candidate quarantine state.
+func (i *Ingress) Candidates() *proxy.Candidates {
+	return i.candidates
+}
+
 func (i *Ingress) serveProxy(writer http.ResponseWriter, request *http.Request) {
 	select {
 	case i.requests <- struct{}{}:

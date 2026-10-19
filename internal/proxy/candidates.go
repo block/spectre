@@ -4,6 +4,7 @@ package proxy
 import (
 	"context"
 	"sync"
+	"time"
 
 	"github.com/alecthomas/errors"
 	. "github.com/alecthomas/types/optional"
@@ -17,11 +18,19 @@ type Candidates struct {
 	maxInFlight int
 
 	// mu serializes admission with quarantine and shutdown.
-	mu          sync.Mutex
-	closing     bool
-	quarantined bool
-	runs        map[*CandidateRun]struct{}
-	idle        chan struct{}
+	mu         sync.Mutex
+	closing    bool
+	quarantine QuarantineStatus
+	runs       map[*CandidateRun]struct{}
+	idle       chan struct{}
+}
+
+// QuarantineStatus reports why candidate traffic is quarantined, if it is.
+type QuarantineStatus struct {
+	// Reason is the error that triggered quarantine, nil while healthy.
+	Reason error
+	// Since is when quarantine began, zero while healthy.
+	Since time.Time
 }
 
 // NewCandidates tracks candidate work, quarantining beyond the configured concurrent runs.
@@ -62,7 +71,7 @@ func (c *Candidates) Start(ctx context.Context, cancel context.CancelFunc) Optio
 func (c *Candidates) admit(cancel context.CancelFunc) (run Option[*CandidateRun], capacityExceeded bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.closing || c.quarantined {
+	if c.closing || c.quarantine.Reason != nil {
 		return None[*CandidateRun](), false
 	}
 	if len(c.runs) >= c.maxInFlight {
@@ -89,14 +98,18 @@ func (c *Candidates) Finish(run *CandidateRun) {
 
 // Quarantine refuses all further candidate work and cancels active runs.
 func (c *Candidates) Quarantine(ctx context.Context, reason error) {
+	// A non-nil reason is the quarantine signal, so never store nil.
+	if reason == nil {
+		reason = errors.New("candidate quarantined")
+	}
 	// Publish quarantine before cancelling active runs so concurrent admission
 	// cannot send more traffic to the candidate.
 	c.mu.Lock()
-	if c.quarantined {
+	if c.quarantine.Reason != nil {
 		c.mu.Unlock()
 		return
 	}
-	c.quarantined = true
+	c.quarantine = QuarantineStatus{Reason: reason, Since: time.Now()}
 	runs := c.snapshot()
 	c.mu.Unlock()
 
@@ -108,6 +121,13 @@ func (c *Candidates) Quarantine(ctx context.Context, reason error) {
 		}
 		logger.FromContext(ctx).ErrorContext(context.WithoutCancel(ctx), "Candidate quarantined", "event", logger.EventQuarantine, "reason", reason)
 	}()
+}
+
+// QuarantineStatus reports the current quarantine state and the reason for it.
+func (c *Candidates) QuarantineStatus() QuarantineStatus {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.quarantine
 }
 
 // Close refuses further candidate work and cancels active runs without waiting.
