@@ -9,7 +9,6 @@ import (
 	"github.com/alecthomas/kong"
 
 	"github.com/block/spectre/internal/descriptors"
-	"github.com/block/spectre/internal/logger"
 )
 
 // Config contains the command-line configuration for the supervisor.
@@ -36,8 +35,6 @@ type Config struct {
 	ScriptsDir string `type:"existingdir" placeholder:"DIR" help:"Directory of comparison scripts passed to both proxies."`
 	// SchemaDir holds the TypeScript schema passed to both proxies.
 	SchemaDir string `type:"existingdir" placeholder:"DIR" help:"Directory of TypeScript schema passed to both proxies."`
-	// ServiceLogs maps the services' JSON log fields and level names onto slog's.
-	ServiceLogs logger.LineConfig `embed:"" prefix:"service-log-"`
 	// MatchWindow bounds how long a candidate call waits for a matching reference call.
 	MatchWindow time.Duration `default:"5s" help:"Maximum time a candidate egress call waits for an equivalent reference call before a 502."`
 	// Descriptors supplies protobuf descriptors to both proxies.

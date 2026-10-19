@@ -6,9 +6,12 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/alecthomas/assert/v2"
+	"github.com/alecthomas/errors"
 	"github.com/alecthomas/kong"
 
 	"github.com/block/spectre/internal/logger"
@@ -19,12 +22,11 @@ func TestKongConfig(t *testing.T) {
 		name  string
 		args  []string
 		level slog.Level
-		json  bool
-		remap map[string]string
+		json  string
 	}{
 		{name: "Default", level: slog.LevelInfo},
-		{name: "DebugJSON", args: []string{"--log-level=debug", "--log-json"}, level: slog.LevelDebug, json: true},
-		{name: "Remap", args: []string{"--log-remap=msg=message", "--log-remap=time=timestamp"}, level: slog.LevelInfo, remap: map[string]string{"msg": "message", "time": "timestamp"}},
+		{name: "Debug", args: []string{"--log-level=debug"}, level: slog.LevelDebug},
+		{name: "JSON", args: []string{"--log-json=DEFAULT"}, level: slog.LevelInfo, json: "DEFAULT"},
 		{name: "Warn", args: []string{"--log-level=warn"}, level: slog.LevelWarn},
 		{name: "Error", args: []string{"--log-level=error"}, level: slog.LevelError},
 	} {
@@ -39,11 +41,44 @@ func TestKongConfig(t *testing.T) {
 			assert.NoError(t, err)
 			expected := logger.NewConfig()
 			expected.Level = test.level
-			expected.JSON = test.json
-			expected.Remap = test.remap
+			if test.json != "" {
+				expected.JSON = parseTemplate(t, test.json)
+			}
 			assert.Equal(t, expected, cli.Log)
 		})
 	}
+}
+
+func TestDefaultJSON(t *testing.T) {
+	var output bytes.Buffer
+	config := logger.NewConfig()
+	config.JSON = parseTemplate(t, "DEFAULT")
+	logger.New(config, &output).InfoContext(t.Context(), "hi")
+	var record map[string]any
+	assert.NoError(t, json.Unmarshal(output.Bytes(), &record))
+	_, hasTime := record["time"].(string)
+	assert.True(t, hasTime)
+	delete(record, "time")
+	assert.Equal(t, map[string]any{"level": "INFO", "msg": "hi"}, record)
+}
+
+// parseTemplate builds a template without Kong, as non-flag callers do.
+func parseTemplate(t *testing.T, text string) logger.JSONTemplate {
+	t.Helper()
+	template, err := logger.ParseJSONTemplate(text)
+	assert.NoError(t, err)
+	return template
+}
+
+func TestKongRejectsInvalidJSON(t *testing.T) {
+	var cli struct {
+		Log logger.Config `embed:"" prefix:"log-"`
+	}
+	parser, err := kong.New(&cli)
+	assert.NoError(t, err)
+	_, err = parser.Parse([]string{`--log-json={"message": "<message>"}`})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "--log-json")
 }
 
 func TestKongRejectsInvalidLevel(t *testing.T) {
@@ -69,7 +104,9 @@ func TestOutput(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			var output bytes.Buffer
 			config := logger.NewConfig()
-			config.JSON = test.json
+			if test.json {
+				config.JSON = parseTemplate(t, "DEFAULT")
+			}
 			log := logger.New(config, &output)
 			log.DebugContext(t.Context(), "hidden")
 			assert.Equal(t, "", output.String())
@@ -88,136 +125,107 @@ func TestOutput(t *testing.T) {
 	}
 }
 
-func TestRemap(t *testing.T) {
-	var output bytes.Buffer
-	config := logger.NewConfig()
-	config.JSON = true
-	config.Remap = map[string]string{"msg": "message", "time": "timestamp", "count": "n"}
-	log := logger.New(config, &output)
-	log.InfoContext(t.Context(), "visible", "count", 3, slog.Group("nested", "count", 4))
-	var record map[string]any
-	assert.NoError(t, json.Unmarshal(output.Bytes(), &record))
-	_, hasTime := record["timestamp"].(string)
-	assert.True(t, hasTime)
-	delete(record, "timestamp")
-	// Only top-level keys are renamed; the nested count keeps its name.
-	assert.Equal(t, map[string]any{"level": "INFO", "message": "visible", "n": float64(3), "nested": map[string]any{"count": float64(4)}}, record)
-}
-
-func TestLineWriter(t *testing.T) {
-	var output bytes.Buffer
-	writer := logger.NewLineWriter(t.Context(), timelessLogger(&output), slog.LevelWarn, logger.LineConfig{}, slog.String("subsystem", "candidate"))
-	for _, chunk := range []string{"first ", "line\r\nsecond line\n\nthird", " line"} {
-		n, err := writer.Write([]byte(chunk))
-		assert.NoError(t, err)
-		assert.Equal(t, len(chunk), n)
-	}
-	// The unterminated third line is held back until the writer is flushed.
-	assert.Equal(t, `{"level":"WARN","msg":"first line","subsystem":"candidate"}
-{"level":"WARN","msg":"second line","subsystem":"candidate"}
-`, output.String())
-	writer.Flush()
-	assert.Equal(t, `{"level":"WARN","msg":"first line","subsystem":"candidate"}
-{"level":"WARN","msg":"second line","subsystem":"candidate"}
-{"level":"WARN","msg":"third line","subsystem":"candidate"}
-`, output.String())
-}
-
-func TestLineWriterStructured(t *testing.T) {
+func TestTemplateOutput(t *testing.T) {
+	at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	for _, test := range []struct {
 		name     string
-		config   logger.LineConfig
-		line     string
-		expected map[string]any
+		template string
+		level    slog.Level
+		message  string
+		attrs    []slog.Attr
+		expected string
 	}{
-		{name: "Slog", line: `{"time":"2026-01-01T00:00:00Z","level":"DEBUG","msg":"hello","count":12345678901234567890,"nested":{"a":1}}`,
-			expected: map[string]any{"level": "DEBUG", "msg": "hello", "count": json.Number("12345678901234567890"), "nested": map[string]any{"a": json.Number("1")}}},
-		{name: "Renamed", config: logger.LineConfig{Fields: map[string]string{"message": "msg", "severity": "level", "timestamp": "time"}},
-			line:     `{"timestamp":"2026-01-01T00:00:00Z","severity":"error","message":"careful"}`,
-			expected: map[string]any{"level": "ERROR", "msg": "careful"}},
-		// Without a rename, unfamiliar names are ordinary attributes rather than guesses.
-		{name: "NotRenamed", line: `{"severity":"error","message":"careful"}`,
-			expected: map[string]any{"level": "INFO", "msg": "", "message": "careful", "severity": "error"}},
-		{name: "MappedLevel", config: logger.LineConfig{Levels: map[string]slog.Level{"fatal": slog.LevelError}},
-			line:     `{"level":"FATAL","msg":"gone"}`,
-			expected: map[string]any{"level": "ERROR", "msg": "gone"}},
-		{name: "SlogLevel", line: `{"level":"warn","msg":"careful"}`,
-			expected: map[string]any{"level": "WARN", "msg": "careful"}},
-		{name: "NumericTime", line: `{"time":1720000000000,"msg":"ready"}`,
-			expected: map[string]any{"level": "INFO", "msg": "ready"}},
-		{name: "NoMessage", line: `{"event":"started"}`,
-			expected: map[string]any{"level": "INFO", "msg": "", "event": "started"}},
-		{name: "LabelWins", line: `{"msg":"x","subsystem":"theirs"}`,
-			expected: map[string]any{"level": "INFO", "msg": "x"}},
-		{name: "Array", line: `["not","an","object"]`,
-			expected: map[string]any{"level": "INFO", "msg": `["not","an","object"]`}},
-		{name: "Malformed", line: `{"msg":"unterminated`,
-			expected: map[string]any{"level": "INFO", "msg": `{"msg":"unterminated`}},
-		{name: "Trailing", line: `{"msg":"a"} {"msg":"b"}`,
-			expected: map[string]any{"level": "INFO", "msg": `{"msg":"a"} {"msg":"b"}`}},
+		{name: "TopLevelAttrs", template: `{"ts": "<time:unixms>", "severity": "<level:debug=DEBUG,info=INFO,warn=WARNING,error=ERROR>", "message": "<msg>"}`,
+			level: slog.LevelWarn, message: "careful", attrs: []slog.Attr{slog.Int("count", 3)},
+			expected: `{"ts": 1767225600000, "severity": "WARNING", "message": "careful", "count": 3}`},
+		{name: "NestedAndConstant", template: `{"log": {"level": "<level>"}, "service": "payments", "tags": [1, "<msg>"], "context": "<attrs>"}`,
+			level: slog.LevelWarn + 2, message: "hi", attrs: []slog.Attr{slog.String("a", "x")},
+			expected: `{"log": {"level": "WARN+2"}, "service": "payments", "tags": [1, "hi"], "context": {"a": "x"}}`},
+		{name: "TemplateKeyWins", template: `{"msg": "<msg>"}`, message: "real", attrs: []slog.Attr{slog.String("msg", "attr")},
+			expected: `{"msg": "real"}`},
+		{name: "LevelBetweenNames", template: `{"level": "<level:info=INFO,error=ERROR,error+4=FATAL>"}`,
+			level: slog.LevelError + 2, expected: `{"level": "ERROR"}`},
+		{name: "LevelBelowNames", template: `{"level": "<level:info=INFO,error=ERROR>"}`,
+			level: slog.LevelDebug, expected: `{"level": "INFO"}`},
+		{name: "NumericLevel", template: `{"level": "<level:debug-4=10,debug=20,info=30,warn=40,error=50,error+4=60>"}`,
+			level: slog.LevelError + 4, expected: `{"level": 60}`},
+		{name: "DefaultTime", template: `{"time": "<time>"}`, expected: `{"time": "2026-01-01T00:00:00Z"}`},
+		{name: "LayoutTime", template: `{"time": "<time:2006-01-02>"}`, expected: `{"time": "2026-01-01"}`},
+		{name: "ValueKinds", template: `{"context": "<attrs>"}`,
+			attrs: []slog.Attr{
+				slog.Any("error", errors.New("boom")), slog.Duration("elapsed", time.Second), slog.Bool("ok", true),
+				slog.Group("empty"), slog.Group("http", slog.String("method", "GET")), slog.Group("", slog.Int("inlined", 1)),
+			},
+			expected: `{"context": {"error": "boom", "elapsed": 1000000000, "ok": true, "http": {"method": "GET"}, "inlined": 1}}`},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			var output bytes.Buffer
-			writer := logger.NewLineWriter(t.Context(), timelessLogger(&output), slog.LevelInfo, test.config, slog.String("subsystem", "candidate"))
-			_, err := writer.Write([]byte(test.line + "\n"))
-			assert.NoError(t, err)
-			decoder := json.NewDecoder(&output)
-			decoder.UseNumber()
-			var record map[string]any
-			assert.NoError(t, decoder.Decode(&record))
-			test.expected["subsystem"] = "candidate"
-			assert.Equal(t, test.expected, record)
+			config := logger.NewConfig()
+			config.JSON = parseTemplate(t, test.template)
+			config.Level = slog.LevelDebug - 8
+			record := slog.NewRecord(at, test.level, test.message, 0)
+			record.AddAttrs(test.attrs...)
+			assert.NoError(t, logger.New(config, &output).Handler().Handle(t.Context(), record))
+			assertJSON(t, test.expected, output.String())
 		})
 	}
 }
 
-// An unmapped level is kept as an attribute, which duplicates the level key in
-// JSON output; check the raw line for both rather than decoding it.
-func TestLineWriterUnknownLevel(t *testing.T) {
+func TestTemplateNoHTMLEscaping(t *testing.T) {
+	var output bytes.Buffer
+	config := logger.NewConfig()
+	config.JSON = parseTemplate(t, `{"msg": "<msg>"}`)
+	logger.New(config, &output).InfoContext(t.Context(), "<b>&")
+	assert.Equal(t, `{"msg":"<b>&"}`+"\n", output.String())
+}
+
+func TestTemplateLogger(t *testing.T) {
+	var output bytes.Buffer
+	config := logger.NewConfig()
+	config.JSON = parseTemplate(t, `{"msg": "<msg>"}`)
+	config.Level = slog.LevelInfo
+	log := logger.New(config, &output).With("request", "r1").WithGroup("http").With("method", "GET")
+	log.DebugContext(t.Context(), "hidden")
+	log.InfoContext(t.Context(), "visible", "status", 200)
+	assertJSON(t, `{"msg": "visible", "request": "r1", "http": {"method": "GET", "status": 200}}`, output.String())
+}
+
+func TestTemplateRejected(t *testing.T) {
 	for _, test := range []struct {
-		name string
-		line string
-		kept string
+		name     string
+		template string
+		error    string
 	}{
-		{name: "NonString", line: `{"level":30,"msg":"pino"}`, kept: `"level":30`},
-		{name: "Unmapped", line: `{"level":"fatal","msg":"gone"}`, kept: `"level":"fatal"`},
+		{name: "NotObject", template: `["<msg>"]`, error: "must be a JSON object"},
+		{name: "Empty", template: `{}`, error: "at least one field"},
+		{name: "UnknownPlaceholder", template: `{"msg": "<message>"}`, error: "unknown log template placeholder <message>"},
+		{name: "MessageArgument", template: `{"msg": "<msg:x>"}`, error: "<msg> takes no argument"},
+		{name: "AttrsTwice", template: `{"a": "<attrs>", "b": {"c": "<attrs>"}}`, error: "<attrs> more than once"},
+		{name: "LevelPair", template: `{"level": "<level:info>"}`, error: "must be LEVEL=NAME"},
+		{name: "LevelName", template: `{"level": "<level:loud=LOUD>"}`, error: "log template level"},
+		{name: "LevelTwice", template: `{"level": "<level:warn=WARN,warn=WARNING>"}`, error: "more than once"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			var output bytes.Buffer
-			writer := logger.NewLineWriter(t.Context(), timelessLogger(&output), slog.LevelInfo, logger.LineConfig{}, slog.String("subsystem", "candidate"))
-			_, err := writer.Write([]byte(test.line + "\n"))
-			assert.NoError(t, err)
-			assert.Contains(t, output.String(), `"level":"INFO"`)
-			assert.Contains(t, output.String(), test.kept)
+			_, err := logger.ParseJSONTemplate(test.template)
+			assert.Error(t, err)
+			assert.Contains(t, err.Error(), test.error)
 		})
 	}
 }
 
-func TestLineConfigFlags(t *testing.T) {
-	var cli struct {
-		Service logger.LineConfig `embed:"" prefix:"service-log-"`
+// assertJSON compares one JSON line with expected by value, decoding numbers exactly.
+func assertJSON(t *testing.T, expected string, actual string) {
+	t.Helper()
+	decode := func(text string) any {
+		decoder := json.NewDecoder(strings.NewReader(text))
+		decoder.UseNumber()
+		var value any
+		assert.NoError(t, decoder.Decode(&value))
+		return value
 	}
-	parser, err := kong.New(&cli)
-	assert.NoError(t, err)
-	_, err = parser.Parse([]string{"--service-log-field=message=msg", "--service-log-level=warning=warn", "--service-log-level=fatal=error"})
-	assert.NoError(t, err)
-	assert.Equal(t, logger.LineConfig{
-		Fields: map[string]string{"message": "msg"},
-		Levels: map[string]slog.Level{"warning": slog.LevelWarn, "fatal": slog.LevelError},
-	}, cli.Service)
-	_, err = parser.Parse([]string{"--service-log-level=fatal=loud"})
-	assert.Error(t, err)
+	assert.Equal(t, decode(expected), decode(actual))
 }
 
-// timelessLogger writes every level as JSON without the time key, so output is comparable.
-func timelessLogger(output io.Writer) *slog.Logger {
-	return slog.New(slog.NewJSONHandler(output, &slog.HandlerOptions{Level: slog.LevelDebug, ReplaceAttr: func(groups []string, attribute slog.Attr) slog.Attr {
-		if len(groups) == 0 && attribute.Key == slog.TimeKey {
-			return slog.Attr{}
-		}
-		return attribute
-	}}))
-}
 
 func TestLevelFiltering(t *testing.T) {
 	for _, test := range []struct {
@@ -270,7 +278,7 @@ func TestMissingContextLogger(t *testing.T) {
 func TestTaggedEvent(t *testing.T) {
 	var output bytes.Buffer
 	config := logger.NewConfig()
-	config.JSON = true
+	config.JSON = parseTemplate(t, "DEFAULT")
 	log := logger.Tagged(logger.New(config, &output))
 	log.InfoContext(t.Context(), "visible", "event", logger.EventQuarantine)
 	var record map[string]any

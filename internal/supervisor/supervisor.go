@@ -22,8 +22,9 @@ import (
 	"github.com/block/spectre/internal/status"
 )
 
-// subsystemKey is the log attribute naming the supervisor, proxy or service that wrote a line.
-const subsystemKey = "subsystem"
+// subsystemKey labels the component that wrote a line, in SPECTRE's logs and the
+// services' passed-through ones. The namespace keeps it clear of services' own fields.
+const subsystemKey = "spectre.subsystem"
 
 // roles name the service leaves and their wiring.
 const (
@@ -350,16 +351,10 @@ func (s *Supervisor) serviceProcess(ctx context.Context, role string, egressURL 
 	}
 	cmd.Env = append(cmd.Environ(), "SPECTRE_LISTEN="+listen, "SPECTRE_EGRESS="+egressURL)
 	// Only stdout carries the service's logs; stderr passes through untouched.
-	stdout := s.serviceLogs(ctx, role)
+	stdout := newServiceLogWriter(os.Stdout, role)
 	cmd.Stdout = stdout
 	cmd.Stderr = os.Stderr
 	return newManagedProcess(role, cmd, stdout)
-}
-
-// serviceLogs logs a service's stdout through the supervisor's log, tagged with
-// the role so its lines are not mistaken for SPECTRE's own.
-func (s *Supervisor) serviceLogs(ctx context.Context, role string) *logger.LineWriter {
-	return logger.NewLineWriter(ctx, logger.FromContext(ctx), slog.LevelInfo, s.config.ServiceLogs, slog.String(subsystemKey, role))
 }
 
 // command builds a child command that terminates gracefully on context

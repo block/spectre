@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"io"
 	"log/slog"
 	"net"
 	"os"
@@ -42,42 +41,8 @@ func TestServiceProcessReference(t *testing.T) {
 	assert.Equal(t, []string{"/bin/sh", "-c", "run-reference --port 2"}, process.command().Args)
 	assert.True(t, slices.Contains(process.command().Env, "SPECTRE_LISTEN=unix:/sockets/reference.sock"))
 	assert.True(t, slices.Contains(process.command().Env, "SPECTRE_EGRESS=http+unix:/sockets/egress-reference.sock"))
+	assert.Equal(t, newServiceLogWriter(os.Stdout, roleReference), process.command().Stdout.(*serviceLogWriter))
 	assert.True(t, process.command().Stderr == os.Stderr, "service stderr is not passed through")
-}
-
-func TestServiceOutputLabelled(t *testing.T) {
-	for _, test := range []struct {
-		name     string
-		line     string
-		expected map[string]any
-	}{
-		{name: "Text", line: "service line", expected: map[string]any{"level": "INFO", "msg": "service line"}},
-		// Labels override a service's own subsystem so its lines stay attributable.
-		{name: "Structured", line: `{"level":"warn","msg":"disk full","subsystem":"db","path":"/data"}`,
-			expected: map[string]any{"level": "WARN", "msg": "disk full", "path": "/data"}},
-		{name: "Adapted", line: `{"severity":"fatal","message":"disk full"}`,
-			expected: map[string]any{"level": "ERROR", "msg": "disk full"}},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			var output bytes.Buffer
-			ctx := logger.WithLogger(t.Context(), slog.New(slog.NewJSONHandler(&output, nil)))
-			config := testConfig(t)
-			config.ServiceLogs = logger.LineConfig{
-				Fields: map[string]string{"message": "msg", "severity": "level"},
-				Levels: map[string]slog.Level{"fatal": slog.LevelError},
-			}
-			s, err := New(ctx, config)
-			assert.NoError(t, err)
-			process := s.serviceProcess(ctx, roleCandidate, "http+unix:/sockets/egress-candidate.sock", "unix:/sockets/candidate.sock", false)
-			_, err = io.WriteString(process.command().Stdout, test.line+"\n")
-			assert.NoError(t, err)
-			var record map[string]any
-			assert.NoError(t, json.Unmarshal(output.Bytes(), &record))
-			delete(record, "time")
-			test.expected["subsystem"] = roleCandidate
-			assert.Equal(t, test.expected, record)
-		})
-	}
 }
 
 func TestServiceProcessCandidateSandboxed(t *testing.T) {
@@ -164,7 +129,7 @@ func TestLogsTagSubsystem(t *testing.T) {
 			ctx := logger.WithLogger(t.Context(), slog.New(slog.NewJSONHandler(&output, nil)))
 			test.log(t, ctx)
 			var record struct {
-				Subsystem string `json:"subsystem"`
+				Subsystem string `json:"spectre.subsystem"`
 			}
 			assert.NoError(t, json.Unmarshal(output.Bytes(), &record))
 			assert.Equal(t, test.subsystem, record.Subsystem)

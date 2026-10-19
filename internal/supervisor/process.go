@@ -4,20 +4,18 @@ import (
 	"os/exec"
 
 	"github.com/alecthomas/errors"
-
-	"github.com/block/spectre/internal/logger"
 )
 
 // managedProcess is one child process the supervisor runs and stops.
 type managedProcess struct {
 	name   string
 	cmd    *exec.Cmd
-	stdout *logger.LineWriter
+	stdout *serviceLogWriter
 }
 
-// newManagedProcess wraps cmd. stdout is the writer logging its output, so a
-// trailing partial line is flushed once it exits.
-func newManagedProcess(name string, cmd *exec.Cmd, stdout *logger.LineWriter) *managedProcess {
+// newManagedProcess wraps cmd. stdout is the writer passing its output through, so
+// a trailing partial line is flushed once it exits.
+func newManagedProcess(name string, cmd *exec.Cmd, stdout *serviceLogWriter) *managedProcess {
 	return &managedProcess{name: name, cmd: cmd, stdout: stdout}
 }
 
@@ -41,9 +39,8 @@ func (p *managedProcess) pid() int {
 	return p.cmd.Process.Pid
 }
 
-// wait blocks until the process exits and its output has been logged.
+// wait blocks until the process exits and its output has been passed through.
 func (p *managedProcess) wait() error {
 	err := p.cmd.Wait()
-	p.stdout.Flush()
-	return errors.Wrapf(err, "%s exited", p.name)
+	return errors.Wrapf(errors.Join(err, p.stdout.Flush()), "%s exited", p.name)
 }

@@ -15,10 +15,8 @@ import (
 type Config struct {
 	// Level is the minimum severity written to the log.
 	Level slog.Level `default:"info" help:"Minimum log level (debug, info, warn, error)."`
-	// JSON enables JSON output instead of text output.
-	JSON bool `help:"Write logs as JSON."`
-	// Remap renames top-level JSON fields for log pipelines that expect other names.
-	Remap map[string]string `placeholder:"OLD=NEW" help:"Rename a top-level JSON log field, e.g. msg=message or time=timestamp. Repeat for each field."`
+	// JSON shapes JSON output like the fronted service's logs. Unset writes text.
+	JSON JSONTemplate `placeholder:"TEMPLATE" help:"Write logs as JSON shaped by this template, so they match the service SPECTRE stands in for. DEFAULT uses '{\"time\": \"<time>\", \"level\": \"<level>\", \"msg\": \"<msg>\"}'. Placeholders are <msg>, <level> or <level:LEVEL=NAME,...>, <time> or <time:FORMAT>, and <attrs>; without <attrs>, attributes go at the top level."`
 }
 
 // NewConfig returns the default logging configuration: info-level text output.
@@ -32,8 +30,8 @@ func NewConfig() Config {
 
 // New constructs a logger that writes to output using the supplied configuration.
 func New(config Config, output io.Writer) *slog.Logger {
-	if config.JSON {
-		return slog.New(slog.NewJSONHandler(output, &slog.HandlerOptions{Level: config.Level, ReplaceAttr: remapAttr(config.Remap)}))
+	if config.JSON.enabled() {
+		return slog.New(newTemplateHandler(&config.JSON, config.Level, output))
 	}
 	return slog.New(tint.NewTextHandler(output, &tint.Options{
 		Level: config.Level,
@@ -45,20 +43,6 @@ func New(config Config, output io.Writer) *slog.Logger {
 			return attribute
 		},
 	}))
-}
-
-// remapAttr renames top-level attributes, including the built-in time, level and
-// message keys. Attributes inside groups keep their names.
-func remapAttr(remap map[string]string) func(groups []string, attribute slog.Attr) slog.Attr {
-	return func(groups []string, attribute slog.Attr) slog.Attr {
-		if len(groups) > 0 {
-			return attribute
-		}
-		if name, ok := remap[attribute.Key]; ok {
-			attribute.Key = name
-		}
-		return attribute
-	}
 }
 
 // Component is the component tag value shared by every SPECTRE proxy log line,

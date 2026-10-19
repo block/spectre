@@ -9,19 +9,28 @@ matching candidate calls. `spectre gen` generates the TypeScript schema
 declarations used for comparison.
 
 Logs default to info-level, colorized text on stderr. Use `--log-level=debug|info|warn|error`
-to change the minimum level and `--log-json` for JSON output. `--log-remap OLD=NEW` renames a
-top-level JSON field for pipelines that expect other names, for example
-`--log-remap msg=message --log-remap time=timestamp`.
+to change the minimum level.
 
-Each line the candidate and reference write to stdout is logged as a record tagged
-`subsystem=candidate` or `subsystem=reference`, so their logs are distinguishable from
-SPECTRE's own lines, which carry `subsystem=supervisor`, `ingress` or `egress`. A line
-that is a JSON object is passed through with its fields as attributes and its `msg`,
-`level` and `time` lifted into the record. If a service uses other field or level names,
-map them with `--service-log-field` and `--service-log-level`, for example
-`--service-log-field message=msg --service-log-field severity=level
---service-log-level warning=warn --service-log-level fatal=error`. Stderr passes through
-unchanged.
+`--log-json` writes JSON logs shaped by a JSON template, so SPECTRE's own logs can look like
+the service it stands in for. `--log-json=DEFAULT` uses
+`{"time": "<time>", "level": "<level>", "msg": "<msg>"}`. Placeholders are `<msg>`,
+`<level>`, `<time>` and `<attrs>`; other values are written as given. Without `<attrs>`,
+attributes go at the top level:
+
+```sh
+--log-json='{"ts": "<time:unixms>", "severity": "<level:debug=DEBUG,info=INFO,warn=WARNING,error=ERROR>", "message": "<msg>"}'
+```
+
+- `<level:LEVEL=NAME,...>` maps slog levels to the service's names. A level between two
+  names uses the lower one, and names that are all integers are written as numbers.
+- `<time:FORMAT>` takes a Go time layout or `rfc3339`, `rfc3339nano` (the default), `unix`,
+  `unixms` or `unixns`.
+
+The candidate's and reference's stdout passes through with a label added, and stderr
+passes through unchanged. A JSON object line gains a leading
+`"spectre.subsystem": "candidate"` or `"reference"` member and is otherwise left as
+written; any other line is prefixed with `candidate: ` or `reference: `. SPECTRE's own
+lines carry `spectre.subsystem` set to `supervisor`, `ingress` or `egress`.
 
 `spectre run` accepts `--config=FILE` to load flag values from a TOML file. Keys are
 flag names without the leading dashes, and command-line flags take precedence:

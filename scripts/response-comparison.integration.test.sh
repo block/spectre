@@ -9,11 +9,11 @@ escape=$(printf '\033')
 
 # Proctor prefixes each line with a coloured, right-aligned process name and a bar.
 # The proxies and services share the supervisor's output, so their JSON records are
-# selected by the subsystem or revision each one logs. Other lines are skipped.
+# selected by the spectre.subsystem or revision each one logs. Other lines are skipped.
 process_log() {
 	# shellcheck disable=SC2016 # $process is a jq variable, bound with --arg.
 	case $1 in
-	ingress | egress) label=supervisor selector='.subsystem == $process' ;;
+	ingress | egress) label=supervisor selector='.["spectre.subsystem"] == $process' ;;
 	candidate) label=supervisor selector='.revision == "candidate"' ;;
 	*) label=$1 selector=true ;;
 	esac
