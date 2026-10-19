@@ -55,11 +55,18 @@ func TestServiceOutputLabelled(t *testing.T) {
 		// Labels override a service's own subsystem so its lines stay attributable.
 		{name: "Structured", line: `{"level":"warn","msg":"disk full","subsystem":"db","path":"/data"}`,
 			expected: map[string]any{"level": "WARN", "msg": "disk full", "path": "/data"}},
+		{name: "Adapted", line: `{"severity":"fatal","message":"disk full"}`,
+			expected: map[string]any{"level": "ERROR", "msg": "disk full"}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			var output bytes.Buffer
 			ctx := logger.WithLogger(t.Context(), slog.New(slog.NewJSONHandler(&output, nil)))
-			s, err := New(ctx, testConfig(t))
+			config := testConfig(t)
+			config.ServiceLogs = logger.LineConfig{
+				Fields: map[string]string{"message": "msg", "severity": "level"},
+				Levels: map[string]slog.Level{"fatal": slog.LevelError},
+			}
+			s, err := New(ctx, config)
 			assert.NoError(t, err)
 			process := s.serviceProcess(ctx, roleCandidate, "http+unix:/sockets/egress-candidate.sock", "unix:/sockets/candidate.sock", false)
 			_, err = io.WriteString(process.command().Stdout, test.line+"\n")

@@ -16,8 +16,11 @@ top-level JSON field for pipelines that expect other names, for example
 Each line the candidate and reference write to stdout is logged as a record tagged
 `subsystem=candidate` or `subsystem=reference`, so their logs are distinguishable from
 SPECTRE's own lines, which carry `subsystem=supervisor`, `ingress` or `egress`. A line
-that is a JSON object is passed through with its fields as attributes and its
-`msg`/`message` and `level`/`severity` lifted into the record. Stderr passes through
+that is a JSON object is passed through with its fields as attributes and its `msg`,
+`level` and `time` lifted into the record. If a service uses other field or level names,
+map them with `--service-log-field` and `--service-log-level`, for example
+`--service-log-field message=msg --service-log-field severity=level
+--service-log-level warning=warn --service-log-level fatal=error`. Stderr passes through
 unchanged.
 
 `spectre run` accepts `--config=FILE` to load flag values from a TOML file. Keys are

@@ -5,10 +5,17 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
-	"maps"
-	"slices"
 	"strings"
 )
+
+// LineConfig describes how a child process's JSON log lines map onto slog's
+// names, so SPECTRE adapts to the process rather than guessing.
+type LineConfig struct {
+	// Fields renames a member to slog's name before msg, level and time are lifted.
+	Fields map[string]string `name:"field" placeholder:"OLD=NEW" help:"Rename a JSON log field the process writes to slog's name before it is logged, e.g. message=msg, severity=level or timestamp=time. Repeat for each field."`
+	// Levels maps the process's level names onto slog levels.
+	Levels map[string]slog.Level `name:"level" placeholder:"NAME=LEVEL" help:"Map a level name the process writes onto debug, info, warn or error, e.g. warning=warn or fatal=error. slog's own names are always recognised. Repeat for each name."`
+}
 
 // LineWriter logs each line written to it as one record, so a child process's
 // output joins the structured log stream. JSON object lines pass through structured.
@@ -16,14 +23,15 @@ type LineWriter struct {
 	ctx     context.Context
 	log     *slog.Logger
 	level   slog.Level
+	config  LineConfig
 	labels  []slog.Attr
 	pending []byte
 }
 
-// NewLineWriter logs plain lines at level and attaches labels to every record,
-// overriding same-named JSON members. Give each stream its own writer; it is not concurrency safe.
-func NewLineWriter(ctx context.Context, log *slog.Logger, level slog.Level, labels ...slog.Attr) *LineWriter {
-	return &LineWriter{ctx: ctx, log: log.With(attrsToAny(labels)...), level: level, labels: labels}
+// NewLineWriter logs plain lines at level and interprets JSON lines with config.
+// labels are attached to every record and override same-named members.
+func NewLineWriter(ctx context.Context, log *slog.Logger, level slog.Level, config LineConfig, labels ...slog.Attr) *LineWriter {
+	return &LineWriter{ctx: ctx, log: log.With(attrsToAny(labels)...), level: level, config: config, labels: labels}
 }
 
 // Write buffers data and logs every complete line it contains.
@@ -63,15 +71,27 @@ func (w *LineWriter) emit(line []byte) {
 // emitStructured logs a parsed JSON line, lifting its message and level into the
 // record and dropping its timestamp in favour of this process's own.
 func (w *LineWriter) emitStructured(fields map[string]any) {
-	message := takeString(fields, slog.MessageKey, "message")
-	level := parseLevel(takeString(fields, slog.LevelKey, "severity"), w.level)
-	takeString(fields, slog.TimeKey, "timestamp", "ts")
+	for old, name := range w.config.Fields {
+		if value, ok := fields[old]; ok {
+			delete(fields, old)
+			fields[name] = value
+		}
+	}
+	message := takeString(fields, slog.MessageKey)
+	level := w.level
+	if name, ok := fields[slog.LevelKey].(string); ok {
+		if parsed, known := w.parseLevel(name); known {
+			level = parsed
+			delete(fields, slog.LevelKey)
+		}
+	}
+	takeString(fields, slog.TimeKey)
 	for _, label := range w.labels {
 		delete(fields, label.Key)
 	}
 	attrs := make([]slog.Attr, 0, len(fields))
-	for _, key := range slices.Sorted(maps.Keys(fields)) {
-		attrs = append(attrs, slog.Any(key, fields[key]))
+	for key, value := range fields {
+		attrs = append(attrs, slog.Any(key, value))
 	}
 	w.log.LogAttrs(w.ctx, level, message, attrs...)
 }
@@ -90,41 +110,28 @@ func parseObject(line string) (fields map[string]any, ok bool) {
 	return fields, true
 }
 
-// takeString removes the first of keys present in fields and returns it when it
-// is a string. Non-string values are left in place as ordinary attributes.
-func takeString(fields map[string]any, keys ...string) string {
-	for _, key := range keys {
-		value, ok := fields[key]
-		if !ok {
-			continue
-		}
-		if text, isString := value.(string); isString {
-			delete(fields, key)
-			return text
-		}
-		return ""
+// takeString removes key from fields and returns its value when it is a string.
+// A non-string value is left in place as an ordinary attribute.
+func takeString(fields map[string]any, key string) string {
+	text, ok := fields[key].(string)
+	if ok {
+		delete(fields, key)
 	}
-	return ""
+	return text
 }
 
-// parseLevel maps a service's level name onto a slog level, accepting the common
-// synonyms slog does not know. Unrecognised names use fallback.
-func parseLevel(name string, fallback slog.Level) slog.Level {
-	switch strings.ToLower(name) {
-	case "":
-		return fallback
-	case "trace":
-		return slog.LevelDebug
-	case "warning":
-		return slog.LevelWarn
-	case "fatal", "panic", "critical":
-		return slog.LevelError
+// parseLevel maps the process's level name onto a slog level using the configured
+// names, then slog's own. Both match case-insensitively.
+func (w *LineWriter) parseLevel(name string) (level slog.Level, known bool) {
+	for configured, mapped := range w.config.Levels {
+		if strings.EqualFold(configured, name) {
+			return mapped, true
+		}
 	}
-	var level slog.Level
 	if err := level.UnmarshalText([]byte(name)); err != nil {
-		return fallback
+		return 0, false
 	}
-	return level
+	return level, true
 }
 
 func attrsToAny(attrs []slog.Attr) []any {

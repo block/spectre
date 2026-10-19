@@ -17,8 +17,10 @@ A plain text line is the record's message, logged at info level.
 A line that is a JSON object is passed through structured, so a log pipeline can index the service's own fields:
 
 - Its members become top-level attributes of the record.
-- A string `msg` or `message` member becomes the record's message. A string `level` or `severity` member sets the record's level; `trace`, `warning`, `fatal`, `panic` and `critical` map onto the nearest slog level, and unrecognised names fall back to info.
-- A `time`, `timestamp` or `ts` member is dropped in favour of SPECTRE's own timestamp, which avoids two time fields after remapping.
+- `--service-log-field OLD=NEW` renames a member to slog's name first, for example `message=msg` or `severity=level`. SPECTRE does not guess which of a service's fields hold its message or level; without a rename, only slog's own names are recognised.
+- A string `msg` member becomes the record's message.
+- A string `level` member sets the record's level. `--service-log-level NAME=LEVEL` maps the service's level names onto slog's, for example `warning=warn` or `fatal=error`; slog's own names are always recognised. An unmapped name leaves the member in place as an attribute and the record logs at info, so the service's level is visible rather than guessed.
+- A `time` member is dropped in favour of SPECTRE's own timestamp, which avoids two time fields after remapping.
 - The `subsystem` label overrides a same-named member, so a line stays attributable to the service that wrote it.
 
 Anything else, including JSON arrays and malformed objects, is logged as plain text.

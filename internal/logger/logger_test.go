@@ -106,7 +106,7 @@ func TestRemap(t *testing.T) {
 
 func TestLineWriter(t *testing.T) {
 	var output bytes.Buffer
-	writer := logger.NewLineWriter(t.Context(), timelessLogger(&output), slog.LevelWarn, slog.String("subsystem", "candidate"))
+	writer := logger.NewLineWriter(t.Context(), timelessLogger(&output), slog.LevelWarn, logger.LineConfig{}, slog.String("subsystem", "candidate"))
 	for _, chunk := range []string{"first ", "line\r\nsecond line\n\nthird", " line"} {
 		n, err := writer.Write([]byte(chunk))
 		assert.NoError(t, err)
@@ -126,36 +126,85 @@ func TestLineWriter(t *testing.T) {
 func TestLineWriterStructured(t *testing.T) {
 	for _, test := range []struct {
 		name     string
+		config   logger.LineConfig
 		line     string
-		expected string
+		expected map[string]any
 	}{
 		{name: "Slog", line: `{"time":"2026-01-01T00:00:00Z","level":"DEBUG","msg":"hello","count":12345678901234567890,"nested":{"a":1}}`,
-			expected: `{"level":"DEBUG","msg":"hello","subsystem":"candidate","count":12345678901234567890,"nested":{"a":1}}`},
-		{name: "Synonyms", line: `{"timestamp":"2026-01-01T00:00:00Z","severity":"warning","message":"careful"}`,
-			expected: `{"level":"WARN","msg":"careful","subsystem":"candidate"}`},
-		{name: "Fatal", line: `{"level":"fatal","msg":"gone"}`,
-			expected: `{"level":"ERROR","msg":"gone","subsystem":"candidate"}`},
-		{name: "UnknownLevel", line: `{"level":30,"msg":"pino"}`,
-			expected: `{"level":"INFO","msg":"pino","subsystem":"candidate","level":30}`},
+			expected: map[string]any{"level": "DEBUG", "msg": "hello", "count": json.Number("12345678901234567890"), "nested": map[string]any{"a": json.Number("1")}}},
+		{name: "Renamed", config: logger.LineConfig{Fields: map[string]string{"message": "msg", "severity": "level", "timestamp": "time"}},
+			line:     `{"timestamp":"2026-01-01T00:00:00Z","severity":"error","message":"careful"}`,
+			expected: map[string]any{"level": "ERROR", "msg": "careful"}},
+		// Without a rename, unfamiliar names are ordinary attributes rather than guesses.
+		{name: "NotRenamed", line: `{"severity":"error","message":"careful"}`,
+			expected: map[string]any{"level": "INFO", "msg": "", "message": "careful", "severity": "error"}},
+		{name: "MappedLevel", config: logger.LineConfig{Levels: map[string]slog.Level{"fatal": slog.LevelError}},
+			line:     `{"level":"FATAL","msg":"gone"}`,
+			expected: map[string]any{"level": "ERROR", "msg": "gone"}},
+		{name: "SlogLevel", line: `{"level":"warn","msg":"careful"}`,
+			expected: map[string]any{"level": "WARN", "msg": "careful"}},
 		{name: "NoMessage", line: `{"event":"started"}`,
-			expected: `{"level":"INFO","msg":"","subsystem":"candidate","event":"started"}`},
+			expected: map[string]any{"level": "INFO", "msg": "", "event": "started"}},
 		{name: "LabelWins", line: `{"msg":"x","subsystem":"theirs"}`,
-			expected: `{"level":"INFO","msg":"x","subsystem":"candidate"}`},
+			expected: map[string]any{"level": "INFO", "msg": "x"}},
 		{name: "Array", line: `["not","an","object"]`,
-			expected: `{"level":"INFO","msg":"[\"not\",\"an\",\"object\"]","subsystem":"candidate"}`},
+			expected: map[string]any{"level": "INFO", "msg": `["not","an","object"]`}},
 		{name: "Malformed", line: `{"msg":"unterminated`,
-			expected: `{"level":"INFO","msg":"{\"msg\":\"unterminated","subsystem":"candidate"}`},
+			expected: map[string]any{"level": "INFO", "msg": `{"msg":"unterminated`}},
 		{name: "Trailing", line: `{"msg":"a"} {"msg":"b"}`,
-			expected: `{"level":"INFO","msg":"{\"msg\":\"a\"} {\"msg\":\"b\"}","subsystem":"candidate"}`},
+			expected: map[string]any{"level": "INFO", "msg": `{"msg":"a"} {"msg":"b"}`}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			var output bytes.Buffer
-			writer := logger.NewLineWriter(t.Context(), timelessLogger(&output), slog.LevelInfo, slog.String("subsystem", "candidate"))
+			writer := logger.NewLineWriter(t.Context(), timelessLogger(&output), slog.LevelInfo, test.config, slog.String("subsystem", "candidate"))
 			_, err := writer.Write([]byte(test.line + "\n"))
 			assert.NoError(t, err)
-			assert.Equal(t, test.expected+"\n", output.String())
+			decoder := json.NewDecoder(&output)
+			decoder.UseNumber()
+			var record map[string]any
+			assert.NoError(t, decoder.Decode(&record))
+			test.expected["subsystem"] = "candidate"
+			assert.Equal(t, test.expected, record)
 		})
 	}
+}
+
+// An unmapped level is kept as an attribute, which duplicates the level key in
+// JSON output; check the raw line for both rather than decoding it.
+func TestLineWriterUnknownLevel(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		line string
+		kept string
+	}{
+		{name: "NonString", line: `{"level":30,"msg":"pino"}`, kept: `"level":30`},
+		{name: "Unmapped", line: `{"level":"fatal","msg":"gone"}`, kept: `"level":"fatal"`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var output bytes.Buffer
+			writer := logger.NewLineWriter(t.Context(), timelessLogger(&output), slog.LevelInfo, logger.LineConfig{}, slog.String("subsystem", "candidate"))
+			_, err := writer.Write([]byte(test.line + "\n"))
+			assert.NoError(t, err)
+			assert.Contains(t, output.String(), `"level":"INFO"`)
+			assert.Contains(t, output.String(), test.kept)
+		})
+	}
+}
+
+func TestLineConfigFlags(t *testing.T) {
+	var cli struct {
+		Service logger.LineConfig `embed:"" prefix:"service-log-"`
+	}
+	parser, err := kong.New(&cli)
+	assert.NoError(t, err)
+	_, err = parser.Parse([]string{"--service-log-field=message=msg", "--service-log-level=warning=warn", "--service-log-level=fatal=error"})
+	assert.NoError(t, err)
+	assert.Equal(t, logger.LineConfig{
+		Fields: map[string]string{"message": "msg"},
+		Levels: map[string]slog.Level{"warning": slog.LevelWarn, "fatal": slog.LevelError},
+	}, cli.Service)
+	_, err = parser.Parse([]string{"--service-log-level=fatal=loud"})
+	assert.Error(t, err)
 }
 
 // timelessLogger writes every level as JSON without the time key, so output is comparable.
