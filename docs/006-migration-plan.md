@@ -1,6 +1,6 @@
 # Migration plan
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Problem
 
