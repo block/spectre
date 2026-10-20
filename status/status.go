@@ -84,17 +84,25 @@ func printQuarantineReasons(report QuarantineReport) {
 	}
 }
 
-// printCommit resolves and prints the git commit for one mirror, falling back
-// to the image digest on a resolver error or an unresolved commit.
+// printCommit prints the git commit and image for one mirror.
 func printCommit(ctx context.Context, platform Platform, mirror MirrorState) {
+	fmt.Printf("    commit: %s\n", commitText(ctx, platform, mirror))
+	fmt.Printf("    image: %s\n", dim(string(mirror.Image)))
+}
+
+// commitText returns the mirror's own commit, else its image's resolved commit,
+// falling back to the image digest on a resolver error or an unresolved commit.
+func commitText(ctx context.Context, platform Platform, mirror MirrorState) string {
+	if mirror.Commit != "" {
+		return green(string(mirror.Commit))
+	}
 	commit, err := platform.ResolveCommit(ctx, mirror.Image)
 	switch {
 	case err != nil:
-		fmt.Printf("    commit: %s\n", red(fmt.Sprintf("unknown (resolve error: %v, digest %s)", err, mirror.Digest)))
+		return red(fmt.Sprintf("unknown (resolve error: %v, digest %s)", err, mirror.Digest))
 	case commit == "":
-		fmt.Printf("    commit: %s\n", yellow(fmt.Sprintf("unknown (digest %s)", mirror.Digest)))
+		return yellow(fmt.Sprintf("unknown (digest %s)", mirror.Digest))
 	default:
-		fmt.Printf("    commit: %s\n", green(string(commit)))
+		return green(string(commit))
 	}
-	fmt.Printf("    image: %s\n", dim(string(mirror.Image)))
 }
