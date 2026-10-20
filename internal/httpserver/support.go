@@ -16,6 +16,7 @@ func Supports() []boundary.Support {
 				Required:    true,
 				Description: "Each route the node handles.",
 				Key:         "<METHOD> /<path>",
+				Unique:      true,
 			}},
 		},
 		{
