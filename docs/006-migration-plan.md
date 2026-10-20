@@ -152,14 +152,6 @@ The plan line reports why instead of a summary when:
 
 None of these fail the report, like the other per-environment errors.
 
-## Consequences
-
-- IO kinds get their own package below the script loader and the engine. Both import it, so neither owns a private copy of directions or protocols.
-- The script API declaration is generated from the binary's supported kinds, so a custom binary's declaration matches its protocols.
-- Adding a protocol server without reporting its kinds makes its scripts fail at load, so tests catch the omission.
-- The plan is a new package with its own config, validation, and readiness rules, plus a `plan` command beside the existing ones.
-- `spectre status` must run inside the service's git repository, with git available, to report plans. Elsewhere it reports the plan as unavailable and still prints the rest.
-
 ## Open questions
 
 - Should `plan validate` take a checkout of the reference and fail when a source file matches no node, or more than one?
