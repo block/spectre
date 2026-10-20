@@ -150,18 +150,18 @@ Code shared by more than one other node that performs no IO, such as shared doma
 
 Code that receives HTTP requests to the service, including gRPC and Connect: route registrations, controllers, handlers, and service implementations. The service's routes and RPC methods are the entry points SPECTRE compares, so every request path starts at one of these nodes.
 
-Settings:
+Write it as the table `[nodes.<id>.ingress.http]`, with these settings:
 
-- `routes` (required): each route the node handles, as `<METHOD> /<path>`. A gRPC or Connect method is `POST /<package>.<Service>/<Method>`.
+- `routes` (required): Each route the node handles, as `<METHOD> /<path>`. A gRPC or Connect method is `POST /<package>.<Service>/<Method>`.
 
 ## egress[http]
 
 Code that sends HTTP requests to another service, including gRPC and Connect: API clients, generated stubs and the code that configures them, and code that builds requests or reads their responses. SPECTRE pairs these requests and replays the reference's responses to the candidate.
 
-No settings.
+Write it as the empty table `[nodes.<id>.egress.http]`.
 ```
 
-Each description says what the node type covers, how to recognise it in source code, and what SPECTRE does with it, followed by the settings a node of that type takes. `library` is described by the plan itself, since no protocol server owns it. It has no table, because a library is a node without IO kinds.
+Each description says what the node type covers, how to recognise it in source code, and what SPECTRE does with it, followed by the table a node of that type uses and the settings it takes. `library` is described by the plan itself, since no protocol server owns it. It has no table, because a library is a node without IO kinds.
 
 ### Status
 
