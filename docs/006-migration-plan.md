@@ -140,26 +140,34 @@ spectre state migrated <node>  # mark a node migrated
 - Marking a node that is already migrated succeeds without changing the file, so an agent can safely retry.
 - It does not commit. The agent commits the plan change with the code change it records.
 
-`spectre state types` is how module extraction discovers the vocabulary. An agent that writes the plan takes its output as input instead of a fixed list, so the prompt stays correct for custom binaries. The output is Markdown, and JSON on request:
+`spectre state types` is how module extraction discovers the vocabulary. An agent that writes the plan takes its output as input instead of a fixed list, so the prompt stays correct for custom binaries. The output is indented text, with colored headings when printed to a terminal, and JSON on request:
 
-```markdown
-## library
+```
+library
+  Code shared by more than one other node that performs no IO, such as shared
+  domain types, validation, calculations, and helpers. Code that only one node
+  uses belongs to that node, not to a library. Shared code that does any IO is
+  not a library either; it is a node with the IO kinds it performs. A library
+  node has no IO kind tables.
 
-Code shared by more than one other node that performs no IO, such as shared domain types, validation, calculations, and helpers. Code that only one node uses belongs to that node, not to a library. Shared code that does any IO is not a library either; it is a node with the IO kinds it performs. A library node has no IO kind tables.
+ingress[http] [nodes.<id>.ingress.http]
+  Code that receives HTTP requests to the service, including gRPC and Connect:
+  route registrations, controllers, handlers, and service implementations. The
+  service's routes and RPC methods are the entry points SPECTRE compares, so
+  every request path starts at one of these nodes.
 
-## ingress[http]
+  routes (required)
+    Each route the node handles, as <METHOD> /<path>. A gRPC or Connect method
+    is POST /<package>.<Service>/<Method>. List every route the service serves:
+    a request to a route no node lists quarantines the candidate.
 
-Code that receives HTTP requests to the service, including gRPC and Connect: route registrations, controllers, handlers, and service implementations. The service's routes and RPC methods are the entry points SPECTRE compares, so every request path starts at one of these nodes.
+egress[http] [nodes.<id>.egress.http]
+  Code that sends HTTP requests to another service, including gRPC and Connect:
+  API clients, generated stubs and the code that configures them, and code that
+  builds requests or reads their responses. SPECTRE pairs these requests and
+  replays the reference's responses to the candidate.
 
-Write it as the table `[nodes.<id>.ingress.http]`, with these settings:
-
-- `routes` (required): Each route the node handles, as `<METHOD> /<path>`. A gRPC or Connect method is `POST /<package>.<Service>/<Method>`. List every route the service serves: a request to a route no node lists quarantines the candidate.
-
-## egress[http]
-
-Code that sends HTTP requests to another service, including gRPC and Connect: API clients, generated stubs and the code that configures them, and code that builds requests or reads their responses. SPECTRE pairs these requests and replays the reference's responses to the candidate.
-
-Write it as the empty table `[nodes.<id>.egress.http]`.
+  No settings.
 ```
 
 Each description says what the node type covers, how to recognise it in source code, and what SPECTRE does with it, followed by the table a node of that type uses and the settings it takes. `library` is described by the plan itself, since no protocol server owns it. It has no table, because a library is a node without IO kinds.
