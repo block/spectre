@@ -42,6 +42,8 @@ When custom binaries can add protocols, which ADR 004 lists as a planned extensi
 
 ### Plan file
 
+SPECTRE does not build the plan itself. An external agent writes it from the service's source code, using the node types and descriptions that `spectre plan types` prints.
+
 `spectre/plan.toml` sits beside `spectre/migration.toml`. The migration config describes where the mirror runs and changes rarely. The plan changes at every migration step and is often written by an LLM, so it is a separate file.
 
 Each node is a table under `nodes`, keyed by a kebab-case ID, so TOML itself rejects duplicate IDs.
