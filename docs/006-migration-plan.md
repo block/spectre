@@ -10,7 +10,7 @@ The kinds of IO a module performs also decide how SPECTRE verifies it. Those kin
 
 ## Goals
 
-- A `spectre/plan.toml` file that lists a service's modules as nodes, their types, and the nodes they depend on.
+- A `spectre/state.toml` file that lists a service's modules as nodes, their types, and the nodes they depend on.
 - Node types are `library` or an IO kind written `<direction>[<protocol>]`, such as `ingress[http]` or `egress[http]`. A node can have several.
 - The IO kinds are not hard-coded in the plan. They come from the same abstraction the proxies register their protocols with, so a protocol a custom binary adds becomes a valid node type too.
 - Ingress mirrors only the routes of migrated nodes, so a partly migrated candidate is compared only on what it implements.
@@ -44,9 +44,9 @@ When custom binaries can add protocols, which ADR 004 lists as a planned extensi
 
 ### Plan file
 
-SPECTRE does not build the plan itself. An external agent writes it from the service's source code, using the node types and descriptions that `spectre plan types` prints.
+SPECTRE does not build the plan itself. An external agent writes it from the service's source code, using the node types and descriptions that `spectre state types` prints.
 
-`spectre/plan.toml` sits beside `spectre/migration.toml`. The migration config describes where the mirror runs and changes rarely. The plan changes at every migration step and is often written by an LLM, so it is a separate file.
+`spectre/state.toml` sits beside `spectre/migration.toml`. The migration config describes where the mirror runs and changes rarely. The plan changes at every migration step and is often written by an LLM, so it is a separate file.
 
 Each node is a table under `nodes`, keyed by a kebab-case ID, so TOML itself rejects duplicate IDs.
 
@@ -112,13 +112,13 @@ Migration runs in topological order, dependencies first, so libraries and egress
 ### Commands
 
 ```
-spectre plan types      # library, then each supported IO kind, with descriptions
-spectre plan validate   # validate the plan; non-zero exit on any error
-spectre plan next       # nodes ready to migrate
-spectre plan migrated <node>  # mark a node migrated
+spectre state types      # library, then each supported IO kind, with descriptions
+spectre state validate   # validate the plan; non-zero exit on any error
+spectre state next       # nodes ready to migrate
+spectre state migrated <node>  # mark a node migrated
 ```
 
-`next` sorts nodes by ID, so its output is stable, and can print JSON for agents. The plan's path is a flag that defaults to `spectre/plan.toml`.
+`next` sorts nodes by ID, so its output is stable, and can print JSON for agents. The plan's path is a flag that defaults to `spectre/state.toml`.
 
 `migrated` is for the agent doing the migration, which calls it after it adds a node to the candidate. It only updates the node's status in the plan file:
 
@@ -127,7 +127,7 @@ spectre plan migrated <node>  # mark a node migrated
 - Marking a node that is already migrated succeeds without changing the file, so an agent can safely retry.
 - It does not commit. The agent commits the plan change with the code change it records.
 
-`spectre plan types` is how module extraction discovers the vocabulary. An agent that writes the plan takes its output as input instead of a fixed list, so the prompt stays correct for custom binaries. The output is Markdown, and JSON on request:
+`spectre state types` is how module extraction discovers the vocabulary. An agent that writes the plan takes its output as input instead of a fixed list, so the prompt stays correct for custom binaries. The output is Markdown, and JSON on request:
 
 ```markdown
 ## library
@@ -154,13 +154,13 @@ invoices
   production-us-west-2: spectre mirror deployed
     commit: 3f9c2a1
     image: ...
-    plan: 7 migrated, 12 pending (19 nodes); 3 ready to migrate
+    state: 7 migrated, 12 pending (19 nodes); 3 ready to migrate
     candidate: healthy
 ```
 
 The plan path is relative to the repository root, because it is read from git rather than from disk.
 
-The plan line reports why instead of a summary when:
+The state line reports why instead of a summary when:
 
 - the commit is unknown, because the platform could not resolve the image;
 - the commit cannot be fetched, with the fetch error;
