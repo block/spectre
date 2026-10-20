@@ -130,7 +130,7 @@ Each description says what the node type covers, how to recognise it in source c
 
 ### Status
 
-`spectre status` reports the plan each environment actually runs, not the one in the working tree. For each environment it already finds the commit the mirror runs. It then reads the plan file at that commit from the local git repository, validates it, and prints a summary under the commit:
+`spectre status` reports the plan each environment actually runs, not the one in the working tree. For each environment it already finds the commit the mirror runs. It then reads the plan file at that commit from the local git repository, fetching the commit from the repository's remote when it is missing, validates it, and prints a summary under the commit:
 
 ```
 invoices
@@ -146,7 +146,7 @@ The plan path is relative to the repository root, because it is read from git ra
 The plan line reports why instead of a summary when:
 
 - the commit is unknown, because the platform could not resolve the image;
-- the commit is not in the local repository, with a hint to fetch;
+- the commit cannot be fetched, with the fetch error;
 - the commit has no plan file;
 - the plan at that commit fails validation, with the first error.
 
@@ -158,4 +158,3 @@ None of these fail the report, like the other per-environment errors.
 - Should a node also list the ingress routes and egress patterns it owns, so a later status between `migrated` and `done` could record that SPECTRE found them equivalent?
 - Should nodes record their candidate sources too, once the target layout is known?
 - Should `plan.toml` and `migration.toml` merge into one file once both are in use?
-- Should `spectre status` fetch a commit that is missing from the local repository instead of only suggesting it?
