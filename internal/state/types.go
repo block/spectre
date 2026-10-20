@@ -18,10 +18,7 @@ import (
 const Library = "library"
 
 const libraryDescription = "Module shared by more than one other node that performs no IO, " +
-	"such as shared domain types, validation, calculations, and helpers. " +
-	"A module that only one node uses belongs to that node, not to a library. " +
-	"A shared module that does any IO is not a library either; it is a node with the IO kinds it performs. " +
-	"A library node has no IO kind tables."
+	"such as shared domain types, validation, calculations, and helpers."
 
 // TypesConfig selects how node types are printed.
 type TypesConfig struct {

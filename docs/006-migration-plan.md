@@ -148,10 +148,7 @@ spectre state migrated <node>  # mark a node migrated
 ```
 library
   Module shared by more than one other node that performs no IO, such as shared
-  domain types, validation, calculations, and helpers. A module that only one
-  node uses belongs to that node, not to a library. A shared module that does
-  any IO is not a library either; it is a node with the IO kinds it performs. A
-  library node has no IO kind tables.
+  domain types, validation, calculations, and helpers.
 
 ingress[http] [nodes.<id>.ingress.http]
   Module that receives HTTP requests to the service, including gRPC and Connect.
