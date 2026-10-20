@@ -77,7 +77,7 @@ func Main(options ...Option) {
 	}
 	kctx, err := parser.Parse(os.Args[1:])
 	parser.FatalIfErrorf(err)
-	log := logger.Tagged(logger.New(command.Log, os.Stderr))
+	log := logger.New(command.Log, os.Stderr)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	ctx = logger.WithLogger(ctx, log)

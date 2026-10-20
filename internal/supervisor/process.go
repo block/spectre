@@ -8,12 +8,15 @@ import (
 
 // managedProcess is one child process the supervisor runs and stops.
 type managedProcess struct {
-	name string
-	cmd  *exec.Cmd
+	name   string
+	cmd    *exec.Cmd
+	stdout *serviceLogWriter
 }
 
-func newManagedProcess(name string, cmd *exec.Cmd) *managedProcess {
-	return &managedProcess{name: name, cmd: cmd}
+// newManagedProcess wraps cmd. stdout is the writer passing its output through, so
+// a trailing partial line is flushed once it exits.
+func newManagedProcess(name string, cmd *exec.Cmd, stdout *serviceLogWriter) *managedProcess {
+	return &managedProcess{name: name, cmd: cmd, stdout: stdout}
 }
 
 // Name returns the process label used in logs.
@@ -36,7 +39,8 @@ func (p *managedProcess) pid() int {
 	return p.cmd.Process.Pid
 }
 
-// wait blocks until the process exits.
+// wait blocks until the process exits and its output has been passed through.
 func (p *managedProcess) wait() error {
-	return errors.Wrapf(p.cmd.Wait(), "%s exited", p.name)
+	err := p.cmd.Wait()
+	return errors.Wrapf(errors.Join(err, p.stdout.Flush()), "%s exited", p.name)
 }

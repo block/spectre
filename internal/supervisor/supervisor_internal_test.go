@@ -41,7 +41,8 @@ func TestServiceProcessReference(t *testing.T) {
 	assert.Equal(t, []string{"/bin/sh", "-c", "run-reference --port 2"}, process.command().Args)
 	assert.True(t, slices.Contains(process.command().Env, "SPECTRE_LISTEN=unix:/sockets/reference.sock"))
 	assert.True(t, slices.Contains(process.command().Env, "SPECTRE_EGRESS=http+unix:/sockets/egress-reference.sock"))
-	assert.True(t, process.command().Stdout == os.Stdout && process.command().Stderr == os.Stderr, "service output is not passed through")
+	assert.Equal(t, newServiceLogWriter(os.Stdout, roleReference), process.command().Stdout.(*serviceLogWriter))
+	assert.True(t, process.command().Stderr == os.Stderr, "service stderr is not passed through")
 }
 
 func TestServiceProcessCandidateSandboxed(t *testing.T) {
@@ -128,7 +129,7 @@ func TestLogsTagSubsystem(t *testing.T) {
 			ctx := logger.WithLogger(t.Context(), slog.New(slog.NewJSONHandler(&output, nil)))
 			test.log(t, ctx)
 			var record struct {
-				Subsystem string `json:"subsystem"`
+				Subsystem string `json:"spectre.subsystem"`
 			}
 			assert.NoError(t, json.Unmarshal(output.Bytes(), &record))
 			assert.Equal(t, test.subsystem, record.Subsystem)

@@ -18,7 +18,7 @@ import (
 
 func main() {
 	var cli struct {
-		Log     logger.Config    `embed:""`
+		Log     logger.Config    `embed:"" prefix:"log-"`
 		Version kong.VersionFlag `help:"Print the version and exit."`
 		Listen  string           `default:"127.0.0.1:50053" help:"Address for the plaintext HTTP server: host:port, or unix:<path|@abstract>."`
 		Weather string           `default:"internal/sample/testdata/weather.json" type:"existingfile" help:"Sample weather, keyed by location. Only the forecasts are served."`

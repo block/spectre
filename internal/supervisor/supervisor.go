@@ -22,8 +22,9 @@ import (
 	"github.com/block/spectre/internal/status"
 )
 
-// subsystemKey is the log attribute naming the supervisor or proxy that wrote a line.
-const subsystemKey = "subsystem"
+// subsystemKey labels the component that wrote a line, in SPECTRE's logs and the
+// services' passed-through ones. The namespace keeps it clear of services' own fields.
+const subsystemKey = "spectre.subsystem"
 
 // roles name the service leaves and their wiring.
 const (
@@ -349,15 +350,17 @@ func (s *Supervisor) serviceProcess(ctx context.Context, role string, egressURL 
 		cmd = s.command(ctx, "/bin/sh", "-c", shell)
 	}
 	cmd.Env = append(cmd.Environ(), "SPECTRE_LISTEN="+listen, "SPECTRE_EGRESS="+egressURL)
-	return newManagedProcess(role, cmd)
+	// Only stdout carries the service's logs; stderr passes through untouched.
+	stdout := newServiceLogWriter(os.Stdout, role)
+	cmd.Stdout = stdout
+	cmd.Stderr = os.Stderr
+	return newManagedProcess(role, cmd, stdout)
 }
 
-// command builds a child command that shares the supervisor's output and terminates
-// gracefully on context cancellation, escalating to a kill after the shutdown timeout.
+// command builds a child command that terminates gracefully on context
+// cancellation, escalating to a kill after the shutdown timeout.
 func (s *Supervisor) command(ctx context.Context, name string, arg ...string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, name, arg...) //nolint:gosec // G204: the supervisor runs operator-provided service commands by design
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
 	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
 	cmd.WaitDelay = s.config.ShutdownTimeout
 	return cmd

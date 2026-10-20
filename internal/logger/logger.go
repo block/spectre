@@ -14,9 +14,9 @@ import (
 // Config contains logging flags that can be embedded in a Kong CLI.
 type Config struct {
 	// Level is the minimum severity written to the log.
-	Level slog.Level `name:"log-level" default:"info" help:"Minimum log level (debug, info, warn, error)."`
-	// JSON enables JSON output instead of text output.
-	JSON bool `name:"log-json" help:"Write logs as JSON."`
+	Level slog.Level `default:"info" help:"Minimum log level (debug, info, warn, error)."`
+	// JSON shapes JSON output like the fronted service's logs. Unset writes text.
+	JSON JSONTemplate `placeholder:"TEMPLATE" help:"Write logs as JSON shaped by this template, so they match the service SPECTRE stands in for. DEFAULT uses '{\"time\": \"<time>\", \"level\": \"<level>\", \"msg\": \"<msg>\"}'. Placeholders are <msg>, <level> or <level:LEVEL=NAME,...>, <time> or <time:FORMAT>, and <attrs>; without <attrs>, attributes go at the top level."`
 }
 
 // NewConfig returns the default logging configuration: info-level text output.
@@ -30,8 +30,8 @@ func NewConfig() Config {
 
 // New constructs a logger that writes to output using the supplied configuration.
 func New(config Config, output io.Writer) *slog.Logger {
-	if config.JSON {
-		return slog.New(slog.NewJSONHandler(output, &slog.HandlerOptions{Level: config.Level}))
+	if config.JSON.enabled() {
+		return slog.New(newTemplateHandler(&config.JSON, config.Level, output))
 	}
 	return slog.New(tint.NewTextHandler(output, &tint.Options{
 		Level: config.Level,
@@ -45,21 +45,12 @@ func New(config Config, output io.Writer) *slog.Logger {
 	}))
 }
 
-// Component is the component tag value shared by every SPECTRE proxy log line,
-// e.g. the @component:spectre facet in Datadog.
-const Component = "spectre"
-
 // Event names for the notable proxy events, used as the event tag value.
 const (
 	EventQuarantine  = "quarantine"
 	EventReceived    = "received"
 	EventCorrelation = "correlation"
 )
-
-// Tagged returns log with the SPECTRE component tag attached to every line.
-func Tagged(log *slog.Logger) *slog.Logger {
-	return log.With(slog.String("component", Component))
-}
 
 // WithLogger returns a child context carrying log without changing the parent context.
 func WithLogger(ctx context.Context, log *slog.Logger) context.Context {
