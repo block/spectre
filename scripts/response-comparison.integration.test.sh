@@ -49,7 +49,7 @@ wait_for_log_count() {
 
 # comparison matches the record ingress logs when it finishes comparing a route.
 comparison() {
-	printf '.msg == "Response comparison completed" and .component == "spectre" and .event == "correlation" and .protocol == "http" and .route == "%s" and .outcome == "%s"' "$1" "$2"
+	printf '.msg == "Response comparison completed" and .event == "correlation" and .protocol == "http" and .route == "%s" and .outcome == "%s"' "$1" "$2"
 }
 
 fetch() {
@@ -70,7 +70,7 @@ verify() {
 		exit 1
 	fi
 	wait_for_log candidate "$list_users"
-	wait_for_log ingress '.msg == "Payload normaliser completed" and .component == "spectre" and .kind == "field" and .target == "spectre.sample.v1.User.roles"'
+	wait_for_log ingress '.msg == "Payload normaliser completed" and .kind == "field" and .target == "spectre.sample.v1.User.roles"'
 	wait_for_log ingress '.target == "spectre.sample.v1.ListUsersResponse.generatedAt" and .side == "candidate" and .payload_path == "$.generatedAt"'
 	wait_for_log ingress "$(comparison 'POST /spectre.sample.v1.UserService/ListUsers' equivalent)"
 	# The comparison timeout has elapsed before this probe, so a second mirror proves
@@ -95,9 +95,9 @@ verify() {
 	# Egress replays the reference's forecast to the candidate, so each mirrored
 	# request reaches the provider once.
 	for side in reference candidate; do
-		wait_for_log egress ".msg == \"Payload normalisation completed\" and .component == \"spectre\" and .message == \"forecasts.FetchForecastRequest\" and .side == \"$side\" and .normalisers == 0"
+		wait_for_log egress ".msg == \"Payload normalisation completed\" and .message == \"forecasts.FetchForecastRequest\" and .side == \"$side\" and .normalisers == 0"
 	done
-	wait_for_log egress '.msg == "Candidate request matched a reference request" and .component == "spectre" and .event == "correlation" and .protocol == "http" and .route == "GET forecasts.example/v1/forecasts/{location}"'
+	wait_for_log egress '.msg == "Candidate request matched a reference request" and .event == "correlation" and .protocol == "http" and .route == "GET forecasts.example/v1/forecasts/{location}"'
 	for location in london sydney; do
 		wait_for_log forecasts ".path == \"/v1/forecasts/$location\""
 		provider_calls=$(count_log forecasts ".path == \"/v1/forecasts/$location\"")

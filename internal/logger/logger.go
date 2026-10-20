@@ -45,21 +45,12 @@ func New(config Config, output io.Writer) *slog.Logger {
 	}))
 }
 
-// Component is the component tag value shared by every SPECTRE proxy log line,
-// e.g. the @component:spectre facet in Datadog.
-const Component = "spectre"
-
 // Event names for the notable proxy events, used as the event tag value.
 const (
 	EventQuarantine  = "quarantine"
 	EventReceived    = "received"
 	EventCorrelation = "correlation"
 )
-
-// Tagged returns log with the SPECTRE component tag attached to every line.
-func Tagged(log *slog.Logger) *slog.Logger {
-	return log.With(slog.String("component", Component))
-}
 
 // WithLogger returns a child context carrying log without changing the parent context.
 func WithLogger(ctx context.Context, log *slog.Logger) context.Context {

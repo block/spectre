@@ -52,6 +52,18 @@ Output with no newline is passed through in 64 KiB pieces, so a service that nev
 
 Other values, including nested objects and arrays, are written as given. Template keys take precedence over top-level attributes of the same name. Unknown placeholders are rejected at startup.
 
+For example, this template mimics a service that logs millisecond timestamps, its own level names, a constant `service` field and nested attributes:
+
+```sh
+--log-json='{"ts": "<time:unixms>", "severity": "<level:debug=DEBUG,info=INFO,warn=WARNING,error=ERROR>", "message": "<msg>", "service": "payments", "context": "<attrs>"}'
+```
+
+A warning from the ingress proxy is then written as:
+
+```json
+{"context": {"spectre.subsystem": "ingress", "route": "GET /v1/users"}, "message": "Candidate quarantined", "service": "payments", "severity": "WARNING", "ts": 1767225600000}
+```
+
 SPECTRE's own lines carry the same `spectre.subsystem` key, set to `supervisor`, `ingress` or `egress`, so one key identifies every component across both paths.
 
 Text output is unchanged, because it is for people rather than the ingester.
