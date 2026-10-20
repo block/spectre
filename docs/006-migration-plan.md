@@ -19,6 +19,7 @@ The kinds of IO a module performs also decide how SPECTRE verifies it. Those kin
 
 - Extracting modules from source code automatically. That stays with the person or LLM that writes the plan.
 - Updating node status from live mirror traffic.
+- Recording which source files make up each node, in either the reference or the candidate.
 - Changing how the engine pairs or compares traffic.
 
 ## Decision
@@ -48,27 +49,20 @@ Each node is a table under `nodes`, keyed by a kebab-case ID, so TOML itself rej
 ```toml
 [nodes.money]
 types = ["library"]
-reference_sources = ["src/main/java/com/example/money/**"]
-candidate_sources = ["candidate/internal/money/**"]
 status = "migrated"
 
 [nodes.ledger-client]
 types = ["egress[http]"]
-reference_sources = ["src/main/java/com/example/ledger/**"]
-candidate_sources = ["candidate/internal/ledger/**"]
 depends_on = ["money"]
 status = "migrated"
 
 [nodes.invoices-api]
 types = ["ingress[http]", "egress[http]"]
-reference_sources = ["src/main/java/com/example/invoices/api/**"]
-candidate_sources = ["candidate/internal/invoices/**"]
 depends_on = ["money", "ledger-client"]
 status = "done"
 
 [nodes.reports-api]
 types = ["ingress[http]"]
-reference_sources = ["src/main/java/com/example/reports/**"]
 depends_on = ["money"]
 status = "pending"
 ```
@@ -76,12 +70,8 @@ status = "pending"
 | Field | Meaning |
 | --- | --- |
 | `types` | Required. `library`, or one or more IO kinds. |
-| `reference_sources` | Globs of the reference implementation's files that make up the node. |
-| `candidate_sources` | Globs of the candidate implementation's files that make up the node, added when the node is migrated. |
 | `depends_on` | IDs of nodes whose code this node calls or imports. |
 | `status` | `pending`, `migrated`, or `done`. Defaults to `pending`. |
-
-Source globs are relative to the root of the repository that holds the plan. Recording both sides lets an agent find the reference code to migrate, the candidate code it became, and the reference code to remove once the node is done.
 
 A node's types describe the IO its own code performs, not IO it reaches through its dependencies. `invoices-api` above calls a tax service directly, so it is `egress[http]` as well as `ingress[http]`. It reaches the ledger only through `ledger-client`, which carries that egress.
 
@@ -160,5 +150,4 @@ None of these fail the report, like the other per-environment errors.
 
 ## Open questions
 
-- Should `plan validate` take a checkout of the reference and fail when a source file matches no node, or more than one?
 - Should a node also list the ingress routes and egress patterns it owns, so a later status between `migrated` and `done` could record that SPECTRE found them equivalent?
