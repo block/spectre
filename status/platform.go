@@ -35,6 +35,9 @@ type MirrorState struct {
 	Image Image
 	// Digest is the mirror image's "@" digest, or "" when it carries none.
 	Digest Digest
+	// Commit is the git commit the mirror runs when it differs from its image's,
+	// e.g. for code synced over the image, or "" to resolve it from the image.
+	Commit GitCommit
 }
 
 // QuarantineReport is the live SPECTRE status read from a mirror.
