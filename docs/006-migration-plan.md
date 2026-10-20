@@ -171,5 +171,4 @@ None of these fail the report, like the other per-environment errors.
 
 ## Open questions
 
-- Should a node also list the egress patterns it owns, so the plan could check that its comparison scripts declare them?
-- How is equivalence reported per node, so a person can tell when a migrated node has seen enough traffic to trust?
+None.
