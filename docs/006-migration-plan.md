@@ -147,31 +147,27 @@ spectre state migrated <node>  # mark a node migrated
 
 ```
 library
-  Code shared by more than one other node that performs no IO, such as shared
-  domain types, validation, calculations, and helpers. Code that only one node
-  uses belongs to that node, not to a library. Shared code that does any IO is
-  not a library either; it is a node with the IO kinds it performs. A library
-  node has no IO kind tables.
+  Module shared by more than one other node that performs no IO, such as shared
+  domain types, validation, calculations, and helpers. A module that only one
+  node uses belongs to that node, not to a library. A shared module that does
+  any IO is not a library either; it is a node with the IO kinds it performs. A
+  library node has no IO kind tables.
 
 ingress[http] [nodes.<id>.ingress.http]
-  Code that receives HTTP requests to the service, including gRPC and Connect:
+  Module that receives HTTP requests to the service, including gRPC and Connect:
   route registrations, controllers, handlers, and service implementations. The
   service's routes and RPC methods are the entry points SPECTRE compares, so
   every request path starts at one of these nodes.
 
   routes (required)
-    Each route the node handles. List every route the service serves: a request
-    to a route no node lists quarantines the candidate.
-
-    A table keyed by <METHOD> /<path>, or POST /<package>.<Service>/<Method> for
-    a gRPC or Connect method. Each entry takes no settings yet, so write it as
-    {}.
+    Each route the node handles. A table keyed by <METHOD> /<path>.
+    Each entry takes no settings yet, so write it as {}.
 
 egress[http] [nodes.<id>.egress.http]
-  Code that sends HTTP requests to another service, including gRPC and Connect:
-  API clients, generated stubs and the code that configures them, and code that
-  builds requests or reads their responses. SPECTRE pairs these requests and
-  replays the reference's responses to the candidate.
+  Module that sends HTTP requests to another service, including gRPC and
+  Connect: API clients, generated stubs and the code that configures them, and
+  code that builds requests or reads their responses. SPECTRE pairs these
+  requests and replays the reference's responses to the candidate.
 
   No settings.
 ```

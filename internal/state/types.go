@@ -17,10 +17,10 @@ import (
 // Library is the node type of shared code that performs no IO.
 const Library = "library"
 
-const libraryDescription = "Code shared by more than one other node that performs no IO, " +
+const libraryDescription = "Module shared by more than one other node that performs no IO, " +
 	"such as shared domain types, validation, calculations, and helpers. " +
-	"Code that only one node uses belongs to that node, not to a library. " +
-	"Shared code that does any IO is not a library either; it is a node with the IO kinds it performs. " +
+	"A module that only one node uses belongs to that node, not to a library. " +
+	"A shared module that does any IO is not a library either; it is a node with the IO kinds it performs. " +
 	"A library node has no IO kind tables."
 
 // TypesConfig selects how node types are printed.
@@ -106,16 +106,16 @@ func writeSettings(section *strings.Builder, palette terminal.Palette, settings 
 			requirement = palette.Yellow("(required)")
 		}
 		section.WriteString("\n" + indent + palette.Green(setting.Name) + " " + requirement + "\n")
-		section.WriteString(terminal.Wrap(setting.Description, indent+"  ", textWidth))
 		if setting.Key == "" {
+			section.WriteString(terminal.Wrap(setting.Description, indent+"  ", textWidth))
 			continue
 		}
-		shape := "A table keyed by " + setting.Key + "."
+		section.WriteString(terminal.Wrap(setting.Description+" A table keyed by "+setting.Key+".", indent+"  ", textWidth))
 		if len(setting.Entry) == 0 {
-			section.WriteString("\n" + terminal.Wrap(shape+" Each entry takes no settings yet, so write it as {}.", indent+"  ", textWidth))
+			section.WriteString(terminal.Wrap("Each entry takes no settings yet, so write it as {}.", indent+"  ", textWidth))
 			continue
 		}
-		section.WriteString("\n" + terminal.Wrap(shape+" Each entry is a table with these settings:", indent+"  ", textWidth))
+		section.WriteString(terminal.Wrap("Each entry is a table with these settings:", indent+"  ", textWidth))
 		writeSettings(section, palette, setting.Entry, indent+"    ")
 	}
 }

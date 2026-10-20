@@ -38,11 +38,11 @@ func TestWriteTypes(t *testing.T) {
 			palette: terminal.NewPalette(false),
 			expected: "library\n" + terminal.Wrap(library, "  ", 80) + "\n" +
 				"ingress[rpc] [nodes.<id>.ingress.rpc]\n  Serves requests.\n\n" +
-				"  methods (required)\n    Each method served.\n\n" +
-				"    A table keyed by method name. Each entry is a table with these settings:\n\n" +
+				"  methods (required)\n    Each method served. A table keyed by method name.\n" +
+				"    Each entry is a table with these settings:\n\n" +
 				"      timeout (optional)\n        How long a call may take.\n\n" +
-				"  services (optional)\n    Each service served.\n\n" +
-				"    A table keyed by service name. Each entry takes no settings yet, so write it\n    as {}.\n\n" +
+				"  services (optional)\n    Each service served. A table keyed by service name.\n" +
+				"    Each entry takes no settings yet, so write it as {}.\n\n" +
 				"  group (optional)\n    The server group.\n\n" +
 				"egress[rpc] [nodes.<id>.egress.rpc]\n  Calls <dependencies>.\n\n" +
 				"  No settings.\n",
@@ -51,11 +51,11 @@ func TestWriteTypes(t *testing.T) {
 			palette: terminal.NewPalette(true),
 			expected: "\033[1mlibrary\033[0m\n" + terminal.Wrap(library, "  ", 80) + "\n" +
 				"\033[1mingress[rpc]\033[0m \033[2m[nodes.<id>.ingress.rpc]\033[0m\n  Serves requests.\n\n" +
-				"  \033[32mmethods\033[0m \033[33m(required)\033[0m\n    Each method served.\n\n" +
-				"    A table keyed by method name. Each entry is a table with these settings:\n\n" +
+				"  \033[32mmethods\033[0m \033[33m(required)\033[0m\n    Each method served. A table keyed by method name.\n" +
+				"    Each entry is a table with these settings:\n\n" +
 				"      \033[32mtimeout\033[0m \033[2m(optional)\033[0m\n        How long a call may take.\n\n" +
-				"  \033[32mservices\033[0m \033[2m(optional)\033[0m\n    Each service served.\n\n" +
-				"    A table keyed by service name. Each entry takes no settings yet, so write it\n    as {}.\n\n" +
+				"  \033[32mservices\033[0m \033[2m(optional)\033[0m\n    Each service served. A table keyed by service name.\n" +
+				"    Each entry takes no settings yet, so write it as {}.\n\n" +
 				"  \033[32mgroup\033[0m \033[2m(optional)\033[0m\n    The server group.\n\n" +
 				"\033[1megress[rpc]\033[0m \033[2m[nodes.<id>.egress.rpc]\033[0m\n  Calls <dependencies>.\n\n" +
 				"  \033[2mNo settings.\033[0m\n",

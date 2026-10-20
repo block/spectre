@@ -10,21 +10,20 @@ func Supports() []boundary.Support {
 	return []boundary.Support{
 		{
 			Kind: boundary.Kind{Direction: boundary.Ingress, Protocol: boundary.ProtocolHTTP},
-			Description: "Code that receives HTTP requests to the service, including gRPC and Connect: " +
+			Description: "Module that receives HTTP requests to the service, including gRPC and Connect: " +
 				"route registrations, controllers, handlers, and service implementations. " +
 				"The service's routes and RPC methods are the entry points SPECTRE compares, " +
 				"so every request path starts at one of these nodes.",
 			Settings: []boundary.Setting{{
-				Name:     "routes",
-				Required: true,
-				Description: "Each route the node handles. " +
-					"List every route the service serves: a request to a route no node lists quarantines the candidate.",
-				Key: "<METHOD> /<path>, or POST /<package>.<Service>/<Method> for a gRPC or Connect method",
+				Name:        "routes",
+				Required:    true,
+				Description: "Each route the node handles.",
+				Key:         "<METHOD> /<path>",
 			}},
 		},
 		{
 			Kind: boundary.Kind{Direction: boundary.Egress, Protocol: boundary.ProtocolHTTP},
-			Description: "Code that sends HTTP requests to another service, including gRPC and Connect: " +
+			Description: "Module that sends HTTP requests to another service, including gRPC and Connect: " +
 				"API clients, generated stubs and the code that configures them, " +
 				"and code that builds requests or reads their responses. " +
 				"SPECTRE pairs these requests and replays the reference's responses to the candidate.",
