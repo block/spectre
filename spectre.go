@@ -14,6 +14,8 @@ import (
 	kongtoml "github.com/alecthomas/kong-toml"
 
 	"github.com/block/spectre/internal"
+	"github.com/block/spectre/internal/boundary"
+	"github.com/block/spectre/internal/httpserver"
 	"github.com/block/spectre/internal/logger"
 	"github.com/block/spectre/internal/supervisor"
 	"github.com/block/spectre/status"
@@ -92,10 +94,14 @@ func newParser(command *cli, options ...Option) (*kong.Kong, error) {
 	for _, option := range options {
 		option(registered)
 	}
+	catalog, err := boundary.NewCatalog(httpserver.Supports()...)
+	if err != nil {
+		return nil, errors.Wrap(err, "collect supported IO")
+	}
 	kongOptions := append([]kong.Option{
 		kong.Vars{"version": internal.Version},
 		kong.Configuration(kongtoml.Loader),
-		kong.Bind(registered.statusPlatforms),
+		kong.Bind(registered.statusPlatforms, catalog),
 	}, registered.kongOptions...)
 	parser, err := kong.New(command, kongOptions...)
 	if err != nil {

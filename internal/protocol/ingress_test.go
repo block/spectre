@@ -10,7 +10,7 @@ import (
 	"github.com/alecthomas/errors"
 	. "github.com/alecthomas/types/optional"
 
-	"github.com/block/spectre/internal/comparison/javascript"
+	"github.com/block/spectre/internal/boundary"
 	"github.com/block/spectre/internal/protocol"
 	"github.com/block/spectre/internal/schema"
 )
@@ -238,7 +238,7 @@ func TestIngressReportsUnableExchanges(t *testing.T) {
 
 func TestIngressCandidateMustJoinAReference(t *testing.T) {
 	for name, test := range map[string]struct {
-		candidate javascript.Protocol
+		candidate boundary.Protocol
 		// joins is how many candidates join successfully first.
 		joins            int
 		referenceEnded   bool

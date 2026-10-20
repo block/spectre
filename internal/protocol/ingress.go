@@ -9,8 +9,8 @@ import (
 	"github.com/alecthomas/errors"
 	. "github.com/alecthomas/types/optional"
 
+	"github.com/block/spectre/internal/boundary"
 	"github.com/block/spectre/internal/comparison"
-	"github.com/block/spectre/internal/comparison/javascript"
 	"github.com/block/spectre/internal/future"
 	"github.com/block/spectre/internal/logger"
 )
@@ -73,7 +73,7 @@ type ingressOutcome struct {
 
 // ingressPair is one mirrored request. ingressPairs.mu guards its lifecycle flags.
 type ingressPair struct {
-	protocol  javascript.Protocol
+	protocol  boundary.Protocol
 	route     Route
 	requestID RequestID
 	// ignoredReason explains why the responses are never compared.
@@ -84,7 +84,7 @@ type ingressPair struct {
 	candidateDone bool
 }
 
-func newIngressPair(protocol javascript.Protocol, requestID RequestID, route Route, ignored Option[string]) *ingressPair {
+func newIngressPair(protocol boundary.Protocol, requestID RequestID, route Route, ignored Option[string]) *ingressPair {
 	return &ingressPair{
 		protocol: protocol, route: route, requestID: requestID, ignoredReason: ignored,
 		outcome: future.New[ingressOutcome](),
@@ -106,7 +106,7 @@ func (p *ingressPair) ignored() Option[string] {
 }
 
 // join admits the pair's only candidate.
-func (p *ingressPair) join(protocol javascript.Protocol) error {
+func (p *ingressPair) join(protocol boundary.Protocol) error {
 	if p.joined {
 		return errors.Errorf("reference request %s already has a candidate", p.requestID)
 	}
@@ -229,7 +229,7 @@ func (p *ingressPair) latencyDelta(candidate time.Duration) Option[time.Duration
 }
 
 // start registers a reference request under a new RequestID.
-func (p *ingressPairs) start(protocol javascript.Protocol, route Route, ignored Option[string]) Decision {
+func (p *ingressPairs) start(protocol boundary.Protocol, route Route, ignored Option[string]) Decision {
 	requestID, exchange := newRequestID(), newExchange()
 	pair := newIngressPair(protocol, requestID, route, ignored)
 	p.mu.Lock()
@@ -240,7 +240,7 @@ func (p *ingressPairs) start(protocol javascript.Protocol, route Route, ignored 
 }
 
 // join pairs a candidate request with its reference, quarantining it if it cannot.
-func (p *ingressPairs) join(ctx context.Context, protocol javascript.Protocol, requestID Option[RequestID]) (Decision, error) {
+func (p *ingressPairs) join(ctx context.Context, protocol boundary.Protocol, requestID Option[RequestID]) (Decision, error) {
 	exchange, err := p.admit(protocol, requestID)
 	if err != nil {
 		p.quarantine.Quarantine(ctx, err)
@@ -249,7 +249,7 @@ func (p *ingressPairs) join(ctx context.Context, protocol javascript.Protocol, r
 	return DecisionForward{RequestID: requestID, Exchange: exchange}, nil
 }
 
-func (p *ingressPairs) admit(protocol javascript.Protocol, requestID Option[RequestID]) (Exchange, error) {
+func (p *ingressPairs) admit(protocol boundary.Protocol, requestID Option[RequestID]) (Exchange, error) {
 	id, ok := requestID.Get()
 	if !ok {
 		return Exchange{}, errors.New("candidate request has no request ID")
@@ -380,10 +380,10 @@ func (p *ingressPairs) report(ctx context.Context, pair *ingressPair, result com
 // ingressReference assigns each inbound request the RequestID its mirror carries.
 type ingressReference struct {
 	pairs    *ingressPairs
-	protocol javascript.Protocol
+	protocol boundary.Protocol
 }
 
-func newIngressReference(pairs *ingressPairs, protocol javascript.Protocol) *ingressReference {
+func newIngressReference(pairs *ingressPairs, protocol boundary.Protocol) *ingressReference {
 	return &ingressReference{pairs: pairs, protocol: protocol}
 }
 
@@ -405,10 +405,10 @@ func (r *ingressReference) Unable(ctx context.Context, exchange Exchange, reason
 // ingressCandidate compares each mirrored response with its reference response.
 type ingressCandidate struct {
 	pairs    *ingressPairs
-	protocol javascript.Protocol
+	protocol boundary.Protocol
 }
 
-func newIngressCandidate(pairs *ingressPairs, protocol javascript.Protocol) *ingressCandidate {
+func newIngressCandidate(pairs *ingressPairs, protocol boundary.Protocol) *ingressCandidate {
 	return &ingressCandidate{pairs: pairs, protocol: protocol}
 }
 
