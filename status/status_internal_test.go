@@ -6,6 +6,8 @@ import (
 
 	"github.com/alecthomas/assert/v2"
 	"github.com/alecthomas/errors"
+
+	"github.com/block/spectre/internal/terminal"
 )
 
 func TestRegistryNewRegistered(t *testing.T) {
@@ -52,7 +54,7 @@ func TestCommitText(t *testing.T) {
 		{"MirrorCommit", synced, commitPlatform{err: errors.New("not called")}, "def456"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			assert.Equal(t, test.want, commitText(context.Background(), test.platform, test.mirror))
+			assert.Equal(t, test.want, commitText(context.Background(), terminal.NewPalette(false), test.platform, test.mirror))
 		})
 	}
 }

@@ -14,6 +14,7 @@ import (
 	"github.com/block/spectre/internal/logger"
 	"github.com/block/spectre/internal/state"
 	"github.com/block/spectre/internal/supervisor"
+	"github.com/block/spectre/internal/terminal"
 	"github.com/block/spectre/status"
 )
 
@@ -41,7 +42,7 @@ type stateTypesCommand struct {
 }
 
 func (c *stateTypesCommand) Run(catalog *boundary.Catalog) error {
-	return errors.WithStack(state.WriteTypes(os.Stdout, c.Types, catalog))
+	return errors.WithStack(state.WriteTypes(os.Stdout, c.Types, terminal.NewPalette(terminal.ColorEnabled(os.Stdout)), catalog))
 }
 
 // statusCommand reports the SPECTRE migration status for a service.

@@ -11,6 +11,7 @@ import (
 	"github.com/alecthomas/errors"
 
 	"github.com/block/spectre/internal/boundary"
+	"github.com/block/spectre/internal/terminal"
 )
 
 // Library is the node type of shared code that performs no IO.
@@ -24,8 +25,8 @@ const libraryDescription = "Code shared by more than one other node that perform
 
 // TypesConfig selects how node types are printed.
 type TypesConfig struct {
-	// JSON prints the node types as a JSON array instead of Markdown.
-	JSON bool `help:"Print JSON instead of Markdown."`
+	// JSON prints the node types as a JSON array instead of text.
+	JSON bool `help:"Print JSON instead of text."`
 }
 
 // NodeType is a type that a node in the migration state can have.
@@ -58,7 +59,7 @@ func NodeTypes(catalog *boundary.Catalog) []NodeType {
 
 // WriteTypes writes every node type with its description and settings, for an
 // agent that writes the migration state.
-func WriteTypes(out io.Writer, config TypesConfig, catalog *boundary.Catalog) error {
+func WriteTypes(out io.Writer, config TypesConfig, palette terminal.Palette, catalog *boundary.Catalog) error {
 	types := NodeTypes(catalog)
 	if config.JSON {
 		encoder := json.NewEncoder(out)
@@ -68,31 +69,37 @@ func WriteTypes(out io.Writer, config TypesConfig, catalog *boundary.Catalog) er
 	}
 	sections := make([]string, 0, len(types))
 	for _, nodeType := range types {
-		sections = append(sections, markdown(nodeType))
+		sections = append(sections, text(palette, nodeType))
 	}
 	_, err := io.WriteString(out, strings.Join(sections, "\n"))
 	return errors.Wrap(err, "write node types")
 }
 
-// markdown renders one node type as a section that ends with a newline.
-func markdown(nodeType NodeType) string {
+// textWidth is the column that text output wraps at.
+const textWidth = 80
+
+// text renders one node type with its description and settings indented below it.
+func text(palette terminal.Palette, nodeType NodeType) string {
 	var section strings.Builder
-	fmt.Fprintf(&section, "## %s\n\n%s\n", nodeType.Name, nodeType.Description)
-	table := nodeType.Table
-	if table == "" {
+	section.WriteString(palette.Bold(nodeType.Name))
+	if nodeType.Table != "" {
+		section.WriteString(" " + palette.Dim("["+nodeType.Table+"]"))
+	}
+	section.WriteString("\n" + terminal.Wrap(nodeType.Description, "  ", textWidth))
+	if nodeType.Table == "" {
 		return section.String()
 	}
 	if len(nodeType.Settings) == 0 {
-		fmt.Fprintf(&section, "\nWrite it as the empty table `[%s]`.\n", table)
+		section.WriteString("\n  " + palette.Dim("No settings.") + "\n")
 		return section.String()
 	}
-	fmt.Fprintf(&section, "\nWrite it as the table `[%s]`, with these settings:\n\n", table)
 	for _, setting := range nodeType.Settings {
-		requirement := "optional"
+		requirement := palette.Dim("(optional)")
 		if setting.Required {
-			requirement = "required"
+			requirement = palette.Yellow("(required)")
 		}
-		fmt.Fprintf(&section, "- `%s` (%s): %s\n", setting.Name, requirement, setting.Description)
+		section.WriteString("\n  " + palette.Green(setting.Name) + " " + requirement + "\n")
+		section.WriteString(terminal.Wrap(setting.Description, "    ", textWidth))
 	}
 	return section.String()
 }

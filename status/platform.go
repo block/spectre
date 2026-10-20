@@ -21,11 +21,17 @@ type Platform interface {
 // Image is a container image reference, optionally pinned with an "@" digest.
 type Image string
 
+// String returns the image reference.
+func (i Image) String() string { return string(i) }
+
 // Digest is an image's "@" content digest, or "" when the image carries none.
 type Digest string
 
 // GitCommit is the git commit an image was built from, or "" when unknown.
 type GitCommit string
+
+// String returns the commit hash.
+func (c GitCommit) String() string { return string(c) }
 
 // MirrorState is a service's SPECTRE mirror state for one deploy target.
 type MirrorState struct {
