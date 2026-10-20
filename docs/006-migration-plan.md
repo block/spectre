@@ -154,10 +154,7 @@ library
   library node has no IO kind tables.
 
 ingress[http] [nodes.<id>.ingress.http]
-  Module that receives HTTP requests to the service, including gRPC and Connect:
-  route registrations, controllers, handlers, and service implementations. The
-  service's routes and RPC methods are the entry points SPECTRE compares, so
-  every request path starts at one of these nodes.
+  Module that receives HTTP requests to the service, including gRPC and Connect.
 
   routes (required)
     Each route the node handles. A table keyed by <METHOD> /<path>.
@@ -165,14 +162,12 @@ ingress[http] [nodes.<id>.ingress.http]
 
 egress[http] [nodes.<id>.egress.http]
   Module that sends HTTP requests to another service, including gRPC and
-  Connect: API clients, generated stubs and the code that configures them, and
-  code that builds requests or reads their responses. SPECTRE pairs these
-  requests and replays the reference's responses to the candidate.
+  Connect.
 
   No settings.
 ```
 
-Each description says what the node type covers, how to recognise it in source code, and what SPECTRE does with it, followed by the table a node of that type uses and the settings it takes. `library` is described by the plan itself, since no protocol server owns it. It has no table, because a library is a node without IO kinds.
+Each description says what the node type covers, followed by the table a node of that type uses and the settings it takes. `library` is described by the plan itself, since no protocol server owns it. It has no table, because a library is a node without IO kinds.
 
 ### Status
 
