@@ -66,11 +66,12 @@ status = "migrated"
 depends_on = ["money", "ledger-client"]
 status = "migrated"
 
-[nodes.invoices-api.ingress.http]
-routes = ["GET /v1/invoices/{id}", "POST /example.invoices.v1.InvoiceService/CreateInvoice"]
+[nodes.invoices-api.ingress.http.routes]
+"GET /v1/invoices/{id}" = {}
+"POST /example.invoices.v1.InvoiceService/CreateInvoice" = {}
 
-[nodes.invoices-api.ingress.kafka]
-topics = ["invoice-requested"]
+[nodes.invoices-api.ingress.kafka.topics]
+"invoice-requested" = {}
 
 [nodes.invoices-api.egress.http]
 
@@ -78,8 +79,8 @@ topics = ["invoice-requested"]
 depends_on = ["money"]
 status = "pending"
 
-[nodes.reports-api.ingress.http]
-routes = ["GET /v1/reports/{id}"]
+[nodes.reports-api.ingress.http.routes]
+"GET /v1/reports/{id}" = {}
 ```
 
 | Field | Meaning |
@@ -87,6 +88,8 @@ routes = ["GET /v1/reports/{id}"]
 | `depends_on` | IDs of nodes whose code this node calls or imports. |
 | `status` | `pending` or `migrated`. Defaults to `pending`. |
 | `<direction>.<protocol>` | An IO kind the node has, holding the settings its protocol server defines. |
+
+A setting that lists things, such as routes or topics, is a table keyed by them, with an empty table for each until a protocol defines settings for individual entries. Adding such settings later then changes no existing state file.
 
 Loading the state rejects a kind the binary does not support and a setting its protocol server does not define, so mistakes in an agent's output fail at once. Each protocol server also checks its settings across nodes, for example that a route belongs to only one node.
 
@@ -105,7 +108,7 @@ A node's status says where its code lives:
 
 The SPECTRE image carries the plan from the same commit as the candidate, and ingress reads it at startup. Each ingress protocol server reads only the settings of its own kind. For HTTP:
 
-- A request whose route is in the `ingress.http.routes` of a `migrated` node is mirrored to the candidate and compared, as today.
+- A request whose route is a key of the `ingress.http.routes` of a `migrated` node is mirrored to the candidate and compared, as today.
 - A request whose route belongs to a `pending` node goes to the reference only.
 - A request whose route no node lists also goes to the reference only, but quarantines the candidate with a reason that names the route. The state is incomplete, so it must be updated before comparison resumes. Routes that ingress never compares, such as those scripts ignore and gRPC reflection, need no node.
 - Without a plan file, ingress mirrors every request, as today.
@@ -140,29 +143,28 @@ spectre state migrated <node>  # mark a node migrated
 - Marking a node that is already migrated succeeds without changing the file, so an agent can safely retry.
 - It does not commit. The agent commits the plan change with the code change it records.
 
-`spectre state types` is how module extraction discovers the vocabulary. An agent that writes the plan takes its output as input instead of a fixed list, so the prompt stays correct for custom binaries. The output is Markdown, and JSON on request:
+`spectre state types` is how module extraction discovers the vocabulary. An agent that writes the plan takes its output as input instead of a fixed list, so the prompt stays correct for custom binaries. The output is indented text, with colored headings when printed to a terminal, and JSON on request:
 
-```markdown
-## library
+```
+library
+  Module shared by more than one other node that performs no IO, such as shared
+  domain types, validation, calculations, and helpers.
 
-Code shared by more than one other node that performs no IO, such as shared domain types, validation, calculations, and helpers. Code that only one node uses belongs to that node, not to a library. Shared code that does any IO is not a library either; it is a node with the IO kinds it performs. A library node has no IO kind tables.
+ingress[http] [nodes.<id>.ingress.http]
+  Module that receives HTTP requests to the service, including gRPC and Connect.
 
-## ingress[http]
+  routes (required)
+    Each route the node handles. A table keyed by <METHOD> /<path>.
+    Each entry takes no settings yet, so write it as {}.
 
-Code that receives HTTP requests to the service, including gRPC and Connect: route registrations, controllers, handlers, and service implementations. The service's routes and RPC methods are the entry points SPECTRE compares, so every request path starts at one of these nodes.
+egress[http] [nodes.<id>.egress.http]
+  Module that sends HTTP requests to another service, including gRPC and
+  Connect.
 
-Write it as the table `[nodes.<id>.ingress.http]`, with these settings:
-
-- `routes` (required): Each route the node handles, as `<METHOD> /<path>`. A gRPC or Connect method is `POST /<package>.<Service>/<Method>`. List every route the service serves: a request to a route no node lists quarantines the candidate.
-
-## egress[http]
-
-Code that sends HTTP requests to another service, including gRPC and Connect: API clients, generated stubs and the code that configures them, and code that builds requests or reads their responses. SPECTRE pairs these requests and replays the reference's responses to the candidate.
-
-Write it as the empty table `[nodes.<id>.egress.http]`.
+  No settings.
 ```
 
-Each description says what the node type covers, how to recognise it in source code, and what SPECTRE does with it, followed by the table a node of that type uses and the settings it takes. `library` is described by the plan itself, since no protocol server owns it. It has no table, because a library is a node without IO kinds.
+Each description says what the node type covers, followed by the table a node of that type uses and the settings it takes. `library` is described by the plan itself, since no protocol server owns it. It has no table, because a library is a node without IO kinds.
 
 ### Status
 

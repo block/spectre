@@ -13,7 +13,7 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/descriptorpb"
 
-	"github.com/block/spectre/internal/comparison/javascript"
+	"github.com/block/spectre/internal/boundary"
 	"github.com/block/spectre/internal/descriptors"
 	"github.com/block/spectre/internal/httpserver/message"
 	"github.com/block/spectre/internal/httpserver/middleware/health"
@@ -87,7 +87,7 @@ func NewIngress(
 	}
 	candidates := proxy.NewCandidates(config.Candidates)
 	routes := route.NewMatcher()
-	engine, err := protocol.NewEngine(ctx, engineConfig, map[javascript.Protocol]protocol.Matcher{javascript.ProtocolHTTP: routes}, candidates)
+	engine, err := protocol.NewEngine(ctx, engineConfig, map[boundary.Protocol]protocol.Matcher{boundary.ProtocolHTTP: routes}, candidates)
 	if err != nil {
 		return nil, errors.Wrap(err, "configure response comparison")
 	}
@@ -96,8 +96,8 @@ func NewIngress(
 	ingress := &Ingress{
 		referenceProxy: referenceProxy,
 		candidateProxy: candidateProxy,
-		reference:      newPoint(engine.IngressReference(javascript.ProtocolHTTP), responseBudget, true, false),
-		candidate:      newPoint(engine.IngressCandidate(javascript.ProtocolHTTP), responseBudget, false, false),
+		reference:      newPoint(engine.IngressReference(boundary.ProtocolHTTP), responseBudget, true, false),
+		candidate:      newPoint(engine.IngressCandidate(boundary.ProtocolHTTP), responseBudget, false, false),
 		config:         config,
 		engine:         engine,
 		routes:         routes,

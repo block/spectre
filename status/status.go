@@ -10,6 +10,8 @@ import (
 	"os"
 
 	"github.com/alecthomas/errors"
+
+	"github.com/block/spectre/internal/terminal"
 )
 
 // Config configures the status command.
@@ -31,47 +33,47 @@ func Report(ctx context.Context, cfg Config, registry *Registry) error {
 		return errors.WithStack(err)
 	}
 
-	useColor = colorEnabled(os.Stdout)
-	fmt.Println(bold(migration.App))
+	palette := terminal.NewPalette(terminal.ColorEnabled(os.Stdout))
+	fmt.Println(palette.Bold(migration.App))
 	for _, target := range migration.Environments {
-		reportTarget(ctx, platform, target)
+		reportTarget(ctx, palette, platform, target)
 	}
 	return nil
 }
 
 // reportTarget prints the SPECTRE mirror status for one <env>-<region> target.
-func reportTarget(ctx context.Context, platform Platform, target string) {
+func reportTarget(ctx context.Context, palette terminal.Palette, platform Platform, target string) {
 	mirror, err := platform.Mirror(ctx, target)
 	if err != nil {
-		fmt.Printf("  %s: %s\n", bold(target), red(fmt.Sprintf("unknown (%v)", err)))
+		fmt.Printf("  %s: %s\n", palette.Bold(target), palette.Red(fmt.Sprintf("unknown (%v)", err)))
 		return
 	}
 	if !mirror.Enabled {
-		fmt.Printf("  %s: %s\n", bold(target), dim("no spectre mirror configured"))
+		fmt.Printf("  %s: %s\n", palette.Bold(target), palette.Dim("no spectre mirror configured"))
 		return
 	}
-	fmt.Printf("  %s: %s\n", bold(target), green("spectre mirror deployed"))
-	printCommit(ctx, platform, mirror)
-	printStatus(ctx, platform, target)
+	fmt.Printf("  %s: %s\n", palette.Bold(target), palette.Green("spectre mirror deployed"))
+	printCommit(ctx, palette, platform, mirror)
+	printStatus(ctx, palette, platform, target)
 }
 
 // printStatus resolves and prints the live candidate quarantine status for one
 // mirror, falling back to a notice when the mirror cannot be reached.
-func printStatus(ctx context.Context, platform Platform, target string) {
+func printStatus(ctx context.Context, palette terminal.Palette, platform Platform, target string) {
 	report, err := platform.ResolveStatus(ctx, target)
 	switch {
 	case err != nil:
-		fmt.Printf("    candidate: %s\n", yellow(fmt.Sprintf("status unavailable (%v)", err)))
+		fmt.Printf("    candidate: %s\n", palette.Yellow(fmt.Sprintf("status unavailable (%v)", err)))
 	case report.Quarantined:
-		fmt.Printf("    candidate: %s\n", red("quarantined"))
-		printQuarantineReasons(report)
+		fmt.Printf("    candidate: %s\n", palette.Red("quarantined"))
+		printQuarantineReasons(palette, report)
 	default:
-		fmt.Printf("    candidate: %s\n", green("healthy"))
+		fmt.Printf("    candidate: %s\n", palette.Green("healthy"))
 	}
 }
 
 // printQuarantineReasons prints each quarantined proxy's reason and start time.
-func printQuarantineReasons(report QuarantineReport) {
+func printQuarantineReasons(palette terminal.Palette, report QuarantineReport) {
 	for _, source := range report.Sources {
 		if !source.Quarantined {
 			continue
@@ -80,29 +82,29 @@ func printQuarantineReasons(report QuarantineReport) {
 		if source.Since != "" {
 			detail = fmt.Sprintf("%s (since %s)", detail, source.Since)
 		}
-		fmt.Printf("      %s: %s\n", source.Name, red(detail))
+		fmt.Printf("      %s: %s\n", source.Name, palette.Red(detail))
 	}
 }
 
 // printCommit prints the git commit and image for one mirror.
-func printCommit(ctx context.Context, platform Platform, mirror MirrorState) {
-	fmt.Printf("    commit: %s\n", commitText(ctx, platform, mirror))
-	fmt.Printf("    image: %s\n", dim(string(mirror.Image)))
+func printCommit(ctx context.Context, palette terminal.Palette, platform Platform, mirror MirrorState) {
+	fmt.Printf("    commit: %s\n", commitText(ctx, palette, platform, mirror))
+	fmt.Printf("    image: %s\n", palette.Dim(mirror.Image.String()))
 }
 
 // commitText returns the mirror's own commit, else its image's resolved commit,
 // falling back to the image digest on a resolver error or an unresolved commit.
-func commitText(ctx context.Context, platform Platform, mirror MirrorState) string {
+func commitText(ctx context.Context, palette terminal.Palette, platform Platform, mirror MirrorState) string {
 	if mirror.Commit != "" {
-		return green(string(mirror.Commit))
+		return palette.Green(mirror.Commit.String())
 	}
 	commit, err := platform.ResolveCommit(ctx, mirror.Image)
 	switch {
 	case err != nil:
-		return red(fmt.Sprintf("unknown (resolve error: %v, digest %s)", err, mirror.Digest))
+		return palette.Red(fmt.Sprintf("unknown (resolve error: %v, digest %s)", err, mirror.Digest))
 	case commit == "":
-		return yellow(fmt.Sprintf("unknown (digest %s)", mirror.Digest))
+		return palette.Yellow(fmt.Sprintf("unknown (digest %s)", mirror.Digest))
 	default:
-		return green(string(commit))
+		return palette.Green(commit.String())
 	}
 }

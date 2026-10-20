@@ -13,7 +13,7 @@ import (
 	"github.com/alecthomas/errors"
 	. "github.com/alecthomas/types/optional"
 
-	"github.com/block/spectre/internal/comparison/javascript"
+	"github.com/block/spectre/internal/boundary"
 	"github.com/block/spectre/internal/descriptors"
 	"github.com/block/spectre/internal/httpserver/message"
 	"github.com/block/spectre/internal/httpserver/middleware/health"
@@ -76,7 +76,7 @@ func NewEgress(
 	}
 	candidates := proxy.NewCandidates(config.Candidates)
 	routes := route.NewMatcher()
-	engine, err := protocol.NewEngine(ctx, engineConfig, map[javascript.Protocol]protocol.Matcher{javascript.ProtocolHTTP: routes}, candidates)
+	engine, err := protocol.NewEngine(ctx, engineConfig, map[boundary.Protocol]protocol.Matcher{boundary.ProtocolHTTP: routes}, candidates)
 	if err != nil {
 		return nil, errors.Wrap(err, "configure request hashing")
 	}
@@ -97,8 +97,8 @@ func NewEgress(
 		candidates:     candidates,
 		requests:       make(chan struct{}, config.MaxInFlightRequests),
 		decoder:        decoder,
-		referencePoint: newPoint(engine.EgressReference(javascript.ProtocolHTTP), recordingBudget, false, true),
-		candidatePoint: newPoint(engine.EgressCandidate(javascript.ProtocolHTTP), recordingBudget, false, true),
+		referencePoint: newPoint(engine.EgressReference(boundary.ProtocolHTTP), recordingBudget, false, true),
+		candidatePoint: newPoint(engine.EgressCandidate(boundary.ProtocolHTTP), recordingBudget, false, true),
 		health:         health.New(http.NotFoundHandler()),
 	}
 	egress.referenceHandler = logging.New(http.HandlerFunc(egress.serveReference), logger.EventReceived)

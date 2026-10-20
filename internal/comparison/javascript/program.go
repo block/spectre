@@ -15,6 +15,7 @@ import (
 	"github.com/alecthomas/errors"
 	"github.com/grafana/sobek"
 
+	"github.com/block/spectre/internal/boundary"
 	"github.com/block/spectre/internal/schema"
 )
 
@@ -110,7 +111,7 @@ func (p *Program) Schema() *schema.Schema {
 }
 
 // Endpoints returns the endpoints declared for a direction, in declaration order.
-func (p *Program) Endpoints(direction Direction) []Endpoint {
+func (p *Program) Endpoints(direction boundary.Direction) []Endpoint {
 	endpoints := []Endpoint{}
 	for _, endpoint := range p.endpoints {
 		if endpoint.Direction() == direction {

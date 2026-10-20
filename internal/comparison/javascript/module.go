@@ -9,6 +9,7 @@ import (
 	"github.com/alecthomas/errors"
 	"github.com/grafana/sobek"
 
+	"github.com/block/spectre/internal/boundary"
 	"github.com/block/spectre/internal/schema"
 )
 
@@ -19,42 +20,32 @@ const (
 	targetMessage targetKind = "message"
 )
 
-// Direction names the proxy that decodes an endpoint's traffic.
-type Direction string
-
-const (
-	// Ingress endpoints type responses from the proxied service. Patterns omit the host.
-	Ingress Direction = "ingress"
-	// Egress endpoints type requests to a dependency. Patterns include its host.
-	Egress Direction = "egress"
-)
-
 // Endpoint maps a protocol-specific request pattern to a payload type, or marks it
 // ignored so matching requests are skipped instead of compared.
 type Endpoint struct {
-	direction Direction
-	protocol  Protocol
+	direction boundary.Direction
+	protocol  boundary.Protocol
 	pattern   string
 	typeName  schema.TypeRef
 	ignore    bool
 }
 
-func newEndpoint(direction Direction, protocol Protocol, pattern string, typeName schema.TypeRef) Endpoint {
+func newEndpoint(direction boundary.Direction, protocol boundary.Protocol, pattern string, typeName schema.TypeRef) Endpoint {
 	return Endpoint{direction: direction, protocol: protocol, pattern: pattern, typeName: typeName}
 }
 
 // newIgnoredEndpoint marks a pattern as never compared; it carries no payload type.
-func newIgnoredEndpoint(direction Direction, protocol Protocol, pattern string) Endpoint {
+func newIgnoredEndpoint(direction boundary.Direction, protocol boundary.Protocol, pattern string) Endpoint {
 	return Endpoint{direction: direction, protocol: protocol, pattern: pattern, ignore: true}
 }
 
 // Direction returns the proxy that uses the endpoint.
-func (e Endpoint) Direction() Direction {
+func (e Endpoint) Direction() boundary.Direction {
 	return e.direction
 }
 
 // Protocol returns the protocol key that interprets the endpoint.
-func (e Endpoint) Protocol() Protocol {
+func (e Endpoint) Protocol() boundary.Protocol {
 	return e.protocol
 }
 
@@ -117,14 +108,14 @@ func (m *spectreModule) Link() error {
 }
 
 func (m *spectreModule) GetExportedNames(callback func([]string), _ ...sobek.ModuleRecord) bool {
-	callback([]string{string(Ingress), string(Egress), string(targetField), string(targetMessage)})
+	callback([]string{string(boundary.Ingress), string(boundary.Egress), string(targetField), string(targetMessage)})
 	return true
 }
 
 func (m *spectreModule) ResolveExport(name string, _ ...sobek.ResolveSetElement) (*sobek.ResolvedBinding, bool) {
 	kind := targetKind(name)
-	direction := Direction(name)
-	if direction != Ingress && direction != Egress && kind != targetField && kind != targetMessage {
+	direction := boundary.Direction(name)
+	if direction != boundary.Ingress && direction != boundary.Egress && kind != targetField && kind != targetMessage {
 		return nil, false
 	}
 	return &sobek.ResolvedBinding{Module: m, BindingName: name}, false
@@ -161,10 +152,10 @@ func newCallbackRegistry(runtime *sobek.Runtime) *callbackRegistry {
 		messages: map[schema.TypeRef]sobek.Callable{},
 	}
 	registry.functions = map[string]sobek.Value{
-		string(Ingress):       registry.directionObject(Ingress),
-		string(Egress):        registry.directionObject(Egress),
-		string(targetField):   runtime.ToValue(registry.registration(targetField)),
-		string(targetMessage): runtime.ToValue(registry.registration(targetMessage)),
+		string(boundary.Ingress): registry.directionObject(boundary.Ingress),
+		string(boundary.Egress):  registry.directionObject(boundary.Egress),
+		string(targetField):      runtime.ToValue(registry.registration(targetField)),
+		string(targetMessage):    runtime.ToValue(registry.registration(targetMessage)),
 	}
 	return registry
 }
@@ -176,44 +167,38 @@ const (
 	ignoreMethod = "ignore"
 )
 
-// Protocol names the protocol that scripts declare endpoints for, e.g. "http".
-type Protocol string
-
-// ProtocolHTTP is the protocol of HTTP servers, including gRPC and Connect.
-const ProtocolHTTP Protocol = "http"
-
 // directionObject builds the ingress or egress namespace object. Its match method
 // registers an endpoint for that direction; ingress also gets an ignore method.
-func (r *callbackRegistry) directionObject(direction Direction) sobek.Value {
+func (r *callbackRegistry) directionObject(direction boundary.Direction) sobek.Value {
 	object := r.runtime.NewObject()
 	r.defineMethod(object, direction, matchMethod, r.endpointRegistration(direction))
-	if direction == Ingress {
+	if direction == boundary.Ingress {
 		r.defineMethod(object, direction, ignoreMethod, r.ignoreRegistration(direction))
 	}
 	return object
 }
 
 // defineMethod binds one namespace-object method, panicking if sobek rejects it.
-func (r *callbackRegistry) defineMethod(object *sobek.Object, direction Direction, method string, fn func(sobek.FunctionCall) sobek.Value) {
+func (r *callbackRegistry) defineMethod(object *sobek.Object, direction boundary.Direction, method string, fn func(sobek.FunctionCall) sobek.Value) {
 	if err := object.Set(method, fn); err != nil {
 		panic(r.runtime.NewTypeError("define spectre.%s.%s: %v", direction, method, err))
 	}
 }
 
 // endpointRegistration receives the type name compile inserts before the script's arguments.
-func (r *callbackRegistry) endpointRegistration(direction Direction) func(sobek.FunctionCall) sobek.Value {
+func (r *callbackRegistry) endpointRegistration(direction boundary.Direction) func(sobek.FunctionCall) sobek.Value {
 	qualified := string(direction) + "." + matchMethod
 	return func(call sobek.FunctionCall) sobek.Value {
 		if len(call.Arguments) != 3 {
 			panic(r.runtime.NewTypeError("spectre.%s requires a type name, a protocol, and a pattern", qualified))
 		}
 		typeName := schema.TypeRef(r.stringArgument(call, 0, qualified, "type name"))
-		protocol := Protocol(r.stringArgument(call, 1, qualified, "protocol"))
+		protocol := boundary.Protocol(r.stringArgument(call, 1, qualified, "protocol"))
 		pattern := r.stringArgument(call, 2, qualified, "pattern")
-		if protocol == ProtocolHTTP && direction == Ingress && !hasForm(pattern, false) {
+		if protocol == boundary.ProtocolHTTP && direction == boundary.Ingress && !hasForm(pattern, false) {
 			panic(r.runtime.NewTypeError("spectre.%s pattern %q must have the form \"<METHOD> /<path>\"", qualified, pattern))
 		}
-		if protocol == ProtocolHTTP && direction == Egress && !hasForm(pattern, true) {
+		if protocol == boundary.ProtocolHTTP && direction == boundary.Egress && !hasForm(pattern, true) {
 			panic(r.runtime.NewTypeError("spectre.%s pattern %q must have the form \"<METHOD> <host>/<path>\"", qualified, pattern))
 		}
 		if slices.ContainsFunc(r.endpoints, func(endpoint Endpoint) bool {
@@ -228,15 +213,15 @@ func (r *callbackRegistry) endpointRegistration(direction Direction) func(sobek.
 
 // ignoreRegistration marks an endpoint as never compared, so the comparator skips
 // matching requests instead of quarantining on them. It takes no payload type.
-func (r *callbackRegistry) ignoreRegistration(direction Direction) func(sobek.FunctionCall) sobek.Value {
+func (r *callbackRegistry) ignoreRegistration(direction boundary.Direction) func(sobek.FunctionCall) sobek.Value {
 	qualified := string(direction) + "." + ignoreMethod
 	return func(call sobek.FunctionCall) sobek.Value {
 		if len(call.Arguments) != 2 {
 			panic(r.runtime.NewTypeError("spectre.%s requires a protocol and a pattern", qualified))
 		}
-		protocol := Protocol(r.stringArgument(call, 0, qualified, "protocol"))
+		protocol := boundary.Protocol(r.stringArgument(call, 0, qualified, "protocol"))
 		pattern := r.stringArgument(call, 1, qualified, "pattern")
-		if protocol == ProtocolHTTP && direction == Ingress && !hasForm(pattern, false) {
+		if protocol == boundary.ProtocolHTTP && direction == boundary.Ingress && !hasForm(pattern, false) {
 			panic(r.runtime.NewTypeError("spectre.%s pattern %q must have the form \"<METHOD> /<path>\"", qualified, pattern))
 		}
 		if slices.ContainsFunc(r.endpoints, func(endpoint Endpoint) bool {

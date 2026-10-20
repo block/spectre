@@ -16,7 +16,7 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/descriptorpb"
 
-	"github.com/block/spectre/internal/comparison/javascript"
+	"github.com/block/spectre/internal/boundary"
 	"github.com/block/spectre/internal/descriptors"
 	"github.com/block/spectre/internal/httpserver/message"
 	"github.com/block/spectre/internal/httpserver/route"
@@ -283,7 +283,7 @@ func buildDecoder(t *testing.T, set *descriptorpb.FileDescriptorSet, declaration
 	config.Comparison.Schema.SchemaDir = writeFiles(t, declarations)
 	config.Comparison.ScriptsDir = writeFiles(t, scripts)
 	routes := route.NewMatcher()
-	matchers := map[javascript.Protocol]protocol.Matcher{javascript.ProtocolHTTP: routes}
+	matchers := map[boundary.Protocol]protocol.Matcher{boundary.ProtocolHTTP: routes}
 	engine, err := protocol.NewEngine(t.Context(), config, matchers, discardQuarantine{})
 	assert.NoError(t, err)
 	return message.New(engine.Schema(), set, routes, maxBodyBytes)

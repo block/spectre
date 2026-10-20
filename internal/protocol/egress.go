@@ -10,8 +10,8 @@ import (
 	"github.com/alecthomas/errors"
 	. "github.com/alecthomas/types/optional"
 
+	"github.com/block/spectre/internal/boundary"
 	"github.com/block/spectre/internal/comparison"
-	"github.com/block/spectre/internal/comparison/javascript"
 	"github.com/block/spectre/internal/future"
 	"github.com/block/spectre/internal/logger"
 )
@@ -92,7 +92,7 @@ func (q *egressQueue) shutdown(ctx context.Context) error {
 }
 
 // hash identifies a request by its protocol, route, and normalised payload.
-func (q *egressQueue) hash(ctx context.Context, protocol javascript.Protocol, route Route, side string,
+func (q *egressQueue) hash(ctx context.Context, protocol boundary.Protocol, route Route, side string,
 	request func(ctx context.Context) (Message, error),
 ) (comparison.Hash, error) {
 	message, err := request(ctx)
@@ -103,7 +103,7 @@ func (q *egressQueue) hash(ctx context.Context, protocol javascript.Protocol, ro
 }
 
 // forward registers a reference request and hashes it in the background.
-func (q *egressQueue) forward(ctx context.Context, protocol javascript.Protocol, route Route,
+func (q *egressQueue) forward(ctx context.Context, protocol boundary.Protocol, route Route,
 	request func(ctx context.Context) (Message, error),
 ) Decision {
 	exchange := newExchange()
@@ -128,7 +128,7 @@ func (q *egressQueue) forward(ctx context.Context, protocol javascript.Protocol,
 }
 
 // intercept answers a candidate request with an equivalent reference response.
-func (q *egressQueue) intercept(ctx context.Context, protocol javascript.Protocol, route Route,
+func (q *egressQueue) intercept(ctx context.Context, protocol boundary.Protocol, route Route,
 	request func(ctx context.Context) (Message, error),
 ) (Decision, error) {
 	raw, err := q.match(ctx, protocol, route, request)
@@ -144,7 +144,7 @@ func (q *egressQueue) intercept(ctx context.Context, protocol javascript.Protoco
 	return DecisionIntercept{Raw: raw}, nil
 }
 
-func (q *egressQueue) match(ctx context.Context, protocol javascript.Protocol, route Route,
+func (q *egressQueue) match(ctx context.Context, protocol boundary.Protocol, route Route,
 	request func(ctx context.Context) (Message, error),
 ) (Raw, error) {
 	waiter := newEgressWaiter(q.arrive())
@@ -386,10 +386,10 @@ func (e *egressExchange) wait(ctx context.Context) (Raw, error) {
 // the background, so failing to identify a request never affects the reference.
 type egressReference struct {
 	queue    *egressQueue
-	protocol javascript.Protocol
+	protocol boundary.Protocol
 }
 
-func newEgressReference(queue *egressQueue, protocol javascript.Protocol) *egressReference {
+func newEgressReference(queue *egressQueue, protocol boundary.Protocol) *egressReference {
 	return &egressReference{queue: queue, protocol: protocol}
 }
 
@@ -418,10 +418,10 @@ func (r *egressReference) Unable(ctx context.Context, exchange Exchange, reason 
 // response. A request that cannot be matched quarantines the candidate.
 type egressCandidate struct {
 	queue    *egressQueue
-	protocol javascript.Protocol
+	protocol boundary.Protocol
 }
 
-func newEgressCandidate(queue *egressQueue, protocol javascript.Protocol) *egressCandidate {
+func newEgressCandidate(queue *egressQueue, protocol boundary.Protocol) *egressCandidate {
 	return &egressCandidate{queue: queue, protocol: protocol}
 }
 

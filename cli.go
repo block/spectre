@@ -2,15 +2,19 @@ package spectre
 
 import (
 	"context"
+	"os"
 
 	"github.com/alecthomas/errors"
 	"github.com/alecthomas/kong"
 
+	"github.com/block/spectre/internal/boundary"
 	"github.com/block/spectre/internal/comparison/javascript"
 	"github.com/block/spectre/internal/descriptors"
 	"github.com/block/spectre/internal/jsonschema"
 	"github.com/block/spectre/internal/logger"
+	"github.com/block/spectre/internal/state"
 	"github.com/block/spectre/internal/supervisor"
+	"github.com/block/spectre/internal/terminal"
 	"github.com/block/spectre/status"
 )
 
@@ -24,6 +28,21 @@ type cli struct {
 	Run    runCommand    `cmd:"" help:"Run the supervisor with the embedded proxies, splitting resources between a candidate and a reference."`
 	Gen    genCommand    `cmd:"" help:"Generate TypeScript schema declarations and the script API."`
 	Status statusCommand `cmd:"" help:"Report the SPECTRE migration status and mirror deployment for a service."`
+	State  stateCommand  `cmd:"" help:"Describe a service's migration state."`
+}
+
+// stateCommand groups the commands that read a service's migration state.
+type stateCommand struct {
+	Types stateTypesCommand `cmd:"" help:"Describe each node type the migration state can use."`
+}
+
+// stateTypesCommand describes the node types for an agent that writes the migration state.
+type stateTypesCommand struct {
+	Types state.TypesConfig `embed:""`
+}
+
+func (c *stateTypesCommand) Run(catalog *boundary.Catalog) error {
+	return errors.WithStack(state.WriteTypes(os.Stdout, c.Types, terminal.NewPalette(terminal.ColorEnabled(os.Stdout)), catalog))
 }
 
 // statusCommand reports the SPECTRE migration status for a service.
