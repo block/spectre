@@ -11,7 +11,7 @@ The kinds of IO a module performs also decide how SPECTRE verifies it. Those kin
 ## Goals
 
 - A `spectre/state.toml` file that lists a service's modules as nodes, their types, and the nodes they depend on.
-- Node types are `library` or an IO kind written `<direction>[<protocol>]`, such as `ingress[http]` or `egress[http]`. A node can have several.
+- Node types are `library` or an IO kind written `<direction>[<protocol>]`, such as `ingress[http]` or `egress[http]`. A node can have several, each with its own settings.
 - The IO kinds are not hard-coded in the plan. They come from the same abstraction the proxies register their protocols with, so a protocol a custom binary adds becomes a valid node type too.
 - Ingress mirrors only the routes of migrated nodes, so a partly migrated candidate is compared only on what it implements.
 - Commands that validate the plan, list the nodes ready for their next step, and describe each valid node type well enough for an agent to write the plan.
@@ -32,7 +32,7 @@ An IO kind is a direction, ingress or egress, paired with a protocol, such as HT
 
 Directions, protocols, and kinds move out of the script loader into their own low-level package, which the script loader, the protocol engine, and the plan all import.
 
-Each protocol server reports the kinds it supports, each with a description of the code that has that kind and how to recognise it. The HTTP server supports both `ingress[http]` and `egress[http]`. A future protocol that proxies only one direction, such as a queue consumer, reports only that one. The protocol server knows its traffic best, so it owns the description, and a custom protocol brings its own.
+Each protocol server reports the kinds it supports. For each kind it gives a description of the code that has that kind and how to recognise it, and the settings a node of that kind takes, such as the routes an HTTP ingress node handles. The HTTP server supports both `ingress[http]` and `egress[http]`. A future protocol that proxies only one direction, such as a queue consumer, reports only that one. The protocol server knows its traffic best, so it owns the description and the settings, and a custom protocol brings its own.
 
 At startup, the binary collects the kinds of every protocol server it contains into one set. That set is the single source for:
 
@@ -40,7 +40,7 @@ At startup, the binary collects the kinds of every protocol server it contains i
 - **The script API declaration**: the protocol parameter of `ingress.match` and `egress.match` lists the protocols supported in that direction, instead of only HTTP.
 - **The plan**: a node type is `library` or a supported kind.
 
-When custom binaries can add protocols, which ADR 004 lists as a planned extension point, registering a protocol server also adds its kinds and their descriptions. The plan then accepts them with no other change.
+When custom binaries can add protocols, which ADR 004 lists as a planned extension point, registering a protocol server also adds its kinds, their descriptions, and their settings. The plan then accepts them with no other change.
 
 ### Plan file
 
@@ -48,41 +48,51 @@ SPECTRE does not build the plan itself. An external agent writes it from the ser
 
 `spectre/state.toml` sits beside `spectre/migration.toml`. The migration config describes where the mirror runs and changes rarely. The plan changes at every migration step and is often written by an LLM, so it is a separate file.
 
-Each node is a table under `nodes`, keyed by a kebab-case ID, so TOML itself rejects duplicate IDs.
+Each node is a table under `nodes`, keyed by a kebab-case ID, so TOML itself rejects duplicate IDs. Each IO kind the node has is a table inside it, keyed by direction and then protocol, that holds the kind's settings. A kind with no settings is an empty table.
+
+This example assumes a binary that also has a Kafka protocol server:
 
 ```toml
 [nodes.money]
-types = ["library"]
 status = "migrated"
 
 [nodes.ledger-client]
-types = ["egress[http]"]
 depends_on = ["money"]
 status = "migrated"
 
+[nodes.ledger-client.egress.http]
+
 [nodes.invoices-api]
-types = ["ingress[http]", "egress[http]"]
-routes = ["GET /v1/invoices/{id}", "POST /example.invoices.v1.InvoiceService/CreateInvoice"]
 depends_on = ["money", "ledger-client"]
 status = "migrated"
 
+[nodes.invoices-api.ingress.http]
+routes = ["GET /v1/invoices/{id}", "POST /example.invoices.v1.InvoiceService/CreateInvoice"]
+
+[nodes.invoices-api.ingress.kafka]
+topics = ["invoice-requested"]
+
+[nodes.invoices-api.egress.http]
+
 [nodes.reports-api]
-types = ["ingress[http]"]
-routes = ["GET /v1/reports/{id}"]
 depends_on = ["money"]
 status = "pending"
+
+[nodes.reports-api.ingress.http]
+routes = ["GET /v1/reports/{id}"]
 ```
 
 | Field | Meaning |
 | --- | --- |
-| `types` | Required. `library`, or one or more IO kinds. |
-| `routes` | Ingress routes the node handles, in the pattern syntax of `ingress.match`. Only nodes with an ingress type have them, and a route belongs to one node. |
 | `depends_on` | IDs of nodes whose code this node calls or imports. |
 | `status` | `pending` or `migrated`. Defaults to `pending`. |
+| `<direction>.<protocol>` | An IO kind the node has, holding the settings its protocol server defines. |
 
-A node's types describe the IO its own code performs, not IO it reaches through its dependencies. `invoices-api` above calls a tax service directly, so it is `egress[http]` as well as `ingress[http]`. It reaches the ledger only through `ledger-client`, which carries that egress.
+Loading the state rejects a kind the binary does not support and a setting its protocol server does not define, so mistakes in an agent's output fail at once. Each protocol server also checks its settings across nodes, for example that a route belongs to only one node.
 
-`library` means code that more than one other node uses and that performs no IO, so it cannot be combined with an IO kind. Code that only one node uses is part of that node.
+A node's IO kinds describe the IO its own code performs, not IO it reaches through its dependencies. `invoices-api` above serves HTTP requests and Kafka messages, and calls a tax service directly, so it has all three kinds. It reaches the ledger only through `ledger-client`, which carries that egress.
+
+A node with no IO kinds is a `library`. A library is code that more than one other node uses, so code that only one node uses is part of that node.
 
 A node's status says where its code lives:
 
@@ -93,11 +103,13 @@ A node's status says where its code lives:
 
 ### Mirroring
 
-The SPECTRE image carries the plan from the same commit as the candidate, and ingress reads it at startup.
+The SPECTRE image carries the plan from the same commit as the candidate, and ingress reads it at startup. Each ingress protocol server reads only the settings of its own kind. For HTTP:
 
-- A request whose route belongs to a `migrated` node is mirrored to the candidate and compared, as today.
+- A request whose route is in the `ingress.http.routes` of a `migrated` node is mirrored to the candidate and compared, as today.
 - Every other request goes to the reference only. That includes routes no node lists, which ingress logs so that missing routes show up.
 - Without a plan file, ingress mirrors every request, as today.
+
+Another protocol mirrors by its own settings in the same way, such as a Kafka server mirroring the topics of migrated nodes.
 
 Because the plan and the candidate come from one commit, the mirrored routes always match the code the candidate has. Marking a node migrated and deploying is enough to start comparing it, and the candidate is never quarantined for routes it does not implement yet. `ingress.ignore` remains for routes that are migrated but cannot be compared.
 
@@ -112,7 +124,7 @@ Migration runs in topological order, dependencies first, so libraries and egress
 ### Commands
 
 ```
-spectre state types      # library, then each supported IO kind, with descriptions
+spectre state types      # library, then each supported IO kind, with descriptions and settings
 spectre state validate   # validate the plan; non-zero exit on any error
 spectre state next       # nodes ready to migrate
 spectre state migrated <node>  # mark a node migrated
@@ -132,18 +144,24 @@ spectre state migrated <node>  # mark a node migrated
 ```markdown
 ## library
 
-Code shared by more than one other node that performs no IO, such as shared domain types, validation, calculations, and helpers. Code that only one node uses belongs to that node, not to a library. Shared code that does any IO is not a library either; it is a node with the IO kinds it performs.
+Code shared by more than one other node that performs no IO, such as shared domain types, validation, calculations, and helpers. Code that only one node uses belongs to that node, not to a library. Shared code that does any IO is not a library either; it is a node with the IO kinds it performs. A library node has no IO kind tables.
 
 ## ingress[http]
 
-Code that receives HTTP requests to the service, including gRPC and Connect: route registrations, controllers, handlers, and service implementations. The service's routes and RPC methods are the entry points SPECTRE compares, so every request path starts at one of these nodes. List each route the node handles in `routes`, as `<METHOD> /<path>`; a gRPC or Connect method is `POST /<package>.<Service>/<Method>`.
+Code that receives HTTP requests to the service, including gRPC and Connect: route registrations, controllers, handlers, and service implementations. The service's routes and RPC methods are the entry points SPECTRE compares, so every request path starts at one of these nodes.
+
+Settings:
+
+- `routes` (required): each route the node handles, as `<METHOD> /<path>`. A gRPC or Connect method is `POST /<package>.<Service>/<Method>`.
 
 ## egress[http]
 
 Code that sends HTTP requests to another service, including gRPC and Connect: API clients, generated stubs and the code that configures them, and code that builds requests or reads their responses. SPECTRE pairs these requests and replays the reference's responses to the candidate.
+
+No settings.
 ```
 
-Each description says what the node type covers, how to recognise it in source code, and what SPECTRE does with it. `library` is described by the plan itself, since no protocol server owns it.
+Each description says what the node type covers, how to recognise it in source code, and what SPECTRE does with it, followed by the settings a node of that type takes. `library` is described by the plan itself, since no protocol server owns it. It has no table, because a library is a node without IO kinds.
 
 ### Status
 
