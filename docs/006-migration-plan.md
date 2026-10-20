@@ -102,9 +102,18 @@ Removal from the reference runs the other way, dependents first, so ingress node
 spectre plan types      # library, then each supported IO kind, with descriptions
 spectre plan validate   # validate the plan; non-zero exit on any error
 spectre plan next       # nodes ready to migrate, then nodes ready to remove
+spectre plan migrated <node>  # mark a node migrated
+spectre plan removed <node>   # mark a node done
 ```
 
 `next` sorts nodes by ID, so its output is stable, and can print JSON for agents. The plan's path is a flag that defaults to `spectre/plan.toml`.
+
+`migrated` and `removed` are for the agent doing the migration, which calls them after it adds a node to the candidate or removes it from the reference. They only update the node's status in the plan file:
+
+- They change only that node's status line, so comments, ordering, and formatting stay as written and the diff is one line.
+- A node must be ready for the step, as defined above. Otherwise the command fails and names the nodes in the way, so the agent knows what to do first.
+- Marking a node with the status it already has succeeds without changing the file, so an agent can safely retry.
+- They do not commit. The agent commits the plan change with the code change it records.
 
 `spectre plan types` is how module extraction discovers the vocabulary. An agent that writes the plan takes its output as input instead of a fixed list, so the prompt stays correct for custom binaries. The output is Markdown, and JSON on request:
 
