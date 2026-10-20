@@ -157,4 +157,3 @@ None of these fail the report, like the other per-environment errors.
 - Should `plan validate` take a checkout of the reference and fail when a source file matches no node, or more than one?
 - Should a node also list the ingress routes and egress patterns it owns, so a later status between `migrated` and `done` could record that SPECTRE found them equivalent?
 - Should nodes record their candidate sources too, once the target layout is known?
-- Should `plan.toml` and `migration.toml` merge into one file once both are in use?
