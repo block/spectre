@@ -13,6 +13,7 @@ The kinds of IO a module performs also decide how SPECTRE verifies it. Those kin
 - A `spectre/plan.toml` file that lists a service's modules as nodes, their types, and the nodes they depend on.
 - Node types are `library` or an IO kind written `<direction>[<protocol>]`, such as `ingress[http]` or `egress[http]`. A node can have several.
 - The IO kinds are not hard-coded in the plan. They come from the same abstraction the proxies register their protocols with, so a protocol a custom binary adds becomes a valid node type too.
+- Ingress mirrors only the routes of migrated nodes, so a partly migrated candidate is compared only on what it implements.
 - Commands that validate the plan, list the nodes ready for their next step, and describe each valid node type well enough for an agent to write the plan.
 
 ## Non-goals
@@ -61,11 +62,13 @@ status = "migrated"
 
 [nodes.invoices-api]
 types = ["ingress[http]", "egress[http]"]
+routes = ["GET /v1/invoices/{id}", "POST /example.invoices.v1.InvoiceService/CreateInvoice"]
 depends_on = ["money", "ledger-client"]
 status = "migrated"
 
 [nodes.reports-api]
 types = ["ingress[http]"]
+routes = ["GET /v1/reports/{id}"]
 depends_on = ["money"]
 status = "pending"
 ```
@@ -73,6 +76,7 @@ status = "pending"
 | Field | Meaning |
 | --- | --- |
 | `types` | Required. `library`, or one or more IO kinds. |
+| `routes` | Ingress routes the node handles, in the pattern syntax of `ingress.match`. Only nodes with an ingress type have them, and a route belongs to one node. |
 | `depends_on` | IDs of nodes whose code this node calls or imports. |
 | `status` | `pending` or `migrated`. Defaults to `pending`. |
 
@@ -86,6 +90,18 @@ A node's status says where its code lives:
 | --- | --- |
 | `pending` | Only in the reference. |
 | `migrated` | In the candidate as well as the reference. |
+
+### Mirroring
+
+The SPECTRE image carries the plan from the same commit as the candidate, and ingress reads it at startup.
+
+- A request whose route belongs to a `migrated` node is mirrored to the candidate and compared, as today.
+- Every other request goes to the reference only. That includes routes no node lists, which ingress logs so that missing routes show up.
+- Without a plan file, ingress mirrors every request, as today.
+
+Because the plan and the candidate come from one commit, the mirrored routes always match the code the candidate has. Marking a node migrated and deploying is enough to start comparing it, and the candidate is never quarantined for routes it does not implement yet. `ingress.ignore` remains for routes that are migrated but cannot be compared.
+
+Each route belongs to one node, so a divergence on a route also names the node to fix.
 
 ### Order
 
@@ -120,7 +136,7 @@ Code shared by more than one other node that performs no IO, such as shared doma
 
 ## ingress[http]
 
-Code that receives HTTP requests to the service, including gRPC and Connect: route registrations, controllers, handlers, and service implementations. The service's routes and RPC methods are the entry points SPECTRE compares, so every request path starts at one of these nodes.
+Code that receives HTTP requests to the service, including gRPC and Connect: route registrations, controllers, handlers, and service implementations. The service's routes and RPC methods are the entry points SPECTRE compares, so every request path starts at one of these nodes. List each route the node handles in `routes`, as `<METHOD> /<path>`; a gRPC or Connect method is `POST /<package>.<Service>/<Method>`.
 
 ## egress[http]
 
@@ -155,4 +171,5 @@ None of these fail the report, like the other per-environment errors.
 
 ## Open questions
 
-- Should a node also list the ingress routes and egress patterns it owns, so the plan could record that SPECTRE found them equivalent?
+- Should a node also list the egress patterns it owns, so the plan could check that its comparison scripts declare them?
+- How is equivalence reported per node, so a person can tell when a migrated node has seen enough traffic to trust?
