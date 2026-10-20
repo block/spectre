@@ -4,7 +4,7 @@
 
 ## Problem
 
-A migration moves a service one piece at a time, but nothing records what the pieces are, what each depends on, or how far each has got. Without that, neither a person nor an LLM can tell which module to migrate next, or which reference code is safe to remove.
+A migration moves a service one piece at a time, but nothing records what the pieces are, what each depends on, or how far each has got. Without that, neither a person nor an LLM can tell which module to migrate next.
 
 The kinds of IO a module performs also decide how SPECTRE verifies it. Those kinds are defined by what the ingress and egress proxies support, but today the script loader is the only place that knows them.
 
@@ -21,6 +21,7 @@ The kinds of IO a module performs also decide how SPECTRE verifies it. Those kin
 - Updating node status from live mirror traffic.
 - Recording which source files make up each node, in either the reference or the candidate.
 - Changing how the engine pairs or compares traffic.
+- Removing migrated code from the reference, or cutting traffic over to the candidate.
 
 ## Decision
 
@@ -61,7 +62,7 @@ status = "migrated"
 [nodes.invoices-api]
 types = ["ingress[http]", "egress[http]"]
 depends_on = ["money", "ledger-client"]
-status = "done"
+status = "migrated"
 
 [nodes.reports-api]
 types = ["ingress[http]"]
@@ -73,7 +74,7 @@ status = "pending"
 | --- | --- |
 | `types` | Required. `library`, or one or more IO kinds. |
 | `depends_on` | IDs of nodes whose code this node calls or imports. |
-| `status` | `pending`, `migrated`, or `done`. Defaults to `pending`. |
+| `status` | `pending` or `migrated`. Defaults to `pending`. |
 
 A node's types describe the IO its own code performs, not IO it reaches through its dependencies. `invoices-api` above calls a tax service directly, so it is `egress[http]` as well as `ingress[http]`. It reaches the ledger only through `ledger-client`, which carries that egress.
 
@@ -85,16 +86,10 @@ A node's status says where its code lives:
 | --- | --- |
 | `pending` | Only in the reference. |
 | `migrated` | In the candidate as well as the reference. |
-| `done` | Removed from the reference, so only in the candidate. |
 
 ### Order
 
-Migration runs in topological order, dependencies first, so libraries and egress clients usually go before the ingress nodes that use them.
-
-Removal from the reference runs the other way, dependents first, so ingress nodes usually go before the libraries they use.
-
-- A node is ready to migrate when it is `pending` and none of its dependencies are.
-- A node is ready to remove when it is `migrated` and every node that depends on it is `done`.
+Migration runs in topological order, dependencies first, so libraries and egress clients usually go before the ingress nodes that use them. A node is ready to migrate when it is `pending` and none of its dependencies are.
 
 `validate` also warns about nodes that no ingress node reaches. SPECTRE only sees code that ingress traffic reaches, so such a node is either dead code or runs from something SPECTRE does not mirror, such as a scheduled job.
 
@@ -103,19 +98,18 @@ Removal from the reference runs the other way, dependents first, so ingress node
 ```
 spectre plan types      # library, then each supported IO kind, with descriptions
 spectre plan validate   # validate the plan; non-zero exit on any error
-spectre plan next       # nodes ready to migrate, then nodes ready to remove
+spectre plan next       # nodes ready to migrate
 spectre plan migrated <node>  # mark a node migrated
-spectre plan done <node>      # mark a node done
 ```
 
 `next` sorts nodes by ID, so its output is stable, and can print JSON for agents. The plan's path is a flag that defaults to `spectre/plan.toml`.
 
-`migrated` and `done` are for the agent doing the migration, which calls them after it adds a node to the candidate or removes it from the reference. They only update the node's status in the plan file:
+`migrated` is for the agent doing the migration, which calls it after it adds a node to the candidate. It only updates the node's status in the plan file:
 
-- They change only that node's status line, so comments, ordering, and formatting stay as written and the diff is one line.
-- A node must be ready for the step, as defined above. Otherwise the command fails and names the nodes in the way, so the agent knows what to do first.
-- Marking a node with the status it already has succeeds without changing the file, so an agent can safely retry.
-- They do not commit. The agent commits the plan change with the code change it records.
+- It changes only that node's status line, so comments, ordering, and formatting stay as written and the diff is one line.
+- The node must be ready to migrate, as defined above. Otherwise the command fails and names the dependencies still pending, so the agent knows what to do first.
+- Marking a node that is already migrated succeeds without changing the file, so an agent can safely retry.
+- It does not commit. The agent commits the plan change with the code change it records.
 
 `spectre plan types` is how module extraction discovers the vocabulary. An agent that writes the plan takes its output as input instead of a fixed list, so the prompt stays correct for custom binaries. The output is Markdown, and JSON on request:
 
@@ -144,7 +138,7 @@ invoices
   production-us-west-2: spectre mirror deployed
     commit: 3f9c2a1
     image: ...
-    plan: 4 done, 7 migrated, 12 pending (23 nodes); 3 ready to migrate, 2 ready to remove
+    plan: 7 migrated, 12 pending (19 nodes); 3 ready to migrate
     candidate: healthy
 ```
 
@@ -161,4 +155,4 @@ None of these fail the report, like the other per-environment errors.
 
 ## Open questions
 
-- Should a node also list the ingress routes and egress patterns it owns, so a later status between `migrated` and `done` could record that SPECTRE found them equivalent?
+- Should a node also list the ingress routes and egress patterns it owns, so the plan could record that SPECTRE found them equivalent?
