@@ -13,7 +13,7 @@ The kinds of IO a module performs also decide how SPECTRE verifies it. Those kin
 - A `spectre/state.toml` file that lists a service's modules as nodes, their types, and the nodes they depend on.
 - Node types are `library` or an IO kind written `<direction>[<protocol>]`, such as `ingress[http]` or `egress[http]`. A node can have several, each with its own settings.
 - The IO kinds are not hard-coded in the plan. They come from the same abstraction the proxies register their protocols with, so a protocol a custom binary adds becomes a valid node type too.
-- Ingress mirrors only the routes of migrated nodes, so a partly migrated candidate is compared only on what it implements.
+- Ingress mirrors only the routes of migrated nodes, so a partly migrated candidate is compared only on what it implements, and quarantines the candidate on a route the state does not list.
 - Commands that validate the plan, list the nodes ready for their next step, and describe each valid node type well enough for an agent to write the plan.
 
 ## Non-goals
@@ -106,7 +106,8 @@ A node's status says where its code lives:
 The SPECTRE image carries the plan from the same commit as the candidate, and ingress reads it at startup. Each ingress protocol server reads only the settings of its own kind. For HTTP:
 
 - A request whose route is in the `ingress.http.routes` of a `migrated` node is mirrored to the candidate and compared, as today.
-- Every other request goes to the reference only. That includes routes no node lists, which ingress logs so that missing routes show up.
+- A request whose route belongs to a `pending` node goes to the reference only.
+- A request whose route no node lists also goes to the reference only, but quarantines the candidate with a reason that names the route. The state is incomplete, so it must be updated before comparison resumes. Routes that ingress never compares, such as those scripts ignore and gRPC reflection, need no node.
 - Without a plan file, ingress mirrors every request, as today.
 
 Another protocol mirrors by its own settings in the same way, such as a Kafka server mirroring the topics of migrated nodes.
@@ -152,7 +153,7 @@ Code that receives HTTP requests to the service, including gRPC and Connect: rou
 
 Write it as the table `[nodes.<id>.ingress.http]`, with these settings:
 
-- `routes` (required): Each route the node handles, as `<METHOD> /<path>`. A gRPC or Connect method is `POST /<package>.<Service>/<Method>`.
+- `routes` (required): Each route the node handles, as `<METHOD> /<path>`. A gRPC or Connect method is `POST /<package>.<Service>/<Method>`. List every route the service serves: a request to a route no node lists quarantines the candidate.
 
 ## egress[http]
 
