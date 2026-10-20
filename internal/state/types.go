@@ -93,13 +93,29 @@ func text(palette terminal.Palette, nodeType NodeType) string {
 		section.WriteString("\n  " + palette.Dim("No settings.") + "\n")
 		return section.String()
 	}
-	for _, setting := range nodeType.Settings {
+	writeSettings(&section, palette, nodeType.Settings, "  ")
+	return section.String()
+}
+
+// writeSettings renders each setting at indent, with the entries of a keyed
+// table nested one level deeper.
+func writeSettings(section *strings.Builder, palette terminal.Palette, settings []boundary.Setting, indent string) {
+	for _, setting := range settings {
 		requirement := palette.Dim("(optional)")
 		if setting.Required {
 			requirement = palette.Yellow("(required)")
 		}
-		section.WriteString("\n  " + palette.Green(setting.Name) + " " + requirement + "\n")
-		section.WriteString(terminal.Wrap(setting.Description, "    ", textWidth))
+		section.WriteString("\n" + indent + palette.Green(setting.Name) + " " + requirement + "\n")
+		section.WriteString(terminal.Wrap(setting.Description, indent+"  ", textWidth))
+		if setting.Key == "" {
+			continue
+		}
+		shape := "A table keyed by " + setting.Key + "."
+		if len(setting.Entry) == 0 {
+			section.WriteString("\n" + terminal.Wrap(shape+" Each entry takes no settings yet, so write it as {}.", indent+"  ", textWidth))
+			continue
+		}
+		section.WriteString("\n" + terminal.Wrap(shape+" Each entry is a table with these settings:", indent+"  ", textWidth))
+		writeSettings(section, palette, setting.Entry, indent+"    ")
 	}
-	return section.String()
 }

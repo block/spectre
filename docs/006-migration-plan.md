@@ -66,11 +66,12 @@ status = "migrated"
 depends_on = ["money", "ledger-client"]
 status = "migrated"
 
-[nodes.invoices-api.ingress.http]
-routes = ["GET /v1/invoices/{id}", "POST /example.invoices.v1.InvoiceService/CreateInvoice"]
+[nodes.invoices-api.ingress.http.routes]
+"GET /v1/invoices/{id}" = {}
+"POST /example.invoices.v1.InvoiceService/CreateInvoice" = {}
 
-[nodes.invoices-api.ingress.kafka]
-topics = ["invoice-requested"]
+[nodes.invoices-api.ingress.kafka.topics]
+"invoice-requested" = {}
 
 [nodes.invoices-api.egress.http]
 
@@ -78,8 +79,8 @@ topics = ["invoice-requested"]
 depends_on = ["money"]
 status = "pending"
 
-[nodes.reports-api.ingress.http]
-routes = ["GET /v1/reports/{id}"]
+[nodes.reports-api.ingress.http.routes]
+"GET /v1/reports/{id}" = {}
 ```
 
 | Field | Meaning |
@@ -87,6 +88,8 @@ routes = ["GET /v1/reports/{id}"]
 | `depends_on` | IDs of nodes whose code this node calls or imports. |
 | `status` | `pending` or `migrated`. Defaults to `pending`. |
 | `<direction>.<protocol>` | An IO kind the node has, holding the settings its protocol server defines. |
+
+A setting that lists things, such as routes or topics, is a table keyed by them, with an empty table for each until a protocol defines settings for individual entries. Adding such settings later then changes no existing state file.
 
 Loading the state rejects a kind the binary does not support and a setting its protocol server does not define, so mistakes in an agent's output fail at once. Each protocol server also checks its settings across nodes, for example that a route belongs to only one node.
 
@@ -105,7 +108,7 @@ A node's status says where its code lives:
 
 The SPECTRE image carries the plan from the same commit as the candidate, and ingress reads it at startup. Each ingress protocol server reads only the settings of its own kind. For HTTP:
 
-- A request whose route is in the `ingress.http.routes` of a `migrated` node is mirrored to the candidate and compared, as today.
+- A request whose route is a key of the `ingress.http.routes` of a `migrated` node is mirrored to the candidate and compared, as today.
 - A request whose route belongs to a `pending` node goes to the reference only.
 - A request whose route no node lists also goes to the reference only, but quarantines the candidate with a reason that names the route. The state is incomplete, so it must be updated before comparison resumes. Routes that ingress never compares, such as those scripts ignore and gRPC reflection, need no node.
 - Without a plan file, ingress mirrors every request, as today.
@@ -157,9 +160,12 @@ ingress[http] [nodes.<id>.ingress.http]
   every request path starts at one of these nodes.
 
   routes (required)
-    Each route the node handles, as <METHOD> /<path>. A gRPC or Connect method
-    is POST /<package>.<Service>/<Method>. List every route the service serves:
-    a request to a route no node lists quarantines the candidate.
+    Each route the node handles. List every route the service serves: a request
+    to a route no node lists quarantines the candidate.
+
+    A table keyed by <METHOD> /<path>, or POST /<package>.<Service>/<Method> for
+    a gRPC or Connect method. Each entry takes no settings yet, so write it as
+    {}.
 
 egress[http] [nodes.<id>.egress.http]
   Code that sends HTTP requests to another service, including gRPC and Connect:

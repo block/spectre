@@ -46,11 +46,16 @@ type Support struct {
 	Settings    []Setting
 }
 
-// Setting is one field that a node's table for a kind of IO can hold.
+// Setting is one field that a node's table for a kind of IO can hold. With a
+// Key, it is a table of entries, each holding the Entry settings.
 type Setting struct {
 	Name        string `json:"name"`
 	Required    bool   `json:"required"`
 	Description string `json:"description"`
+	// Key describes what keys the entries, or is empty for a plain value.
+	Key string `json:"key,omitzero"`
+	// Entry lists the settings that each entry takes.
+	Entry []Setting `json:"entry,omitzero"`
 }
 
 // Catalog is every kind of IO that the protocol servers in one binary support.
