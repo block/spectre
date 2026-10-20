@@ -79,7 +79,7 @@ status = "pending"
 
 A node's types describe the IO its own code performs, not IO it reaches through its dependencies. `invoices-api` above calls a tax service directly, so it is `egress[http]` as well as `ingress[http]`. It reaches the ledger only through `ledger-client`, which carries that egress.
 
-`library` means the node performs no IO, so it cannot be combined with an IO kind.
+`library` means code that more than one other node uses and that performs no IO, so it cannot be combined with an IO kind. Code that only one node uses is part of that node.
 
 A node's status says where its code lives:
 
@@ -115,7 +115,7 @@ spectre plan next       # nodes ready to migrate, then nodes ready to remove
 ```markdown
 ## library
 
-Code that performs no IO: domain types, validation, calculations, and helpers shared by other nodes. It neither receives requests nor calls anything outside the process. Code that does any IO is not a library, even when it is shared.
+Code shared by more than one other node that performs no IO, such as shared domain types, validation, calculations, and helpers. Code that only one node uses belongs to that node, not to a library. Shared code that does any IO is not a library either; it is a node with the IO kinds it performs.
 
 ## ingress[http]
 
