@@ -18,7 +18,8 @@ func Supports() []boundary.Support {
 				Name:     "routes",
 				Required: true,
 				Description: "Each route the node handles, as `<METHOD> /<path>`. " +
-					"A gRPC or Connect method is `POST /<package>.<Service>/<Method>`.",
+					"A gRPC or Connect method is `POST /<package>.<Service>/<Method>`. " +
+					"List every route the service serves: a request to a route no node lists quarantines the candidate.",
 			}},
 		},
 		{
