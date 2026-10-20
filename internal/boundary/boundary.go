@@ -54,6 +54,8 @@ type Setting struct {
 	Description string `json:"description"`
 	// Key describes what keys the entries, or is empty for a plain value.
 	Key string `json:"key,omitzero"`
+	// Unique keyed entries may belong to only one node, such as a route.
+	Unique bool `json:"unique,omitzero"`
 	// Entry lists the settings that each entry takes.
 	Entry []Setting `json:"entry,omitzero"`
 }
@@ -81,6 +83,16 @@ func NewCatalog(supports ...Support) (*Catalog, error) {
 // Supports returns every supported kind of IO in listing order.
 func (c *Catalog) Supports() []Support {
 	return slices.Clone(c.supports)
+}
+
+// Support returns what the catalog supports for kind, if it supports it.
+func (c *Catalog) Support(kind Kind) (Support, bool) {
+	for _, support := range c.supports {
+		if support.Kind == kind {
+			return support, true
+		}
+	}
+	return Support{}, false
 }
 
 func directionOrder(direction Direction) int {

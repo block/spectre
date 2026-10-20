@@ -29,6 +29,19 @@ func TestCatalogRejectsKindSupportedTwice(t *testing.T) {
 	assert.EqualError(t, err, "ingress[http] is supported twice")
 }
 
+func TestCatalogSupport(t *testing.T) {
+	httpIngress := support(boundary.Ingress, boundary.ProtocolHTTP)
+	catalog, err := boundary.NewCatalog(httpIngress)
+	assert.NoError(t, err)
+
+	found, ok := catalog.Support(httpIngress.Kind)
+	assert.True(t, ok)
+	assert.Equal(t, httpIngress, found)
+
+	_, ok = catalog.Support(boundary.Kind{Direction: boundary.Egress, Protocol: boundary.ProtocolHTTP})
+	assert.False(t, ok)
+}
+
 func support(direction boundary.Direction, protocol boundary.Protocol) boundary.Support {
 	kind := boundary.Kind{Direction: direction, Protocol: protocol}
 	return boundary.Support{Kind: kind, Description: "Code that does " + kind.String() + "."}

@@ -121,7 +121,7 @@ Each route belongs to one node, so a divergence on a route also names the node t
 
 ### Order
 
-Migration runs in topological order, dependencies first, so libraries and egress clients usually go before the ingress nodes that use them. A node is ready to migrate when it is `pending` and none of its dependencies are.
+Migration runs in topological order, dependencies first, so libraries and egress clients usually go before the ingress nodes that use them. A node is ready to migrate when it is `pending` and none of its dependencies are. A `migrated` node that depends on a `pending` one is invalid, since the candidate would lack code it calls.
 
 `validate` also warns about nodes that no ingress node reaches. SPECTRE only sees code that ingress traffic reaches, so such a node is either dead code or runs from something SPECTRE does not mirror, such as a scheduled job.
 

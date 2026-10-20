@@ -33,7 +33,8 @@ type cli struct {
 
 // stateCommand groups the commands that read a service's migration state.
 type stateCommand struct {
-	Types stateTypesCommand `cmd:"" help:"Describe each node type the migration state can use."`
+	Types    stateTypesCommand    `cmd:"" help:"Describe each node type the migration state can use."`
+	Validate stateValidateCommand `cmd:"" help:"Check the migration state for errors, and warn about nodes ingress never reaches."`
 }
 
 // stateTypesCommand describes the node types for an agent that writes the migration state.
@@ -43,6 +44,15 @@ type stateTypesCommand struct {
 
 func (c *stateTypesCommand) Run(catalog *boundary.Catalog) error {
 	return errors.WithStack(state.WriteTypes(os.Stdout, c.Types, terminal.NewPalette(terminal.ColorEnabled(os.Stdout)), catalog))
+}
+
+// stateValidateCommand checks a migration state file.
+type stateValidateCommand struct {
+	State state.Config `embed:""`
+}
+
+func (c *stateValidateCommand) Run(catalog *boundary.Catalog) error {
+	return errors.WithStack(state.Validate(os.Stdout, c.State, terminal.NewPalette(terminal.ColorEnabled(os.Stdout)), catalog))
 }
 
 // statusCommand reports the SPECTRE migration status for a service.
