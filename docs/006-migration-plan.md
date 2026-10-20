@@ -89,17 +89,6 @@ A node's status says where its code lives:
 | `migrated` | In the candidate as well as the reference. |
 | `done` | Removed from the reference, so only in the candidate. |
 
-### Validation
-
-Loading the plan fails when:
-
-- a node has no types, a duplicate type, an unknown type, or `library` alongside an IO kind;
-- a type names an IO kind that this binary's proxies do not support;
-- `depends_on` names a missing node or the node itself;
-- the dependencies form a cycle. The error names the nodes in one cycle. Mutually dependent modules are migrated together, so they belong in one node;
-- a node is `migrated` or `done` while a dependency is `pending`, because the candidate code would call code the candidate does not have;
-- a node is `done` while a node that depends on it is not, because the remaining reference code would call code that was removed.
-
 ### Order
 
 Migration runs in topological order, dependencies first, so libraries and egress clients usually go before the ingress nodes that use them.
