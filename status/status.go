@@ -41,7 +41,11 @@ func Report(ctx context.Context, cfg Config, registry *Registry) error {
 
 // reportTarget prints the SPECTRE mirror status for one <env>-<region> target.
 func reportTarget(ctx context.Context, platform Platform, target string) {
-	mirror := platform.Mirror(target)
+	mirror, err := platform.Mirror(ctx, target)
+	if err != nil {
+		fmt.Printf("  %s: %s\n", bold(target), red(fmt.Sprintf("unknown (%v)", err)))
+		return
+	}
 	if !mirror.Enabled {
 		fmt.Printf("  %s: %s\n", bold(target), dim("no spectre mirror configured"))
 		return
