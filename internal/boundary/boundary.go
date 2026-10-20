@@ -39,10 +39,18 @@ func (k Kind) String() string {
 }
 
 // Support is a kind of IO that a protocol server proxies, with a description of
-// the code that performs it and how to recognise that code.
+// the code that performs it and the settings a migration state node of it takes.
 type Support struct {
 	Kind        Kind
 	Description string
+	Settings    []Setting
+}
+
+// Setting is one field that a node's table for a kind of IO can hold.
+type Setting struct {
+	Name        string `json:"name"`
+	Required    bool   `json:"required"`
+	Description string `json:"description"`
 }
 
 // Catalog is every kind of IO that the protocol servers in one binary support.

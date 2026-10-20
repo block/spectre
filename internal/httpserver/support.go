@@ -13,9 +13,13 @@ func Supports() []boundary.Support {
 			Description: "Code that receives HTTP requests to the service, including gRPC and Connect: " +
 				"route registrations, controllers, handlers, and service implementations. " +
 				"The service's routes and RPC methods are the entry points SPECTRE compares, " +
-				"so every request path starts at one of these nodes. " +
-				"List each route the node handles in `routes`, as `<METHOD> /<path>`; " +
-				"a gRPC or Connect method is `POST /<package>.<Service>/<Method>`.",
+				"so every request path starts at one of these nodes.",
+			Settings: []boundary.Setting{{
+				Name:     "routes",
+				Required: true,
+				Description: "Each route the node handles, as `<METHOD> /<path>`. " +
+					"A gRPC or Connect method is `POST /<package>.<Service>/<Method>`.",
+			}},
 		},
 		{
 			Kind: boundary.Kind{Direction: boundary.Egress, Protocol: boundary.ProtocolHTTP},

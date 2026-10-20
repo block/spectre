@@ -13,7 +13,14 @@ import (
 func TestWriteTypes(t *testing.T) {
 	catalog, err := boundary.NewCatalog(
 		boundary.Support{Kind: boundary.Kind{Direction: boundary.Egress, Protocol: "rpc"}, Description: "Calls <dependencies>."},
-		boundary.Support{Kind: boundary.Kind{Direction: boundary.Ingress, Protocol: "rpc"}, Description: "Serves requests."},
+		boundary.Support{
+			Kind:        boundary.Kind{Direction: boundary.Ingress, Protocol: "rpc"},
+			Description: "Serves requests.",
+			Settings: []boundary.Setting{
+				{Name: "methods", Required: true, Description: "Each method served."},
+				{Name: "group", Description: "The server group."},
+			},
+		},
 	)
 	assert.NoError(t, err)
 	library := state.NodeTypes(catalog)[0].Description
@@ -25,7 +32,11 @@ func TestWriteTypes(t *testing.T) {
 		"Markdown": {
 			expected: "## library\n\n" + library + "\n\n" +
 				"## ingress[rpc]\n\nServes requests.\n\n" +
-				"## egress[rpc]\n\nCalls <dependencies>.\n",
+				"Write it as the table `[nodes.<id>.ingress.rpc]`, with these settings:\n\n" +
+				"- `methods` (required): Each method served.\n" +
+				"- `group` (optional): The server group.\n\n" +
+				"## egress[rpc]\n\nCalls <dependencies>.\n\n" +
+				"Write it as the empty table `[nodes.<id>.egress.rpc]`.\n",
 		},
 		"JSON": {
 			config: state.TypesConfig{JSON: true},
@@ -36,11 +47,25 @@ func TestWriteTypes(t *testing.T) {
   },
   {
     "name": "ingress[rpc]",
-    "description": "Serves requests."
+    "description": "Serves requests.",
+    "table": "nodes.<id>.ingress.rpc",
+    "settings": [
+      {
+        "name": "methods",
+        "required": true,
+        "description": "Each method served."
+      },
+      {
+        "name": "group",
+        "required": false,
+        "description": "The server group."
+      }
+    ]
   },
   {
     "name": "egress[rpc]",
-    "description": "Calls <dependencies>."
+    "description": "Calls <dependencies>.",
+    "table": "nodes.<id>.egress.rpc"
   }
 ]
 `,
