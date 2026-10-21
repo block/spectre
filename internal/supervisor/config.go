@@ -71,9 +71,9 @@ type LimitConfig struct {
 
 // SandboxConfig contains the candidate egress sandbox configuration.
 type SandboxConfig struct {
-	// EgressEnabled blocks the candidate from opening IP sockets with seccomp,
-	// so it can only reach dependencies through the egress proxy.
-	EgressEnabled bool `name:"seccomp-egress" negatable:"" default:"true" help:"Block the candidate from opening IPv4 and IPv6 sockets with a seccomp filter, leaving only the egress proxy's unix socket."`
+	// EgressEnabled connects every candidate TCP socket to the egress proxy with
+	// seccomp, and refuses its other IP sockets.
+	EgressEnabled bool `name:"seccomp-egress" negatable:"" default:"true" help:"Connect every candidate TCP socket to the egress proxy with a seccomp filter, and refuse its other IPv4 and IPv6 sockets."`
 }
 
 // NewConfig returns the default supervisor configuration.

@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -27,6 +28,9 @@ import (
 // subsystemKey labels the component that wrote a line, in SPECTRE's logs and the
 // services' passed-through ones. The namespace keeps it clear of services' own fields.
 const subsystemKey = "spectre.subsystem"
+
+// redirectListen is the egress proxy's loopback listener for redirected candidate sockets.
+const redirectListen = "127.0.0.1:0"
 
 // roles name the service leaves and their wiring.
 const (
@@ -51,9 +55,10 @@ type Supervisor struct {
 	ingress *httpserver.Ingress
 	egress  *httpserver.Egress
 
-	limits  Option[*cgroups]
-	running int
-	exits   chan exit
+	limits   Option[*cgroups]
+	redirect Option[*egressRedirect]
+	running  int
+	exits    chan exit
 }
 
 // exit reports a finished component.
@@ -89,6 +94,7 @@ func New(ctx context.Context, config Config, catalog *boundary.Catalog) (*Superv
 		selfExe:   selfExe,
 		migration: migration,
 		limits:    None[*cgroups](),
+		redirect:  None[*egressRedirect](),
 		exits:     make(chan exit, 4),
 	}, nil
 }
@@ -195,6 +201,11 @@ func (s *Supervisor) startAll(ctx context.Context) error {
 		return err
 	}
 	candidate := s.serviceProcess(ctx, roleCandidate, httpUnix(s.egressCandidate), unixListen(s.candidateSock), s.sandboxActive())
+	if redirect, ok := s.redirect.Get(); ok {
+		if err := redirect.sandbox(withProxyLogger(ctx, "sandbox"), candidate); err != nil {
+			return err
+		}
+	}
 	if err := s.launchService(ctx, candidate, "unix", s.candidateSock); err != nil {
 		return err
 	}
@@ -258,13 +269,27 @@ func (s *Supervisor) startEgress(ctx context.Context) error {
 		return errors.Wrap(err, "configure egress")
 	}
 	s.egress = handler
-	listeners, err := listenAll(ctx, config.ReferenceListen, config.CandidateListen, config.HealthListen)
+	addresses := []string{config.ReferenceListen, config.CandidateListen, config.HealthListen}
+	if s.sandboxActive() {
+		// The sandbox connects every candidate TCP socket to this loopback listener.
+		addresses = append(addresses, redirectListen)
+	}
+	listeners, err := listenAll(ctx, addresses...)
 	if err != nil {
 		transport.CloseIdleConnections()
 		return errors.Wrap(err, "listen for egress")
 	}
+	redirected := listeners[3:]
+	for _, listener := range redirected {
+		target, err := netip.ParseAddrPort(listener.Addr().String())
+		if err != nil {
+			transport.CloseIdleConnections()
+			return errors.Join(errors.Wrap(err, "resolve the redirect listener"), closeListeners(listeners))
+		}
+		s.redirect = Some(newEgressRedirect(withProxyLogger(ctx, "sandbox"), target))
+	}
 	s.runProxy(ctx, "egress", transport, func() error {
-		return handler.Serve(proxyContext, listeners[0], listeners[1], listeners[2])
+		return handler.Serve(proxyContext, listeners[0], listeners[1], listeners[2], redirected...)
 	})
 	return nil
 }

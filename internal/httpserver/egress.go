@@ -135,12 +135,15 @@ func egressDestinations(ctx context.Context, config EgressConfig, transport http
 }
 
 // Serve accepts reference, candidate, and health traffic until the context is
-// cancelled or a server fails. Readiness turns true once the servers start.
-func (e *Egress) Serve(ctx context.Context, reference net.Listener, candidate net.Listener, probes net.Listener) error {
+// cancelled or a server fails. Redirected listeners carry candidate TCP sockets.
+func (e *Egress) Serve(ctx context.Context, reference net.Listener, candidate net.Listener, probes net.Listener, redirected ...net.Listener) error {
 	bindings := []Binding{
 		NewBinding(reference, e.referenceHandler),
 		NewBinding(candidate, e.candidateHandler),
 		NewBinding(probes, e.health),
+	}
+	for _, listener := range redirected {
+		bindings = append(bindings, NewBinding(listener, redirectedHandler(e.candidateHandler)))
 	}
 	lifecycle := NewLifecycle(e.markReady, e.stop, e.drain)
 	return errors.Wrap(Serve(ctx, e.config.Config, bindings, lifecycle), "serve egress")
@@ -237,6 +240,15 @@ func (e *Egress) upstream(request *http.Request) Option[*httputil.ReverseProxy] 
 		return None[*httputil.ReverseProxy]()
 	}
 	return Some(destination)
+}
+
+// redirectedHandler tags requests from candidate sockets the sandbox redirected.
+func redirectedHandler(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		ctx := request.Context()
+		tagged := logger.WithLogger(ctx, logger.FromContext(ctx).With("redirected", true))
+		next.ServeHTTP(writer, request.WithContext(tagged))
+	})
 }
 
 // serveCandidate replays the matching reference response. The engine quarantines
