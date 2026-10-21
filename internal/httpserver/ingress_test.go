@@ -22,10 +22,12 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/descriptorpb"
 
+	"github.com/block/spectre/internal/boundary"
 	"github.com/block/spectre/internal/descriptors"
 	"github.com/block/spectre/internal/httpserver"
 	"github.com/block/spectre/internal/logger"
 	"github.com/block/spectre/internal/protocol"
+	"github.com/block/spectre/internal/state"
 )
 
 type requestView struct {
@@ -1051,6 +1053,74 @@ func TestCandidateConcurrencyLimitQuarantinesAllRequests(t *testing.T) {
 	assert.NoError(t, handler.Shutdown(t.Context()))
 }
 
+func TestMirrorsOnlyRoutesOfMigratedNodes(t *testing.T) {
+	candidatePaths := make(chan string, 8)
+	var referencePaths []string
+	var referenceMu sync.Mutex
+	transport := roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+		if request.URL.Host == candidateAddress {
+			candidatePaths <- request.URL.Path
+		} else {
+			referenceMu.Lock()
+			referencePaths = append(referencePaths, request.URL.Path)
+			referenceMu.Unlock()
+		}
+		return noContentResponse(request), nil
+	})
+	catalog, err := boundary.NewCatalog(httpserver.Supports()...)
+	assert.NoError(t, err)
+	migration, err := state.Parse([]byte(`
+[nodes.migrated]
+status = "migrated"
+[nodes.migrated.ingress.http.routes]
+"GET /migrated/{name}" = {}
+
+[nodes.pending.ingress.http.routes]
+"GET /pending/{name}" = {}
+`), catalog)
+	assert.NoError(t, err)
+	config := newTestConfig(t, "http://127.0.0.1:50051", "http://"+candidateAddress)
+	handler, err := httpserver.NewIngress(t.Context(), config, newEngineConfig(t), transport, Some[httpserver.DescriptorLoader](matchingDescriptorLoader()), Some(migration))
+	assert.NoError(t, err)
+
+	serve := func(method, path string) {
+		handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(method, "http://proxy.example"+path, nil))
+	}
+	serve(http.MethodGet, "/pending/a")
+	serve(http.MethodGet, "/ignored/a")
+	serve(http.MethodPost, "/grpc.reflection.v1.ServerReflection/ServerReflectionInfo")
+	serve(http.MethodGet, "/migrated/a")
+	select {
+	case path := <-candidatePaths:
+		assert.Equal(t, "/migrated/a", path)
+	case <-time.After(time.Second):
+		t.Fatal("migrated route was not mirrored")
+	}
+	assert.Zero(t, handler.Candidates().QuarantineStatus().Reason)
+
+	serve(http.MethodGet, "/unlisted")
+	assert.EqualError(t, handler.Candidates().QuarantineStatus().Reason, "route GET /unlisted is in no node of the migration state")
+	assert.NoError(t, handler.Shutdown(t.Context()))
+	assert.Equal(t, 0, len(candidatePaths))
+	referenceMu.Lock()
+	defer referenceMu.Unlock()
+	assert.Equal(t, []string{"/pending/a", "/ignored/a", "/grpc.reflection.v1.ServerReflection/ServerReflectionInfo", "/migrated/a", "/unlisted"}, referencePaths)
+}
+
+func TestRejectsInvalidStateRoute(t *testing.T) {
+	migration := state.State{Nodes: []state.Node{{
+		ID:     "api",
+		Status: state.Migrated,
+		IO: map[boundary.Kind]map[string]any{
+			{Direction: boundary.Ingress, Protocol: boundary.ProtocolHTTP}: {"routes": map[string]any{"/no-method": map[string]any{}}},
+		},
+	}}}
+	config := newTestConfig(t, "http://127.0.0.1:50051", "http://"+candidateAddress)
+	_, err := httpserver.NewIngress(t.Context(), config, newEngineConfig(t), http.DefaultTransport, Some[httpserver.DescriptorLoader](matchingDescriptorLoader()), Some(migration))
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "route migration state: node api: route pattern \"/no-method\" must have the form")
+}
+
 func TestRejectsIngressRequestsOverCapacity(t *testing.T) {
 	referenceStarted := make(chan struct{})
 	releaseReference := make(chan struct{})
@@ -1214,7 +1284,7 @@ func newIngress(
 	loader Option[httpserver.DescriptorLoader],
 ) (*httpserver.Ingress, error) {
 	t.Helper()
-	return errors.WithStack2(httpserver.NewIngress(t.Context(), config, engineConfig, transport, loader))
+	return errors.WithStack2(httpserver.NewIngress(t.Context(), config, engineConfig, transport, loader, None[state.State]()))
 }
 
 // serveIngress serves handler with ctx until the test ends. Responses are compared

@@ -14,11 +14,13 @@ import (
 	"github.com/alecthomas/errors"
 	. "github.com/alecthomas/types/optional"
 
+	"github.com/block/spectre/internal/boundary"
 	"github.com/block/spectre/internal/descriptors"
 	"github.com/block/spectre/internal/httpserver"
 	"github.com/block/spectre/internal/logger"
 	"github.com/block/spectre/internal/netaddr"
 	"github.com/block/spectre/internal/protocol"
+	"github.com/block/spectre/internal/state"
 	"github.com/block/spectre/internal/status"
 )
 
@@ -35,9 +37,10 @@ const (
 // Supervisor runs the candidate and reference services behind the SPECTRE
 // proxies, with the candidate's egress sandboxed and host resources split.
 type Supervisor struct {
-	config  Config
-	log     *slog.Logger
-	selfExe string
+	config    Config
+	log       *slog.Logger
+	selfExe   string
+	migration Option[state.State]
 
 	egressReference string
 	egressCandidate string
@@ -59,8 +62,9 @@ type exit struct {
 	err  error
 }
 
-// New validates config and returns a supervisor that logs to ctx's logger.
-func New(ctx context.Context, config Config) (*Supervisor, error) {
+// New validates config and returns a supervisor that logs to ctx's logger. The
+// catalog checks the migration state, if config names one.
+func New(ctx context.Context, config Config, catalog *boundary.Catalog) (*Supervisor, error) {
 	if config.Candidate == "" || config.Reference == "" {
 		return nil, errors.New("candidate and reference commands are required")
 	}
@@ -71,12 +75,21 @@ func New(ctx context.Context, config Config) (*Supervisor, error) {
 	if err != nil {
 		return nil, errors.Wrap(err, "find supervisor executable")
 	}
+	migration := None[state.State]()
+	if config.StateFile != "" {
+		loaded, err := state.Load(config.StateFile, catalog)
+		if err != nil {
+			return nil, errors.Wrapf(err, "load migration state %s", config.StateFile)
+		}
+		migration = Some(loaded)
+	}
 	return &Supervisor{
-		config:  config,
-		log:     logger.FromContext(ctx).With(subsystemKey, "supervisor"),
-		selfExe: selfExe,
-		limits:  None[*cgroups](),
-		exits:   make(chan exit, 4),
+		config:    config,
+		log:       logger.FromContext(ctx).With(subsystemKey, "supervisor"),
+		selfExe:   selfExe,
+		migration: migration,
+		limits:    None[*cgroups](),
+		exits:     make(chan exit, 4),
 	}, nil
 }
 
@@ -262,7 +275,7 @@ func (s *Supervisor) startIngress(ctx context.Context) error {
 	transport := httpserver.NewTransport(config.Config)
 	loader := Some[httpserver.DescriptorLoader](descriptors.NewReflectionLoader())
 	proxyContext := withProxyLogger(ctx, "ingress")
-	handler, err := httpserver.NewIngress(proxyContext, config, s.engineConfig(), transport, loader)
+	handler, err := httpserver.NewIngress(proxyContext, config, s.engineConfig(), transport, loader, s.migration)
 	if err != nil {
 		transport.CloseIdleConnections()
 		return errors.Wrap(err, "configure ingress")

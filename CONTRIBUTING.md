@@ -196,6 +196,13 @@ import { ingress } from "spectre";
 ingress.ignore("http", "GET /_status");
 ```
 
+`--state-file` passes the migration state described in
+[ADR 006](docs/006-migration-plan.md) to ingress. Ingress then mirrors only the routes
+of migrated nodes and sends routes of pending nodes to the reference only. A route
+that no node lists also goes to the reference only, and quarantines the candidate
+unless scripts ignore it or it is gRPC reflection. Check the file with
+`spectre state validate` first; an invalid state stops `spectre run` at startup.
+
 For protobuf traffic, generate declarations with
 `spectre gen proto --descriptors-dir=dist/descriptors --output=internal/sample/schema`.
 Wire descriptors must agree with those declarations. ProtoJSON defaults are emitted

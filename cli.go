@@ -69,8 +69,8 @@ type runCommand struct {
 	Supervisor supervisor.Config `embed:""`
 }
 
-func (c *runCommand) Run(ctx context.Context) error {
-	super, err := supervisor.New(ctx, c.Supervisor)
+func (c *runCommand) Run(ctx context.Context, catalog *boundary.Catalog) error {
+	super, err := supervisor.New(ctx, c.Supervisor, catalog)
 	if err != nil {
 		return errors.WithStack(err)
 	}
