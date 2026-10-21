@@ -13,16 +13,60 @@ import (
 	"time"
 
 	"github.com/alecthomas/assert/v2"
+	. "github.com/alecthomas/types/optional"
 
+	"github.com/block/spectre/internal/boundary"
+	"github.com/block/spectre/internal/httpserver"
 	"github.com/block/spectre/internal/logger"
+	"github.com/block/spectre/internal/state"
 )
 
 func testSupervisor(t *testing.T) (*Supervisor, Config) {
 	t.Helper()
 	config := testConfig(t)
-	s, err := New(t.Context(), config)
+	s, err := New(t.Context(), config, testCatalog(t))
 	assert.NoError(t, err)
 	return s, config
+}
+
+func testCatalog(t *testing.T) *boundary.Catalog {
+	t.Helper()
+	catalog, err := boundary.NewCatalog(httpserver.Supports()...)
+	assert.NoError(t, err)
+	return catalog
+}
+
+func TestLoadsMigrationState(t *testing.T) {
+	for name, test := range map[string]struct {
+		state    string
+		expected Option[state.State]
+		err      string
+	}{
+		"NoStateFile": {expected: None[state.State]()},
+		"Valid": {
+			state:    "[nodes.money]\nstatus = \"migrated\"\n",
+			expected: Some(state.State{Nodes: []state.Node{{ID: "money", Status: state.Migrated, IO: map[boundary.Kind]map[string]any{}, Line: 1}}}),
+		},
+		"Invalid": {
+			state: "[nodes.money]\nstatus = \"done\"\n",
+			err:   `line 2: nodes.money.status: must be "pending" or "migrated"`,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			config := testConfig(t)
+			if test.state != "" {
+				config.StateFile = filepath.Join(t.TempDir(), "state.toml")
+				assert.NoError(t, os.WriteFile(config.StateFile, []byte(test.state), 0o600))
+			}
+			s, err := New(t.Context(), config, testCatalog(t))
+			if test.err != "" {
+				assert.EqualError(t, err, "load migration state "+config.StateFile+": "+test.err)
+				return
+			}
+			assert.NoError(t, err)
+			assert.Equal(t, test.expected, s.migration)
+		})
+	}
 }
 
 func testConfig(t *testing.T) Config {
@@ -114,7 +158,7 @@ func TestLogsTagSubsystem(t *testing.T) {
 	}{
 		{name: "Supervisor", subsystem: "supervisor", log: func(t *testing.T, ctx context.Context) {
 			t.Helper()
-			s, err := New(ctx, testConfig(t))
+			s, err := New(ctx, testConfig(t), testCatalog(t))
 			assert.NoError(t, err)
 			s.log.InfoContext(ctx, "logged")
 		}},

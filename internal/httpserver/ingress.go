@@ -3,9 +3,12 @@ package httpserver
 import (
 	"context"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"net/http/httputil"
+	"slices"
+	"strings"
 	"sync"
 
 	"github.com/alecthomas/errors"
@@ -23,6 +26,7 @@ import (
 	"github.com/block/spectre/internal/netaddr"
 	"github.com/block/spectre/internal/protocol"
 	"github.com/block/spectre/internal/proxy"
+	"github.com/block/spectre/internal/state"
 )
 
 // Ingress mirrors each inbound request to the reference and candidate services.
@@ -41,6 +45,8 @@ type Ingress struct {
 	descriptors    Option[DescriptorLoader]
 	static         *descriptorpb.FileDescriptorSet
 	candidates     *proxy.Candidates
+	// migration maps each route in the migration state to its node's status.
+	migration Option[*route.Map[state.Status]]
 	// mu guards decoder, which is set once descriptors are configured.
 	mu      sync.RWMutex
 	decoder Option[*message.Decoder]
@@ -51,14 +57,15 @@ type DescriptorLoader interface {
 	Load(ctx context.Context, endpoint string) (*descriptorpb.FileDescriptorSet, error)
 }
 
-// NewIngress constructs an ingress proxy and the engine it owns. loader is
-// required only for reflection.
+// NewIngress constructs an ingress proxy and the engine it owns. loader is required
+// only for reflection; with a migration state, only migrated routes are mirrored.
 func NewIngress(
 	ctx context.Context,
 	config IngressConfig,
 	engineConfig protocol.Config,
 	transport http.RoundTripper,
 	loader Option[DescriptorLoader],
+	migration Option[state.State],
 ) (*Ingress, error) {
 	if err := config.Validate(); err != nil {
 		return nil, err
@@ -85,6 +92,10 @@ func NewIngress(
 	if err != nil {
 		return nil, errors.Wrap(err, "proxy candidate backend")
 	}
+	migrationRoutes, err := stateRoutes(migration)
+	if err != nil {
+		return nil, errors.Wrap(err, "route migration state")
+	}
 	candidates := proxy.NewCandidates(config.Candidates)
 	routes := route.NewMatcher()
 	engine, err := protocol.NewEngine(ctx, engineConfig, map[boundary.Protocol]protocol.Matcher{boundary.ProtocolHTTP: routes}, candidates)
@@ -106,10 +117,30 @@ func NewIngress(
 		descriptors:    loader,
 		static:         static,
 		candidates:     candidates,
+		migration:      migrationRoutes,
 	}
 	requestHandler := logging.New(http.HandlerFunc(ingress.serveProxy), logger.EventReceived)
 	ingress.health = health.New(requestHandler)
 	return ingress, nil
+}
+
+// stateRoutes maps the ingress[http] routes of each node to the node's status.
+func stateRoutes(migration Option[state.State]) (Option[*route.Map[state.Status]], error) {
+	nodes, ok := migration.Get()
+	if !ok {
+		return None[*route.Map[state.Status]](), nil
+	}
+	kind := boundary.Kind{Direction: boundary.Ingress, Protocol: boundary.ProtocolHTTP}
+	routes := route.New[state.Status]()
+	for _, node := range nodes.Nodes {
+		entries, _ := node.IO[kind][routesSetting].(map[string]any)
+		for _, pattern := range slices.Sorted(maps.Keys(entries)) {
+			if err := routes.Add(pattern, node.Status); err != nil {
+				return None[*route.Map[state.Status]](), errors.Wrapf(err, "node %s", node.ID)
+			}
+		}
+	}
+	return Some(routes), nil
 }
 
 func ingressBackends(config IngressConfig) (reference, candidate *netaddr.Endpoint, err error) {
@@ -153,11 +184,15 @@ func (i *Ingress) serveProxy(writer http.ResponseWriter, request *http.Request) 
 		http.Error(writer, "ingress request capacity exceeded", http.StatusServiceUnavailable)
 		return
 	}
+	referenceRequest := request.Clone(request.Context())
+	referenceRequest.GetBody = nil
+	if !i.mirrors(request) {
+		i.referenceProxy.ServeHTTP(writer, referenceRequest)
+		return
+	}
 	// Candidate work may outlive reference delivery, but its own timeout bounds its lifetime.
 	candidateContext := context.WithoutCancel(request.Context())
 	candidateContext, cancel := context.WithTimeout(candidateContext, i.config.CandidateTimeout)
-	referenceRequest := request.Clone(request.Context())
-	referenceRequest.GetBody = nil
 	run, admitted := i.candidates.Start(candidateContext, cancel).Get()
 	if !admitted {
 		cancel()
@@ -193,6 +228,25 @@ func (i *Ingress) serveProxy(writer http.ResponseWriter, request *http.Request) 
 		}()
 	}
 	i.reference.respond(writer, referenceRequest, reference, Some(i.referenceProxy), decode)
+}
+
+// mirrors reports whether the migration state lets a request reach the candidate.
+// A route no node lists quarantines the candidate, unless ingress never compares it.
+func (i *Ingress) mirrors(request *http.Request) bool {
+	routes, ok := i.migration.Get()
+	if !ok {
+		return true
+	}
+	path := request.URL.EscapedPath()
+	status, _, listed := routes.Match(request.Method, request.Host, path)
+	if listed {
+		return status == state.Migrated
+	}
+	if _, ignored, matched := i.routes.Response(request.Method, path); (matched && ignored.Ok()) || strings.HasPrefix(path, "/grpc.reflection.") {
+		return false
+	}
+	i.candidates.Quarantine(request.Context(), errors.Errorf("route %s %s is in no node of the migration state", request.Method, path))
+	return false
 }
 
 // mirror makes the reference request body the sole producer of the candidate's body.

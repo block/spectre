@@ -33,6 +33,8 @@ type Config struct {
 	Destinations map[string]string `name:"destination" placeholder:"HOST=URL" help:"Upstream URL for requests to HOST, passed to the egress proxy. Repeat for each dependency."`
 	// ScriptsDir holds the comparison scripts passed to both proxies.
 	ScriptsDir string `type:"existingdir" placeholder:"DIR" help:"Directory of comparison scripts passed to both proxies."`
+	// StateFile is the migration state that decides which routes ingress mirrors.
+	StateFile string `type:"existingfile" placeholder:"FILE" help:"Migration state TOML file. Ingress mirrors only routes of migrated nodes, and quarantines the candidate on a route no node lists. Without it, every request is mirrored."`
 	// SchemaDir holds the TypeScript schema passed to both proxies.
 	SchemaDir string `type:"existingdir" placeholder:"DIR" help:"Directory of TypeScript schema passed to both proxies."`
 	// MatchWindow bounds how long a candidate call waits for a matching reference call.
