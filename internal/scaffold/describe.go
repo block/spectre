@@ -19,14 +19,12 @@ type DescribeConfig struct {
 	JSON bool `help:"Print the templates and their variables as JSON."`
 }
 
-// Description is a template with the variables of every template it extends.
+// Description is a template and its variables.
 type Description struct {
 	// Name is the template's registered name.
 	Name string `json:"name"`
 	// Description says what the template sets up.
 	Description string `json:"description"`
-	// Extends names the template this one is rendered on top of.
-	Extends string `json:"extends,omitzero"`
 	// Variables are the values the template asks for, in order.
 	Variables []Variable `json:"variables"`
 }
@@ -46,8 +44,7 @@ func Describe(out io.Writer, config DescribeConfig, registry *Registry, palette 
 		descriptions = append(descriptions, Description{
 			Name:        name,
 			Description: template.Manifest.Description,
-			Extends:     template.Manifest.Extends,
-			Variables:   template.Variables,
+			Variables:   template.Manifest.Variables,
 		})
 	}
 	if config.JSON {
@@ -64,11 +61,7 @@ func Describe(out io.Writer, config DescribeConfig, registry *Registry, palette 
 		if i > 0 {
 			text.WriteString("\n")
 		}
-		heading := palette.Bold(description.Name)
-		if description.Extends != "" {
-			heading += palette.Dim(" extends " + description.Extends)
-		}
-		text.WriteString(heading + "\n")
+		text.WriteString(palette.Bold(description.Name) + "\n")
 		text.WriteString(terminal.Wrap(description.Description, "  ", 80))
 		if config.Name == "" {
 			continue

@@ -42,25 +42,15 @@ func (r *Registry) Names() []string {
 	return slices.Sorted(maps.Keys(r.templates))
 }
 
-// Load reads a template and every template it extends.
+// Load reads a registered template's manifest.
 func (r *Registry) Load(name string) (template Template, err error) {
-	var layers []layer
-	seen := map[string]bool{}
-	for next := name; next != ""; {
-		if seen[next] {
-			return template, errors.Errorf("template %q extends itself", name)
-		}
-		seen[next] = true
-		files, ok := r.templates[next]
-		if !ok {
-			return template, errors.Errorf("unknown template %q; available: %s", next, strings.Join(r.Names(), ", "))
-		}
-		manifest, err := ParseManifest(files)
-		if err != nil {
-			return template, errors.Wrapf(err, "template %q", next)
-		}
-		layers = append([]layer{{Name: next, Files: files, Manifest: manifest}}, layers...)
-		next = manifest.Extends
+	files, ok := r.templates[name]
+	if !ok {
+		return template, errors.Errorf("unknown template %q; available: %s", name, strings.Join(r.Names(), ", "))
 	}
-	return newTemplate(name, layers), nil
+	manifest, err := ParseManifest(files)
+	if err != nil {
+		return template, errors.Wrapf(err, "template %q", name)
+	}
+	return newTemplate(name, manifest, files), nil
 }

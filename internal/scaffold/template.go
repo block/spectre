@@ -3,7 +3,6 @@ package scaffold
 import (
 	"bytes"
 	"io/fs"
-	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -13,24 +12,14 @@ import (
 	"github.com/block/scaffolder"
 )
 
-// Template is a template rendered on top of the templates it extends.
+// Template is a registered template with its manifest.
 type Template struct {
 	// Name is the template's registered name.
 	Name string
-	// Manifest is the named template's own manifest.
+	// Manifest is the template's manifest.
 	Manifest Manifest
-	// Variables are the variables of every layer, parents first. A child's
-	// variable replaces its parent's in place.
-	Variables []Variable
 
-	layers []layer
-}
-
-// layer is one template in a chain, parents first.
-type layer struct {
-	Name     string
-	Files    fs.FS
-	Manifest Manifest
+	files fs.FS
 }
 
 // File is a rendered file, or a symbolic link when Link is set.
@@ -45,53 +34,21 @@ type File struct {
 	Executable bool
 }
 
-func newTemplate(name string, layers []layer) Template {
-	var variables []Variable
-	index := map[string]int{}
-	for _, l := range layers {
-		for _, variable := range l.Manifest.Variables {
-			if i, ok := index[variable.Name]; ok {
-				variables[i] = variable
-				continue
-			}
-			index[variable.Name] = len(variables)
-			variables = append(variables, variable)
-		}
-	}
-	return Template{Name: name, Manifest: layers[len(layers)-1].Manifest, Variables: variables, layers: layers}
+func newTemplate(name string, manifest Manifest, files fs.FS) Template {
+	return Template{Name: name, Manifest: manifest, files: files}
 }
 
-// NextSteps renders the next steps of the closest layer that has them.
+// NextSteps renders the template's next steps.
 func (t Template) NextSteps(values map[string]any) (string, error) {
-	for i := len(t.layers) - 1; i >= 0; i-- {
-		if steps := t.layers[i].Manifest.NextSteps; steps != "" {
-			return errors.WithStack2(renderText("next steps", steps, values))
-		}
+	if t.Manifest.NextSteps == "" {
+		return "", nil
 	}
-	return "", nil
+	return errors.WithStack2(renderText("next steps", t.Manifest.NextSteps, values))
 }
 
-// Render renders every layer with values and merges them, keyed by
-// slash-separated path. A child's files replace and exclude its parent's.
+// Render renders the template with values, keyed by slash-separated path. It
+// copies the template to disk first, because scaffolder reads only from disk.
 func (t Template) Render(values map[string]any) (map[string]File, error) {
-	files := map[string]File{}
-	for _, l := range t.layers {
-		maps.DeleteFunc(files, func(name string, _ File) bool { return matchAny(l.Manifest.Files.Exclude, name) })
-		rendered, err := l.render(values)
-		if err != nil {
-			return nil, errors.Wrapf(err, "render template %q", l.Name)
-		}
-		maps.Copy(files, rendered)
-	}
-	if _, ok := files[lockFile]; ok {
-		return nil, errors.Errorf("templates cannot render %s", lockFile)
-	}
-	return files, nil
-}
-
-// render copies the layer to disk for scaffolder, which reads only from disk,
-// then collects what it renders.
-func (l layer) render(values map[string]any) (map[string]File, error) {
 	work, err := os.MkdirTemp("", "spectre-template-*")
 	if err != nil {
 		return nil, errors.Wrap(err, "create template directory")
@@ -99,7 +56,7 @@ func (l layer) render(values map[string]any) (map[string]File, error) {
 	defer os.RemoveAll(work) //nolint:errcheck // Best-effort cleanup of a temporary directory.
 	source := filepath.Join(work, "source")
 	output := filepath.Join(work, "output")
-	if err := os.CopyFS(source, l.Files); err != nil {
+	if err := os.CopyFS(source, t.files); err != nil {
 		return nil, errors.Wrap(err, "copy template")
 	}
 	err = scaffolder.Scaffold(source, output, values,
@@ -128,15 +85,15 @@ func (l layer) render(values map[string]any) (map[string]File, error) {
 		}
 		files[name] = File{
 			Content:      content,
-			Customisable: matchAny(l.Manifest.Files.Customisable, name),
-			Executable:   matchAny(l.Manifest.Files.Executable, name),
+			Customisable: matchAny(t.Manifest.Files.Customisable, name),
+			Executable:   matchAny(t.Manifest.Files.Executable, name),
 		}
 		return nil
 	})
 	if err != nil {
 		return nil, errors.Wrap(err, "collect rendered files")
 	}
-	for link, target := range l.Manifest.Symlinks {
+	for link, target := range t.Manifest.Symlinks {
 		name, err := renderText("symlink", link, values)
 		if err != nil {
 			return nil, errors.WithStack(err)
@@ -147,7 +104,10 @@ func (l layer) render(values map[string]any) (map[string]File, error) {
 		if !filepath.IsLocal(name) || strings.Contains(name, "\\") {
 			return nil, errors.Errorf("symlink %q must be a relative path inside the checkout", name)
 		}
-		files[name] = File{Link: target, Customisable: matchAny(l.Manifest.Files.Customisable, name)}
+		files[name] = File{Link: target, Customisable: matchAny(t.Manifest.Files.Customisable, name)}
+	}
+	if _, ok := files[lockFile]; ok {
+		return nil, errors.Errorf("templates cannot render %s", lockFile)
 	}
 	return files, nil
 }

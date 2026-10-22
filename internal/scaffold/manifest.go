@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"io/fs"
 	"path"
+	"slices"
 	"strings"
 
 	"github.com/alecthomas/errors"
@@ -14,21 +15,18 @@ import (
 // never rendered.
 const manifestFile = "scaffold.toml"
 
-// Manifest describes a template: what it builds on, the values it asks for, and
-// how its files are written.
+// Manifest describes a template: the values it asks for, and how its files are
+// written.
 type Manifest struct {
 	// Description says what the template sets up.
 	Description string `toml:"description"`
-	// Extends names the template this one is rendered on top of.
-	Extends string `toml:"extends"`
 	// Variables are the values the template asks for, in order.
 	Variables []Variable `toml:"variables"`
 	// Files sets how the template's rendered files are written.
 	Files Files `toml:"files"`
 	// Symlinks maps a link path to its target. Both are templates.
 	Symlinks map[string]string `toml:"symlinks"`
-	// NextSteps is a template printed after the files are written. A child's
-	// replaces its parent's.
+	// NextSteps is a template printed after the files are written.
 	NextSteps string `toml:"next_steps"`
 }
 
@@ -39,8 +37,6 @@ type Files struct {
 	Customisable []string `toml:"customisable"`
 	// Executable files are written with execute permission.
 	Executable []string `toml:"executable"`
-	// Exclude drops the parent template's files.
-	Exclude []string `toml:"exclude"`
 }
 
 // ParseManifest reads the manifest at the root of files.
@@ -65,7 +61,7 @@ func ParseManifest(files fs.FS) (Manifest, error) {
 		}
 		manifest.Variables[i] = normalised
 	}
-	for _, pattern := range append(append(append([]string{}, manifest.Files.Customisable...), manifest.Files.Executable...), manifest.Files.Exclude...) {
+	for _, pattern := range slices.Concat(manifest.Files.Customisable, manifest.Files.Executable) {
 		if _, err := path.Match(strings.TrimSuffix(pattern, "/**"), ""); err != nil {
 			return Manifest{}, errors.Errorf("invalid file pattern %q", pattern)
 		}

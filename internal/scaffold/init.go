@@ -126,7 +126,7 @@ func readValues(path string) (map[string]any, error) {
 // the previous run, then the prompt or the default.
 func resolve(template Template, builtins map[string]any, flags map[string]string, fromFile, locked map[string]any, prompt Option[Prompt]) (map[string]any, error) {
 	declared := map[string]bool{}
-	for _, variable := range template.Variables {
+	for _, variable := range template.Manifest.Variables {
 		declared[variable.Name] = true
 	}
 	for _, name := range slices.Concat(slices.Sorted(maps.Keys(flags)), slices.Sorted(maps.Keys(fromFile))) {
@@ -136,7 +136,7 @@ func resolve(template Template, builtins map[string]any, flags map[string]string
 	}
 	values := map[string]any{}
 	var missing []Variable
-	for _, variable := range template.Variables {
+	for _, variable := range template.Manifest.Variables {
 		value, ok, err := given(variable, flags, fromFile, locked)
 		if err != nil {
 			return nil, err

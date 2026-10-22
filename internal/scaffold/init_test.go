@@ -19,8 +19,8 @@ import (
 	"github.com/block/spectre/internal/terminal"
 )
 
-const parentManifest = `
-description = "Parent."
+const appManifest = `
+description = "App."
 next_steps = "Edit {{ .name }}."
 
 [[variables]]
@@ -43,9 +43,9 @@ executable = ["bin/*"]
 "link/{{ .name }}" = "../bin/run"
 `
 
-func parentTemplate() fstest.MapFS {
+func appTemplate() fstest.MapFS {
 	return fstest.MapFS{
-		"scaffold.toml":          {Data: []byte(parentManifest)},
+		"scaffold.toml":          {Data: []byte(appManifest)},
 		"config.toml.tmpl":       {Data: []byte("name = {{ toml .name }}\nenvs = {{ toml .envs }}\n")},
 		"bin/run":                {Data: []byte("#!/bin/sh\necho {{ .name }}\n")},
 		"custom/{{ .name }}.txt": {Data: []byte("{{ .name }}\n")},
@@ -54,41 +54,34 @@ func parentTemplate() fstest.MapFS {
 	}
 }
 
-func childTemplate() fstest.MapFS {
-	return fstest.MapFS{
-		"scaffold.toml": {Data: []byte(`
-description = "Child."
-extends = "parent"
-
-[[variables]]
-name = "envs"
-help = "Environments."
-type = "list"
-default = ["production"]
-
-[[variables]]
+// nextTemplate is a later app template that drops placeholder.txt and manages config.toml.
+func nextTemplate() fstest.MapFS {
+	files := appTemplate()
+	delete(files, "placeholder.txt")
+	delete(files, "config.toml.tmpl")
+	manifest := strings.Replace(appManifest, `customisable = ["config.toml", "custom/**"]`, `customisable = ["custom/**"]`, 1)
+	manifest = strings.Replace(manifest, "[files]", `[[variables]]
 name = "image"
 help = "Image."
 default = "{{ .name }}-image"
 
-[files]
-exclude = ["placeholder.txt"]
-`)},
-		"config.toml": {Data: []byte("image = {{ toml .image }}\n")},
-		"child.txt":   {Data: []byte("{{ .image }} {{ join \",\" .envs }}\n")},
-	}
+[files]`, 1)
+	files["scaffold.toml"] = &fstest.MapFile{Data: []byte(manifest)}
+	files["config.toml"] = &fstest.MapFile{Data: []byte("image = {{ toml .image }}\n")}
+	files["next.txt"] = &fstest.MapFile{Data: []byte("{{ .image }} {{ join \",\" .envs }}\n")}
+	return files
 }
 
 func newRegistry() *scaffold.Registry {
 	registry := scaffold.NewRegistry()
-	registry.Register("parent", parentTemplate())
-	registry.Register("child", childTemplate())
+	registry.Register("app", appTemplate())
+	registry.Register("next", nextTemplate())
 	return registry
 }
 
 func TestInitWritesTemplate(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "svc")
-	result := runInit(t, scaffold.Config{Dir: dir, Template: "parent"}, newRegistry())
+	result := runInit(t, scaffold.Config{Dir: dir, Template: "app"}, newRegistry())
 
 	assert.Equal(t, map[string]string{
 		"README.md":              "# svc\n",
@@ -100,7 +93,7 @@ func TestInitWritesTemplate(t *testing.T) {
 		"spectre/init.lock.toml": readFile(t, dir, "spectre/init.lock.toml"),
 	}, readTree(t, dir))
 	assert.Equal(t, scaffold.Result{
-		Template: "parent",
+		Template: "app",
 		Changes: []scaffold.Change{
 			{Path: "README.md", Action: scaffold.Create},
 			{Path: "bin/run", Action: scaffold.Create},
@@ -116,18 +109,17 @@ func TestInitWritesTemplate(t *testing.T) {
 func TestInitRerunReconciles(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "svc")
 	registry := newRegistry()
-	runInit(t, scaffold.Config{Dir: dir, Template: "parent", Vars: map[string]string{"name": "first"}}, registry)
+	runInit(t, scaffold.Config{Dir: dir, Template: "app", Vars: map[string]string{"name": "first"}}, registry)
 	writeFile(t, dir, "config.toml", "edited\n")
 	writeFile(t, dir, "README.md", "edited\n")
 	writeFile(t, dir, "own.txt", "the service's own file\n")
 
-	// The recorded envs answer outlives the parent, so the child's default is unused.
-	result := runInit(t, scaffold.Config{Dir: dir, Template: "child"}, registry)
+	result := runInit(t, scaffold.Config{Dir: dir, Template: "next"}, registry)
 
 	assert.Equal(t, map[string]string{
 		"README.md":              "# first\n",
 		"bin/run":                "exec:#!/bin/sh\necho first\n",
-		"child.txt":              "first-image staging\n",
+		"next.txt":               "first-image staging\n",
 		"config.toml":            "image = \"first-image\"\n",
 		"custom/first.txt":       "first\n",
 		"link/first":             "link:../bin/run",
@@ -137,10 +129,10 @@ func TestInitRerunReconciles(t *testing.T) {
 	assert.Equal(t, []scaffold.Change{
 		{Path: "README.md", Action: scaffold.Update},
 		{Path: "bin/run", Action: scaffold.Unchanged},
-		{Path: "child.txt", Action: scaffold.Create},
 		{Path: "config.toml", Action: scaffold.Update},
 		{Path: "custom/first.txt", Action: scaffold.Unchanged},
 		{Path: "link/first", Action: scaffold.Unchanged},
+		{Path: "next.txt", Action: scaffold.Create},
 		{Path: "placeholder.txt", Action: scaffold.Delete},
 	}, result.Changes)
 }
@@ -148,7 +140,7 @@ func TestInitRerunReconciles(t *testing.T) {
 func TestInitRerunKeepsCustomisableAndDeletesStale(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "svc")
 	registry := newRegistry()
-	runInit(t, scaffold.Config{Dir: dir, Template: "parent", Vars: map[string]string{"name": "first"}}, registry)
+	runInit(t, scaffold.Config{Dir: dir, Template: "app", Vars: map[string]string{"name": "first"}}, registry)
 	writeFile(t, dir, "config.toml", "edited\n")
 
 	result := runInit(t, scaffold.Config{Dir: dir, Vars: map[string]string{"name": "second"}}, registry)
@@ -176,7 +168,7 @@ func TestInitRerunKeepsCustomisableAndDeletesStale(t *testing.T) {
 
 func TestInitDryRunWritesNothing(t *testing.T) {
 	dir := t.TempDir()
-	result := runInit(t, scaffold.Config{Dir: dir, Template: "parent", DryRun: true}, newRegistry())
+	result := runInit(t, scaffold.Config{Dir: dir, Template: "app", DryRun: true}, newRegistry())
 
 	assert.Equal(t, map[string]string{}, readTree(t, dir))
 	assert.True(t, result.DryRun)
@@ -197,7 +189,7 @@ func TestInitVariables(t *testing.T) {
 		{name: "VarsFile", varsFile: "name = \"file\"\nenvs = [\"production\"]\n", want: "name = \"file\"\nenvs = [\"production\"]\n"},
 		{name: "FlagsOverVarsFile", config: scaffold.Config{Vars: map[string]string{"name": "flag"}}, varsFile: "name = \"file\"\n", want: "name = \"flag\"\nenvs = [\"staging\"]\n"},
 		{name: "Prompt", prompt: "asked\nnope\n\n", want: "name = \"asked\"\nenvs = [\"staging\"]\n"},
-		{name: "UnknownVariable", config: scaffold.Config{Vars: map[string]string{"nope": "x"}}, error: `template "parent" has no variable "nope"; run spectre templates parent`},
+		{name: "UnknownVariable", config: scaffold.Config{Vars: map[string]string{"nope": "x"}}, error: `template "app" has no variable "nope"; run spectre templates app`},
 		{name: "InvalidChoice", config: scaffold.Config{Vars: map[string]string{"envs": "dev"}}, error: `envs: "dev" is not one of staging, production`},
 	}
 	for _, test := range tests {
@@ -205,7 +197,7 @@ func TestInitVariables(t *testing.T) {
 			dir := filepath.Join(t.TempDir(), "svc")
 			config := test.config
 			config.Dir = dir
-			config.Template = "parent"
+			config.Template = "app"
 			if test.varsFile != "" {
 				config.VarsFile = filepath.Join(t.TempDir(), "vars.toml")
 				assert.NoError(t, os.WriteFile(config.VarsFile, []byte(test.varsFile), 0o600))
@@ -243,7 +235,7 @@ help = "Deploy platform."
 func TestInitNeedsTemplateOnFirstRun(t *testing.T) {
 	err := scaffold.Init(&bytes.Buffer{}, scaffold.Config{Dir: t.TempDir()}, newRegistry(), None[scaffold.Prompt]())
 
-	assert.EqualError(t, err, "no template given; pass --template with one of: base, child, parent")
+	assert.EqualError(t, err, "no template given; pass --template with one of: app, base, next")
 }
 
 func TestInitRendersBaseTemplate(t *testing.T) {
@@ -255,18 +247,17 @@ func TestInitRendersBaseTemplate(t *testing.T) {
 
 func TestDescribeJSON(t *testing.T) {
 	var out bytes.Buffer
-	err := scaffold.Describe(&out, scaffold.DescribeConfig{Name: "child", JSON: true}, newRegistry(), terminal.NewPalette(false))
+	err := scaffold.Describe(&out, scaffold.DescribeConfig{Name: "next", JSON: true}, newRegistry(), terminal.NewPalette(false))
 	assert.NoError(t, err)
 
 	var description map[string]any
 	assert.NoError(t, json.Unmarshal(out.Bytes(), &description))
 	assert.Equal(t, map[string]any{
-		"name":        "child",
-		"description": "Child.",
-		"extends":     "parent",
+		"name":        "next",
+		"description": "App.",
 		"variables": []any{
 			map[string]any{"name": "name", "help": "Service name.", "type": "string", "default": "{{ .Dir }}"},
-			map[string]any{"name": "envs", "help": "Environments.", "type": "list", "default": "production"},
+			map[string]any{"name": "envs", "help": "Environments.", "type": "list", "default": "staging", "choices": []any{"staging", "production"}},
 			map[string]any{"name": "image", "help": "Image.", "type": "string", "default": "{{ .name }}-image"},
 		},
 	}, description)
