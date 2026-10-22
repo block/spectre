@@ -20,8 +20,8 @@ github.com/alecthomas/types v0.20.1 h1:NwFTHt5VQSOa+7Q8ZgdZIZY9SgnbxZxSIut2RuK7x
 github.com/alecthomas/types v0.20.1/go.mod h1:FPpx/TFcz1NP/fsbg3iy4mnEFfw0YOEuhXYwZQSxL5I=
 github.com/block/getit v0.1.0 h1:14J3b9xL9uKn6GIctLPr3MnSKAUXzFHTr7RDjwizLBU=
 github.com/block/getit v0.1.0/go.mod h1:wldKOgqqKEfPvEQMM5DgRJqWU1ob6n940/GDFFOft+4=
-github.com/block/scaffolder v1.11.0 h1:5cNy4BsiM7KDnmgPK6MLoGyhYGh3cspKP2XL5onPWbQ=
-github.com/block/scaffolder v1.11.0/go.mod h1:TmpCQ6cBwO29/TWCdPYeZ0nkefccHZeo19ZgMX5FzUk=
+github.com/block/scaffolder v1.12.0 h1:VTKV3/yxd1O7Blpx9EsZwHi2VtzoLhpD2Fkv3xu57nI=
+github.com/block/scaffolder v1.12.0/go.mod h1:TmpCQ6cBwO29/TWCdPYeZ0nkefccHZeo19ZgMX5FzUk=
 github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/dlclark/regexp2 v1.11.4 h1:rPYF9/LECdNymJufQKmri9gV604RvvABwgOA8un7yAo=

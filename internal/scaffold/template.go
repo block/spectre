@@ -46,22 +46,18 @@ func (t Template) NextSteps(values map[string]any) (string, error) {
 	return errors.WithStack2(renderText("next steps", t.Manifest.NextSteps, values))
 }
 
-// Render renders the template with values, keyed by slash-separated path. It
-// copies the template to disk first, because scaffolder reads only from disk.
+// Render renders the template with values, keyed by slash-separated path.
 func (t Template) Render(values map[string]any) (map[string]File, error) {
 	work, err := os.MkdirTemp("", "spectre-template-*")
 	if err != nil {
-		return nil, errors.Wrap(err, "create template directory")
+		return nil, errors.Wrap(err, "create output directory")
 	}
 	defer os.RemoveAll(work) //nolint:errcheck // Best-effort cleanup of a temporary directory.
-	source := filepath.Join(work, "source")
 	output := filepath.Join(work, "output")
-	if err := os.CopyFS(source, t.files); err != nil {
-		return nil, errors.Wrap(err, "copy template")
-	}
-	err = scaffolder.Scaffold(source, output, values,
+	err = scaffolder.Scaffold(t.files, output, values,
 		scaffolder.Functions(templateFuncs()),
 		scaffolder.Exclude("^"+regexp.QuoteMeta(manifestFile)+"$"),
+		scaffolder.AfterEach(readable),
 	)
 	if err != nil {
 		return nil, errors.WithStack(err)
@@ -110,4 +106,13 @@ func (t Template) Render(values map[string]any) (map[string]File, error) {
 		return nil, errors.Errorf("templates cannot render %s", lockFile)
 	}
 	return files, nil
+}
+
+// readable lets Render read back a rendered file whatever mode the template gives it.
+func readable(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() {
+		return errors.WithStack(err)
+	}
+	return errors.WithStack(os.Chmod(path, 0o600))
 }
