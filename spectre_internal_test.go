@@ -58,7 +58,7 @@ func TestWithTemplateRepoSetsDefault(t *testing.T) {
 	dir := t.TempDir()
 	repo := t.TempDir()
 	assert.NoError(t, os.CopyFS(filepath.Join(repo, "custom"), fstest.MapFS{
-		"spectre/{{ .name }}.txt": {Data: []byte(`{{ range split .envs }}[{{ . }}]{{ end }}`)},
+		"{{ .name }}.txt": {Data: []byte(`{{ range split .envs }}[{{ . }}]{{ end }}`)},
 	}))
 	parser, err := newParser(&cli{}, WithTemplateRepo(repo))
 	assert.NoError(t, err)
