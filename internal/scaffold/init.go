@@ -16,7 +16,6 @@ import (
 	"strings"
 
 	"github.com/alecthomas/errors"
-	. "github.com/alecthomas/types/optional"
 )
 
 // Config selects the template init renders and where its values come from.
@@ -51,7 +50,7 @@ func Init(out io.Writer, config Config, registry *Registry) error {
 		return err
 	}
 	builtins := map[string]any{"Dir": filepath.Base(dir), "SpectreRef": spectreRef(), "Template": name}
-	values, err := resolve(template, builtins, config.Vars, previous.Variables)
+	values, err := resolve(template, config.Vars, previous.Variables)
 	if err != nil {
 		return err
 	}
@@ -74,9 +73,8 @@ func Init(out io.Writer, config Config, registry *Registry) error {
 	return errors.Wrap(err, "write next steps")
 }
 
-// resolve finds each variable's value, from flags, then the previous run, then
-// the default.
-func resolve(template Template, builtins map[string]any, flags, locked map[string]string) (map[string]string, error) {
+// resolve finds each variable's value, from flags, then the previous run.
+func resolve(template Template, flags, locked map[string]string) (map[string]string, error) {
 	names := make([]string, 0, len(template.Manifest.Variables))
 	for _, variable := range template.Manifest.Variables {
 		names = append(names, variable.Name)
@@ -91,16 +89,14 @@ func resolve(template Template, builtins map[string]any, flags, locked map[strin
 	for _, variable := range template.Manifest.Variables {
 		value, ok := locked[variable.Name]
 		if ok && variable.check(value) != nil {
-			ok = false // A recorded answer the template no longer accepts falls back to the default.
+			ok = false // A recorded answer the template no longer accepts is missing.
 		}
 		if flag, found := flags[variable.Name]; found {
 			value, ok = flag, true
 		}
 		if !ok {
-			if value, ok = renderDefault(variable, builtins, values).Get(); !ok {
-				missing = append(missing, variable)
-				continue
-			}
+			missing = append(missing, variable)
+			continue
 		}
 		if err := variable.check(value); err != nil {
 			return nil, err
@@ -111,20 +107,6 @@ func resolve(template Template, builtins map[string]any, flags, locked map[strin
 		return nil, missingError(template.Name, missing)
 	}
 	return values, nil
-}
-
-// renderDefault renders a variable's default from the built-in values and the
-// earlier variables. A default that refers to a missing value has none.
-func renderDefault(variable Variable, builtins map[string]any, values map[string]string) Option[string] {
-	raw, ok := variable.Default.Get()
-	if !ok {
-		return None[string]()
-	}
-	rendered, err := renderText(variable.Name+" default", raw, merge(builtins, values))
-	if err != nil {
-		return None[string]()
-	}
-	return Some(rendered)
 }
 
 func missingError(template string, missing []Variable) error {

@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"github.com/alecthomas/errors"
-	. "github.com/alecthomas/types/optional"
 )
 
 // variableName keeps variables apart from the capitalised built-in values.
@@ -18,16 +17,11 @@ type Variable struct {
 	Name string `toml:"name"`
 	// Help says what the value is for.
 	Help string `toml:"help"`
-	// RawDefault is the manifest's default, which must be a string.
-	RawDefault any `toml:"default"`
-	// Default is a template rendered with the built-in values and the earlier
-	// variables.
-	Default Option[string] `toml:"-"`
 	// Choices are the only values allowed.
 	Choices []string `toml:"choices"`
 }
 
-// normalise checks a variable read from a manifest and fills in its default.
+// normalise checks a variable read from a manifest.
 func (v Variable) normalise() (Variable, error) {
 	if !variableName.MatchString(v.Name) {
 		return Variable{}, errors.Errorf("variable name %q must match %s", v.Name, variableName)
@@ -35,14 +29,6 @@ func (v Variable) normalise() (Variable, error) {
 	if v.Help == "" {
 		return Variable{}, errors.Errorf("variable %q has no help", v.Name)
 	}
-	switch raw := v.RawDefault.(type) {
-	case nil:
-	case string:
-		v.Default = Some(raw)
-	default:
-		return Variable{}, errors.Errorf("variable %q default must be a string", v.Name)
-	}
-	v.RawDefault = nil
 	return v, nil
 }
 

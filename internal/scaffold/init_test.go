@@ -22,12 +22,10 @@ next_steps = "Edit {{ .name }}."
 [[variables]]
 name = "name"
 help = "Service name."
-default = "{{ .Dir }}"
 
 [[variables]]
 name = "envs"
 help = "Environments."
-default = "staging"
 
 [files]
 customisable = ["config.toml", "spectre/custom/**", "spectre/migration.toml"]
@@ -58,7 +56,6 @@ func nextTemplate() fstest.MapFS {
 	manifest = strings.Replace(manifest, "[files]", `[[variables]]
 name = "image"
 help = "Image."
-default = "{{ .name }}-image"
 
 [files]`, 1)
 	files["scaffold.toml"] = &fstest.MapFile{Data: []byte(manifest)}
@@ -76,7 +73,7 @@ func newRegistry() *scaffold.Registry {
 
 func TestInitWritesTemplate(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "svc")
-	output := runInit(t, scaffold.Config{Dir: dir, Template: "app"}, newRegistry())
+	output := runInit(t, scaffold.Config{Dir: dir, Template: "app", Vars: map[string]string{"name": "svc", "envs": "staging"}}, newRegistry())
 
 	assert.Equal(t, map[string]string{
 		"README.md":               "# svc\n",
@@ -93,14 +90,14 @@ func TestInitWritesTemplate(t *testing.T) {
 func TestInitRerunReconciles(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "svc")
 	registry := newRegistry()
-	runInit(t, scaffold.Config{Dir: dir, Template: "app", Vars: map[string]string{"name": "first"}}, registry)
+	runInit(t, scaffold.Config{Dir: dir, Template: "app", Vars: map[string]string{"name": "first", "envs": "staging"}}, registry)
 	writeFile(t, dir, "config.toml", "edited\n")
 	writeFile(t, dir, "README.md", "edited\n")
 	writeFile(t, dir, "own.txt", "the service's own file\n")
 	writeFile(t, dir, "spectre/own.txt", "not in the template\n")
 	writeFile(t, dir, "spectre/custom/own.txt", "customised\n")
 
-	runInit(t, scaffold.Config{Dir: dir, Template: "next"}, registry)
+	runInit(t, scaffold.Config{Dir: dir, Template: "next", Vars: map[string]string{"image": "first-image"}}, registry)
 
 	assert.Equal(t, map[string]string{
 		"README.md":                "# first\n",
@@ -118,7 +115,7 @@ func TestInitRerunReconciles(t *testing.T) {
 func TestInitRerunKeepsCustomisableAndDeletesStale(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "svc")
 	registry := newRegistry()
-	runInit(t, scaffold.Config{Dir: dir, Template: "app", Vars: map[string]string{"name": "first"}}, registry)
+	runInit(t, scaffold.Config{Dir: dir, Template: "app", Vars: map[string]string{"name": "first", "envs": "staging"}}, registry)
 	writeFile(t, dir, "config.toml", "edited\n")
 	writeFile(t, dir, "spectre/migration.toml", strings.Replace(readFile(t, dir, "spectre/migration.toml"), "first", "edited", 1))
 
@@ -143,7 +140,6 @@ func TestInitVariables(t *testing.T) {
 		want   string
 		error  string
 	}{
-		{name: "Defaults", want: "name = \"svc\"\nenvs = [\"staging\"]\n"},
 		{name: "Flags", config: scaffold.Config{Vars: map[string]string{"name": "flag", "envs": "staging, production"}}, want: "name = \"flag\"\nenvs = [\"staging\", \"production\"]\n"},
 		{name: "UnknownVariable", config: scaffold.Config{Vars: map[string]string{"nope": "x"}}, error: `template "app" has no variable "nope"; it has: name, envs`},
 	}
