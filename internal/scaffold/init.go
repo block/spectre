@@ -96,7 +96,7 @@ func Init(config Config, registry *Registry) (Result, error) {
 
 // resolve finds each variable's value, from flags, then the previous run, then
 // the default.
-func resolve(template Template, builtins map[string]any, flags, locked map[string]string) (map[string]any, error) {
+func resolve(template Template, builtins map[string]any, flags, locked map[string]string) (map[string]string, error) {
 	names := make([]string, 0, len(template.Manifest.Variables))
 	for _, variable := range template.Manifest.Variables {
 		names = append(names, variable.Name)
@@ -106,22 +106,24 @@ func resolve(template Template, builtins map[string]any, flags, locked map[strin
 			return nil, errors.Errorf("template %q has no variable %q; it has: %s", template.Name, name, strings.Join(names, ", "))
 		}
 	}
-	values := map[string]any{}
+	values := map[string]string{}
 	var missing []Variable
 	for _, variable := range template.Manifest.Variables {
-		value, ok, err := given(variable, flags, locked)
-		if err != nil {
-			return nil, err
+		value, ok := locked[variable.Name]
+		if ok && variable.check(value) != nil {
+			ok = false // A recorded answer the template no longer accepts falls back to the default.
+		}
+		if flag, found := flags[variable.Name]; found {
+			value, ok = flag, true
 		}
 		if !ok {
-			fallback, found := renderDefault(variable, builtins, values).Get()
-			if !found {
+			if value, ok = renderDefault(variable, builtins, values).Get(); !ok {
 				missing = append(missing, variable)
 				continue
 			}
-			if value, err = variable.parse(fallback); err != nil {
-				return nil, errors.Wrap(err, "default")
-			}
+		}
+		if err := variable.check(value); err != nil {
+			return nil, err
 		}
 		values[variable.Name] = value
 	}
@@ -131,39 +133,9 @@ func resolve(template Template, builtins map[string]any, flags, locked map[strin
 	return values, nil
 }
 
-// given returns a variable's value from flags or the previous run. A previous
-// value the variable no longer accepts is asked for again.
-func given(variable Variable, flags, locked map[string]string) (value any, ok bool, err error) {
-	if raw, found := flags[variable.Name]; found {
-		return checked(variable)(variable.parse(raw))
-	}
-	raw, found := locked[variable.Name]
-	if !found {
-		return nil, false, nil
-	}
-	value, ok, err = checked(variable)(variable.parse(raw))
-	if err != nil {
-		return nil, false, nil //nolint:nilerr // A stale answer is asked for again.
-	}
-	return value, ok, nil
-}
-
-// checked returns a function that checks a parsed value against variable.
-func checked(variable Variable) func(value any, err error) (any, bool, error) {
-	return func(value any, err error) (any, bool, error) {
-		if err == nil {
-			err = variable.check(value)
-		}
-		if err != nil {
-			return nil, false, err
-		}
-		return value, true, nil
-	}
-}
-
 // renderDefault renders a variable's default from the built-in values and the
 // earlier variables. A default that refers to a missing value has none.
-func renderDefault(variable Variable, builtins, values map[string]any) Option[string] {
+func renderDefault(variable Variable, builtins map[string]any, values map[string]string) Option[string] {
 	raw, ok := variable.Default.Get()
 	if !ok {
 		return None[string]()
@@ -179,7 +151,7 @@ func missingError(template string, missing []Variable) error {
 	var message strings.Builder
 	fmt.Fprintf(&message, "template %q needs values for:", template)
 	for _, variable := range missing {
-		fmt.Fprintf(&message, "\n  --var %s=<%s>  %s", variable.Name, variable.Type, variable.Help)
+		fmt.Fprintf(&message, "\n  --var %s=VALUE  %s", variable.Name, variable.Help)
 		if len(variable.Choices) > 0 {
 			fmt.Fprintf(&message, " One of: %s.", strings.Join(variable.Choices, ", "))
 		}
@@ -210,8 +182,10 @@ func (r Result) Write(out io.Writer) error {
 }
 
 // merge returns the built-in values with the variable values added.
-func merge(builtins, values map[string]any) map[string]any {
+func merge(builtins map[string]any, values map[string]string) map[string]any {
 	merged := maps.Clone(builtins)
-	maps.Copy(merged, values)
+	for name, value := range values {
+		merged[name] = value
+	}
 	return merged
 }

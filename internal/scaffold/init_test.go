@@ -26,9 +26,8 @@ default = "{{ .Dir }}"
 [[variables]]
 name = "envs"
 help = "Environments."
-type = "list"
 default = "staging"
-choices = ["staging", "production"]
+pattern = "^(staging|production)(, *(staging|production))*$"
 
 [files]
 customisable = ["config.toml", "spectre/custom/**", "spectre/migration.toml"]
@@ -41,7 +40,7 @@ executable = ["spectre/bin/*"]
 func appTemplate() fstest.MapFS {
 	return fstest.MapFS{
 		"scaffold.toml":                  {Data: []byte(appManifest)},
-		"config.toml.tmpl":               {Data: []byte("name = \"{{ .name }}\"\nenvs = \"{{ join \",\" .envs }}\"\n")},
+		"config.toml.tmpl":               {Data: []byte("name = \"{{ .name }}\"\nenvs = [{{ range $i, $env := split .envs }}{{ if $i }}, {{ end }}\"{{ $env }}\"{{ end }}]\n")},
 		"spectre/bin/run":                {Data: []byte("#!/bin/sh\necho {{ .name }}\n")},
 		"spectre/custom/{{ .name }}.txt": {Data: []byte("{{ .name }}\n")},
 		"spectre/migration.toml":         {Data: []byte("app = \"{{ .name }}\"\n")},
@@ -64,7 +63,7 @@ default = "{{ .name }}-image"
 [files]`, 1)
 	files["scaffold.toml"] = &fstest.MapFile{Data: []byte(manifest)}
 	files["config.toml"] = &fstest.MapFile{Data: []byte("image = \"{{ .image }}\"\n")}
-	files["next.txt"] = &fstest.MapFile{Data: []byte("{{ .image }} {{ join \",\" .envs }}\n")}
+	files["next.txt"] = &fstest.MapFile{Data: []byte("{{ .image }} {{ .envs }}\n")}
 	return files
 }
 
@@ -81,7 +80,7 @@ func TestInitWritesTemplate(t *testing.T) {
 
 	assert.Equal(t, map[string]string{
 		"README.md":               "# svc\n",
-		"config.toml":             "name = \"svc\"\nenvs = \"staging\"\n",
+		"config.toml":             "name = \"svc\"\nenvs = [\"staging\"]\n",
 		"spectre/bin/run":         "exec:#!/bin/sh\necho svc\n",
 		"spectre/custom/svc.txt":  "svc\n",
 		"spectre/migration.toml":  "app = \"svc\"\n\n" + answers("app", `envs = "staging"`, `name = "svc"`),
@@ -186,10 +185,10 @@ func TestInitVariables(t *testing.T) {
 		want   string
 		error  string
 	}{
-		{name: "Defaults", want: "name = \"svc\"\nenvs = \"staging\"\n"},
-		{name: "Flags", config: scaffold.Config{Vars: map[string]string{"name": "flag", "envs": "staging, production"}}, want: "name = \"flag\"\nenvs = \"staging,production\"\n"},
+		{name: "Defaults", want: "name = \"svc\"\nenvs = [\"staging\"]\n"},
+		{name: "Flags", config: scaffold.Config{Vars: map[string]string{"name": "flag", "envs": "staging, production"}}, want: "name = \"flag\"\nenvs = [\"staging\", \"production\"]\n"},
 		{name: "UnknownVariable", config: scaffold.Config{Vars: map[string]string{"nope": "x"}}, error: `template "app" has no variable "nope"; it has: name, envs`},
-		{name: "InvalidChoice", config: scaffold.Config{Vars: map[string]string{"envs": "dev"}}, error: `envs: "dev" is not one of staging, production`},
+		{name: "InvalidValue", config: scaffold.Config{Vars: map[string]string{"envs": "dev"}}, error: `envs: "dev" does not match ^(staging|production)(, *(staging|production))*$`},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -219,7 +218,7 @@ choices = ["ski"]
 	_, err := scaffold.Init(scaffold.Config{Dir: t.TempDir(), Template: "required"}, registry)
 
 	assert.EqualError(t, err, "template \"required\" needs values for:\n"+
-		"  --var platform=<string>  Deploy platform. One of: ski.")
+		"  --var platform=VALUE  Deploy platform. One of: ski.")
 }
 
 func TestInitNeedsTemplateOnFirstRun(t *testing.T) {

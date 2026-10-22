@@ -22,18 +22,13 @@ const answersComment = "# Written by spectre init, which reads it on the next ru
 type Answers struct {
 	// Template is the name of the rendered template.
 	Template string `toml:"template"`
-	// Variables are the values the template was rendered with, as written on
-	// the command line.
+	// Variables are the values the template was rendered with.
 	Variables map[string]string `toml:"variables"`
 }
 
 // newAnswers records a run's template and values.
-func newAnswers(template string, values map[string]any) Answers {
-	answers := Answers{Template: template, Variables: map[string]string{}}
-	for name, value := range values {
-		answers.Variables[name] = format(value)
-	}
-	return answers
+func newAnswers(template string, values map[string]string) Answers {
+	return Answers{Template: template, Variables: values}
 }
 
 // readAnswers reads the [init] table of the migration config in dir, and
