@@ -1,138 +1,56 @@
-// Package scaffold writes the files a SPECTRE migration needs into a service
-// checkout from a template, and keeps them up to date on later runs.
-//
-// A template is a file tree rendered with scaffolder, with a manifest at its
-// root that declares its variables and which files are customisable. A run
-// deletes the files in spectre/ that are not customisable, then renders the
-// template, except customisable files already there. The answers are kept in
-// spectre/migration.toml.
+// Package scaffold sets a service up for SPECTRE by rendering a template from a
+// template repository into its checkout with scaffolder.
 package scaffold
 
 import (
 	"context"
-	"fmt"
-	"io"
-	"maps"
+	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 
 	"github.com/alecthomas/errors"
+	"github.com/block/scaffolder"
 )
 
-// Config selects the template init renders and where its values come from.
+// Config selects the template init renders and its variables.
 type Config struct {
 	// Dir is the service checkout to write into.
 	Dir string `arg:"" optional:"" default:"." type:"path" help:"Service checkout to write the files into."`
 	// Template names the template to render.
-	Template string `placeholder:"NAME" help:"Template to render, a directory at the root of the template repository. Defaults to the one the last run used."`
+	Template string `required:"" placeholder:"NAME" help:"Template to render, a directory at the root of the template repository."`
 	// Repo holds the templates, one directory each.
 	Repo string `name:"template-repo" default:"${template_repo}" placeholder:"SOURCE" help:"Template repository: a local directory, or a git source such as git+ssh://github.com/org/repo."`
-	// Ref is the branch or tag of a git template repository.
-	Ref string `name:"template-ref" default:"main" placeholder:"REF" help:"Branch or tag of the template repository."`
-	// Vars are variable values, as written on the command line.
+	// Vars are the template's variables.
 	Vars map[string]string `name:"var" mapsep:"none" placeholder:"NAME=VALUE" help:"Set a template variable. Write a list comma-separated."`
 }
 
-// Init renders a template into config.Dir and writes its next steps to out.
-func Init(ctx context.Context, out io.Writer, config Config) error {
-	dir, err := filepath.Abs(config.Dir)
-	if err != nil {
-		return errors.WithStack(err)
+// Init renders the template into config.Dir, which must not be set up yet.
+func Init(ctx context.Context, config Config) error {
+	if config.Repo == "" {
+		return errors.New("no template repository; pass --template-repo, or build spectre with spectre.WithTemplateRepo")
 	}
-	previous, found, err := readAnswers(dir)
-	if err != nil {
-		return err
+	if _, err := os.Stat(filepath.Join(config.Dir, "spectre")); err == nil {
+		return errors.Errorf("%s already has a spectre directory", config.Dir)
 	}
-	name := config.Template
-	if name == "" {
-		if !found {
-			return errors.New("no template given; pass --template")
-		}
-		name = previous.Template
-	}
-	template, cleanup, err := openTemplate(ctx, config, name)
+	files, cleanup, err := scaffolder.Open(ctx, config.Repo+"//"+config.Template)
 	if err != nil {
-		return err
+		return errors.Wrapf(err, "fetch template %q", config.Template)
 	}
 	defer cleanup()
-	builtins := map[string]any{"Dir": filepath.Base(dir), "SpectreRef": spectreRef(), "Template": name}
-	values, err := resolve(template, config.Vars, previous.Variables)
-	if err != nil {
-		return err
-	}
-	context := merge(builtins, values)
-	kept, err := clean(dir, template.Manifest.Files.Customisable)
-	if err != nil {
-		return err
-	}
-	if err := template.Render(dir, context, kept); err != nil {
-		return err
-	}
-	if err := writeAnswers(dir, newAnswers(name, values)); err != nil {
-		return err
-	}
-	steps, err := template.NextSteps(context)
-	if err != nil || steps == "" {
-		return err
-	}
-	_, err = fmt.Fprintf(out, "Next steps:\n%s\n", strings.TrimRight(steps, "\n"))
-	return errors.Wrap(err, "write next steps")
+	err = scaffolder.Scaffold(files, config.Dir, config.Vars,
+		scaffolder.WithContext(ctx),
+		scaffolder.Functions(scaffolder.FuncMap{"split": split}),
+	)
+	return errors.Wrapf(err, "render template %q", config.Template)
 }
 
-// resolve finds each variable's value, from flags, then the previous run.
-func resolve(template Template, flags, locked map[string]string) (map[string]string, error) {
-	names := make([]string, 0, len(template.Manifest.Variables))
-	for _, variable := range template.Manifest.Variables {
-		names = append(names, variable.Name)
-	}
-	for _, name := range slices.Sorted(maps.Keys(flags)) {
-		if !slices.Contains(names, name) {
-			return nil, errors.Errorf("template %q has no variable %q; it has: %s", template.Name, name, strings.Join(names, ", "))
+// split returns the comma-separated items of a value, trimmed, without empty ones.
+func split(value string) []string {
+	items := []string{}
+	for item := range strings.SplitSeq(value, ",") {
+		if item = strings.TrimSpace(item); item != "" {
+			items = append(items, item)
 		}
 	}
-	values := map[string]string{}
-	var missing []Variable
-	for _, variable := range template.Manifest.Variables {
-		value, ok := locked[variable.Name]
-		if ok && variable.check(value) != nil {
-			ok = false // A recorded answer the template no longer accepts is missing.
-		}
-		if flag, found := flags[variable.Name]; found {
-			value, ok = flag, true
-		}
-		if !ok {
-			missing = append(missing, variable)
-			continue
-		}
-		if err := variable.check(value); err != nil {
-			return nil, err
-		}
-		values[variable.Name] = value
-	}
-	if len(missing) > 0 {
-		return nil, missingError(template.Name, missing)
-	}
-	return values, nil
-}
-
-func missingError(template string, missing []Variable) error {
-	var message strings.Builder
-	fmt.Fprintf(&message, "template %q needs values for:", template)
-	for _, variable := range missing {
-		fmt.Fprintf(&message, "\n  --var %s=VALUE  %s", variable.Name, variable.Help)
-		if len(variable.Choices) > 0 {
-			fmt.Fprintf(&message, " One of: %s.", strings.Join(variable.Choices, ", "))
-		}
-	}
-	return errors.New(message.String())
-}
-
-// merge returns the built-in values with the variable values added.
-func merge(builtins map[string]any, values map[string]string) map[string]any {
-	merged := maps.Clone(builtins)
-	for name, value := range values {
-		merged[name] = value
-	}
-	return merged
+	return items
 }

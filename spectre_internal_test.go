@@ -58,20 +58,19 @@ func TestWithTemplateRepoSetsDefault(t *testing.T) {
 	dir := t.TempDir()
 	repo := t.TempDir()
 	assert.NoError(t, os.CopyFS(filepath.Join(repo, "custom"), fstest.MapFS{
-		"scaffold.toml": {Data: []byte("[[variables]]\nname = \"name\"\nhelp = \"Name.\"\n")},
-		"hello.txt":     {Data: []byte("hello {{ .name }}\n")},
+		"spectre/{{ .name }}.txt": {Data: []byte(`{{ range split .envs }}[{{ . }}]{{ end }}`)},
 	}))
 	parser, err := newParser(&cli{}, WithTemplateRepo(repo))
 	assert.NoError(t, err)
 
-	kctx, err := parser.Parse([]string{"init", dir, "--template=custom", "--var=name=spectre"})
+	kctx, err := parser.Parse([]string{"init", dir, "--template=custom", "--var=name=svc", "--var=envs=staging, production"})
 	assert.NoError(t, err)
 	kctx.BindTo(t.Context(), (*context.Context)(nil))
 	assert.NoError(t, kctx.Run())
 
-	content, err := os.ReadFile(filepath.Join(dir, "hello.txt"))
+	content, err := os.ReadFile(filepath.Join(dir, "spectre/svc.txt"))
 	assert.NoError(t, err)
-	assert.Equal(t, "hello spectre\n", string(content))
+	assert.Equal(t, "[staging][production]", string(content))
 }
 
 // pushCommand's default needs both a variable from WithKongOptions and the
