@@ -8,7 +8,6 @@
 package scaffold
 
 import (
-	"bytes"
 	"fmt"
 	"io"
 	"maps"
@@ -28,70 +27,51 @@ type Config struct {
 	Template string `placeholder:"NAME" help:"Template to render. Defaults to the one the last run used."`
 	// Vars are variable values, as written on the command line.
 	Vars map[string]string `name:"var" mapsep:"none" placeholder:"NAME=VALUE" help:"Set a template variable. Write a list comma-separated."`
-	// DryRun reports the changes without writing them.
-	DryRun bool `help:"Report the changes without writing anything."`
 }
 
-// Result is what a run of init did, or would do in a dry run.
-type Result struct {
-	// Template is the rendered template's name.
-	Template string
-	// DryRun is set when nothing was written.
-	DryRun bool
-	// Changes are the actions on each file, including unchanged ones.
-	Changes []Change
-	// NextSteps are the template's instructions for what to do after init.
-	NextSteps string
-}
-
-// Init renders a template into config.Dir, unless it is a dry run.
-func Init(config Config, registry *Registry) (Result, error) {
+// Init renders a template into config.Dir and writes its next steps to out.
+func Init(out io.Writer, config Config, registry *Registry) error {
 	dir, err := filepath.Abs(config.Dir)
 	if err != nil {
-		return Result{}, errors.WithStack(err)
+		return errors.WithStack(err)
 	}
 	previous, found, err := readAnswers(dir)
 	if err != nil {
-		return Result{}, err
+		return err
 	}
 	name := config.Template
 	if name == "" {
 		if !found {
-			return Result{}, errors.Errorf("no template given; pass --template with one of: %s", strings.Join(registry.Names(), ", "))
+			return errors.Errorf("no template given; pass --template with one of: %s", strings.Join(registry.Names(), ", "))
 		}
 		name = previous.Template
 	}
 	template, err := registry.Load(name)
 	if err != nil {
-		return Result{}, err
+		return err
 	}
 	builtins := map[string]any{"Dir": filepath.Base(dir), "SpectreRef": spectreRef(), "Template": name}
 	values, err := resolve(template, builtins, config.Vars, previous.Variables)
 	if err != nil {
-		return Result{}, err
+		return err
 	}
 	context := merge(builtins, values)
 	files, err := template.Render(context)
 	if err != nil {
-		return Result{}, err
+		return err
 	}
 	if err := recordAnswers(dir, files, newAnswers(name, values)); err != nil {
-		return Result{}, err
+		return err
 	}
-	changes, err := plan(dir, files, template.Manifest.Files.Customisable)
-	if err != nil {
-		return Result{}, err
-	}
-	if !config.DryRun {
-		if err := apply(dir, files, changes); err != nil {
-			return Result{}, err
-		}
+	if err := apply(dir, files, template.Manifest.Files.Customisable); err != nil {
+		return err
 	}
 	steps, err := template.NextSteps(context)
-	if err != nil {
-		return Result{}, err
+	if err != nil || steps == "" {
+		return err
 	}
-	return Result{Template: name, DryRun: config.DryRun, Changes: changes, NextSteps: steps}, nil
+	_, err = fmt.Fprintf(out, "Next steps:\n%s\n", strings.TrimRight(steps, "\n"))
+	return errors.Wrap(err, "write next steps")
 }
 
 // resolve finds each variable's value, from flags, then the previous run, then
@@ -157,28 +137,6 @@ func missingError(template string, missing []Variable) error {
 		}
 	}
 	return errors.New(message.String())
-}
-
-// Write reports the changes and next steps to out.
-func (r Result) Write(out io.Writer) error {
-	var text bytes.Buffer
-	if r.DryRun {
-		text.WriteString("Dry run: no files were written.\n")
-	}
-	unchanged := 0
-	for _, change := range r.Changes {
-		if change.Action == Unchanged {
-			unchanged++
-			continue
-		}
-		fmt.Fprintf(&text, "%-9s %s\n", change.Action, change.Path)
-	}
-	fmt.Fprintf(&text, "%d unchanged\n", unchanged)
-	if r.NextSteps != "" {
-		fmt.Fprintf(&text, "\nNext steps:\n%s\n", strings.TrimRight(r.NextSteps, "\n"))
-	}
-	_, err := out.Write(text.Bytes())
-	return errors.Wrap(err, "write init result")
 }
 
 // merge returns the built-in values with the variable values added.

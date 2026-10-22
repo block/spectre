@@ -40,11 +40,7 @@ type initCommand struct {
 }
 
 func (c *initCommand) Run(registry *scaffold.Registry) error {
-	result, err := scaffold.Init(c.Init, registry)
-	if err != nil {
-		return errors.WithStack(err)
-	}
-	return errors.WithStack(result.Write(os.Stdout))
+	return errors.WithStack(scaffold.Init(os.Stdout, c.Init, registry))
 }
 
 // stateCommand groups the commands that read a service's migration state.

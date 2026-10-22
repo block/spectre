@@ -1,6 +1,7 @@
 package scaffold_test
 
 import (
+	"io"
 	"io/fs"
 	"maps"
 	"os"
@@ -76,7 +77,7 @@ func newRegistry() *scaffold.Registry {
 
 func TestInitWritesTemplate(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "svc")
-	result := runInit(t, scaffold.Config{Dir: dir, Template: "app"}, newRegistry())
+	output := runInit(t, scaffold.Config{Dir: dir, Template: "app"}, newRegistry())
 
 	assert.Equal(t, map[string]string{
 		"README.md":               "# svc\n",
@@ -87,19 +88,7 @@ func TestInitWritesTemplate(t *testing.T) {
 		"spectre/link/svc":        "link:../bin/run",
 		"spectre/placeholder.txt": "placeholder\n",
 	}, readTree(t, dir))
-	assert.Equal(t, scaffold.Result{
-		Template: "app",
-		Changes: []scaffold.Change{
-			{Path: "README.md", Action: scaffold.Create},
-			{Path: "config.toml", Action: scaffold.Create},
-			{Path: "spectre/bin/run", Action: scaffold.Create},
-			{Path: "spectre/custom/svc.txt", Action: scaffold.Create},
-			{Path: "spectre/link/svc", Action: scaffold.Create},
-			{Path: "spectre/migration.toml", Action: scaffold.Create},
-			{Path: "spectre/placeholder.txt", Action: scaffold.Create},
-		},
-		NextSteps: "Edit svc.",
-	}, result)
+	assert.Equal(t, "Next steps:\nEdit svc.\n", output)
 }
 
 func TestInitRerunReconciles(t *testing.T) {
@@ -112,7 +101,7 @@ func TestInitRerunReconciles(t *testing.T) {
 	writeFile(t, dir, "spectre/own.txt", "not in the template\n")
 	writeFile(t, dir, "spectre/custom/own.txt", "customised\n")
 
-	result := runInit(t, scaffold.Config{Dir: dir, Template: "next"}, registry)
+	runInit(t, scaffold.Config{Dir: dir, Template: "next"}, registry)
 
 	assert.Equal(t, map[string]string{
 		"README.md":                "# first\n",
@@ -125,17 +114,6 @@ func TestInitRerunReconciles(t *testing.T) {
 		"spectre/link/first":       "link:../bin/run",
 		"spectre/migration.toml":   "app = \"first\"\n\n" + answers("next", `envs = "staging"`, `image = "first-image"`, `name = "first"`),
 	}, readTree(t, dir))
-	assert.Equal(t, []scaffold.Change{
-		{Path: "README.md", Action: scaffold.Update},
-		{Path: "config.toml", Action: scaffold.Update},
-		{Path: "next.txt", Action: scaffold.Create},
-		{Path: "spectre/bin/run", Action: scaffold.Unchanged},
-		{Path: "spectre/custom/first.txt", Action: scaffold.Unchanged},
-		{Path: "spectre/link/first", Action: scaffold.Unchanged},
-		{Path: "spectre/migration.toml", Action: scaffold.Update},
-		{Path: "spectre/own.txt", Action: scaffold.Delete},
-		{Path: "spectre/placeholder.txt", Action: scaffold.Delete},
-	}, result.Changes)
 }
 
 func TestInitRerunKeepsCustomisableAndDeletesStale(t *testing.T) {
@@ -145,7 +123,7 @@ func TestInitRerunKeepsCustomisableAndDeletesStale(t *testing.T) {
 	writeFile(t, dir, "config.toml", "edited\n")
 	writeFile(t, dir, "spectre/migration.toml", strings.Replace(readFile(t, dir, "spectre/migration.toml"), "first", "edited", 1))
 
-	result := runInit(t, scaffold.Config{Dir: dir, Vars: map[string]string{"name": "second"}}, registry)
+	runInit(t, scaffold.Config{Dir: dir, Vars: map[string]string{"name": "second"}}, registry)
 
 	assert.Equal(t, map[string]string{
 		"README.md":                 "# second\n",
@@ -157,25 +135,6 @@ func TestInitRerunKeepsCustomisableAndDeletesStale(t *testing.T) {
 		"spectre/migration.toml":    "app = \"edited\"\n\n" + answers("app", `envs = "staging"`, `name = "second"`),
 		"spectre/placeholder.txt":   "placeholder\n",
 	}, readTree(t, dir))
-	assert.Equal(t, []scaffold.Change{
-		{Path: "README.md", Action: scaffold.Update},
-		{Path: "config.toml", Action: scaffold.Keep},
-		{Path: "spectre/bin/run", Action: scaffold.Update},
-		{Path: "spectre/custom/second.txt", Action: scaffold.Create},
-		{Path: "spectre/link/second", Action: scaffold.Create},
-		{Path: "spectre/migration.toml", Action: scaffold.Update},
-		{Path: "spectre/placeholder.txt", Action: scaffold.Unchanged},
-		{Path: "spectre/link/first", Action: scaffold.Delete},
-	}, result.Changes)
-}
-
-func TestInitDryRunWritesNothing(t *testing.T) {
-	dir := t.TempDir()
-	result := runInit(t, scaffold.Config{Dir: dir, Template: "app", DryRun: true}, newRegistry())
-
-	assert.Equal(t, map[string]string{}, readTree(t, dir))
-	assert.True(t, result.DryRun)
-	assert.Equal(t, 7, len(result.Changes))
 }
 
 func TestInitVariables(t *testing.T) {
@@ -196,7 +155,7 @@ func TestInitVariables(t *testing.T) {
 			config := test.config
 			config.Dir = dir
 			config.Template = "app"
-			_, err := scaffold.Init(config, newRegistry())
+			err := scaffold.Init(io.Discard, config, newRegistry())
 			if test.error != "" {
 				assert.EqualError(t, err, test.error)
 				return
@@ -215,14 +174,14 @@ name = "platform"
 help = "Deploy platform."
 choices = ["ski"]
 `)}})
-	_, err := scaffold.Init(scaffold.Config{Dir: t.TempDir(), Template: "required"}, registry)
+	err := scaffold.Init(io.Discard, scaffold.Config{Dir: t.TempDir(), Template: "required"}, registry)
 
 	assert.EqualError(t, err, "template \"required\" needs values for:\n"+
 		"  --var platform=VALUE  Deploy platform. One of: ski.")
 }
 
 func TestInitNeedsTemplateOnFirstRun(t *testing.T) {
-	_, err := scaffold.Init(scaffold.Config{Dir: t.TempDir()}, newRegistry())
+	err := scaffold.Init(io.Discard, scaffold.Config{Dir: t.TempDir()}, newRegistry())
 
 	assert.EqualError(t, err, "no template given; pass --template with one of: app, base, next")
 }
@@ -240,11 +199,11 @@ func answers(template string, variables ...string) string {
 		"template = \"" + template + "\"\n\n[init.variables]\n" + strings.Join(variables, "\n") + "\n"
 }
 
-func runInit(t *testing.T, config scaffold.Config, registry *scaffold.Registry) scaffold.Result {
+func runInit(t *testing.T, config scaffold.Config, registry *scaffold.Registry) string {
 	t.Helper()
-	result, err := scaffold.Init(config, registry)
-	assert.NoError(t, err)
-	return result
+	var out strings.Builder
+	assert.NoError(t, scaffold.Init(&out, config, registry))
+	return out.String()
 }
 
 // readTree reads every file below dir, marking executables and symlinks.
