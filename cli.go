@@ -12,6 +12,7 @@ import (
 	"github.com/block/spectre/internal/descriptors"
 	"github.com/block/spectre/internal/jsonschema"
 	"github.com/block/spectre/internal/logger"
+	"github.com/block/spectre/internal/scaffold"
 	"github.com/block/spectre/internal/state"
 	"github.com/block/spectre/internal/supervisor"
 	"github.com/block/spectre/internal/terminal"
@@ -29,6 +30,17 @@ type cli struct {
 	Gen    genCommand    `cmd:"" help:"Generate TypeScript schema declarations and the script API."`
 	Status statusCommand `cmd:"" help:"Report the SPECTRE migration status and mirror deployment for a service."`
 	State  stateCommand  `cmd:"" help:"Describe a service's migration state."`
+
+	Init initCommand `cmd:"" help:"Set a service checkout up for a SPECTRE migration from a template."`
+}
+
+// initCommand renders a template into a service checkout.
+type initCommand struct {
+	Init scaffold.Config `embed:""`
+}
+
+func (c *initCommand) Run(ctx context.Context) error {
+	return errors.WithStack(scaffold.Init(ctx, c.Init))
 }
 
 // stateCommand groups the commands that read a service's migration state.

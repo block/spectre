@@ -51,6 +51,14 @@ func WithStatusPlatform(name string, factory status.PlatformFactory) Option {
 	}
 }
 
+// WithTemplateRepo sets the default repository spectre init fetches templates
+// from: a git source such as git+ssh://github.com/org/repo, or a local directory.
+func WithTemplateRepo(source string) Option {
+	return func(registered *extensions) {
+		registered.kongOptions = append(registered.kongOptions, kong.Vars{"template_repo": source})
+	}
+}
+
 // WithKongOptions passes options to the parser after the built-in ones, so
 // kong.Vars adds to the built-in variables, such as version.
 func WithKongOptions(options ...kong.Option) Option {
@@ -99,7 +107,7 @@ func newParser(command *cli, options ...Option) (*kong.Kong, error) {
 		return nil, errors.Wrap(err, "collect supported IO")
 	}
 	kongOptions := append([]kong.Option{
-		kong.Vars{"version": internal.Version},
+		kong.Vars{"version": internal.Version, "template_repo": ""},
 		kong.Configuration(kongtoml.Loader),
 		kong.Bind(registered.statusPlatforms, catalog),
 	}, registered.kongOptions...)

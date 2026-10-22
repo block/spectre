@@ -3,7 +3,10 @@ package spectre
 import (
 	"context"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"testing"
+	"testing/fstest"
 
 	"github.com/alecthomas/assert/v2"
 	"github.com/alecthomas/kong"
@@ -49,6 +52,25 @@ func TestWithKongOptionsAddsVars(t *testing.T) {
 	assert.NoError(t, err)
 
 	assert.Equal(t, &pushCommand{Image: "registry.example.com/spectre:" + internal.Version}, extension)
+}
+
+func TestWithTemplateRepoSetsDefault(t *testing.T) {
+	dir := t.TempDir()
+	repo := t.TempDir()
+	assert.NoError(t, os.CopyFS(filepath.Join(repo, "custom"), fstest.MapFS{
+		"spectre/{{ .name }}.txt": {Data: []byte(`{{ range split .envs }}[{{ . }}]{{ end }}`)},
+	}))
+	parser, err := newParser(&cli{}, WithTemplateRepo(repo))
+	assert.NoError(t, err)
+
+	kctx, err := parser.Parse([]string{"init", dir, "--template=custom", "--var=name=svc", "--var=envs=staging, production"})
+	assert.NoError(t, err)
+	kctx.BindTo(t.Context(), (*context.Context)(nil))
+	assert.NoError(t, kctx.Run())
+
+	content, err := os.ReadFile(filepath.Join(dir, "spectre/svc.txt"))
+	assert.NoError(t, err)
+	assert.Equal(t, "[staging][production]", string(content))
 }
 
 // pushCommand's default needs both a variable from WithKongOptions and the
