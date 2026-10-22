@@ -10,11 +10,7 @@ import (
 // templateFuncs are the functions templates can call, beyond Go's built-ins.
 func templateFuncs() template.FuncMap {
 	return template.FuncMap{
-		"split":      split,
-		"replace":    func(old, replacement, text string) string { return strings.ReplaceAll(text, old, replacement) },
-		"trimPrefix": func(prefix, text string) string { return strings.TrimPrefix(text, prefix) },
-		"upper":      strings.ToUpper,
-		"lower":      strings.ToLower,
+		"split": split,
 	}
 }
 

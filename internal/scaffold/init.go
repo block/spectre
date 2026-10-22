@@ -3,8 +3,9 @@
 //
 // A template is a file tree rendered with scaffolder, with a manifest at its
 // root that declares its variables and which files are customisable. A run
-// overwrites the files it renders, except customisable ones, and deletes every
-// other file in spectre/. The answers are kept in spectre/migration.toml.
+// deletes the files in spectre/ that are not customisable, then renders the
+// template, except customisable files already there. The answers are kept in
+// spectre/migration.toml.
 package scaffold
 
 import (
@@ -61,14 +62,14 @@ func Init(ctx context.Context, out io.Writer, config Config) error {
 		return err
 	}
 	context := merge(builtins, values)
-	files, err := template.Render(context)
+	kept, err := clean(dir, template.Manifest.Files.Customisable)
 	if err != nil {
 		return err
 	}
-	if err := recordAnswers(dir, files, newAnswers(name, values)); err != nil {
+	if err := template.Render(dir, context, kept); err != nil {
 		return err
 	}
-	if err := apply(dir, files, template.Manifest.Files.Customisable); err != nil {
+	if err := writeAnswers(dir, newAnswers(name, values)); err != nil {
 		return err
 	}
 	steps, err := template.NextSteps(context)

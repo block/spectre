@@ -28,7 +28,8 @@ type Manifest struct {
 // Files holds path patterns over a template's rendered paths. A pattern is a
 // path.Match pattern, and a trailing /** matches everything below a directory.
 type Files struct {
-	// Customisable files are written only when absent and never deleted.
+	// Customisable files are written only when absent and never deleted. They
+	// are in spectre/, with names that are not templates.
 	Customisable []string `toml:"customisable"`
 }
 
@@ -58,6 +59,21 @@ func ParseManifest(files fs.FS) (Manifest, error) {
 		if _, err := path.Match(strings.TrimSuffix(pattern, "/**"), ""); err != nil {
 			return Manifest{}, errors.Errorf("invalid file pattern %q", pattern)
 		}
+		if !strings.HasPrefix(pattern, managedDir+"/") {
+			return Manifest{}, errors.Errorf("customisable pattern %q must be in %s/", pattern, managedDir)
+		}
+	}
+	err = fs.WalkDir(files, ".", func(name string, entry fs.DirEntry, err error) error {
+		if err != nil || entry.IsDir() {
+			return err
+		}
+		if strings.Contains(name, "{{") && matchAny(manifest.Files.Customisable, strings.TrimSuffix(name, ".tmpl")) {
+			return errors.Errorf("customisable file %q must not have a template as its name", name)
+		}
+		return nil
+	})
+	if err != nil {
+		return Manifest{}, errors.WithStack(err)
 	}
 	return manifest, nil
 }

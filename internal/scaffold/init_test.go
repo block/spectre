@@ -26,29 +26,28 @@ name = "envs"
 help = "Environments."
 
 [files]
-customisable = ["config.toml", "spectre/custom/**", "spectre/migration.toml"]
+customisable = ["spectre/custom/**", "spectre/migration.toml"]
 `
 
 func appTemplate() fstest.MapFS {
 	return fstest.MapFS{
-		"scaffold.toml":                  {Data: []byte(appManifest)},
-		"config.toml.tmpl":               {Data: []byte("name = \"{{ .name }}\"\nenvs = [{{ range $i, $env := split .envs }}{{ if $i }}, {{ end }}\"{{ $env }}\"{{ end }}]\n")},
-		"spectre/bin/run":                {Data: []byte("#!/bin/sh\necho {{ .name }}\n"), Mode: 0o755},
-		"spectre/link/{{ .name }}":       {Data: []byte("../bin/run"), Mode: fs.ModeSymlink},
-		"spectre/custom/{{ .name }}.txt": {Data: []byte("{{ .name }}\n")},
-		"spectre/migration.toml":         {Data: []byte("app = \"{{ .name }}\"\n")},
-		"spectre/placeholder.txt":        {Data: []byte("placeholder\n")},
-		"README.md":                      {Data: []byte("# {{ .name }}\n")},
+		"scaffold.toml":                 {Data: []byte(appManifest)},
+		"config.toml.tmpl":              {Data: []byte("name = \"{{ .name }}\"\nenvs = [{{ range $i, $env := split .envs }}{{ if $i }}, {{ end }}\"{{ $env }}\"{{ end }}]\n")},
+		"spectre/bin/run":               {Data: []byte("#!/bin/sh\necho {{ .name }}\n"), Mode: 0o755},
+		"spectre/link/{{ .name }}":      {Data: []byte("../bin/run"), Mode: fs.ModeSymlink},
+		"spectre/custom/notes.txt.tmpl": {Data: []byte("{{ .name }}\n")},
+		"spectre/migration.toml":        {Data: []byte("app = \"{{ .name }}\"\n")},
+		"spectre/placeholder.txt":       {Data: []byte("placeholder\n")},
+		"README.md":                     {Data: []byte("# {{ .name }}\n")},
 	}
 }
 
-// nextTemplate is a later app template that drops spectre/placeholder.txt and manages config.toml.
+// nextTemplate is a later app template that drops spectre/placeholder.txt and renders config.toml differently.
 func nextTemplate() fstest.MapFS {
 	files := appTemplate()
 	delete(files, "spectre/placeholder.txt")
 	delete(files, "config.toml.tmpl")
-	manifest := strings.Replace(appManifest, `customisable = ["config.toml", "spectre/custom/**", "spectre/migration.toml"]`, `customisable = ["spectre/custom/**", "spectre/migration.toml"]`, 1)
-	manifest = strings.Replace(manifest, "[files]", `[[variables]]
+	manifest := strings.Replace(appManifest, "[files]", `[[variables]]
 name = "image"
 help = "Image."
 
@@ -79,13 +78,13 @@ func TestInitWritesTemplate(t *testing.T) {
 	output := runInit(t, scaffold.Config{Dir: dir, Template: "app", Vars: map[string]string{"name": "svc", "envs": "staging"}}, appRepo(t))
 
 	assert.Equal(t, map[string]string{
-		"README.md":               "# svc\n",
-		"config.toml":             "name = \"svc\"\nenvs = [\"staging\"]\n",
-		"spectre/bin/run":         "exec:#!/bin/sh\necho svc\n",
-		"spectre/custom/svc.txt":  "svc\n",
-		"spectre/migration.toml":  "app = \"svc\"\n\n" + answers("app", `envs = "staging"`, `name = "svc"`),
-		"spectre/link/svc":        "link:../bin/run",
-		"spectre/placeholder.txt": "placeholder\n",
+		"README.md":                "# svc\n",
+		"config.toml":              "name = \"svc\"\nenvs = [\"staging\"]\n",
+		"spectre/bin/run":          "exec:#!/bin/sh\necho svc\n",
+		"spectre/custom/notes.txt": "svc\n",
+		"spectre/migration.toml":   "app = \"svc\"\n\n" + answers("app", `envs = "staging"`, `name = "svc"`),
+		"spectre/link/svc":         "link:../bin/run",
+		"spectre/placeholder.txt":  "placeholder\n",
 	}, readTree(t, dir))
 	assert.Equal(t, "Next steps:\nEdit svc.\n", output)
 }
@@ -108,7 +107,7 @@ func TestInitRerunReconciles(t *testing.T) {
 		"next.txt":                 "first-image staging\n",
 		"own.txt":                  "the service's own file\n",
 		"spectre/bin/run":          "exec:#!/bin/sh\necho first\n",
-		"spectre/custom/first.txt": "first\n",
+		"spectre/custom/notes.txt": "first\n",
 		"spectre/custom/own.txt":   "customised\n",
 		"spectre/link/first":       "link:../bin/run",
 		"spectre/migration.toml":   "app = \"first\"\n\n" + answers("next", `envs = "staging"`, `image = "first-image"`, `name = "first"`),
@@ -120,19 +119,19 @@ func TestInitRerunKeepsCustomisableAndDeletesStale(t *testing.T) {
 	repo := appRepo(t)
 	runInit(t, scaffold.Config{Dir: dir, Template: "app", Vars: map[string]string{"name": "first", "envs": "staging"}}, repo)
 	writeFile(t, dir, "config.toml", "edited\n")
+	writeFile(t, dir, "spectre/custom/notes.txt", "edited\n")
 	writeFile(t, dir, "spectre/migration.toml", strings.Replace(readFile(t, dir, "spectre/migration.toml"), "first", "edited", 1))
 
 	runInit(t, scaffold.Config{Dir: dir, Vars: map[string]string{"name": "second"}}, repo)
 
 	assert.Equal(t, map[string]string{
-		"README.md":                 "# second\n",
-		"config.toml":               "edited\n",
-		"spectre/bin/run":           "exec:#!/bin/sh\necho second\n",
-		"spectre/custom/first.txt":  "first\n",
-		"spectre/custom/second.txt": "second\n",
-		"spectre/link/second":       "link:../bin/run",
-		"spectre/migration.toml":    "app = \"edited\"\n\n" + answers("app", `envs = "staging"`, `name = "second"`),
-		"spectre/placeholder.txt":   "placeholder\n",
+		"README.md":                "# second\n",
+		"config.toml":              "name = \"second\"\nenvs = [\"staging\"]\n",
+		"spectre/bin/run":          "exec:#!/bin/sh\necho second\n",
+		"spectre/custom/notes.txt": "edited\n",
+		"spectre/link/second":      "link:../bin/run",
+		"spectre/migration.toml":   "app = \"edited\"\n\n" + answers("app", `envs = "staging"`, `name = "second"`),
+		"spectre/placeholder.txt":  "placeholder\n",
 	}, readTree(t, dir))
 }
 

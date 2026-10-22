@@ -50,21 +50,13 @@ func readAnswers(dir string) (answers Answers, found bool, err error) {
 	return config.Init, config.Init.Template != "", nil
 }
 
-// recordAnswers sets the migration config in files to its rendered content, or
-// the checkout's when customisable or not rendered, with answers as [init].
-func recordAnswers(dir string, files map[string]File, answers Answers) error {
-	file, rendered := files[migrationFile]
-	if !rendered {
-		file.Mode = 0o644
-	}
-	if file.Customisable || !rendered {
-		existing, err := os.ReadFile(filepath.Join(dir, migrationFile))
-		switch {
-		case err == nil:
-			file.Content = existing
-		case !errors.Is(err, fs.ErrNotExist):
-			return errors.Wrap(err, "read migration config")
-		}
+// writeAnswers replaces the [init] table of the migration config in dir with
+// answers, keeping the rest of the file.
+func writeAnswers(dir string, answers Answers) error {
+	path := filepath.Join(dir, migrationFile)
+	existing, err := os.ReadFile(path)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return errors.Wrap(err, "read migration config")
 	}
 	var table bytes.Buffer
 	if err := toml.NewEncoder(&table).Indentation("").Encode(struct {
@@ -72,13 +64,15 @@ func recordAnswers(dir string, files map[string]File, answers Answers) error {
 	}{answers}); err != nil {
 		return errors.Wrap(err, "encode init answers")
 	}
-	content := strings.TrimRight(withoutInit(string(file.Content)), "\n")
+	content := strings.TrimRight(withoutInit(string(existing)), "\n")
 	if content != "" {
 		content += "\n\n"
 	}
 	header, rest, _ := strings.Cut(strings.TrimLeft(table.String(), "\n"), "\n")
-	files[migrationFile] = File{Content: []byte(content + header + "\n" + answersComment + rest), Mode: file.Mode}
-	return nil
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil { //nolint:gosec // A service checkout.
+		return errors.WithStack(err)
+	}
+	return errors.Wrap(os.WriteFile(path, []byte(content+header+"\n"+answersComment+rest), 0o644), "write migration config")
 }
 
 // withoutInit removes the [init] table and its subtables from a TOML document.
