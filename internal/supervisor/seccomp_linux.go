@@ -17,58 +17,73 @@ const (
 	auditArchAArch64 = 0xc00000b7
 )
 
-// seccomp(2) mode and flag used to install the filter across all threads.
-const (
-	seccompSetModeFilter   = 1
-	seccompFilterFlagTSync = 1
-)
+// seccomp(2) mode used to install the filter.
+const seccompSetModeFilter = 1
 
 // SandboxArg is the first argument that re-execs the supervisor as the egress
 // sandbox launcher for a child command.
 const SandboxArg = "__spectre_sandbox__"
 
-// ExecSandbox installs the egress seccomp filter then replaces the process with
-// command, so the filter guards it. It returns only when the filter or exec fails.
+// sandboxHandoffFD is the inherited socket the launcher sends the filter's
+// notification listener over, so the supervisor can answer trapped syscalls.
+const sandboxHandoffFD = 3
+
+// ExecSandbox installs the egress seccomp filter, hands its listener to the
+// supervisor, then replaces the process with command. It returns only on failure.
 func ExecSandbox(command []string) error {
 	if len(command) == 0 {
 		return errors.New("sandbox requires a command to run")
-	}
-	if err := applyEgressFilter(); err != nil {
-		return errors.Wrap(err, "install egress seccomp filter")
 	}
 	path, err := exec.LookPath(command[0])
 	if err != nil {
 		return errors.Wrapf(err, "find %q", command[0])
 	}
+	// The filter guards only the thread that installs it, which then execs.
+	runtime.LockOSThread()
+	listener, err := applyEgressFilter()
+	if err != nil {
+		return errors.Wrap(err, "install egress seccomp filter")
+	}
+	if err := unix.Sendmsg(sandboxHandoffFD, []byte{0}, unix.UnixRights(listener), nil, 0); err != nil {
+		return errors.Wrap(err, "hand the seccomp listener to the supervisor")
+	}
+	// The candidate must never hold the listener, or it could answer its own syscalls.
+	if err := errors.Join(unix.Close(listener), unix.Close(sandboxHandoffFD)); err != nil {
+		return errors.Wrap(err, "close the seccomp listener")
+	}
 	//nolint:forbidigo // propagate the inherited environment across the sandbox re-exec
 	return errors.Wrapf(syscall.Exec(path, command, os.Environ()), "exec %q", command[0])
 }
 
-// applyEgressFilter denies IP socket creation for the whole process. The caller
-// is expected to exec immediately after, so the filter guards the real program.
-func applyEgressFilter() error {
+// applyEgressFilter installs the egress filter on the calling thread and returns
+// the listener that receives its trapped syscalls.
+func applyEgressFilter() (listener int, err error) {
 	arch, err := currentArch()
 	if err != nil {
-		return err
+		return -1, err
 	}
 	raw, err := buildEgressFilter(arch)
 	if err != nil {
-		return err
+		return -1, err
 	}
 	filter := make([]unix.SockFilter, len(raw))
 	for i, instruction := range raw {
 		filter[i] = unix.SockFilter{Code: instruction.Op, Jt: instruction.Jt, Jf: instruction.Jf, K: instruction.K}
 	}
-	// Keep the thread that sets no_new_privs and installs the filter stable.
-	runtime.LockOSThread()
 	if err := unix.Prctl(unix.PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0); err != nil {
-		return errors.Wrap(err, "set no_new_privs")
+		return -1, errors.Wrap(err, "set no_new_privs")
 	}
 	program := unix.SockFprog{Len: uint16(len(filter)), Filter: &filter[0]}
-	if _, _, errno := unix.Syscall(unix.SYS_SECCOMP, seccompSetModeFilter, seccompFilterFlagTSync, uintptr(unsafe.Pointer(&program))); errno != 0 {
-		return errors.Wrap(errno, "load seccomp filter")
+	// Killable waits stop signals from interrupting a syscall the supervisor is handling.
+	flags := uintptr(unix.SECCOMP_FILTER_FLAG_NEW_LISTENER | unix.SECCOMP_FILTER_FLAG_WAIT_KILLABLE_RECV)
+	fd, _, errno := unix.Syscall(unix.SYS_SECCOMP, seccompSetModeFilter, flags, uintptr(unsafe.Pointer(&program)))
+	if errno == unix.EINVAL {
+		fd, _, errno = unix.Syscall(unix.SYS_SECCOMP, seccompSetModeFilter, unix.SECCOMP_FILTER_FLAG_NEW_LISTENER, uintptr(unsafe.Pointer(&program)))
 	}
-	return nil
+	if errno != 0 {
+		return -1, errors.Wrap(errno, "load seccomp filter")
+	}
+	return int(fd), nil
 }
 
 // egressSandboxSupported reports whether the egress sandbox can run here.
@@ -79,12 +94,14 @@ func egressSandboxSupported() bool {
 
 // currentArch returns the seccomp ABI pin for the running architecture.
 func currentArch() (seccompArch, error) {
+	pin := seccompArch{socketNR: unix.SYS_SOCKET, connectNR: unix.SYS_CONNECT, ioUringSetupNR: unix.SYS_IO_URING_SETUP}
 	switch runtime.GOARCH {
 	case "amd64":
-		return seccompArch{auditArch: auditArchX8664, socketNR: unix.SYS_SOCKET}, nil
+		pin.auditArch = auditArchX8664
 	case "arm64":
-		return seccompArch{auditArch: auditArchAArch64, socketNR: unix.SYS_SOCKET}, nil
+		pin.auditArch = auditArchAArch64
 	default:
 		return seccompArch{}, errors.Errorf("egress sandbox unsupported on %s", runtime.GOARCH)
 	}
+	return pin, nil
 }
