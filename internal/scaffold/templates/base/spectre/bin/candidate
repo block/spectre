@@ -1,8 +1,0 @@
-#!/bin/sh
-# Candidate leg: the new {{ .service_name }}. It runs sandboxed, so its only way
-# out is $SPECTRE_EGRESS, where egress compares its calls with the reference's and
-# replays the recorded responses. Serve on $SPECTRE_LISTEN.
-set -eu
-
-echo "spectre/bin/candidate: start the new {{ .service_name }} on \$SPECTRE_LISTEN" >&2
-exit 1

@@ -1,8 +1,0 @@
-#!/bin/sh
-# Reference leg: the existing {{ .service_name }}, which answers clients and
-# performs real writes. Serve on $SPECTRE_LISTEN, and send dependency calls to
-# $SPECTRE_EGRESS, both exported by the supervisor.
-set -eu
-
-echo "spectre/bin/reference: start {{ .service_name }} on \$SPECTRE_LISTEN" >&2
-exit 1

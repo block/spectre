@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"encoding/json"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -225,10 +227,17 @@ func TestInitVariables(t *testing.T) {
 
 func TestInitReportsMissingVariables(t *testing.T) {
 	registry := scaffold.NewRegistry()
-	err := scaffold.Init(&bytes.Buffer{}, scaffold.Config{Dir: t.TempDir(), Template: scaffold.BaseTemplate}, registry, None[scaffold.Prompt]())
+	registry.Register("required", fstest.MapFS{"scaffold.toml": {Data: []byte(`
+description = "Required."
 
-	assert.EqualError(t, err, "template \"base\" needs values for:\n"+
-		"  --var platform=<string>  Deploy platform the service runs on, as spectre status names it.")
+[[variables]]
+name = "platform"
+help = "Deploy platform."
+`)}})
+	err := scaffold.Init(&bytes.Buffer{}, scaffold.Config{Dir: t.TempDir(), Template: "required"}, registry, None[scaffold.Prompt]())
+
+	assert.EqualError(t, err, "template \"required\" needs values for:\n"+
+		"  --var platform=<string>  Deploy platform.")
 }
 
 func TestInitNeedsTemplateOnFirstRun(t *testing.T) {
@@ -238,19 +247,10 @@ func TestInitNeedsTemplateOnFirstRun(t *testing.T) {
 }
 
 func TestInitRendersBaseTemplate(t *testing.T) {
-	dir := filepath.Join(t.TempDir(), "svc")
-	runInit(t, scaffold.Config{Dir: dir, Template: scaffold.BaseTemplate, Vars: map[string]string{
-		"platform":     "ski",
-		"environments": "staging-us-west-2",
-		"egress_hosts": "deps.example",
-		"health_route": "GET /_status",
-	}}, scaffold.NewRegistry())
+	dir := t.TempDir()
+	runInit(t, scaffold.Config{Dir: dir, Template: scaffold.BaseTemplate}, scaffold.NewRegistry())
 
-	assert.Equal(t, "# SPECTRE migration config for svc, read by `spectre status`.\n"+
-		"app = \"svc\"\nplatform = \"ski\"\nenvironments = [\"staging-us-west-2\"]\n",
-		readFile(t, dir, "spectre/migration.toml"))
-	assert.Contains(t, readFile(t, dir, "spectre/bin/entrypoint"), `--destination="deps.example=${upstream}"`)
-	assert.Contains(t, readFile(t, dir, "spectre/scripts/ingress.ts"), `ingress.ignore("http", "GET /_status");`)
+	assert.Equal(t, []string{"spectre/TODO.md", "spectre/init.lock.toml"}, slices.Sorted(maps.Keys(readTree(t, dir))))
 }
 
 func TestDescribeJSON(t *testing.T) {

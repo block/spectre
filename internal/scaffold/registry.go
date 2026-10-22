@@ -10,7 +10,7 @@ import (
 	"github.com/alecthomas/errors"
 )
 
-// BaseTemplate is the name of the generic template the binary ships.
+// BaseTemplate is the name of the placeholder template the binary ships.
 const BaseTemplate = "base"
 
 //go:embed all:templates/base
