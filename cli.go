@@ -35,14 +35,13 @@ type cli struct {
 	Templates templatesCommand `cmd:"" help:"List the templates init can render, or describe one template's variables."`
 }
 
-// initCommand renders a template into a service checkout. It prompts for
-// missing values only when standard input is a terminal.
+// initCommand renders a template into a service checkout.
 type initCommand struct {
 	Init scaffold.Config `embed:""`
 }
 
 func (c *initCommand) Run(registry *scaffold.Registry) error {
-	return errors.WithStack(scaffold.Init(os.Stdout, c.Init, registry, scaffold.TerminalPrompt(os.Stdin, os.Stderr)))
+	return errors.WithStack(scaffold.Init(os.Stdout, c.Init, registry))
 }
 
 // templatesCommand describes the templates init can render.

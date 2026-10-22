@@ -4,8 +4,6 @@ package terminal
 import (
 	"os"
 	"strings"
-
-	"golang.org/x/term"
 )
 
 // ANSI SGR sequences.
@@ -35,12 +33,8 @@ func ColorEnabled(f *os.File) bool {
 	if _, ok := os.LookupEnv("NO_COLOR"); ok { //nolint:forbidigo // NO_COLOR is a cross-tool convention, not service config.
 		return false
 	}
-	return Interactive(f)
-}
-
-// Interactive reports whether f is a terminal.
-func Interactive(f *os.File) bool {
-	return term.IsTerminal(int(f.Fd())) //nolint:gosec // File descriptors fit in an int.
+	info, err := f.Stat()
+	return err == nil && info.Mode()&os.ModeCharDevice != 0
 }
 
 // Bold styles text as bold.

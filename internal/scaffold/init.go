@@ -48,8 +48,7 @@ type Result struct {
 }
 
 // Init renders a template into config.Dir and reports the changes to out.
-// prompt asks for values that no flag, file, or earlier run provides.
-func Init(out io.Writer, config Config, registry *Registry, prompt Option[Prompt]) error {
+func Init(out io.Writer, config Config, registry *Registry) error {
 	dir, err := filepath.Abs(config.Dir)
 	if err != nil {
 		return errors.WithStack(err)
@@ -70,7 +69,7 @@ func Init(out io.Writer, config Config, registry *Registry, prompt Option[Prompt
 		return err
 	}
 	builtins := map[string]any{"Dir": filepath.Base(dir), "SpectreRef": spectreRef(), "Template": name}
-	values, err := resolve(template, builtins, config.Vars, previous.Variables, prompt)
+	values, err := resolve(template, builtins, config.Vars, previous.Variables)
 	if err != nil {
 		return err
 	}
@@ -99,8 +98,8 @@ func Init(out io.Writer, config Config, registry *Registry, prompt Option[Prompt
 }
 
 // resolve finds each variable's value, from flags, then the previous run, then
-// the prompt or the default.
-func resolve(template Template, builtins map[string]any, flags, locked map[string]string, prompt Option[Prompt]) (map[string]any, error) {
+// the default.
+func resolve(template Template, builtins map[string]any, flags, locked map[string]string) (map[string]any, error) {
 	declared := map[string]bool{}
 	for _, variable := range template.Manifest.Variables {
 		declared[variable.Name] = true
@@ -118,19 +117,13 @@ func resolve(template Template, builtins map[string]any, flags, locked map[strin
 			return nil, err
 		}
 		if !ok {
-			fallback := renderDefault(variable, builtins, values)
-			switch prompter, interactive := prompt.Get(); {
-			case interactive:
-				if value, err = prompter.Ask(variable, fallback); err != nil {
-					return nil, err
-				}
-			case fallback.Ok():
-				if value, err = variable.parse(fallback.Default("")); err != nil {
-					return nil, errors.Wrap(err, "default")
-				}
-			default:
+			fallback, found := renderDefault(variable, builtins, values).Get()
+			if !found {
 				missing = append(missing, variable)
 				continue
+			}
+			if value, err = variable.parse(fallback); err != nil {
+				return nil, errors.Wrap(err, "default")
 			}
 		}
 		values[variable.Name] = value

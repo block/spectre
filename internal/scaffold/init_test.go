@@ -13,7 +13,6 @@ import (
 	"testing/fstest"
 
 	"github.com/alecthomas/assert/v2"
-	. "github.com/alecthomas/types/optional"
 
 	"github.com/block/spectre/internal/scaffold"
 	"github.com/block/spectre/internal/terminal"
@@ -179,13 +178,11 @@ func TestInitVariables(t *testing.T) {
 	tests := []struct {
 		name   string
 		config scaffold.Config
-		prompt string
 		want   string
 		error  string
 	}{
 		{name: "Defaults", want: "name = \"svc\"\nenvs = \"staging\"\n"},
 		{name: "Flags", config: scaffold.Config{Vars: map[string]string{"name": "flag", "envs": "staging, production"}}, want: "name = \"flag\"\nenvs = \"staging,production\"\n"},
-		{name: "Prompt", prompt: "asked\nnope\n\n", want: "name = \"asked\"\nenvs = \"staging\"\n"},
 		{name: "UnknownVariable", config: scaffold.Config{Vars: map[string]string{"nope": "x"}}, error: `template "app" has no variable "nope"; run spectre templates app`},
 		{name: "InvalidChoice", config: scaffold.Config{Vars: map[string]string{"envs": "dev"}}, error: `envs: "dev" is not one of staging, production`},
 	}
@@ -195,11 +192,7 @@ func TestInitVariables(t *testing.T) {
 			config := test.config
 			config.Dir = dir
 			config.Template = "app"
-			prompt := None[scaffold.Prompt]()
-			if test.prompt != "" {
-				prompt = Some(scaffold.NewPrompt(strings.NewReader(test.prompt), &bytes.Buffer{}))
-			}
-			err := scaffold.Init(&bytes.Buffer{}, config, newRegistry(), prompt)
+			err := scaffold.Init(&bytes.Buffer{}, config, newRegistry())
 			if test.error != "" {
 				assert.EqualError(t, err, test.error)
 				return
@@ -219,14 +212,14 @@ description = "Required."
 name = "platform"
 help = "Deploy platform."
 `)}})
-	err := scaffold.Init(&bytes.Buffer{}, scaffold.Config{Dir: t.TempDir(), Template: "required"}, registry, None[scaffold.Prompt]())
+	err := scaffold.Init(&bytes.Buffer{}, scaffold.Config{Dir: t.TempDir(), Template: "required"}, registry)
 
 	assert.EqualError(t, err, "template \"required\" needs values for:\n"+
 		"  --var platform=<string>  Deploy platform.")
 }
 
 func TestInitNeedsTemplateOnFirstRun(t *testing.T) {
-	err := scaffold.Init(&bytes.Buffer{}, scaffold.Config{Dir: t.TempDir()}, newRegistry(), None[scaffold.Prompt]())
+	err := scaffold.Init(&bytes.Buffer{}, scaffold.Config{Dir: t.TempDir()}, newRegistry())
 
 	assert.EqualError(t, err, "no template given; pass --template with one of: app, base, next")
 }
@@ -260,7 +253,7 @@ func runInit(t *testing.T, config scaffold.Config, registry *scaffold.Registry) 
 	t.Helper()
 	config.JSON = true
 	var out bytes.Buffer
-	assert.NoError(t, scaffold.Init(&out, config, registry, None[scaffold.Prompt]()))
+	assert.NoError(t, scaffold.Init(&out, config, registry))
 	var result scaffold.Result
 	assert.NoError(t, json.Unmarshal(out.Bytes(), &result))
 	return result
