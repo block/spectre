@@ -27,17 +27,14 @@ help = "Environments."
 
 [files]
 customisable = ["config.toml", "spectre/custom/**", "spectre/migration.toml"]
-executable = ["spectre/bin/*"]
-
-[symlinks]
-"spectre/link/{{ .name }}" = "../bin/run"
 `
 
 func appTemplate() fstest.MapFS {
 	return fstest.MapFS{
 		"scaffold.toml":                  {Data: []byte(appManifest)},
 		"config.toml.tmpl":               {Data: []byte("name = \"{{ .name }}\"\nenvs = [{{ range $i, $env := split .envs }}{{ if $i }}, {{ end }}\"{{ $env }}\"{{ end }}]\n")},
-		"spectre/bin/run":                {Data: []byte("#!/bin/sh\necho {{ .name }}\n")},
+		"spectre/bin/run":                {Data: []byte("#!/bin/sh\necho {{ .name }}\n"), Mode: 0o755},
+		"spectre/link/{{ .name }}":       {Data: []byte("../bin/run"), Mode: fs.ModeSymlink},
 		"spectre/custom/{{ .name }}.txt": {Data: []byte("{{ .name }}\n")},
 		"spectre/migration.toml":         {Data: []byte("app = \"{{ .name }}\"\n")},
 		"spectre/placeholder.txt":        {Data: []byte("placeholder\n")},

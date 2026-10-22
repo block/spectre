@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"strings"
 
 	"github.com/alecthomas/errors"
 	"github.com/block/scaffolder"
@@ -28,10 +27,10 @@ type File struct {
 	Content []byte
 	// Link is the target of a symbolic link.
 	Link string
+	// Mode is the permission bits of a regular file, as in the template.
+	Mode fs.FileMode
 	// Customisable files are written only when absent and never deleted.
 	Customisable bool
-	// Executable files are written with execute permission.
-	Executable bool
 }
 
 func newTemplate(name string, manifest Manifest, files fs.FS) Template {
@@ -57,59 +56,50 @@ func (t Template) Render(values map[string]any) (map[string]File, error) {
 	err = scaffolder.Scaffold(t.files, output, values,
 		scaffolder.Functions(templateFuncs()),
 		scaffolder.Exclude("^"+regexp.QuoteMeta(manifestFile)+"$"),
-		scaffolder.AfterEach(readable),
 	)
 	if err != nil {
 		return nil, errors.WithStack(err)
 	}
 	files := map[string]File{}
 	err = filepath.WalkDir(output, func(path string, entry fs.DirEntry, err error) error {
-		if err != nil || !entry.Type().IsRegular() {
+		if err != nil || entry.IsDir() {
 			return err
-		}
-		content, err := os.ReadFile(path)
-		if err != nil {
-			return errors.WithStack(err)
 		}
 		rel, err := filepath.Rel(output, path)
 		if err != nil {
 			return errors.WithStack(err)
 		}
 		name := filepath.ToSlash(rel)
-		if bytes.Contains(content, []byte("<no value>")) {
-			return errors.Errorf("%s refers to an undeclared variable", name)
+		file, err := readRendered(path, entry)
+		if err != nil {
+			return errors.Wrap(err, name)
 		}
-		files[name] = File{
-			Content:      content,
-			Customisable: matchAny(t.Manifest.Files.Customisable, name),
-			Executable:   matchAny(t.Manifest.Files.Executable, name),
-		}
+		file.Customisable = matchAny(t.Manifest.Files.Customisable, name)
+		files[name] = file
 		return nil
 	})
-	if err != nil {
-		return nil, errors.Wrap(err, "collect rendered files")
-	}
-	for link, target := range t.Manifest.Symlinks {
-		name, err := renderText("symlink", link, values)
-		if err != nil {
-			return nil, errors.WithStack(err)
-		}
-		if target, err = renderText("symlink target", target, values); err != nil {
-			return nil, errors.WithStack(err)
-		}
-		if !filepath.IsLocal(name) || strings.Contains(name, "\\") {
-			return nil, errors.Errorf("symlink %q must be a relative path inside the checkout", name)
-		}
-		files[name] = File{Link: target, Customisable: matchAny(t.Manifest.Files.Customisable, name)}
-	}
-	return files, nil
+	return files, errors.Wrap(err, "collect rendered files")
 }
 
-// readable lets Render read back a rendered file whatever mode the template gives it.
-func readable(path string) error {
-	info, err := os.Lstat(path)
-	if err != nil || !info.Mode().IsRegular() {
-		return errors.WithStack(err)
+// readRendered reads a file or symbolic link scaffolder rendered at path.
+func readRendered(path string, entry fs.DirEntry) (File, error) {
+	if entry.Type()&fs.ModeSymlink != 0 {
+		link, err := os.Readlink(path)
+		return File{Link: link}, errors.WithStack(err)
 	}
-	return errors.WithStack(os.Chmod(path, 0o600))
+	info, err := entry.Info()
+	if err != nil {
+		return File{}, errors.WithStack(err)
+	}
+	if !info.Mode().IsRegular() {
+		return File{}, errors.Errorf("unsupported file type %s", info.Mode().Type())
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return File{}, errors.WithStack(err)
+	}
+	if bytes.Contains(content, []byte("<no value>")) {
+		return File{}, errors.New("refers to an undeclared variable")
+	}
+	return File{Content: content, Mode: info.Mode().Perm()}, nil
 }

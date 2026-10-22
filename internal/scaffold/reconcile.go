@@ -66,11 +66,7 @@ func write(path string, file File) error {
 	if file.Link != "" {
 		return errors.WithStack(os.Symlink(file.Link, path))
 	}
-	mode := fs.FileMode(0o644)
-	if file.Executable {
-		mode = 0o755
-	}
-	return errors.WithStack(os.WriteFile(path, file.Content, mode))
+	return errors.WithStack(os.WriteFile(path, file.Content, file.Mode))
 }
 
 // remove deletes path, then each parent directory up to dir left empty.

@@ -54,6 +54,9 @@ func readAnswers(dir string) (answers Answers, found bool, err error) {
 // the checkout's when customisable or not rendered, with answers as [init].
 func recordAnswers(dir string, files map[string]File, answers Answers) error {
 	file, rendered := files[migrationFile]
+	if !rendered {
+		file.Mode = 0o644
+	}
 	if file.Customisable || !rendered {
 		existing, err := os.ReadFile(filepath.Join(dir, migrationFile))
 		switch {
@@ -74,7 +77,7 @@ func recordAnswers(dir string, files map[string]File, answers Answers) error {
 		content += "\n\n"
 	}
 	header, rest, _ := strings.Cut(strings.TrimLeft(table.String(), "\n"), "\n")
-	files[migrationFile] = File{Content: []byte(content + header + "\n" + answersComment + rest)}
+	files[migrationFile] = File{Content: []byte(content + header + "\n" + answersComment + rest), Mode: file.Mode}
 	return nil
 }
 
