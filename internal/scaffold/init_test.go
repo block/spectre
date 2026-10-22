@@ -19,7 +19,7 @@ func TestInitErrors(t *testing.T) {
 		error  string
 	}{
 		{name: "NoRepo", config: scaffold.Config{Dir: t.TempDir(), Template: "app"}, error: "no template repository; pass --template-repo, or build spectre with spectre.WithTemplateRepo"},
-		{name: "AlreadySetUp", config: scaffold.Config{Dir: setUp, Template: "app", Repo: t.TempDir()}, error: setUp + " already has a spectre directory"},
+		{name: "AlreadySetUp", config: scaffold.Config{Dir: setUp, Template: "app", Repo: t.TempDir()}, error: filepath.Join(setUp, "spectre") + " already exists"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
