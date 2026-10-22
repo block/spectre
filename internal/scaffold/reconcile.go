@@ -32,9 +32,13 @@ type Change struct {
 	Action Action `json:"action"`
 }
 
-// plan decides the action for each rendered file, and for each file the
-// previous run managed that is no longer rendered.
-func plan(dir string, files map[string]File, previous Lock) ([]Change, error) {
+// managedDir is the checkout directory init owns. Files there that are neither
+// rendered nor customisable are deleted.
+const managedDir = "spectre"
+
+// plan decides the action for each rendered file, and for each file in
+// managedDir that is no longer rendered.
+func plan(dir string, files map[string]File, customisable []string) ([]Change, error) {
 	var changes []Change
 	for _, name := range slices.Sorted(maps.Keys(files)) {
 		action, err := planFile(filepath.Join(dir, filepath.FromSlash(name)), files[name])
@@ -43,18 +47,24 @@ func plan(dir string, files map[string]File, previous Lock) ([]Change, error) {
 		}
 		changes = append(changes, Change{Path: name, Action: action})
 	}
-	for _, name := range previous.Managed {
-		if _, ok := files[name]; ok {
-			continue
+	err := filepath.WalkDir(filepath.Join(dir, managedDir), func(path string, entry fs.DirEntry, err error) error {
+		if errors.Is(err, fs.ErrNotExist) || (err == nil && entry.IsDir()) {
+			return nil
 		}
-		if !filepath.IsLocal(filepath.FromSlash(name)) {
-			return nil, errors.Errorf("%s lists %q outside the checkout", lockFile, name)
+		if err != nil {
+			return errors.WithStack(err)
 		}
-		if _, err := os.Lstat(filepath.Join(dir, filepath.FromSlash(name))); err == nil {
+		rel, err := filepath.Rel(dir, path)
+		if err != nil {
+			return errors.WithStack(err)
+		}
+		name := filepath.ToSlash(rel)
+		if _, rendered := files[name]; !rendered && !matchAny(customisable, name) {
 			changes = append(changes, Change{Path: name, Action: Delete})
 		}
-	}
-	return changes, nil
+		return nil
+	})
+	return changes, errors.Wrapf(err, "read %s", managedDir)
 }
 
 func planFile(path string, file File) (Action, error) {

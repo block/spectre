@@ -3,8 +3,8 @@
 //
 // A template is a file tree rendered with scaffolder, with a manifest at its
 // root that declares its variables and which files are customisable. A run
-// records what it wrote in a lock file, so the next run reuses the answers,
-// overwrites managed files, and deletes the ones no longer rendered.
+// overwrites the files it renders, except customisable ones, and deletes every
+// other file in spectre/. The answers are kept in spectre/migration.toml.
 package scaffold
 
 import (
@@ -53,7 +53,7 @@ func Init(out io.Writer, config Config, registry *Registry) error {
 	if err != nil {
 		return errors.WithStack(err)
 	}
-	previous, found, err := readLock(dir)
+	previous, found, err := readAnswers(dir)
 	if err != nil {
 		return err
 	}
@@ -78,15 +78,15 @@ func Init(out io.Writer, config Config, registry *Registry) error {
 	if err != nil {
 		return err
 	}
-	changes, err := plan(dir, files, previous)
+	if err := recordAnswers(dir, files, newAnswers(name, values)); err != nil {
+		return err
+	}
+	changes, err := plan(dir, files, template.Manifest.Files.Customisable)
 	if err != nil {
 		return err
 	}
 	if !config.DryRun {
 		if err := apply(dir, files, changes); err != nil {
-			return err
-		}
-		if err := newLock(name, values, files).write(dir); err != nil {
 			return err
 		}
 	}

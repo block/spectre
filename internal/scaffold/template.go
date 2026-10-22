@@ -102,9 +102,6 @@ func (t Template) Render(values map[string]any) (map[string]File, error) {
 		}
 		files[name] = File{Link: target, Customisable: matchAny(t.Manifest.Files.Customisable, name)}
 	}
-	if _, ok := files[lockFile]; ok {
-		return nil, errors.Errorf("templates cannot render %s", lockFile)
-	}
 	return files, nil
 }
 
