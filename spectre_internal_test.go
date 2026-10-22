@@ -3,7 +3,10 @@ package spectre
 import (
 	"context"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"testing"
+	"testing/fstest"
 
 	"github.com/alecthomas/assert/v2"
 	"github.com/alecthomas/kong"
@@ -49,6 +52,24 @@ func TestWithKongOptionsAddsVars(t *testing.T) {
 	assert.NoError(t, err)
 
 	assert.Equal(t, &pushCommand{Image: "registry.example.com/spectre:" + internal.Version}, extension)
+}
+
+func TestWithTemplateAddsTemplate(t *testing.T) {
+	dir := t.TempDir()
+	template := fstest.MapFS{
+		"scaffold.toml": {Data: []byte("description = \"Custom.\"\n[[variables]]\nname = \"name\"\nhelp = \"Name.\"\n")},
+		"hello.txt":     {Data: []byte("hello {{ .name }}\n")},
+	}
+	parser, err := newParser(&cli{}, WithTemplate("custom", template))
+	assert.NoError(t, err)
+
+	kctx, err := parser.Parse([]string{"init", dir, "--template=custom", "--var=name=spectre", "--json"})
+	assert.NoError(t, err)
+	assert.NoError(t, kctx.Run())
+
+	content, err := os.ReadFile(filepath.Join(dir, "hello.txt"))
+	assert.NoError(t, err)
+	assert.Equal(t, "hello spectre\n", string(content))
 }
 
 // pushCommand's default needs both a variable from WithKongOptions and the

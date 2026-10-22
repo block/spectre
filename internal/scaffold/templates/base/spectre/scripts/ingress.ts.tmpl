@@ -1,0 +1,7 @@
+// Ingress comparison for {{ .service_name }}. Type each route's responses with
+// ingress.match, and skip routes that cannot be compared with ingress.ignore.
+import { ingress } from "spectre";
+{{- if .health_route }}
+
+ingress.ignore("http", {{ toml .health_route }});
+{{- end }}

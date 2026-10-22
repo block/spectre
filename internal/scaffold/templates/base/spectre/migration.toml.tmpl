@@ -1,0 +1,4 @@
+# SPECTRE migration config for {{ .service_name }}, read by `spectre status`.
+app = {{ toml .service_name }}
+platform = {{ toml .platform }}
+environments = {{ toml .environments }}

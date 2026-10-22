@@ -1,0 +1,332 @@
+package scaffold_test
+
+import (
+	"bytes"
+	"encoding/json"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"testing/fstest"
+
+	"github.com/alecthomas/assert/v2"
+	. "github.com/alecthomas/types/optional"
+
+	"github.com/block/spectre/internal/scaffold"
+	"github.com/block/spectre/internal/terminal"
+)
+
+const parentManifest = `
+description = "Parent."
+next_steps = "Edit {{ .name }}."
+
+[[variables]]
+name = "name"
+help = "Service name."
+default = "{{ .Dir }}"
+
+[[variables]]
+name = "envs"
+help = "Environments."
+type = "list"
+default = ["staging"]
+choices = ["staging", "production"]
+
+[files]
+customisable = ["config.toml", "custom/**"]
+executable = ["bin/*"]
+
+[symlinks]
+"link/{{ .name }}" = "../bin/run"
+`
+
+func parentTemplate() fstest.MapFS {
+	return fstest.MapFS{
+		"scaffold.toml":          {Data: []byte(parentManifest)},
+		"config.toml.tmpl":       {Data: []byte("name = {{ toml .name }}\nenvs = {{ toml .envs }}\n")},
+		"bin/run":                {Data: []byte("#!/bin/sh\necho {{ .name }}\n")},
+		"custom/{{ .name }}.txt": {Data: []byte("{{ .name }}\n")},
+		"placeholder.txt":        {Data: []byte("placeholder\n")},
+		"README.md":              {Data: []byte("# {{ .name }}\n")},
+	}
+}
+
+func childTemplate() fstest.MapFS {
+	return fstest.MapFS{
+		"scaffold.toml": {Data: []byte(`
+description = "Child."
+extends = "parent"
+
+[[variables]]
+name = "envs"
+help = "Environments."
+type = "list"
+default = ["production"]
+
+[[variables]]
+name = "image"
+help = "Image."
+default = "{{ .name }}-image"
+
+[files]
+exclude = ["placeholder.txt"]
+`)},
+		"config.toml": {Data: []byte("image = {{ toml .image }}\n")},
+		"child.txt":   {Data: []byte("{{ .image }} {{ join \",\" .envs }}\n")},
+	}
+}
+
+func newRegistry() *scaffold.Registry {
+	registry := scaffold.NewRegistry()
+	registry.Register("parent", parentTemplate())
+	registry.Register("child", childTemplate())
+	return registry
+}
+
+func TestInitWritesTemplate(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "svc")
+	result := runInit(t, scaffold.Config{Dir: dir, Template: "parent"}, newRegistry())
+
+	assert.Equal(t, map[string]string{
+		"README.md":              "# svc\n",
+		"bin/run":                "exec:#!/bin/sh\necho svc\n",
+		"config.toml":            "name = \"svc\"\nenvs = [\"staging\"]\n",
+		"custom/svc.txt":         "svc\n",
+		"link/svc":               "link:../bin/run",
+		"placeholder.txt":        "placeholder\n",
+		"spectre/init.lock.toml": readFile(t, dir, "spectre/init.lock.toml"),
+	}, readTree(t, dir))
+	assert.Equal(t, scaffold.Result{
+		Template: "parent",
+		Changes: []scaffold.Change{
+			{Path: "README.md", Action: scaffold.Create},
+			{Path: "bin/run", Action: scaffold.Create},
+			{Path: "config.toml", Action: scaffold.Create},
+			{Path: "custom/svc.txt", Action: scaffold.Create},
+			{Path: "link/svc", Action: scaffold.Create},
+			{Path: "placeholder.txt", Action: scaffold.Create},
+		},
+		NextSteps: "Edit svc.",
+	}, result)
+}
+
+func TestInitRerunReconciles(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "svc")
+	registry := newRegistry()
+	runInit(t, scaffold.Config{Dir: dir, Template: "parent", Vars: map[string]string{"name": "first"}}, registry)
+	writeFile(t, dir, "config.toml", "edited\n")
+	writeFile(t, dir, "README.md", "edited\n")
+	writeFile(t, dir, "own.txt", "the service's own file\n")
+
+	// The recorded envs answer outlives the parent, so the child's default is unused.
+	result := runInit(t, scaffold.Config{Dir: dir, Template: "child"}, registry)
+
+	assert.Equal(t, map[string]string{
+		"README.md":              "# first\n",
+		"bin/run":                "exec:#!/bin/sh\necho first\n",
+		"child.txt":              "first-image staging\n",
+		"config.toml":            "image = \"first-image\"\n",
+		"custom/first.txt":       "first\n",
+		"link/first":             "link:../bin/run",
+		"own.txt":                "the service's own file\n",
+		"spectre/init.lock.toml": readFile(t, dir, "spectre/init.lock.toml"),
+	}, readTree(t, dir))
+	assert.Equal(t, []scaffold.Change{
+		{Path: "README.md", Action: scaffold.Update},
+		{Path: "bin/run", Action: scaffold.Unchanged},
+		{Path: "child.txt", Action: scaffold.Create},
+		{Path: "config.toml", Action: scaffold.Update},
+		{Path: "custom/first.txt", Action: scaffold.Unchanged},
+		{Path: "link/first", Action: scaffold.Unchanged},
+		{Path: "placeholder.txt", Action: scaffold.Delete},
+	}, result.Changes)
+}
+
+func TestInitRerunKeepsCustomisableAndDeletesStale(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "svc")
+	registry := newRegistry()
+	runInit(t, scaffold.Config{Dir: dir, Template: "parent", Vars: map[string]string{"name": "first"}}, registry)
+	writeFile(t, dir, "config.toml", "edited\n")
+
+	result := runInit(t, scaffold.Config{Dir: dir, Vars: map[string]string{"name": "second"}}, registry)
+
+	assert.Equal(t, map[string]string{
+		"README.md":              "# second\n",
+		"bin/run":                "exec:#!/bin/sh\necho second\n",
+		"config.toml":            "edited\n",
+		"custom/first.txt":       "first\n",
+		"custom/second.txt":      "second\n",
+		"link/second":            "link:../bin/run",
+		"placeholder.txt":        "placeholder\n",
+		"spectre/init.lock.toml": readFile(t, dir, "spectre/init.lock.toml"),
+	}, readTree(t, dir))
+	assert.Equal(t, []scaffold.Change{
+		{Path: "README.md", Action: scaffold.Update},
+		{Path: "bin/run", Action: scaffold.Update},
+		{Path: "config.toml", Action: scaffold.Keep},
+		{Path: "custom/second.txt", Action: scaffold.Create},
+		{Path: "link/second", Action: scaffold.Create},
+		{Path: "placeholder.txt", Action: scaffold.Unchanged},
+		{Path: "link/first", Action: scaffold.Delete},
+	}, result.Changes)
+}
+
+func TestInitDryRunWritesNothing(t *testing.T) {
+	dir := t.TempDir()
+	result := runInit(t, scaffold.Config{Dir: dir, Template: "parent", DryRun: true}, newRegistry())
+
+	assert.Equal(t, map[string]string{}, readTree(t, dir))
+	assert.True(t, result.DryRun)
+	assert.Equal(t, 6, len(result.Changes))
+}
+
+func TestInitVariables(t *testing.T) {
+	tests := []struct {
+		name     string
+		config   scaffold.Config
+		varsFile string
+		prompt   string
+		want  string
+		error    string
+	}{
+		{name: "Defaults", want: "name = \"svc\"\nenvs = [\"staging\"]\n"},
+		{name: "Flags", config: scaffold.Config{Vars: map[string]string{"name": "flag", "envs": "staging, production"}}, want: "name = \"flag\"\nenvs = [\"staging\", \"production\"]\n"},
+		{name: "VarsFile", varsFile: "name = \"file\"\nenvs = [\"production\"]\n", want: "name = \"file\"\nenvs = [\"production\"]\n"},
+		{name: "FlagsOverVarsFile", config: scaffold.Config{Vars: map[string]string{"name": "flag"}}, varsFile: "name = \"file\"\n", want: "name = \"flag\"\nenvs = [\"staging\"]\n"},
+		{name: "Prompt", prompt: "asked\nnope\n\n", want: "name = \"asked\"\nenvs = [\"staging\"]\n"},
+		{name: "UnknownVariable", config: scaffold.Config{Vars: map[string]string{"nope": "x"}}, error: `template "parent" has no variable "nope"; run spectre templates parent`},
+		{name: "InvalidChoice", config: scaffold.Config{Vars: map[string]string{"envs": "dev"}}, error: `envs: "dev" is not one of staging, production`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), "svc")
+			config := test.config
+			config.Dir = dir
+			config.Template = "parent"
+			if test.varsFile != "" {
+				config.VarsFile = filepath.Join(t.TempDir(), "vars.toml")
+				assert.NoError(t, os.WriteFile(config.VarsFile, []byte(test.varsFile), 0o600))
+			}
+			prompt := None[scaffold.Prompt]()
+			if test.prompt != "" {
+				prompt = Some(scaffold.NewPrompt(strings.NewReader(test.prompt), &bytes.Buffer{}))
+			}
+			err := scaffold.Init(&bytes.Buffer{}, config, newRegistry(), prompt)
+			if test.error != "" {
+				assert.EqualError(t, err, test.error)
+				return
+			}
+			assert.NoError(t, err)
+			assert.Equal(t, test.want, readFile(t, dir, "config.toml"))
+		})
+	}
+}
+
+func TestInitReportsMissingVariables(t *testing.T) {
+	registry := scaffold.NewRegistry()
+	err := scaffold.Init(&bytes.Buffer{}, scaffold.Config{Dir: t.TempDir(), Template: scaffold.BaseTemplate}, registry, None[scaffold.Prompt]())
+
+	assert.EqualError(t, err, "template \"base\" needs values for:\n"+
+		"  --var platform=<string>  Deploy platform the service runs on, as spectre status names it.")
+}
+
+func TestInitNeedsTemplateOnFirstRun(t *testing.T) {
+	err := scaffold.Init(&bytes.Buffer{}, scaffold.Config{Dir: t.TempDir()}, newRegistry(), None[scaffold.Prompt]())
+
+	assert.EqualError(t, err, "no template given; pass --template with one of: base, child, parent")
+}
+
+func TestInitRendersBaseTemplate(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "svc")
+	runInit(t, scaffold.Config{Dir: dir, Template: scaffold.BaseTemplate, Vars: map[string]string{
+		"platform":     "ski",
+		"environments": "staging-us-west-2",
+		"egress_hosts": "deps.example",
+		"health_route": "GET /_status",
+	}}, scaffold.NewRegistry())
+
+	assert.Equal(t, "# SPECTRE migration config for svc, read by `spectre status`.\n"+
+		"app = \"svc\"\nplatform = \"ski\"\nenvironments = [\"staging-us-west-2\"]\n",
+		readFile(t, dir, "spectre/migration.toml"))
+	assert.Contains(t, readFile(t, dir, "spectre/bin/entrypoint"), `--destination="deps.example=${upstream}"`)
+	assert.Contains(t, readFile(t, dir, "spectre/scripts/ingress.ts"), `ingress.ignore("http", "GET /_status");`)
+}
+
+func TestDescribeJSON(t *testing.T) {
+	var out bytes.Buffer
+	err := scaffold.Describe(&out, scaffold.DescribeConfig{Name: "child", JSON: true}, newRegistry(), terminal.NewPalette(false))
+	assert.NoError(t, err)
+
+	var description map[string]any
+	assert.NoError(t, json.Unmarshal(out.Bytes(), &description))
+	assert.Equal(t, map[string]any{
+		"name":        "child",
+		"description": "Child.",
+		"extends":     "parent",
+		"variables": []any{
+			map[string]any{"name": "name", "help": "Service name.", "type": "string", "default": "{{ .Dir }}"},
+			map[string]any{"name": "envs", "help": "Environments.", "type": "list", "default": "production"},
+			map[string]any{"name": "image", "help": "Image.", "type": "string", "default": "{{ .name }}-image"},
+		},
+	}, description)
+}
+
+func runInit(t *testing.T, config scaffold.Config, registry *scaffold.Registry) scaffold.Result {
+	t.Helper()
+	config.JSON = true
+	var out bytes.Buffer
+	assert.NoError(t, scaffold.Init(&out, config, registry, None[scaffold.Prompt]()))
+	var result scaffold.Result
+	assert.NoError(t, json.Unmarshal(out.Bytes(), &result))
+	return result
+}
+
+// readTree reads every file below dir, marking executables and symlinks.
+func readTree(t *testing.T, dir string) map[string]string {
+	t.Helper()
+	tree := map[string]string{}
+	if _, err := os.Stat(dir); err != nil {
+		return tree
+	}
+	err := filepath.WalkDir(dir, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil || entry.IsDir() {
+			return err
+		}
+		rel, err := filepath.Rel(dir, path)
+		if err != nil {
+			return err
+		}
+		name := filepath.ToSlash(rel)
+		if entry.Type()&fs.ModeSymlink != 0 {
+			target, err := os.Readlink(path)
+			tree[name] = "link:" + target
+			return err
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		content, err := os.ReadFile(path)
+		prefix := ""
+		if info.Mode()&0o111 != 0 {
+			prefix = "exec:"
+		}
+		tree[name] = prefix + string(content)
+		return err
+	})
+	assert.NoError(t, err)
+	return tree
+}
+
+func readFile(t *testing.T, dir, name string) string {
+	t.Helper()
+	content, err := os.ReadFile(filepath.Join(dir, name))
+	assert.NoError(t, err)
+	return string(content)
+}
+
+func writeFile(t *testing.T, dir, name, content string) {
+	t.Helper()
+	assert.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte(content), 0o600))
+}

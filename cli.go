@@ -12,6 +12,7 @@ import (
 	"github.com/block/spectre/internal/descriptors"
 	"github.com/block/spectre/internal/jsonschema"
 	"github.com/block/spectre/internal/logger"
+	"github.com/block/spectre/internal/scaffold"
 	"github.com/block/spectre/internal/state"
 	"github.com/block/spectre/internal/supervisor"
 	"github.com/block/spectre/internal/terminal"
@@ -29,6 +30,28 @@ type cli struct {
 	Gen    genCommand    `cmd:"" help:"Generate TypeScript schema declarations and the script API."`
 	Status statusCommand `cmd:"" help:"Report the SPECTRE migration status and mirror deployment for a service."`
 	State  stateCommand  `cmd:"" help:"Describe a service's migration state."`
+
+	Init      initCommand      `cmd:"" help:"Write the files a migration needs into a service checkout from a template, or bring them up to date."`
+	Templates templatesCommand `cmd:"" help:"List the templates init can render, or describe one template's variables."`
+}
+
+// initCommand renders a template into a service checkout. It prompts for
+// missing values only when standard input is a terminal.
+type initCommand struct {
+	Init scaffold.Config `embed:""`
+}
+
+func (c *initCommand) Run(registry *scaffold.Registry) error {
+	return errors.WithStack(scaffold.Init(os.Stdout, c.Init, registry, scaffold.TerminalPrompt(os.Stdin, os.Stderr)))
+}
+
+// templatesCommand describes the templates init can render.
+type templatesCommand struct {
+	Describe scaffold.DescribeConfig `embed:""`
+}
+
+func (c *templatesCommand) Run(registry *scaffold.Registry) error {
+	return errors.WithStack(scaffold.Describe(os.Stdout, c.Describe, registry, terminal.NewPalette(terminal.ColorEnabled(os.Stdout))))
 }
 
 // stateCommand groups the commands that read a service's migration state.

@@ -1,0 +1,52 @@
+description = "A generic SPECTRE migration: the migration config and state, agent skills, and placeholders for starting the reference and candidate and building the mirror image."
+next_steps = """
+1. Start the reference and candidate in spectre/bin/reference and spectre/bin/candidate.
+2. Install both into the mirror image in Dockerfile.spectre.
+3. Ask an agent to plan the migration with the spectre-plan skill."""
+
+[[variables]]
+name = "service_name"
+help = "Name of the service being migrated."
+default = "{{ .Dir }}"
+pattern = "^[a-z][a-z0-9-]*$"
+
+[[variables]]
+name = "platform"
+help = "Deploy platform the service runs on, as spectre status names it."
+pattern = "^[a-z][a-z0-9-]*$"
+
+[[variables]]
+name = "environments"
+help = "Environments that run a SPECTRE mirror, as <env>-<region>."
+type = "list"
+default = []
+pattern = "^[a-z0-9]+-[a-z0-9-]+$"
+
+[[variables]]
+name = "egress_hosts"
+help = "Hosts of the dependencies the service calls. Egress forwards the reference's calls to them."
+type = "list"
+default = []
+pattern = "^[A-Za-z0-9.-]+(:[0-9]+)?$"
+
+[[variables]]
+name = "health_route"
+help = "Health check route that ingress never compares, as <METHOD> /<path>. Empty for none."
+default = ""
+pattern = "^([A-Z]+ /.*)?$"
+
+[files]
+customisable = [
+  "Dockerfile.spectre",
+  "spectre/bin/candidate",
+  "spectre/bin/reference",
+  "spectre/migration.toml",
+  "spectre/scripts/**",
+  "spectre/state.toml",
+]
+executable = ["spectre/bin/*"]
+
+[symlinks]
+".claude/skills/spectre-migrate" = "../../.agents/skills/spectre-migrate"
+".claude/skills/spectre-plan" = "../../.agents/skills/spectre-plan"
+".claude/skills/spectre-scripts" = "../../.agents/skills/spectre-scripts"

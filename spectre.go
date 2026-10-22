@@ -4,6 +4,7 @@ package spectre
 
 import (
 	"context"
+	"io/fs"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -17,6 +18,7 @@ import (
 	"github.com/block/spectre/internal/boundary"
 	"github.com/block/spectre/internal/httpserver"
 	"github.com/block/spectre/internal/logger"
+	"github.com/block/spectre/internal/scaffold"
 	"github.com/block/spectre/internal/supervisor"
 	"github.com/block/spectre/status"
 )
@@ -33,6 +35,7 @@ type Option func(registered *extensions)
 type extensions struct {
 	kongOptions     []kong.Option
 	statusPlatforms *status.Registry
+	templates       *scaffold.Registry
 }
 
 // WithCommand adds a top-level command. command must be a pointer to a struct,
@@ -48,6 +51,14 @@ func WithCommand(name string, help string, command Command) Option {
 func WithStatusPlatform(name string, factory status.PlatformFactory) Option {
 	return func(registered *extensions) {
 		registered.statusPlatforms.Register(name, factory)
+	}
+}
+
+// WithTemplate registers a template that spectre init can render. files holds the
+// template, with its scaffold.toml manifest at the root; a name in use is replaced.
+func WithTemplate(name string, files fs.FS) Option {
+	return func(registered *extensions) {
+		registered.templates.Register(name, files)
 	}
 }
 
@@ -90,7 +101,7 @@ func Main(options ...Option) {
 
 // newParser builds the parser for command with every registered extension.
 func newParser(command *cli, options ...Option) (*kong.Kong, error) {
-	registered := &extensions{statusPlatforms: status.NewRegistry()}
+	registered := &extensions{statusPlatforms: status.NewRegistry(), templates: scaffold.NewRegistry()}
 	for _, option := range options {
 		option(registered)
 	}
@@ -101,7 +112,7 @@ func newParser(command *cli, options ...Option) (*kong.Kong, error) {
 	kongOptions := append([]kong.Option{
 		kong.Vars{"version": internal.Version},
 		kong.Configuration(kongtoml.Loader),
-		kong.Bind(registered.statusPlatforms, catalog),
+		kong.Bind(registered.statusPlatforms, registered.templates, catalog),
 	}, registered.kongOptions...)
 	parser, err := kong.New(command, kongOptions...)
 	if err != nil {

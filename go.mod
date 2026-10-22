@@ -10,6 +10,7 @@ require (
 	github.com/alecthomas/kong v1.16.1
 	github.com/alecthomas/kong-toml v0.4.1
 	github.com/alecthomas/types v0.20.1
+	github.com/block/scaffolder v1.11.0
 	github.com/grafana/sobek v0.0.0-20260915160442-8a431c44cd7b
 	github.com/lmittmann/tint v1.2.0
 	github.com/microsoft/TypeScript/tsc/shim/typescript v0.0.0
@@ -18,13 +19,15 @@ require (
 	go.jetify.com/typeid v1.3.0
 	golang.org/x/net v0.59.0
 	golang.org/x/sync v0.23.0
-	golang.org/x/sys v0.48.0
+	golang.org/x/sys v0.49.0
+	golang.org/x/term v0.47.0
 	google.golang.org/protobuf v1.36.12
 )
 
 require (
 	github.com/Microsoft/go-winio v0.6.2 // indirect
 	github.com/alecthomas/repr v0.5.2 // indirect
+	github.com/block/getit v0.1.0 // indirect
 	github.com/dlclark/regexp2/v2 v2.8.0 // indirect
 	github.com/go-sourcemap/sourcemap v2.1.4+incompatible // indirect
 	github.com/gofrs/uuid/v5 v5.2.0 // indirect

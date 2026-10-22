@@ -1,0 +1,29 @@
+#!/bin/sh
+# Container entrypoint for the {{ .service_name }} SPECTRE mirror. Runs the
+# supervisor, which starts the ingress and egress proxies, the reference, and the
+# candidate in this one container, wired together over unix sockets.
+set -eu
+
+# The SPECTRE files: the image's, or ones mounted over them.
+home="${SPECTRE_HOME:-/etc/spectre}"
+sockets="${SPECTRE_SOCKET_DIR:-/tmp/spectre-sockets}"
+mkdir -p "$sockets"
+{{- if .egress_hosts }}
+
+# Where egress forwards the reference's dependency calls.
+upstream="${SPECTRE_UPSTREAM:?set SPECTRE_UPSTREAM to the URL dependency calls are forwarded to}"
+{{- end }}
+
+exec spectre run \
+  --listen="${SPECTRE_LISTEN_ADDRESS:-0.0.0.0:50050}" \
+  --socket-dir="$sockets" \
+  --reference="${home}/bin/reference" \
+  --candidate="${home}/bin/candidate" \
+  --scripts-dir="${home}/scripts" \
+  --schema-dir="${home}/schema" \
+  --descriptors-dir="${home}/descriptors" \
+  --state-file="${home}/state.toml" \
+{{- range .egress_hosts }}
+  --destination="{{ . }}=${upstream}" \
+{{- end }}
+  "$@"

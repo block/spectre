@@ -1,0 +1,2 @@
+# SPECTRE migration state for {{ .service_name }}: its modules as nodes, what each
+# depends on, and which are migrated. Write it with the spectre-plan skill.
