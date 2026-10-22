@@ -25,8 +25,6 @@ type Variable struct {
 	Default Option[string] `toml:"-"`
 	// Choices are the only values allowed.
 	Choices []string `toml:"choices"`
-	// Pattern is a regular expression the value must match.
-	Pattern string `toml:"pattern"`
 }
 
 // normalise checks a variable read from a manifest and fills in its default.
@@ -36,9 +34,6 @@ func (v Variable) normalise() (Variable, error) {
 	}
 	if v.Help == "" {
 		return Variable{}, errors.Errorf("variable %q has no help", v.Name)
-	}
-	if _, err := regexp.Compile(v.Pattern); err != nil {
-		return Variable{}, errors.Wrapf(err, "variable %q pattern", v.Name)
 	}
 	switch raw := v.RawDefault.(type) {
 	case nil:
@@ -51,13 +46,10 @@ func (v Variable) normalise() (Variable, error) {
 	return v, nil
 }
 
-// check reports a value outside the variable's choices or pattern.
+// check reports a value outside the variable's choices.
 func (v Variable) check(value string) error {
 	if len(v.Choices) > 0 && !slices.Contains(v.Choices, value) {
 		return errors.Errorf("%s: %q is not one of %s", v.Name, value, strings.Join(v.Choices, ", "))
-	}
-	if v.Pattern != "" && !regexp.MustCompile(v.Pattern).MatchString(value) {
-		return errors.Errorf("%s: %q does not match %s", v.Name, value, v.Pattern)
 	}
 	return nil
 }

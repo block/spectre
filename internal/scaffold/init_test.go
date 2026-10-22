@@ -28,7 +28,6 @@ default = "{{ .Dir }}"
 name = "envs"
 help = "Environments."
 default = "staging"
-pattern = "^(staging|production)(, *(staging|production))*$"
 
 [files]
 customisable = ["config.toml", "spectre/custom/**", "spectre/migration.toml"]
@@ -147,7 +146,6 @@ func TestInitVariables(t *testing.T) {
 		{name: "Defaults", want: "name = \"svc\"\nenvs = [\"staging\"]\n"},
 		{name: "Flags", config: scaffold.Config{Vars: map[string]string{"name": "flag", "envs": "staging, production"}}, want: "name = \"flag\"\nenvs = [\"staging\", \"production\"]\n"},
 		{name: "UnknownVariable", config: scaffold.Config{Vars: map[string]string{"nope": "x"}}, error: `template "app" has no variable "nope"; it has: name, envs`},
-		{name: "InvalidValue", config: scaffold.Config{Vars: map[string]string{"envs": "dev"}}, error: `envs: "dev" does not match ^(staging|production)(, *(staging|production))*$`},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -178,6 +176,9 @@ choices = ["ski"]
 
 	assert.EqualError(t, err, "template \"required\" needs values for:\n"+
 		"  --var platform=VALUE  Deploy platform. One of: ski.")
+
+	err = scaffold.Init(io.Discard, scaffold.Config{Dir: t.TempDir(), Template: "required", Vars: map[string]string{"platform": "k8s"}}, registry)
+	assert.EqualError(t, err, `platform: "k8s" is not one of ski`)
 }
 
 func TestInitNeedsTemplateOnFirstRun(t *testing.T) {
