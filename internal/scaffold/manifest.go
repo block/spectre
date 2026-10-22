@@ -18,8 +18,6 @@ const manifestFile = "scaffold.toml"
 // Manifest describes a template: the values it asks for, and how its files are
 // written.
 type Manifest struct {
-	// Description says what the template sets up.
-	Description string `toml:"description"`
 	// Variables are the values the template asks for, in order.
 	Variables []Variable `toml:"variables"`
 	// Files sets how the template's rendered files are written.

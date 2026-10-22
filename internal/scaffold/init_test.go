@@ -1,8 +1,6 @@
 package scaffold_test
 
 import (
-	"bytes"
-	"encoding/json"
 	"io/fs"
 	"maps"
 	"os"
@@ -15,11 +13,9 @@ import (
 	"github.com/alecthomas/assert/v2"
 
 	"github.com/block/spectre/internal/scaffold"
-	"github.com/block/spectre/internal/terminal"
 )
 
 const appManifest = `
-description = "App."
 next_steps = "Edit {{ .name }}."
 
 [[variables]]
@@ -192,7 +188,7 @@ func TestInitVariables(t *testing.T) {
 	}{
 		{name: "Defaults", want: "name = \"svc\"\nenvs = \"staging\"\n"},
 		{name: "Flags", config: scaffold.Config{Vars: map[string]string{"name": "flag", "envs": "staging, production"}}, want: "name = \"flag\"\nenvs = \"staging,production\"\n"},
-		{name: "UnknownVariable", config: scaffold.Config{Vars: map[string]string{"nope": "x"}}, error: `template "app" has no variable "nope"; run spectre templates app`},
+		{name: "UnknownVariable", config: scaffold.Config{Vars: map[string]string{"nope": "x"}}, error: `template "app" has no variable "nope"; it has: name, envs`},
 		{name: "InvalidChoice", config: scaffold.Config{Vars: map[string]string{"envs": "dev"}}, error: `envs: "dev" is not one of staging, production`},
 	}
 	for _, test := range tests {
@@ -201,7 +197,7 @@ func TestInitVariables(t *testing.T) {
 			config := test.config
 			config.Dir = dir
 			config.Template = "app"
-			err := scaffold.Init(&bytes.Buffer{}, config, newRegistry())
+			_, err := scaffold.Init(config, newRegistry())
 			if test.error != "" {
 				assert.EqualError(t, err, test.error)
 				return
@@ -215,20 +211,19 @@ func TestInitVariables(t *testing.T) {
 func TestInitReportsMissingVariables(t *testing.T) {
 	registry := scaffold.NewRegistry()
 	registry.Register("required", fstest.MapFS{"scaffold.toml": {Data: []byte(`
-description = "Required."
-
 [[variables]]
 name = "platform"
 help = "Deploy platform."
+choices = ["ski"]
 `)}})
-	err := scaffold.Init(&bytes.Buffer{}, scaffold.Config{Dir: t.TempDir(), Template: "required"}, registry)
+	_, err := scaffold.Init(scaffold.Config{Dir: t.TempDir(), Template: "required"}, registry)
 
 	assert.EqualError(t, err, "template \"required\" needs values for:\n"+
-		"  --var platform=<string>  Deploy platform.")
+		"  --var platform=<string>  Deploy platform. One of: ski.")
 }
 
 func TestInitNeedsTemplateOnFirstRun(t *testing.T) {
-	err := scaffold.Init(&bytes.Buffer{}, scaffold.Config{Dir: t.TempDir()}, newRegistry())
+	_, err := scaffold.Init(scaffold.Config{Dir: t.TempDir()}, newRegistry())
 
 	assert.EqualError(t, err, "no template given; pass --template with one of: app, base, next")
 }
@@ -240,24 +235,6 @@ func TestInitRendersBaseTemplate(t *testing.T) {
 	assert.Equal(t, []string{"spectre/TODO.md", "spectre/migration.toml"}, slices.Sorted(maps.Keys(readTree(t, dir))))
 }
 
-func TestDescribeJSON(t *testing.T) {
-	var out bytes.Buffer
-	err := scaffold.Describe(&out, scaffold.DescribeConfig{Name: "next", JSON: true}, newRegistry(), terminal.NewPalette(false))
-	assert.NoError(t, err)
-
-	var description map[string]any
-	assert.NoError(t, json.Unmarshal(out.Bytes(), &description))
-	assert.Equal(t, map[string]any{
-		"name":        "next",
-		"description": "App.",
-		"variables": []any{
-			map[string]any{"name": "name", "help": "Service name.", "type": "string", "default": "{{ .Dir }}"},
-			map[string]any{"name": "envs", "help": "Environments.", "type": "list", "default": "staging", "choices": []any{"staging", "production"}},
-			map[string]any{"name": "image", "help": "Image.", "type": "string", "default": "{{ .name }}-image"},
-		},
-	}, description)
-}
-
 // answers is the [init] table init writes into the migration config.
 func answers(template string, variables ...string) string {
 	return "[init]\n# Written by spectre init, which reads it on the next run. Change it with --var.\n" +
@@ -266,11 +243,8 @@ func answers(template string, variables ...string) string {
 
 func runInit(t *testing.T, config scaffold.Config, registry *scaffold.Registry) scaffold.Result {
 	t.Helper()
-	config.JSON = true
-	var out bytes.Buffer
-	assert.NoError(t, scaffold.Init(&out, config, registry))
-	var result scaffold.Result
-	assert.NoError(t, json.Unmarshal(out.Bytes(), &result))
+	result, err := scaffold.Init(config, registry)
+	assert.NoError(t, err)
 	return result
 }
 

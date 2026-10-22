@@ -27,9 +27,9 @@ const (
 // Change is the action init takes on one file.
 type Change struct {
 	// Path is the file's slash-separated path in the checkout.
-	Path string `json:"path"`
+	Path string
 	// Action is what init does to it.
-	Action Action `json:"action"`
+	Action Action
 }
 
 // managedDir is the checkout directory init owns. Files there that are neither

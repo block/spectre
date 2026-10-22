@@ -9,7 +9,6 @@ package scaffold
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
 	"io"
 	"maps"
@@ -31,82 +30,80 @@ type Config struct {
 	Vars map[string]string `name:"var" mapsep:"none" placeholder:"NAME=VALUE" help:"Set a template variable. Write a list comma-separated."`
 	// DryRun reports the changes without writing them.
 	DryRun bool `help:"Report the changes without writing anything."`
-	// JSON reports the changes as JSON.
-	JSON bool `help:"Report the changes as JSON."`
 }
 
 // Result is what a run of init did, or would do in a dry run.
 type Result struct {
 	// Template is the rendered template's name.
-	Template string `json:"template"`
+	Template string
 	// DryRun is set when nothing was written.
-	DryRun bool `json:"dry_run"`
+	DryRun bool
 	// Changes are the actions on each file, including unchanged ones.
-	Changes []Change `json:"changes"`
+	Changes []Change
 	// NextSteps are the template's instructions for what to do after init.
-	NextSteps string `json:"next_steps,omitzero"`
+	NextSteps string
 }
 
-// Init renders a template into config.Dir and reports the changes to out.
-func Init(out io.Writer, config Config, registry *Registry) error {
+// Init renders a template into config.Dir, unless it is a dry run.
+func Init(config Config, registry *Registry) (Result, error) {
 	dir, err := filepath.Abs(config.Dir)
 	if err != nil {
-		return errors.WithStack(err)
+		return Result{}, errors.WithStack(err)
 	}
 	previous, found, err := readAnswers(dir)
 	if err != nil {
-		return err
+		return Result{}, err
 	}
 	name := config.Template
 	if name == "" {
 		if !found {
-			return errors.Errorf("no template given; pass --template with one of: %s", strings.Join(registry.Names(), ", "))
+			return Result{}, errors.Errorf("no template given; pass --template with one of: %s", strings.Join(registry.Names(), ", "))
 		}
 		name = previous.Template
 	}
 	template, err := registry.Load(name)
 	if err != nil {
-		return err
+		return Result{}, err
 	}
 	builtins := map[string]any{"Dir": filepath.Base(dir), "SpectreRef": spectreRef(), "Template": name}
 	values, err := resolve(template, builtins, config.Vars, previous.Variables)
 	if err != nil {
-		return err
+		return Result{}, err
 	}
 	context := merge(builtins, values)
 	files, err := template.Render(context)
 	if err != nil {
-		return err
+		return Result{}, err
 	}
 	if err := recordAnswers(dir, files, newAnswers(name, values)); err != nil {
-		return err
+		return Result{}, err
 	}
 	changes, err := plan(dir, files, template.Manifest.Files.Customisable)
 	if err != nil {
-		return err
+		return Result{}, err
 	}
 	if !config.DryRun {
 		if err := apply(dir, files, changes); err != nil {
-			return err
+			return Result{}, err
 		}
 	}
 	steps, err := template.NextSteps(context)
 	if err != nil {
-		return err
+		return Result{}, err
 	}
-	return report(out, Result{Template: name, DryRun: config.DryRun, Changes: changes, NextSteps: steps}, config.JSON)
+	return Result{Template: name, DryRun: config.DryRun, Changes: changes, NextSteps: steps}, nil
 }
 
 // resolve finds each variable's value, from flags, then the previous run, then
 // the default.
 func resolve(template Template, builtins map[string]any, flags, locked map[string]string) (map[string]any, error) {
-	declared := map[string]bool{}
+	names := make([]string, 0, len(template.Manifest.Variables))
 	for _, variable := range template.Manifest.Variables {
-		declared[variable.Name] = true
+		names = append(names, variable.Name)
 	}
 	for _, name := range slices.Sorted(maps.Keys(flags)) {
-		if !declared[name] {
-			return nil, errors.Errorf("template %q has no variable %q; run spectre templates %s", template.Name, name, template.Name)
+		if !slices.Contains(names, name) {
+			return nil, errors.Errorf("template %q has no variable %q; it has: %s", template.Name, name, strings.Join(names, ", "))
 		}
 	}
 	values := map[string]any{}
@@ -183,23 +180,21 @@ func missingError(template string, missing []Variable) error {
 	fmt.Fprintf(&message, "template %q needs values for:", template)
 	for _, variable := range missing {
 		fmt.Fprintf(&message, "\n  --var %s=<%s>  %s", variable.Name, variable.Type, variable.Help)
+		if len(variable.Choices) > 0 {
+			fmt.Fprintf(&message, " One of: %s.", strings.Join(variable.Choices, ", "))
+		}
 	}
 	return errors.New(message.String())
 }
 
-func report(out io.Writer, result Result, asJSON bool) error {
-	if asJSON {
-		encoder := json.NewEncoder(out)
-		encoder.SetIndent("", "  ")
-		encoder.SetEscapeHTML(false)
-		return errors.Wrap(encoder.Encode(result), "write init result")
-	}
+// Write reports the changes and next steps to out.
+func (r Result) Write(out io.Writer) error {
 	var text bytes.Buffer
-	if result.DryRun {
+	if r.DryRun {
 		text.WriteString("Dry run: no files were written.\n")
 	}
 	unchanged := 0
-	for _, change := range result.Changes {
+	for _, change := range r.Changes {
 		if change.Action == Unchanged {
 			unchanged++
 			continue
@@ -207,8 +202,8 @@ func report(out io.Writer, result Result, asJSON bool) error {
 		fmt.Fprintf(&text, "%-9s %s\n", change.Action, change.Path)
 	}
 	fmt.Fprintf(&text, "%d unchanged\n", unchanged)
-	if result.NextSteps != "" {
-		fmt.Fprintf(&text, "\nNext steps:\n%s\n", strings.TrimRight(result.NextSteps, "\n"))
+	if r.NextSteps != "" {
+		fmt.Fprintf(&text, "\nNext steps:\n%s\n", strings.TrimRight(r.NextSteps, "\n"))
 	}
 	_, err := out.Write(text.Bytes())
 	return errors.Wrap(err, "write init result")

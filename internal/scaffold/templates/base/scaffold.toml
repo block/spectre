@@ -1,1 +1,2 @@
-description = "Placeholder that writes only a TODO. Custom binaries register templates for the stacks they migrate."
+# Placeholder that writes only a TODO. Custom binaries register templates for
+# the stacks they migrate.

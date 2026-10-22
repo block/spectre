@@ -57,13 +57,13 @@ func TestWithKongOptionsAddsVars(t *testing.T) {
 func TestWithTemplateAddsTemplate(t *testing.T) {
 	dir := t.TempDir()
 	template := fstest.MapFS{
-		"scaffold.toml": {Data: []byte("description = \"Custom.\"\n[[variables]]\nname = \"name\"\nhelp = \"Name.\"\n")},
+		"scaffold.toml": {Data: []byte("[[variables]]\nname = \"name\"\nhelp = \"Name.\"\n")},
 		"hello.txt":     {Data: []byte("hello {{ .name }}\n")},
 	}
 	parser, err := newParser(&cli{}, WithTemplate("custom", template))
 	assert.NoError(t, err)
 
-	kctx, err := parser.Parse([]string{"init", dir, "--template=custom", "--var=name=spectre", "--json"})
+	kctx, err := parser.Parse([]string{"init", dir, "--template=custom", "--var=name=spectre"})
 	assert.NoError(t, err)
 	assert.NoError(t, kctx.Run())
 
