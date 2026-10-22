@@ -8,6 +8,7 @@
 package scaffold
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"maps"
@@ -23,13 +24,17 @@ type Config struct {
 	// Dir is the service checkout to write into.
 	Dir string `arg:"" optional:"" default:"." type:"path" help:"Service checkout to write the files into."`
 	// Template names the template to render.
-	Template string `placeholder:"NAME" help:"Template to render. Defaults to the one the last run used."`
+	Template string `placeholder:"NAME" help:"Template to render, a directory at the root of the template repository. Defaults to the one the last run used."`
+	// Repo holds the templates, one directory each.
+	Repo string `name:"template-repo" default:"${template_repo}" placeholder:"SOURCE" help:"Template repository: a local directory, or a git source such as git+ssh://github.com/org/repo."`
+	// Ref is the branch or tag of a git template repository.
+	Ref string `name:"template-ref" default:"main" placeholder:"REF" help:"Branch or tag of the template repository."`
 	// Vars are variable values, as written on the command line.
 	Vars map[string]string `name:"var" mapsep:"none" placeholder:"NAME=VALUE" help:"Set a template variable. Write a list comma-separated."`
 }
 
 // Init renders a template into config.Dir and writes its next steps to out.
-func Init(out io.Writer, config Config, registry *Registry) error {
+func Init(ctx context.Context, out io.Writer, config Config) error {
 	dir, err := filepath.Abs(config.Dir)
 	if err != nil {
 		return errors.WithStack(err)
@@ -41,14 +46,15 @@ func Init(out io.Writer, config Config, registry *Registry) error {
 	name := config.Template
 	if name == "" {
 		if !found {
-			return errors.Errorf("no template given; pass --template with one of: %s", strings.Join(registry.Names(), ", "))
+			return errors.New("no template given; pass --template")
 		}
 		name = previous.Template
 	}
-	template, err := registry.Load(name)
+	template, cleanup, err := openTemplate(ctx, config, name)
 	if err != nil {
 		return err
 	}
+	defer cleanup()
 	builtins := map[string]any{"Dir": filepath.Base(dir), "SpectreRef": spectreRef(), "Template": name}
 	values, err := resolve(template, config.Vars, previous.Variables)
 	if err != nil {

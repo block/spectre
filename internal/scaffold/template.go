@@ -12,9 +12,9 @@ import (
 	"github.com/block/scaffolder"
 )
 
-// Template is a registered template with its manifest.
+// Template is a fetched template with its manifest.
 type Template struct {
-	// Name is the template's registered name.
+	// Name is the template's directory in its repository.
 	Name string
 	// Manifest is the template's manifest.
 	Manifest Manifest

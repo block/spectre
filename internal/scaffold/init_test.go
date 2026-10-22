@@ -3,10 +3,8 @@ package scaffold_test
 import (
 	"io"
 	"io/fs"
-	"maps"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -64,16 +62,24 @@ help = "Image."
 	return files
 }
 
-func newRegistry() *scaffold.Registry {
-	registry := scaffold.NewRegistry()
-	registry.Register("app", appTemplate())
-	registry.Register("next", nextTemplate())
-	return registry
+// newRepo writes templates into a local template repository.
+func newRepo(t *testing.T, templates map[string]fstest.MapFS) string {
+	t.Helper()
+	repo := t.TempDir()
+	for name, files := range templates {
+		assert.NoError(t, os.CopyFS(filepath.Join(repo, name), files))
+	}
+	return repo
+}
+
+func appRepo(t *testing.T) string {
+	t.Helper()
+	return newRepo(t, map[string]fstest.MapFS{"app": appTemplate(), "next": nextTemplate()})
 }
 
 func TestInitWritesTemplate(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "svc")
-	output := runInit(t, scaffold.Config{Dir: dir, Template: "app", Vars: map[string]string{"name": "svc", "envs": "staging"}}, newRegistry())
+	output := runInit(t, scaffold.Config{Dir: dir, Template: "app", Vars: map[string]string{"name": "svc", "envs": "staging"}}, appRepo(t))
 
 	assert.Equal(t, map[string]string{
 		"README.md":               "# svc\n",
@@ -89,15 +95,15 @@ func TestInitWritesTemplate(t *testing.T) {
 
 func TestInitRerunReconciles(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "svc")
-	registry := newRegistry()
-	runInit(t, scaffold.Config{Dir: dir, Template: "app", Vars: map[string]string{"name": "first", "envs": "staging"}}, registry)
+	repo := appRepo(t)
+	runInit(t, scaffold.Config{Dir: dir, Template: "app", Vars: map[string]string{"name": "first", "envs": "staging"}}, repo)
 	writeFile(t, dir, "config.toml", "edited\n")
 	writeFile(t, dir, "README.md", "edited\n")
 	writeFile(t, dir, "own.txt", "the service's own file\n")
 	writeFile(t, dir, "spectre/own.txt", "not in the template\n")
 	writeFile(t, dir, "spectre/custom/own.txt", "customised\n")
 
-	runInit(t, scaffold.Config{Dir: dir, Template: "next", Vars: map[string]string{"image": "first-image"}}, registry)
+	runInit(t, scaffold.Config{Dir: dir, Template: "next", Vars: map[string]string{"image": "first-image"}}, repo)
 
 	assert.Equal(t, map[string]string{
 		"README.md":                "# first\n",
@@ -114,12 +120,12 @@ func TestInitRerunReconciles(t *testing.T) {
 
 func TestInitRerunKeepsCustomisableAndDeletesStale(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "svc")
-	registry := newRegistry()
-	runInit(t, scaffold.Config{Dir: dir, Template: "app", Vars: map[string]string{"name": "first", "envs": "staging"}}, registry)
+	repo := appRepo(t)
+	runInit(t, scaffold.Config{Dir: dir, Template: "app", Vars: map[string]string{"name": "first", "envs": "staging"}}, repo)
 	writeFile(t, dir, "config.toml", "edited\n")
 	writeFile(t, dir, "spectre/migration.toml", strings.Replace(readFile(t, dir, "spectre/migration.toml"), "first", "edited", 1))
 
-	runInit(t, scaffold.Config{Dir: dir, Vars: map[string]string{"name": "second"}}, registry)
+	runInit(t, scaffold.Config{Dir: dir, Vars: map[string]string{"name": "second"}}, repo)
 
 	assert.Equal(t, map[string]string{
 		"README.md":                 "# second\n",
@@ -149,7 +155,8 @@ func TestInitVariables(t *testing.T) {
 			config := test.config
 			config.Dir = dir
 			config.Template = "app"
-			err := scaffold.Init(io.Discard, config, newRegistry())
+			config.Repo = appRepo(t)
+			err := scaffold.Init(t.Context(), io.Discard, config)
 			if test.error != "" {
 				assert.EqualError(t, err, test.error)
 				return
@@ -161,33 +168,42 @@ func TestInitVariables(t *testing.T) {
 }
 
 func TestInitReportsMissingVariables(t *testing.T) {
-	registry := scaffold.NewRegistry()
-	registry.Register("required", fstest.MapFS{"scaffold.toml": {Data: []byte(`
+	repo := newRepo(t, map[string]fstest.MapFS{"required": {"scaffold.toml": {Data: []byte(`
 [[variables]]
 name = "platform"
 help = "Deploy platform."
 choices = ["ski"]
-`)}})
-	err := scaffold.Init(io.Discard, scaffold.Config{Dir: t.TempDir(), Template: "required"}, registry)
+`)}}})
+	err := scaffold.Init(t.Context(), io.Discard, scaffold.Config{Dir: t.TempDir(), Template: "required", Repo: repo})
 
 	assert.EqualError(t, err, "template \"required\" needs values for:\n"+
 		"  --var platform=VALUE  Deploy platform. One of: ski.")
 
-	err = scaffold.Init(io.Discard, scaffold.Config{Dir: t.TempDir(), Template: "required", Vars: map[string]string{"platform": "k8s"}}, registry)
+	err = scaffold.Init(t.Context(), io.Discard, scaffold.Config{Dir: t.TempDir(), Template: "required", Repo: repo, Vars: map[string]string{"platform": "k8s"}})
 	assert.EqualError(t, err, `platform: "k8s" is not one of ski`)
 }
 
-func TestInitNeedsTemplateOnFirstRun(t *testing.T) {
-	err := scaffold.Init(io.Discard, scaffold.Config{Dir: t.TempDir()}, newRegistry())
-
-	assert.EqualError(t, err, "no template given; pass --template with one of: app, base, next")
-}
-
-func TestInitRendersBaseTemplate(t *testing.T) {
-	dir := t.TempDir()
-	runInit(t, scaffold.Config{Dir: dir, Template: scaffold.BaseTemplate}, scaffold.NewRegistry())
-
-	assert.Equal(t, []string{"spectre/TODO.md", "spectre/migration.toml"}, slices.Sorted(maps.Keys(readTree(t, dir))))
+func TestInitErrors(t *testing.T) {
+	tests := []struct {
+		name   string
+		config scaffold.Config
+		error  string
+	}{
+		{name: "NoTemplate", config: scaffold.Config{Repo: "REPO"}, error: "no template given; pass --template"},
+		{name: "NoRepo", config: scaffold.Config{Template: "app"}, error: "no template repository; pass --template-repo, or build spectre with spectre.WithTemplateRepo"},
+		{name: "InvalidName", config: scaffold.Config{Template: "../app", Repo: "REPO"}, error: `template name "../app" must match ^[a-z0-9][a-z0-9_-]*$`},
+		{name: "UnknownTemplate", config: scaffold.Config{Template: "nope", Repo: "REPO", Ref: "main"}, error: `template "nope" not found in REPO at main`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			repo := appRepo(t)
+			config := test.config
+			config.Dir = t.TempDir()
+			config.Repo = strings.ReplaceAll(config.Repo, "REPO", repo)
+			err := scaffold.Init(t.Context(), io.Discard, config)
+			assert.EqualError(t, err, strings.ReplaceAll(test.error, "REPO", repo))
+		})
+	}
 }
 
 // answers is the [init] table init writes into the migration config.
@@ -196,10 +212,11 @@ func answers(template string, variables ...string) string {
 		"template = \"" + template + "\"\n\n[init.variables]\n" + strings.Join(variables, "\n") + "\n"
 }
 
-func runInit(t *testing.T, config scaffold.Config, registry *scaffold.Registry) string {
+func runInit(t *testing.T, config scaffold.Config, repo string) string {
 	t.Helper()
 	var out strings.Builder
-	assert.NoError(t, scaffold.Init(&out, config, registry))
+	config.Repo = repo
+	assert.NoError(t, scaffold.Init(t.Context(), &out, config))
 	return out.String()
 }
 

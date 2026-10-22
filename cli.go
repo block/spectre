@@ -39,8 +39,8 @@ type initCommand struct {
 	Init scaffold.Config `embed:""`
 }
 
-func (c *initCommand) Run(registry *scaffold.Registry) error {
-	return errors.WithStack(scaffold.Init(os.Stdout, c.Init, registry))
+func (c *initCommand) Run(ctx context.Context) error {
+	return errors.WithStack(scaffold.Init(ctx, os.Stdout, c.Init))
 }
 
 // stateCommand groups the commands that read a service's migration state.

@@ -54,17 +54,19 @@ func TestWithKongOptionsAddsVars(t *testing.T) {
 	assert.Equal(t, &pushCommand{Image: "registry.example.com/spectre:" + internal.Version}, extension)
 }
 
-func TestWithTemplateAddsTemplate(t *testing.T) {
+func TestWithTemplateRepoSetsDefault(t *testing.T) {
 	dir := t.TempDir()
-	template := fstest.MapFS{
+	repo := t.TempDir()
+	assert.NoError(t, os.CopyFS(filepath.Join(repo, "custom"), fstest.MapFS{
 		"scaffold.toml": {Data: []byte("[[variables]]\nname = \"name\"\nhelp = \"Name.\"\n")},
 		"hello.txt":     {Data: []byte("hello {{ .name }}\n")},
-	}
-	parser, err := newParser(&cli{}, WithTemplate("custom", template))
+	}))
+	parser, err := newParser(&cli{}, WithTemplateRepo(repo))
 	assert.NoError(t, err)
 
 	kctx, err := parser.Parse([]string{"init", dir, "--template=custom", "--var=name=spectre"})
 	assert.NoError(t, err)
+	kctx.BindTo(t.Context(), (*context.Context)(nil))
 	assert.NoError(t, kctx.Run())
 
 	content, err := os.ReadFile(filepath.Join(dir, "hello.txt"))

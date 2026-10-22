@@ -4,7 +4,6 @@ package spectre
 
 import (
 	"context"
-	"io/fs"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -18,7 +17,6 @@ import (
 	"github.com/block/spectre/internal/boundary"
 	"github.com/block/spectre/internal/httpserver"
 	"github.com/block/spectre/internal/logger"
-	"github.com/block/spectre/internal/scaffold"
 	"github.com/block/spectre/internal/supervisor"
 	"github.com/block/spectre/status"
 )
@@ -35,7 +33,6 @@ type Option func(registered *extensions)
 type extensions struct {
 	kongOptions     []kong.Option
 	statusPlatforms *status.Registry
-	templates       *scaffold.Registry
 }
 
 // WithCommand adds a top-level command. command must be a pointer to a struct,
@@ -54,11 +51,11 @@ func WithStatusPlatform(name string, factory status.PlatformFactory) Option {
 	}
 }
 
-// WithTemplate registers a template that spectre init can render. files holds the
-// template, with its scaffold.toml manifest at the root; a name in use is replaced.
-func WithTemplate(name string, files fs.FS) Option {
+// WithTemplateRepo sets the default repository spectre init fetches templates
+// from: a git source such as git+ssh://github.com/org/repo, or a local directory.
+func WithTemplateRepo(source string) Option {
 	return func(registered *extensions) {
-		registered.templates.Register(name, files)
+		registered.kongOptions = append(registered.kongOptions, kong.Vars{"template_repo": source})
 	}
 }
 
@@ -101,7 +98,7 @@ func Main(options ...Option) {
 
 // newParser builds the parser for command with every registered extension.
 func newParser(command *cli, options ...Option) (*kong.Kong, error) {
-	registered := &extensions{statusPlatforms: status.NewRegistry(), templates: scaffold.NewRegistry()}
+	registered := &extensions{statusPlatforms: status.NewRegistry()}
 	for _, option := range options {
 		option(registered)
 	}
@@ -110,9 +107,9 @@ func newParser(command *cli, options ...Option) (*kong.Kong, error) {
 		return nil, errors.Wrap(err, "collect supported IO")
 	}
 	kongOptions := append([]kong.Option{
-		kong.Vars{"version": internal.Version},
+		kong.Vars{"version": internal.Version, "template_repo": ""},
 		kong.Configuration(kongtoml.Loader),
-		kong.Bind(registered.statusPlatforms, registered.templates, catalog),
+		kong.Bind(registered.statusPlatforms, catalog),
 	}, registered.kongOptions...)
 	parser, err := kong.New(command, kongOptions...)
 	if err != nil {
