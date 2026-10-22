@@ -25,13 +25,17 @@ type Lock struct {
 	Managed []string `toml:"managed"`
 	// Customisable are the files written only when absent.
 	Customisable []string `toml:"customisable"`
-	// Variables are the values the template was rendered with.
-	Variables map[string]any `toml:"variables"`
+	// Variables are the values the template was rendered with, as written on
+	// the command line.
+	Variables map[string]string `toml:"variables"`
 }
 
 // newLock records the files a run rendered.
 func newLock(template string, values map[string]any, files map[string]File) Lock {
-	lock := Lock{Template: template, Managed: []string{}, Customisable: []string{}, Variables: values}
+	lock := Lock{Template: template, Managed: []string{}, Customisable: []string{}, Variables: map[string]string{}}
+	for name, value := range values {
+		lock.Variables[name] = format(value)
+	}
 	for name, file := range files {
 		if file.Customisable {
 			lock.Customisable = append(lock.Customisable, name)

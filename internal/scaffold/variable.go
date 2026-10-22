@@ -1,6 +1,7 @@
 package scaffold
 
 import (
+	"fmt"
 	"regexp"
 	"slices"
 	"strconv"
@@ -31,8 +32,7 @@ type Variable struct {
 	Help string `toml:"help" json:"help"`
 	// Type is the kind of value. It defaults to string.
 	Type VariableType `toml:"type" json:"type"`
-	// RawDefault is the manifest's default: a string template, a boolean, or a
-	// list of string templates.
+	// RawDefault is the manifest's default, which must be a string.
 	RawDefault any `toml:"default" json:"-"`
 	// Default is a template rendered with the built-in values and the earlier
 	// variables, then read like a command-line value.
@@ -65,20 +65,8 @@ func (v Variable) normalise() (Variable, error) {
 	case nil:
 	case string:
 		v.Default = Some(raw)
-	case bool:
-		v.Default = Some(strconv.FormatBool(raw))
-	case []any:
-		items := make([]string, 0, len(raw))
-		for _, item := range raw {
-			text, ok := item.(string)
-			if !ok {
-				return Variable{}, errors.Errorf("variable %q default must be a list of strings", v.Name)
-			}
-			items = append(items, text)
-		}
-		v.Default = Some(strings.Join(items, ","))
 	default:
-		return Variable{}, errors.Errorf("variable %q default must be a string, boolean, or list of strings", v.Name)
+		return Variable{}, errors.Errorf("variable %q default must be a string", v.Name)
 	}
 	v.RawDefault = nil
 	return v, nil
@@ -108,32 +96,16 @@ func (v Variable) parse(raw string) (any, error) {
 	}
 }
 
-// fromTOML reads a value from a values or lock file. A string is read like a
-// command-line value.
-func (v Variable) fromTOML(value any) (any, error) {
-	if text, ok := value.(string); ok {
-		return errors.WithStack2(v.parse(text))
+// format writes a parsed value as it is written on the command line.
+func format(value any) string {
+	switch value := value.(type) {
+	case bool:
+		return strconv.FormatBool(value)
+	case []string:
+		return strings.Join(value, ",")
+	default:
+		return fmt.Sprint(value)
 	}
-	switch v.Type {
-	case Bool:
-		if flag, ok := value.(bool); ok {
-			return flag, nil
-		}
-	case List:
-		if raw, isList := value.([]any); isList {
-			items := make([]string, 0, len(raw))
-			for _, item := range raw {
-				text, isString := item.(string)
-				if !isString {
-					return nil, errors.Errorf("%s: list items must be strings", v.Name)
-				}
-				items = append(items, text)
-			}
-			return items, nil
-		}
-	case String:
-	}
-	return nil, errors.Errorf("%s: %v is not a %s", v.Name, value, v.Type)
 }
 
 // check reports a value outside the variable's choices or pattern.

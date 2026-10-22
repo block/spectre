@@ -13,14 +13,12 @@ import (
 	"fmt"
 	"io"
 	"maps"
-	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 
 	"github.com/alecthomas/errors"
 	. "github.com/alecthomas/types/optional"
-	"github.com/pelletier/go-toml"
 )
 
 // Config selects the template init renders and where its values come from.
@@ -31,8 +29,6 @@ type Config struct {
 	Template string `placeholder:"NAME" help:"Template to render. Defaults to the one the last run used."`
 	// Vars are variable values, as written on the command line.
 	Vars map[string]string `name:"var" mapsep:"none" placeholder:"NAME=VALUE" help:"Set a template variable. Write a list comma-separated."`
-	// VarsFile is a TOML file of variable values.
-	VarsFile string `type:"existingfile" placeholder:"FILE" help:"TOML file of template variable values."`
 	// DryRun reports the changes without writing them.
 	DryRun bool `help:"Report the changes without writing anything."`
 	// JSON reports the changes as JSON.
@@ -73,12 +69,8 @@ func Init(out io.Writer, config Config, registry *Registry, prompt Option[Prompt
 	if err != nil {
 		return err
 	}
-	fromFile, err := readValues(config.VarsFile)
-	if err != nil {
-		return err
-	}
 	builtins := map[string]any{"Dir": filepath.Base(dir), "SpectreRef": spectreRef(), "Template": name}
-	values, err := resolve(template, builtins, config.Vars, fromFile, previous.Variables, prompt)
+	values, err := resolve(template, builtins, config.Vars, previous.Variables, prompt)
 	if err != nil {
 		return err
 	}
@@ -106,30 +98,14 @@ func Init(out io.Writer, config Config, registry *Registry, prompt Option[Prompt
 	return report(out, Result{Template: name, DryRun: config.DryRun, Changes: changes, NextSteps: steps}, config.JSON)
 }
 
-// readValues reads a TOML file of variable values, if one is given.
-func readValues(path string) (map[string]any, error) {
-	if path == "" {
-		return map[string]any{}, nil
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, errors.Wrap(err, "read variables file")
-	}
-	tree, err := toml.LoadBytes(data)
-	if err != nil {
-		return nil, errors.Wrapf(err, "parse %s", path)
-	}
-	return tree.ToMap(), nil
-}
-
-// resolve finds each variable's value, from flags, then the values file, then
-// the previous run, then the prompt or the default.
-func resolve(template Template, builtins map[string]any, flags map[string]string, fromFile, locked map[string]any, prompt Option[Prompt]) (map[string]any, error) {
+// resolve finds each variable's value, from flags, then the previous run, then
+// the prompt or the default.
+func resolve(template Template, builtins map[string]any, flags, locked map[string]string, prompt Option[Prompt]) (map[string]any, error) {
 	declared := map[string]bool{}
 	for _, variable := range template.Manifest.Variables {
 		declared[variable.Name] = true
 	}
-	for _, name := range slices.Concat(slices.Sorted(maps.Keys(flags)), slices.Sorted(maps.Keys(fromFile))) {
+	for _, name := range slices.Sorted(maps.Keys(flags)) {
 		if !declared[name] {
 			return nil, errors.Errorf("template %q has no variable %q; run spectre templates %s", template.Name, name, template.Name)
 		}
@@ -137,7 +113,7 @@ func resolve(template Template, builtins map[string]any, flags map[string]string
 	values := map[string]any{}
 	var missing []Variable
 	for _, variable := range template.Manifest.Variables {
-		value, ok, err := given(variable, flags, fromFile, locked)
+		value, ok, err := given(variable, flags, locked)
 		if err != nil {
 			return nil, err
 		}
@@ -165,20 +141,17 @@ func resolve(template Template, builtins map[string]any, flags map[string]string
 	return values, nil
 }
 
-// given returns a variable's value from flags, the values file, or the previous
-// run. A previous value the variable no longer accepts is asked for again.
-func given(variable Variable, flags map[string]string, fromFile, locked map[string]any) (value any, ok bool, err error) {
+// given returns a variable's value from flags or the previous run. A previous
+// value the variable no longer accepts is asked for again.
+func given(variable Variable, flags, locked map[string]string) (value any, ok bool, err error) {
 	if raw, found := flags[variable.Name]; found {
 		return checked(variable)(variable.parse(raw))
-	}
-	if raw, found := fromFile[variable.Name]; found {
-		return checked(variable)(variable.fromTOML(raw))
 	}
 	raw, found := locked[variable.Name]
 	if !found {
 		return nil, false, nil
 	}
-	value, ok, err = checked(variable)(variable.fromTOML(raw))
+	value, ok, err = checked(variable)(variable.parse(raw))
 	if err != nil {
 		return nil, false, nil //nolint:nilerr // A stale answer is asked for again.
 	}
