@@ -32,7 +32,7 @@ type Egress struct {
 	transport        http.RoundTripper
 	engine           *protocol.Engine
 	routes           *route.Matcher
-	destinations     map[string]*httputil.ReverseProxy
+	destinations     *destinations
 	listeners        []*netaddr.Endpoint
 	candidates       *proxy.Candidates
 	requests         chan struct{}
@@ -108,19 +108,18 @@ func NewEgress(
 
 func egressDestinations(ctx context.Context, config EgressConfig, transport http.RoundTripper,
 	listeners []*netaddr.Endpoint,
-) (map[string]*httputil.ReverseProxy, error) {
-	destinations := make(map[string]*httputil.ReverseProxy, len(config.Destinations))
+) (*destinations, error) {
+	destinations := newDestinations()
+	seen := map[string]bool{}
 	for host, upstream := range config.Destinations {
-		name := hostname(host)
-		if name == "" || name != strings.ToLower(host) {
+		name := strings.ToLower(host)
+		if strings.Contains(name, ":") || (!strings.ContainsAny(name, "*?[{") && hostname(host) != name) {
 			return nil, errors.Errorf("destination host %q must be a host name without a port", host)
 		}
-		if strings.Contains(strings.TrimPrefix(name, "*."), "*") {
-			return nil, errors.Errorf("destination host %q may only start with a *. wildcard", host)
-		}
-		if _, duplicate := destinations[name]; duplicate {
+		if seen[name] {
 			return nil, errors.Errorf("destination host %q is configured more than once", host)
 		}
+		seen[name] = true
 		endpoint, err := netaddr.ParseBackend(upstream)
 		if err != nil {
 			return nil, errors.Wrapf(err, "parse destination %q", host)
@@ -132,7 +131,9 @@ func egressDestinations(ctx context.Context, config EgressConfig, transport http
 		if err != nil {
 			return nil, errors.Wrapf(err, "proxy destination %q", host)
 		}
-		destinations[name] = destination
+		if err := destinations.add(name, destination); err != nil {
+			return nil, err
+		}
 	}
 	return destinations, nil
 }
@@ -221,19 +222,9 @@ func (e *Egress) serveReference(writer http.ResponseWriter, request *http.Reques
 	e.referencePoint.respond(writer, outbound, decision, upstream, noDecode)
 }
 
-// destination returns the configured destination for a host: an exact match, or
-// else the longest *. wildcard that matches it.
+// destination returns the configured destination for a host, ignoring any port.
 func (e *Egress) destination(host string) (destination *httputil.ReverseProxy, configured bool) {
-	name := hostname(host)
-	if destination, configured = e.destinations[name]; configured {
-		return destination, true
-	}
-	for _, rest, found := strings.Cut(name, "."); found; _, rest, found = strings.Cut(rest, ".") {
-		if destination, configured = e.destinations["*."+rest]; configured {
-			return destination, true
-		}
-	}
-	return nil, false
+	return e.destinations.lookup(hostname(host))
 }
 
 // upstream returns the destination for a request's host. Other hosts are reached

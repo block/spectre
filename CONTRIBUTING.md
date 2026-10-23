@@ -68,9 +68,9 @@ which sends requests for `HOST` to `URL`:
 spectre run ... --destination=forecasts.example=http://127.0.0.1:50053
 ```
 
-A `HOST` that starts with `*.` matches its subdomains, such as
-`--destination="*.example=http://127.0.0.1:50053"`. An exact host wins over a
-wildcard, and a longer wildcard over a shorter one.
+A `HOST` may be a glob, such as `--destination="*.example=http://127.0.0.1:50053"`,
+where `*` also matches dots. An exact host wins over a glob, and a longer glob
+over a shorter one.
 
 Scripts declare dependency endpoints with `egress.match<Type>("http", pattern)`.
 Types come from `--schema-dir`; descriptors are only needed for protobuf traffic. A candidate call waits up to `--match-window` for an

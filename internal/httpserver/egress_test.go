@@ -81,12 +81,12 @@ func TestReplaysRawJSONWithoutDescriptors(t *testing.T) {
 	assert.False(t, strings.Contains(harness.Logs.String(), "Candidate quarantined"))
 }
 
-func TestReplaysWildcardDestination(t *testing.T) {
+func TestReplaysGlobDestination(t *testing.T) {
 	upstream := newUpstream(t, func(writer http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(writer, "reference")
 	})
 	harness := newHarness(t, upstream)
-	harness.Config.Destinations = map[string]string{"*.example": upstream}
+	harness.Config.Destinations = map[string]string{"weather.ex*": upstream, "*.example": "http://127.0.0.1:9"}
 	harness.Start(t)
 
 	reference := send(t, harness.Reference, dependencyHost, london)
@@ -291,11 +291,11 @@ func TestEgressRejectsUnsafeConfiguration(t *testing.T) {
 			},
 			message: `destination host "weather.example:80" must be a host name without a port`,
 		},
-		"DestinationInnerWildcard": {
+		"DestinationInvalidGlob": {
 			update: func(config *httpserver.EgressConfig, _ *protocol.Config) {
-				config.Destinations = map[string]string{"weather.*.example": "http://127.0.0.1:9"}
+				config.Destinations = map[string]string{"weather.{example": "http://127.0.0.1:9"}
 			},
-			message: `destination host "weather.*.example" may only start with a *. wildcard`,
+			message: `destination host "weather.{example" is not a valid glob`,
 		},
 		"DestinationLoop": {
 			update: func(config *httpserver.EgressConfig, _ *protocol.Config) {
