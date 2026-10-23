@@ -17,7 +17,7 @@ type EgressConfig struct {
 	HealthListen string `default:"127.0.0.1:50062" help:"Health listener address for /livez and /readyz: host:port, or unix:<path|@abstract>."`
 	// Destinations maps each request host to its upstream URL, using the backend
 	// URL forms that ingress accepts.
-	Destinations map[string]string `name:"destination" placeholder:"HOST=URL" help:"Upstream URL for requests to HOST: http, https, h2c, http+unix:<socket>, or h2c+unix:<socket>. Repeat for each dependency."`
+	Destinations map[string]string `name:"destination" placeholder:"HOST=URL" help:"Upstream URL for requests to HOST: http, https, h2c, http+unix:<socket>, or h2c+unix:<socket>. HOST may be a glob, such as *.example. Repeat for each dependency."`
 	// RecordingBufferBytes limits recorded reference responses across all requests.
 	RecordingBufferBytes int `default:"33554432" help:"Maximum reference response bytes recorded across all requests."`
 	// Config holds the configuration shared with ingress.
