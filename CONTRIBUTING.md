@@ -69,8 +69,8 @@ spectre run ... --destination=forecasts.example=http://127.0.0.1:50053
 ```
 
 A `HOST` may be a glob, such as `--destination="*.example=http://127.0.0.1:50053"`,
-where `*` also matches dots. An exact host wins over a glob, and a longer glob
-over a shorter one.
+where `*` also matches dots. A host takes the first destination, in pattern order,
+that matches it.
 
 Scripts declare dependency endpoints with `egress.match<Type>("http", pattern)`.
 Types come from `--schema-dir`; descriptors are only needed for protobuf traffic. A candidate call waits up to `--match-window` for an

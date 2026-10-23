@@ -86,7 +86,7 @@ func TestReplaysGlobDestination(t *testing.T) {
 		_, _ = io.WriteString(writer, "reference")
 	})
 	harness := newHarness(t, upstream)
-	harness.Config.Destinations = map[string]string{"weather.ex*": upstream, "*.example": "http://127.0.0.1:9"}
+	harness.Config.Destinations = map[string]string{"*.example": upstream, "weather.*": "http://127.0.0.1:9"}
 	harness.Start(t)
 
 	reference := send(t, harness.Reference, dependencyHost, london)

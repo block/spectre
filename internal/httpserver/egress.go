@@ -3,6 +3,7 @@ package httpserver
 import (
 	"context"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/alecthomas/errors"
 	. "github.com/alecthomas/types/optional"
+	"github.com/gobwas/glob"
 
 	"github.com/block/spectre/internal/boundary"
 	"github.com/block/spectre/internal/descriptors"
@@ -32,7 +34,7 @@ type Egress struct {
 	transport        http.RoundTripper
 	engine           *protocol.Engine
 	routes           *route.Matcher
-	destinations     *destinations
+	destinations     []destination
 	listeners        []*netaddr.Endpoint
 	candidates       *proxy.Candidates
 	requests         chan struct{}
@@ -106,14 +108,22 @@ func NewEgress(
 	return egress, nil
 }
 
+// destination is the upstream of the request hosts its pattern matches.
+type destination struct {
+	pattern *glob.Pattern
+	proxy   *httputil.ReverseProxy
+}
+
+// egressDestinations returns the configured destinations in host pattern order.
 func egressDestinations(ctx context.Context, config EgressConfig, transport http.RoundTripper,
 	listeners []*netaddr.Endpoint,
-) (*destinations, error) {
-	destinations := newDestinations()
+) ([]destination, error) {
+	destinations := make([]destination, 0, len(config.Destinations))
 	seen := map[string]bool{}
-	for host, upstream := range config.Destinations {
+	for _, host := range slices.Sorted(maps.Keys(config.Destinations)) {
+		upstream := config.Destinations[host]
 		name := strings.ToLower(host)
-		if strings.Contains(name, ":") || (!strings.ContainsAny(name, "*?[{") && hostname(host) != name) {
+		if name == "" || strings.Contains(name, ":") {
 			return nil, errors.Errorf("destination host %q must be a host name without a port", host)
 		}
 		if seen[name] {
@@ -127,13 +137,15 @@ func egressDestinations(ctx context.Context, config EgressConfig, transport http
 		if targetsListener(endpoint, listeners) {
 			return nil, errors.Errorf("destination %q must not target an egress listener", host)
 		}
-		destination, err := NewReverseProxy(ctx, endpoint, transport, false)
+		pattern, err := glob.Compile(name)
+		if err != nil {
+			return nil, errors.Wrapf(err, "destination host %q is not a valid glob", host)
+		}
+		proxy, err := NewReverseProxy(ctx, endpoint, transport, false)
 		if err != nil {
 			return nil, errors.Wrapf(err, "proxy destination %q", host)
 		}
-		if err := destinations.add(name, destination); err != nil {
-			return nil, err
-		}
+		destinations = append(destinations, destination{pattern: pattern, proxy: proxy})
 	}
 	return destinations, nil
 }
@@ -222,9 +234,16 @@ func (e *Egress) serveReference(writer http.ResponseWriter, request *http.Reques
 	e.referencePoint.respond(writer, outbound, decision, upstream, noDecode)
 }
 
-// destination returns the configured destination for a host, ignoring any port.
-func (e *Egress) destination(host string) (destination *httputil.ReverseProxy, configured bool) {
-	return e.destinations.lookup(hostname(host))
+// destination returns the upstream of the first destination that matches a host,
+// ignoring any port.
+func (e *Egress) destination(host string) (proxy *httputil.ReverseProxy, configured bool) {
+	name := hostname(host)
+	for _, destination := range e.destinations {
+		if destination.pattern.Match(name) {
+			return destination.proxy, true
+		}
+	}
+	return nil, false
 }
 
 // upstream returns the destination for a request's host. Other hosts are reached
