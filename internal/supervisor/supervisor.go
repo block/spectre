@@ -187,6 +187,7 @@ func (s *Supervisor) cleanupLimits(ctx context.Context) {
 // startAll brings up the proxies and services in dependency order, waiting for
 // each service to accept connections before the next.
 func (s *Supervisor) startAll(ctx context.Context) error {
+	started := time.Now()
 	if err := s.startEgress(ctx); err != nil {
 		return err
 	}
@@ -207,12 +208,12 @@ func (s *Supervisor) startAll(ctx context.Context) error {
 	if err := s.startIngress(ctx); err != nil {
 		return err
 	}
-	return s.startStatus(ctx)
+	return s.startStatus(ctx, started)
 }
 
-// startStatus serves the SPECTRE status endpoint, aggregating both proxies'
-// quarantine state. It is best-effort: its failure never stops the mirror.
-func (s *Supervisor) startStatus(ctx context.Context) error {
+// startStatus serves both proxies' quarantine state on the SPECTRE status
+// endpoint. It is best-effort: its failure never stops the mirror.
+func (s *Supervisor) startStatus(ctx context.Context, started time.Time) error {
 	if s.config.StatusListen == "" {
 		return nil
 	}
@@ -220,7 +221,7 @@ func (s *Supervisor) startStatus(ctx context.Context) error {
 	if err != nil {
 		return errors.Wrap(err, "listen for status")
 	}
-	handler := status.NewHandler(
+	handler := status.NewHandler(started,
 		status.Source{Name: "ingress", Reporter: s.ingress.Candidates()},
 		status.Source{Name: "egress", Reporter: s.egress.Candidates()},
 	)

@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"time"
 
+	. "github.com/alecthomas/types/optional"
+
 	"github.com/block/spectre/internal/proxy"
 )
 
@@ -28,6 +30,9 @@ type Source struct {
 type Report struct {
 	// Quarantined is true when any source has quarantined the candidate.
 	Quarantined bool `json:"quarantined"`
+	// HealthyForSeconds is how long the candidate has been healthy, measured on
+	// the mirror's clock. It is null while quarantined.
+	HealthyForSeconds Option[int64] `json:"healthy_for_seconds"`
 	// Sources is the per-source quarantine state.
 	Sources []SourceStatus `json:"sources"`
 }
@@ -43,12 +48,14 @@ type SourceStatus struct {
 
 // Handler serves the aggregated SPECTRE status at Path as JSON.
 type Handler struct {
+	started time.Time
 	sources []Source
 }
 
-// NewHandler serves the aggregated quarantine state of sources at Path.
-func NewHandler(sources ...Source) *Handler {
-	return &Handler{sources: sources}
+// NewHandler serves the quarantine state of sources at Path. Quarantine lasts
+// for the process, so a healthy candidate has been healthy since started.
+func NewHandler(started time.Time, sources ...Source) *Handler {
+	return &Handler{started: started, sources: sources}
 }
 
 // ServeHTTP serves the status report at Path and 404s every other path.
@@ -83,6 +90,9 @@ func (h *Handler) report() Report {
 			report.Quarantined = true
 		}
 		report.Sources = append(report.Sources, status)
+	}
+	if !report.Quarantined {
+		report.HealthyForSeconds = Some(int64(time.Since(h.started) / time.Second))
 	}
 	return report
 }

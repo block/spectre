@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/alecthomas/errors"
+	. "github.com/alecthomas/types/optional"
 )
 
 // Platform inspects a service's SPECTRE mirror on a specific deploy platform:
@@ -50,6 +51,9 @@ type MirrorState struct {
 type QuarantineReport struct {
 	// Quarantined is true when any proxy has quarantined the candidate.
 	Quarantined bool `json:"quarantined"`
+	// HealthyForSeconds is how long the candidate has been healthy, measured by
+	// the mirror. It is None while quarantined or when the mirror omits it.
+	HealthyForSeconds Option[int64] `json:"healthy_for_seconds"`
 	// Sources is the per-proxy quarantine state.
 	Sources []SourceStatus `json:"sources"`
 }
