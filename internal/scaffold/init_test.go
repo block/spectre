@@ -20,7 +20,7 @@ func TestInitErrors(t *testing.T) {
 		error  string
 	}{
 		{name: "NoRepo", config: scaffold.Config{Dir: t.TempDir(), Template: "app"}, error: "no template repository; pass --template-repo, or build spectre with spectre.WithTemplateRepo"},
-		{name: "AlreadySetUp", config: scaffold.Config{Dir: setUp, Template: "app", Repo: t.TempDir()}, error: filepath.Join(setUp, "spectre") + " already exists"},
+		{name: "AlreadySetUp", config: scaffold.Config{Dir: setUp, Template: "app", Repo: t.TempDir()}, error: filepath.Join(setUp, "spectre") + " already exists; pass --force to overwrite it"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -47,4 +47,22 @@ func TestInitStopsWhenTemplateScriptThrows(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, 1, len(entries))
 	assert.Equal(t, "file.txt", entries[0].Name())
+}
+
+func TestInitForceOverwritesTemplateFiles(t *testing.T) {
+	repo := t.TempDir()
+	assert.NoError(t, os.CopyFS(filepath.Join(repo, "app"), fstest.MapFS{"file.txt": {Data: []byte("{{ .name }}")}}))
+	dir := t.TempDir()
+	assert.NoError(t, os.CopyFS(filepath.Join(dir, "spectre"), fstest.MapFS{
+		"file.txt": {Data: []byte("old")},
+		"own.txt":  {Data: []byte("own")},
+	}))
+
+	assert.NoError(t, scaffold.Init(t.Context(), scaffold.Config{Dir: dir, Template: "app", Repo: repo, Force: true, Vars: map[string]string{"name": "svc"}}))
+
+	for name, expected := range map[string]string{"file.txt": "svc", "own.txt": "own"} {
+		content, err := os.ReadFile(filepath.Join(dir, "spectre", name))
+		assert.NoError(t, err)
+		assert.Equal(t, expected, string(content))
+	}
 }

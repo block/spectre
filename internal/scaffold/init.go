@@ -28,19 +28,21 @@ type Config struct {
 	Template string `required:"" placeholder:"NAME" help:"Template to render, a directory at the root of the template repository."`
 	// Repo holds the templates, one directory each.
 	Repo string `name:"template-repo" default:"${template_repo}" placeholder:"SOURCE" help:"Template repository: a local directory, or a git source such as git+ssh://github.com/org/repo."`
+	// Force renders over an existing spectre directory.
+	Force bool `short:"f" help:"Render over an existing spectre directory, overwriting the files the template writes."`
 	// Vars are the template's variables.
 	Vars map[string]string `name:"var" mapsep:"none" placeholder:"NAME=VALUE" help:"Set a template variable. Write a list comma-separated. spectre_version defaults to the SPECTRE version of this binary."`
 }
 
 // Init renders the template into the spectre directory of config.Dir, which
-// must not exist yet.
+// must not exist yet unless config.Force is set.
 func Init(ctx context.Context, config Config) error {
 	if config.Repo == "" {
 		return errors.New("no template repository; pass --template-repo, or build spectre with spectre.WithTemplateRepo")
 	}
 	target := filepath.Join(config.Dir, "spectre")
-	if _, err := os.Stat(target); err == nil {
-		return errors.Errorf("%s already exists", target)
+	if _, err := os.Stat(target); err == nil && !config.Force {
+		return errors.Errorf("%s already exists; pass --force to overwrite it", target)
 	}
 	files, cleanup, err := scaffolder.Open(ctx, config.Repo+"//"+config.Template)
 	if err != nil {
