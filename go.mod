@@ -17,6 +17,7 @@ require (
 	github.com/pelletier/go-toml v1.9.5
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
 	go.jetify.com/typeid v1.3.0
+	golang.org/x/mod v0.41.0
 	golang.org/x/net v0.59.0
 	golang.org/x/sync v0.23.0
 	golang.org/x/sys v0.49.0

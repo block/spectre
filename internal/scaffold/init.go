@@ -2,18 +2,22 @@
 // template repository into the spectre directory of its checkout with scaffolder.
 //
 // A template's template.js runs before anything is written, so it can check the
-// variables and throw to stop the run.
+// variables and throw to stop the run. The spectre_version variable defaults to
+// the git tag or commit of the SPECTRE this binary is built from.
 package scaffold
 
 import (
 	"context"
+	"maps"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 
 	"github.com/alecthomas/errors"
 	"github.com/block/scaffolder"
 	"github.com/block/scaffolder/extensions/javascript"
+	"golang.org/x/mod/module"
 )
 
 // Config selects the template init renders and its variables.
@@ -25,7 +29,7 @@ type Config struct {
 	// Repo holds the templates, one directory each.
 	Repo string `name:"template-repo" default:"${template_repo}" placeholder:"SOURCE" help:"Template repository: a local directory, or a git source such as git+ssh://github.com/org/repo."`
 	// Vars are the template's variables.
-	Vars map[string]string `name:"var" mapsep:"none" placeholder:"NAME=VALUE" help:"Set a template variable. Write a list comma-separated."`
+	Vars map[string]string `name:"var" mapsep:"none" placeholder:"NAME=VALUE" help:"Set a template variable. Write a list comma-separated. spectre_version defaults to the SPECTRE version of this binary."`
 }
 
 // Init renders the template into the spectre directory of config.Dir, which
@@ -43,12 +47,48 @@ func Init(ctx context.Context, config Config) error {
 		return errors.Wrapf(err, "fetch template %q", config.Template)
 	}
 	defer cleanup()
-	err = scaffolder.Scaffold(files, target, config.Vars,
+	vars := maps.Clone(config.Vars)
+	if vars == nil {
+		vars = map[string]string{}
+	}
+	if _, set := vars["spectre_version"]; !set {
+		if info, ok := debug.ReadBuildInfo(); ok {
+			if version, known := spectreVersion(info); known {
+				vars["spectre_version"] = version
+			}
+		}
+	}
+	err = scaffolder.Scaffold(files, target, vars,
 		scaffolder.WithContext(ctx),
 		scaffolder.Functions(scaffolder.FuncMap{"split": split}),
 		scaffolder.Extend(javascript.Extension("template.js")),
 	)
 	return errors.Wrapf(err, "render template %q", config.Template)
+}
+
+// spectreVersion returns the git tag or commit of the SPECTRE module in a build,
+// whether it is the main module or a dependency.
+func spectreVersion(info *debug.BuildInfo) (version string, ok bool) {
+	const path = "github.com/block/spectre"
+	modules := append([]*debug.Module{&info.Main}, info.Deps...)
+	for _, mod := range modules {
+		if mod.Path != path {
+			continue
+		}
+		if mod.Replace != nil {
+			mod = mod.Replace
+		}
+		version, _, _ = strings.Cut(mod.Version, "+")
+		if module.IsPseudoVersion(version) {
+			rev, err := module.PseudoVersionRev(version)
+			return rev, err == nil
+		}
+		if !strings.HasPrefix(version, "v") {
+			return "", false
+		}
+		return version, true
+	}
+	return "", false
 }
 
 // split returns the comma-separated items of a value, trimmed, without empty ones.
