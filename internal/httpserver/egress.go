@@ -115,6 +115,9 @@ func egressDestinations(ctx context.Context, config EgressConfig, transport http
 		if name == "" || name != strings.ToLower(host) {
 			return nil, errors.Errorf("destination host %q must be a host name without a port", host)
 		}
+		if strings.Contains(strings.TrimPrefix(name, "*."), "*") {
+			return nil, errors.Errorf("destination host %q may only start with a *. wildcard", host)
+		}
 		if _, duplicate := destinations[name]; duplicate {
 			return nil, errors.Errorf("destination host %q is configured more than once", host)
 		}
@@ -195,7 +198,7 @@ func (e *Egress) serveReference(writer http.ResponseWriter, request *http.Reques
 		outbound.Body = newTeeBody(request.Body, captured)
 	}
 	payload := func(ctx context.Context) (protocol.Message, error) {
-		if _, configured := e.destinations[hostname(snapshot.Host)]; !configured {
+		if _, configured := e.destination(snapshot.Host); !configured {
 			return protocol.Message{}, errors.Errorf("reference request to unconfigured host %q", snapshot.Host)
 		}
 		body, overflow, err := captured.wait(ctx)
@@ -218,10 +221,25 @@ func (e *Egress) serveReference(writer http.ResponseWriter, request *http.Reques
 	e.referencePoint.respond(writer, outbound, decision, upstream, noDecode)
 }
 
+// destination returns the configured destination for a host: an exact match, or
+// else the longest *. wildcard that matches it.
+func (e *Egress) destination(host string) (destination *httputil.ReverseProxy, configured bool) {
+	name := hostname(host)
+	if destination, configured = e.destinations[name]; configured {
+		return destination, true
+	}
+	for _, rest, found := strings.Cut(name, "."); found; _, rest, found = strings.Cut(rest, ".") {
+		if destination, configured = e.destinations["*."+rest]; configured {
+			return destination, true
+		}
+	}
+	return nil, false
+}
+
 // upstream returns the destination for a request's host. Other hosts are reached
 // over plaintext HTTP as received, unless they would loop back to egress.
 func (e *Egress) upstream(request *http.Request) Option[*httputil.ReverseProxy] {
-	if destination, configured := e.destinations[hostname(request.Host)]; configured {
+	if destination, configured := e.destination(request.Host); configured {
 		return Some(destination)
 	}
 	endpoint, err := netaddr.ParseBackend("http://" + request.Host)
@@ -251,7 +269,7 @@ func (e *Egress) serveCandidate(writer http.ResponseWriter, request *http.Reques
 	}
 	defer e.candidates.Finish(run)
 	payload := func(context.Context) (protocol.Message, error) {
-		if _, configured := e.destinations[hostname(request.Host)]; !configured {
+		if _, configured := e.destination(request.Host); !configured {
 			return protocol.Message{}, errors.Errorf("candidate request to unconfigured host %q", request.Host)
 		}
 		limit := e.config.ComparisonMaxBodyBytes

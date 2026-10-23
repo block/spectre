@@ -81,6 +81,22 @@ func TestReplaysRawJSONWithoutDescriptors(t *testing.T) {
 	assert.False(t, strings.Contains(harness.Logs.String(), "Candidate quarantined"))
 }
 
+func TestReplaysWildcardDestination(t *testing.T) {
+	upstream := newUpstream(t, func(writer http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(writer, "reference")
+	})
+	harness := newHarness(t, upstream)
+	harness.Config.Destinations = map[string]string{"*.example": upstream}
+	harness.Start(t)
+
+	reference := send(t, harness.Reference, dependencyHost, london)
+	candidate := send(t, harness.Candidate, dependencyHost, london)
+
+	assert.Equal(t, "reference", reference.Body)
+	assert.Equal(t, reference, candidate)
+	assert.False(t, strings.Contains(harness.Logs.String(), "Candidate quarantined"))
+}
+
 func TestCandidateWaitsForReference(t *testing.T) {
 	upstream := newUpstream(t, func(writer http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(writer, "reference")
@@ -274,6 +290,12 @@ func TestEgressRejectsUnsafeConfiguration(t *testing.T) {
 				config.Destinations = map[string]string{"weather.example:80": "http://127.0.0.1:9"}
 			},
 			message: `destination host "weather.example:80" must be a host name without a port`,
+		},
+		"DestinationInnerWildcard": {
+			update: func(config *httpserver.EgressConfig, _ *protocol.Config) {
+				config.Destinations = map[string]string{"weather.*.example": "http://127.0.0.1:9"}
+			},
+			message: `destination host "weather.*.example" may only start with a *. wildcard`,
 		},
 		"DestinationLoop": {
 			update: func(config *httpserver.EgressConfig, _ *protocol.Config) {

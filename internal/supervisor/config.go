@@ -30,7 +30,7 @@ type Config struct {
 	// SocketDir holds the unix sockets wiring the proxies to the services.
 	SocketDir string `default:"dist/sockets" help:"Directory for the unix sockets wiring the proxies to the services."`
 	// Destinations maps each request host to its upstream URL for egress.
-	Destinations map[string]string `name:"destination" placeholder:"HOST=URL" help:"Upstream URL for requests to HOST, passed to the egress proxy. Repeat for each dependency."`
+	Destinations map[string]string `name:"destination" placeholder:"HOST=URL" help:"Upstream URL for requests to HOST, passed to the egress proxy. HOST may start with *. to match its subdomains. Repeat for each dependency."`
 	// ScriptsDir holds the comparison scripts passed to both proxies.
 	ScriptsDir string `type:"existingdir" placeholder:"DIR" help:"Directory of comparison scripts passed to both proxies."`
 	// StateFile is the migration state that decides which routes ingress mirrors.
