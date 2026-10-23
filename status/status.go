@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/alecthomas/errors"
 
@@ -68,8 +69,18 @@ func printStatus(ctx context.Context, palette terminal.Palette, platform Platfor
 		fmt.Printf("    candidate: %s\n", palette.Red("quarantined"))
 		printQuarantineReasons(palette, report)
 	default:
-		fmt.Printf("    candidate: %s\n", palette.Green("healthy"))
+		fmt.Printf("    candidate: %s\n", palette.Green(healthyText(report)))
 	}
+}
+
+// healthyText describes a healthy candidate, with how long it has been healthy
+// when the mirror reports it.
+func healthyText(report QuarantineReport) string {
+	seconds, ok := report.HealthyForSeconds.Get()
+	if !ok {
+		return "healthy"
+	}
+	return fmt.Sprintf("healthy for %s", time.Duration(seconds)*time.Second)
 }
 
 // printQuarantineReasons prints each quarantined proxy's reason and start time.

@@ -23,7 +23,7 @@ func (f fakeReporter) QuarantineStatus() proxy.QuarantineStatus { return f.quara
 
 func TestStatusReport(t *testing.T) {
 	since := time.Date(2026, 10, 19, 12, 0, 0, 0, time.UTC)
-	handler := status.NewHandler(
+	handler := status.NewHandler(time.Now(),
 		status.Source{Name: "ingress", Reporter: fakeReporter{}},
 		status.Source{Name: "egress", Reporter: fakeReporter{proxy.QuarantineStatus{
 			Reason: errors.New("GetUnit is not declared"),
@@ -40,6 +40,7 @@ func TestStatusReport(t *testing.T) {
 	var report status.Report
 	assert.NoError(t, json.Unmarshal(response.Body.Bytes(), &report))
 	assert.True(t, report.Quarantined)
+	assert.False(t, report.HealthyForSeconds.Ok())
 	assert.Equal(t, 2, len(report.Sources))
 
 	ingress := report.Sources[0]
@@ -56,7 +57,7 @@ func TestStatusReport(t *testing.T) {
 }
 
 func TestStatusHealthy(t *testing.T) {
-	handler := status.NewHandler(status.Source{Name: "ingress", Reporter: fakeReporter{}})
+	handler := status.NewHandler(time.Now().Add(-90*time.Minute), status.Source{Name: "ingress", Reporter: fakeReporter{}})
 
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, status.Path, nil))
@@ -64,11 +65,14 @@ func TestStatusHealthy(t *testing.T) {
 	var report status.Report
 	assert.NoError(t, json.Unmarshal(response.Body.Bytes(), &report))
 	assert.False(t, report.Quarantined)
+	healthyFor, ok := report.HealthyForSeconds.Get()
+	assert.True(t, ok)
+	assert.True(t, healthyFor >= 90*60, "healthy for %ds", healthyFor)
 	assert.Equal(t, "", report.Sources[0].Since)
 }
 
 func TestStatusRequests(t *testing.T) {
-	handler := status.NewHandler()
+	handler := status.NewHandler(time.Now())
 	for _, test := range []struct {
 		name   string
 		method string

@@ -2,10 +2,12 @@ package status
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/alecthomas/assert/v2"
 	"github.com/alecthomas/errors"
+	. "github.com/alecthomas/types/optional"
 
 	"github.com/block/spectre/internal/terminal"
 )
@@ -57,6 +59,17 @@ func TestCommitText(t *testing.T) {
 			assert.Equal(t, test.want, commitText(context.Background(), terminal.NewPalette(false), test.platform, test.mirror))
 		})
 	}
+}
+
+func TestHealthyText(t *testing.T) {
+	assert.Equal(t, "healthy for 3h12m5s", healthyText(QuarantineReport{HealthyForSeconds: Some(int64(3*3600 + 12*60 + 5))}))
+	assert.Equal(t, "healthy", healthyText(QuarantineReport{HealthyForSeconds: None[int64]()}))
+}
+
+func TestQuarantineReportWithoutHealthyFor(t *testing.T) {
+	var report QuarantineReport
+	assert.NoError(t, json.Unmarshal([]byte(`{"quarantined":false,"sources":[]}`), &report))
+	assert.False(t, report.HealthyForSeconds.Ok())
 }
 
 // commitPlatform is a stubPlatform that resolves every image to commit, or fails with err.
