@@ -61,7 +61,7 @@
 - Do not modify `README.md` unless the user explicitly requests it.
 - Put developer workflow documentation, such as building, testing, and running locally, in `CONTRIBUTING.md`.
 - Put design documents, implementation plans, and other documents that fit neither `README.md` nor `CONTRIBUTING.md` in `docs/`.
-- Write each design decision as an ADR that follows `docs/adr-template.md`:
+- Open a new ADR only when the user explicitly asks for one. Write ADRs to follow `docs/adr-template.md`:
   - Name it `docs/NNN-<slug>.md`, using the next unused three-digit number.
   - Never change or reuse a number, even when an ADR is renamed or superseded.
   - Update its status as the decision moves from proposed to implemented.
