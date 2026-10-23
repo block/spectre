@@ -27,7 +27,9 @@ require (
 	github.com/Microsoft/go-winio v0.6.2 // indirect
 	github.com/alecthomas/repr v0.5.2 // indirect
 	github.com/block/getit v0.1.0 // indirect
+	github.com/dlclark/regexp2 v1.11.4 // indirect
 	github.com/dlclark/regexp2/v2 v2.8.0 // indirect
+	github.com/dop251/goja v0.0.0-20260311135729-065cd970411c // indirect
 	github.com/go-sourcemap/sourcemap v2.1.4+incompatible // indirect
 	github.com/gofrs/uuid/v5 v5.2.0 // indirect
 	github.com/google/pprof v0.0.0-20230207041349-798e818bf904 // indirect

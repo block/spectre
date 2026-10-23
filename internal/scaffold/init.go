@@ -1,5 +1,8 @@
 // Package scaffold sets a service up for SPECTRE by rendering a template from a
 // template repository into the spectre directory of its checkout with scaffolder.
+//
+// A template's template.js runs before anything is written, so it can check the
+// variables and throw to stop the run.
 package scaffold
 
 import (
@@ -10,6 +13,7 @@ import (
 
 	"github.com/alecthomas/errors"
 	"github.com/block/scaffolder"
+	"github.com/block/scaffolder/extensions/javascript"
 )
 
 // Config selects the template init renders and its variables.
@@ -42,6 +46,7 @@ func Init(ctx context.Context, config Config) error {
 	err = scaffolder.Scaffold(files, target, config.Vars,
 		scaffolder.WithContext(ctx),
 		scaffolder.Functions(scaffolder.FuncMap{"split": split}),
+		scaffolder.Extend(javascript.Extension("template.js")),
 	)
 	return errors.Wrapf(err, "render template %q", config.Template)
 }
