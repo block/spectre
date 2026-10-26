@@ -279,7 +279,20 @@ func TestCompareAppliesNormalisers(t *testing.T) {
 			typeName:  None[schema.TypeRef](),
 			reference: `{"stable":"same","ignored":"first"}`,
 			candidate: `{"stable":"same","ignored":"second"}`,
-			expected:  []string{"$.ignored"},
+			// Untyped keys are payload data, so no path quotes them.
+			expected: []string{"$[*]"},
+		},
+		"MapKeysAreNotReported": {
+			typeName:  response,
+			reference: `{"stable":"same","labels":{"alice@example.com":"a"}}`,
+			candidate: `{"stable":"same","labels":{"alice@example.com":"b","bob@example.com":"c"}}`,
+			expected:  []string{"$.labels[*]"},
+		},
+		"DeclaredFieldsUnderListsAreReported": {
+			typeName:  response,
+			reference: `{"stable":"same","users":[{"name":"alice"}]}`,
+			candidate: `{"stable":"same","users":[{"name":"bob"}]}`,
+			expected:  []string{"$.users[0].name"},
 		},
 		"ExplicitDefaultsRemainPresent": {
 			typeName:  Some[schema.TypeRef]("raw.Response"),

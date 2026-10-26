@@ -48,10 +48,11 @@ func TestIngressComparesResponses(t *testing.T) {
 			logged:      map[string]any{"outcome": "divergent", "differences": []any{"$.value"}},
 		},
 		"UntypedMessagesSkipNormalisers": {
-			reference:   protocol.Response{Decode: decoded("OK", message(None[schema.TypeRef](), "london", "first"))},
-			candidate:   protocol.Response{Decode: decoded("OK", message(None[schema.TypeRef](), "london", "second"))},
-			quarantined: []string{"response differences: $.trace"},
-			logged:      map[string]any{"outcome": "divergent", "differences": []any{"$.trace"}},
+			reference: protocol.Response{Decode: decoded("OK", message(None[schema.TypeRef](), "london", "first"))},
+			candidate: protocol.Response{Decode: decoded("OK", message(None[schema.TypeRef](), "london", "second"))},
+			// Untyped keys are payload data, so no path quotes them.
+			quarantined: []string{"response differences: $[*]"},
+			logged:      map[string]any{"outcome": "divergent", "differences": []any{"$[*]"}},
 		},
 		"Status": {
 			reference:   protocol.Response{Decode: decoded("OK", message(responseType, "london", ""))},

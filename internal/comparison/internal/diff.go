@@ -4,21 +4,46 @@ import (
 	"reflect"
 	"slices"
 	"sort"
+
+	. "github.com/alecthomas/types/optional"
+
+	"github.com/block/spectre/internal/schema"
 )
 
 // maxDifferences bounds both result size and work after divergence is established.
 const maxDifferences = 100
 
-// diffValues structurally compares two payloads after normalisation.
-func diffValues(reference, candidate any, path documentPath, differences []string) []string {
-	if len(differences) >= maxDifferences || reflect.DeepEqual(reference, candidate) {
-		return differences
+// differ collects the paths at which two payloads differ. Paths leave the mirror,
+// so they name only the object keys that the schema declares as fields.
+type differ struct {
+	// loaded and root are absent for untyped payloads, whose keys are all payload data.
+	loaded      Option[*schema.Schema]
+	root        Option[schema.Value]
+	differences []string
+}
+
+func newDiffer(loaded Option[*schema.Schema], root Option[schema.Value]) *differ {
+	return &differ{loaded: loaded, root: root, differences: []string{}}
+}
+
+// compare returns the paths at which two payloads differ, starting at path.
+func (d *differ) compare(reference, candidate any, path documentPath) []string {
+	d.diff(reference, candidate, path, d.root)
+	return d.differences
+}
+
+// diff structurally compares two payloads after normalisation. value is the
+// declared type at path, or None where the payload departs from the schema.
+func (d *differ) diff(reference, candidate any, path documentPath, value Option[schema.Value]) {
+	if len(d.differences) >= maxDifferences || reflect.DeepEqual(reference, candidate) {
+		return
 	}
 	switch referenceValue := reference.(type) {
 	case map[string]any:
 		candidateValue, ok := candidate.(map[string]any)
 		if !ok {
-			return appendDifference(differences, path.String())
+			d.add(path.String())
+			return
 		}
 		keys := map[string]struct{}{}
 		for key := range referenceValue {
@@ -35,40 +60,65 @@ func diffValues(reference, candidate any, path documentPath, differences []strin
 		for _, key := range ordered {
 			referenceItem, referencePresent := referenceValue[key]
 			candidateItem, candidatePresent := candidateValue[key]
-			itemPath := path.appendField(key)
+			itemPath, itemValue := d.member(path, value, key)
 			if referencePresent != candidatePresent {
-				differences = appendDifference(differences, itemPath.String())
+				d.add(itemPath.String())
 				continue
 			}
-			differences = diffValues(referenceItem, candidateItem, itemPath, differences)
+			d.diff(referenceItem, candidateItem, itemPath, itemValue)
 		}
-		return differences
 	case []any:
 		candidateValue, ok := candidate.([]any)
 		if !ok {
-			return appendDifference(differences, path.String())
+			d.add(path.String())
+			return
+		}
+		element := None[schema.Value]()
+		if declared, typed := value.Get(); typed && declared.Kind == schema.KindList {
+			element = derefValue(declared.Element)
 		}
 		length := max(len(referenceValue), len(candidateValue))
 		for index := range length {
 			itemPath := path.appendIndex(index)
 			if index >= len(referenceValue) || index >= len(candidateValue) {
-				differences = appendDifference(differences, itemPath.String())
+				d.add(itemPath.String())
 				continue
 			}
-			differences = diffValues(referenceValue[index], candidateValue[index], itemPath, differences)
+			d.diff(referenceValue[index], candidateValue[index], itemPath, element)
 		}
-		return differences
 	default:
-		return appendDifference(differences, path.String())
+		d.add(path.String())
 	}
 }
 
-func appendDifference(differences []string, path string) []string {
-	if len(differences) >= maxDifferences {
-		return differences
+// member returns the path and declared type of an object's key. Only a declared
+// field is named; other keys are payload data, so the path holds a wildcard.
+func (d *differ) member(path documentPath, value Option[schema.Value], key string) (documentPath, Option[schema.Value]) {
+	declared, typed := value.Get()
+	loaded, hasSchema := d.loaded.Get()
+	switch {
+	case typed && hasSchema && declared.Kind == schema.KindObject:
+		if object, err := loaded.Type(declared.Type); err == nil {
+			if field, found := object.Field(key); found {
+				return path.appendField(key), Some(field.Value)
+			}
+		}
+	case typed && declared.Kind == schema.KindMap:
+		return path.appendAnyKey(), derefValue(declared.Element)
 	}
-	if slices.Contains(differences, path) {
-		return differences
+	return path.appendAnyKey(), None[schema.Value]()
+}
+
+func (d *differ) add(path string) {
+	if len(d.differences) >= maxDifferences || slices.Contains(d.differences, path) {
+		return
 	}
-	return append(differences, path)
+	d.differences = append(d.differences, path)
+}
+
+func derefValue(value Option[*schema.Value]) Option[schema.Value] {
+	if pointer, ok := value.Get(); ok && pointer != nil {
+		return Some(*pointer)
+	}
+	return None[schema.Value]()
 }
