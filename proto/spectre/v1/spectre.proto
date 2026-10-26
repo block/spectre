@@ -1,0 +1,105 @@
+syntax = "proto3";
+
+package spectre.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/block/spectre/spectrepb;spectrepb";
+
+// SpectreService collects the quarantines of running mirrors and answers
+// questions about them for people and agents.
+service SpectreService {
+  // Quarantine records that a mirror quarantined its candidate. A mirror sends
+  // each quarantine once, retrying until it succeeds, so repeats are ignored.
+  rpc Quarantine(QuarantineRequest) returns (QuarantineResponse);
+  // ListDivergences returns the latest quarantine of each mirror direction.
+  rpc ListDivergences(ListDivergencesRequest) returns (ListDivergencesResponse);
+  // ClearDivergences removes the divergences of one service environment, once
+  // someone has dealt with them.
+  rpc ClearDivergences(ClearDivergencesRequest) returns (ClearDivergencesResponse);
+}
+
+// Direction names the proxy that carries traffic.
+enum Direction {
+  DIRECTION_UNSPECIFIED = 0;
+  // Requests to the proxied service.
+  DIRECTION_INGRESS = 1;
+  // Requests from the service to a dependency.
+  DIRECTION_EGRESS = 2;
+}
+
+message QuarantineRequest {
+  Divergence divergence = 1;
+}
+
+message QuarantineResponse {}
+
+// ListDivergencesRequest filters divergences. An unset filter matches every value.
+message ListDivergencesRequest {
+  optional string service = 1;
+  optional string environment = 2;
+  optional string revision = 3;
+  // Node matches only divergences on routes of that migration state node.
+  optional string node = 4;
+}
+
+message ListDivergencesResponse {
+  repeated Divergence divergences = 1;
+}
+
+// ClearDivergencesRequest names the service environment whose divergences to remove.
+message ClearDivergencesRequest {
+  string service = 1;
+  string environment = 2;
+}
+
+message ClearDivergencesResponse {}
+
+// Quarantine is why a proxy quarantined the candidate. It never carries
+// payload values.
+message Quarantine {
+  // Kind is why the proxy quarantined the candidate.
+  enum Kind {
+    KIND_UNSPECIFIED = 0;
+    // The candidate's responses differ from the reference's.
+    KIND_DIVERGENT = 1;
+    // The mirror could not compare or replay traffic.
+    KIND_UNABLE = 2;
+    // The candidate made a dependency request the reference did not.
+    KIND_UNMATCHED = 3;
+    // An ingress route is in no node of the migration state.
+    KIND_UNLISTED = 4;
+    // Candidate work exceeded a concurrency or buffer limit.
+    KIND_CAPACITY = 5;
+    // The mirror could not pair candidate and reference traffic.
+    KIND_PAIRING = 6;
+  }
+
+  google.protobuf.Timestamp since = 1;
+  Kind kind = 2;
+  // Traffic is absent when no single request caused the quarantine.
+  Traffic traffic = 3;
+  // Node is the migration state node that owns an ingress route.
+  optional string node = 4;
+  repeated string differences = 5;
+  string detail = 6;
+}
+
+// Traffic identifies the request that caused a quarantine.
+message Traffic {
+  Direction direction = 1;
+  // Protocol is open-ended, because custom binaries may add protocols.
+  string protocol = 2;
+  string route = 3;
+}
+
+// Divergence is a quarantine of the mirror of one service environment.
+message Divergence {
+  string service = 1;
+  string environment = 2;
+  // Revision is the commit of the candidate the mirror runs.
+  string revision = 3;
+  // Direction is the proxy that quarantined the candidate.
+  Direction direction = 4;
+  Quarantine quarantine = 5;
+}

@@ -1,6 +1,6 @@
 # Contributing
 
-The `spectre` binary supervises the whole comparison. `spectre run` starts a
+The `spectre` binary supervises the whole comparison. `spectre supervise` starts a
 candidate and a reference service behind two embedded proxies. The ingress proxy
 mirrors HTTP requests to both services and returns the reference response without
 waiting for the candidate. The egress proxy sits between the services and their
@@ -32,7 +32,7 @@ passes through unchanged. A JSON object line gains a leading
 written; any other line is prefixed with `candidate: ` or `reference: `. SPECTRE's own
 lines carry `spectre.subsystem` set to `supervisor`, `ingress` or `egress`.
 
-`spectre run` accepts `--config=FILE` to load flag values from a TOML file. Keys are
+`spectre supervise` accepts `--config=FILE` to load flag values from a TOML file. Keys are
 flag names without the leading dashes, and command-line flags take precedence:
 
 ```toml
@@ -49,23 +49,45 @@ Unknown keys are rejected.
 ## Container image
 
 Build the local Alpine-based image with `bit container`. It contains the single
-`spectre` binary, with the proxies embedded, and its entry point is `spectre`.
-Run `spectre run` with your candidate and reference commands to start the whole
-stack. The [demo](demo/README.md) wraps a complete supervised example around the
-sample service, including the cgroup split and egress sandbox.
+`spectre` binary, with the proxies embedded, and its entry point is `spectre`, so
+the same image runs any command. Run `spectre supervise` with your candidate and
+reference commands to start the whole stack, or `spectre serve` to run the
+SPECTRE server. Both listen on localhost by default, so pass `--listen` with
+`0.0.0.0` inside a container.
+
+Build the [demo](demo/README.md) image with `bit demo`. It wraps a complete
+supervised example around the sample service, including the cgroup split and
+egress sandbox.
 
 Releases are published for Linux AMD64 and ARM64 as `ghcr.io/block/spectre`
 and `docker.io/blockossreleases/spectre`.
 
+## SPECTRE server
+
+`spectre serve` collects the quarantines that mirrors report. It listens on
+`127.0.0.1:50070` by default and keeps them in memory, so a restart loses them.
+
+Every mirror reports to a server, so `spectre supervise` requires its URL,
+`--server-url`, and the mirror's identity, `--service`, `--environment`, and
+`--revision`. Set them in a deployment with the matching `SPECTRE_SERVER_URL`,
+`SPECTRE_SERVICE`, `SPECTRE_ENVIRONMENT`, and `SPECTRE_REVISION` variables.
+Every flag can be set from a `SPECTRE_` variable named after it.
+
+List what the server holds with `spectre divergences --server-url=URL`. Filter
+with `--service`, `--environment`, `--revision`, or `--node`, and print JSON
+with `--json`. A divergence stays listed until someone clears it with
+`spectre divergences clear --service=SERVICE --environment=ENVIRONMENT`, which
+removes both directions of that mirror.
+
 ## Egress proxy
 
 The embedded egress proxy forwards each reference service's dependency calls to
-the real upstream and records the responses. `spectre run` wires it to the
+the real upstream and records the responses. `spectre supervise` wires it to the
 services automatically; map each dependency with a `--destination=HOST=URL` flag,
 which sends requests for `HOST` to `URL`:
 
 ```sh
-spectre run ... --destination=forecasts.example=http://127.0.0.1:50053
+spectre supervise ... --destination=forecasts.example=http://127.0.0.1:50053
 ```
 
 A `HOST` may be a glob, such as `--destination="*.example=http://127.0.0.1:50053"`,
@@ -88,10 +110,16 @@ spectre-sample
 ```
 
 Run two samples as the candidate and reference behind the proxies with
-`spectre run`, which starts both services itself:
+`spectre supervise`, which starts both services itself. It reports to a SPECTRE
+server, so start one first:
 
 ```sh
-spectre run \
+spectre serve &
+spectre supervise \
+  --server-url=http://127.0.0.1:50070 \
+  --service=sample \
+  --environment=local \
+  --revision=local \
   --reference='spectre-sample --listen=$SPECTRE_LISTEN' \
   --candidate='spectre-sample --listen=$SPECTRE_LISTEN' \
   --scripts-dir=internal/sample/scripts \
@@ -205,7 +233,7 @@ ingress.ignore("http", "GET /_status");
 of migrated nodes and sends routes of pending nodes to the reference only. A route
 that no node lists also goes to the reference only, and quarantines the candidate
 unless scripts ignore it or it is gRPC reflection. Check the file with
-`spectre state validate` first; an invalid state stops `spectre run` at startup.
+`spectre state validate` first; an invalid state stops `spectre supervise` at startup.
 
 For protobuf traffic, generate declarations with
 `spectre gen proto --descriptors-dir=dist/descriptors --output=internal/sample/schema`.

@@ -99,6 +99,7 @@ func newParser(command *cli, options ...Option) (*kong.Kong, error) {
 	kongOptions := append([]kong.Option{
 		kong.Vars{"version": internal.Version, "template_repo": ""},
 		kong.Configuration(kongtoml.Loader),
+		kong.DefaultEnvars("SPECTRE"),
 		kong.Bind(catalog),
 	}, registered.kongOptions...)
 	parser, err := kong.New(command, kongOptions...)

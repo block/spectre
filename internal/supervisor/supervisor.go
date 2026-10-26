@@ -14,12 +14,12 @@ import (
 	. "github.com/alecthomas/types/optional"
 
 	"github.com/block/spectre/internal/boundary"
-	"github.com/block/spectre/internal/coordinator"
 	"github.com/block/spectre/internal/descriptors"
 	"github.com/block/spectre/internal/httpserver"
 	"github.com/block/spectre/internal/logger"
 	"github.com/block/spectre/internal/netaddr"
 	"github.com/block/spectre/internal/protocol"
+	"github.com/block/spectre/internal/server"
 	"github.com/block/spectre/internal/state"
 )
 
@@ -206,25 +206,19 @@ func (s *Supervisor) startAll(ctx context.Context) error {
 	if err := s.startIngress(ctx); err != nil {
 		return err
 	}
-	return s.startReporter(ctx)
+	s.startReporter(ctx)
+	return nil
 }
 
-// startReporter reports both proxies' quarantine state to the coordination
-// service, when one is configured. Reporting never stops the mirror.
-func (s *Supervisor) startReporter(ctx context.Context) error {
-	if !s.config.Coordinator.Enabled() {
-		return nil
-	}
-	reporter, err := coordinator.NewReporter(s.config.Coordinator,
-		coordinator.Source{Name: "ingress", Candidates: s.ingress.Candidates()},
-		coordinator.Source{Name: "egress", Candidates: s.egress.Candidates()},
+// startReporter reports both proxies' quarantines to the SPECTRE server.
+// Reporting never stops the mirror.
+func (s *Supervisor) startReporter(ctx context.Context) {
+	reporter := server.NewReporter(s.config.Server,
+		server.Source{Direction: boundary.Ingress, Quarantined: s.ingress.Candidates().Quarantined()},
+		server.Source{Direction: boundary.Egress, Quarantined: s.egress.Candidates().Quarantined()},
 	)
-	if err != nil {
-		return errors.Wrap(err, "configure coordination reporting")
-	}
 	go reporter.Run(logger.WithLogger(ctx, s.log))
-	s.log.InfoContext(ctx, "Reporting to the coordination service", "url", s.config.Coordinator.Client.URL)
-	return nil
+	s.log.InfoContext(ctx, "Reporting to the SPECTRE server", "url", s.config.Server.Client.URL)
 }
 
 // startEgress builds the egress proxy, opens its listeners, and serves it.

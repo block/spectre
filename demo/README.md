@@ -1,7 +1,7 @@
 # SPECTRE supervisor demo
 
-This demo packages the `spectre` binary into a single container image. The
-`spectre run` supervisor starts a reference and a candidate service behind both
+This demo packages the `spectre` binary into a single container image.
+`spectre supervise` starts a reference and a candidate service behind both
 SPECTRE proxies with one command: it runs the embedded ingress and egress
 proxies, wires the services to them over unix sockets, sandboxes the candidate's
 egress with seccomp, and splits host CPU and memory between the two services
@@ -61,7 +61,8 @@ Base your image on the same pattern as `demo/Dockerfile`:
 2. Add your reference and candidate binaries, your comparison scripts
    (`--scripts-dir`), TypeScript schema (`--schema-dir`), and protobuf
    descriptors (`--descriptors-dir`).
-3. Run the supervisor with your two commands.
+3. Run the supervisor with your two commands, pointed at a SPECTRE server
+   (`spectre serve`) that it reports quarantines to.
 
 The supervisor runs each service command through `/bin/sh -c` and exports two
 environment variables to it:
@@ -78,8 +79,12 @@ call to the upstream and replays the recorded response to the candidate.
 A minimal invocation:
 
 ```
-spectre run \
+spectre supervise \
   --listen=0.0.0.0:50050 \
+  --server-url=http://spectre-server:50070 \
+  --service=my-service \
+  --environment=production \
+  --revision=3f9c2a1 \
   --reference='my-service --listen=$SPECTRE_LISTEN --upstream=$SPECTRE_EGRESS' \
   --candidate='my-service-v2 --listen=$SPECTRE_LISTEN --upstream=$SPECTRE_EGRESS' \
   --destination=api.internal=https://api.internal \

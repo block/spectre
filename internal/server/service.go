@@ -1,4 +1,4 @@
-package coordinator
+package server
 
 import (
 	"context"
@@ -9,51 +9,58 @@ import (
 	"connectrpc.com/connect"
 	"github.com/alecthomas/errors"
 
-	pb "github.com/block/spectre/internal/coordinator/pb"
-	"github.com/block/spectre/internal/coordinator/pb/coordinatorpbconnect"
 	"github.com/block/spectre/internal/httpserver/middleware/health"
 	"github.com/block/spectre/internal/httpserver/middleware/logging"
 	"github.com/block/spectre/internal/logger"
 	"github.com/block/spectre/internal/netaddr"
+	pb "github.com/block/spectre/spectrepb"
+	"github.com/block/spectre/spectrepb/spectrepbconnect"
 )
 
-// Service serves the mirror and query APIs of the coordination service.
+// Service serves the SPECTRE service API.
 type Service struct {
 	store *store
 }
 
-// NewService returns a coordination service with no divergences.
+// NewService returns a SPECTRE server with no divergences.
 func NewService() *Service {
 	return &Service{store: newStore()}
 }
 
-// Handler serves both APIs.
+// Handler serves the API.
 func (s *Service) Handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.Handle(coordinatorpbconnect.NewMirrorServiceHandler(s))
-	mux.Handle(coordinatorpbconnect.NewQueryServiceHandler(s))
+	mux.Handle(spectrepbconnect.NewSpectreServiceHandler(s))
 	return mux
 }
 
-// Report records the reporting mirror's quarantines.
-func (s *Service) Report(_ context.Context, request *connect.Request[pb.ReportRequest]) (*connect.Response[pb.ReportResponse], error) {
-	if err := s.store.report(request.Msg.GetMirror()); err != nil {
+// Quarantine records that a mirror quarantined its candidate.
+func (s *Service) Quarantine(_ context.Context, request *connect.Request[pb.QuarantineRequest]) (*connect.Response[pb.QuarantineResponse], error) {
+	if err := s.store.record(request.Msg.GetDivergence()); err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
-	return connect.NewResponse(&pb.ReportResponse{}), nil
+	return connect.NewResponse(&pb.QuarantineResponse{}), nil
 }
 
-// ListDivergences returns quarantines, grouping identical ones across mirrors.
+// ListDivergences returns the latest quarantine of each mirror direction.
 func (s *Service) ListDivergences(_ context.Context, request *connect.Request[pb.ListDivergencesRequest]) (*connect.Response[pb.ListDivergencesResponse], error) {
 	return connect.NewResponse(&pb.ListDivergencesResponse{Divergences: s.store.listDivergences(request.Msg)}), nil
 }
 
-// Serve runs a coordination service until ctx is cancelled. Mesh mTLS secures
+// ClearDivergences removes the divergences of one service environment.
+func (s *Service) ClearDivergences(_ context.Context, request *connect.Request[pb.ClearDivergencesRequest]) (*connect.Response[pb.ClearDivergencesResponse], error) {
+	if err := s.store.clear(request.Msg.GetService(), request.Msg.GetEnvironment()); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	return connect.NewResponse(&pb.ClearDivergencesResponse{}), nil
+}
+
+// Serve runs a SPECTRE server until ctx is cancelled. Mesh mTLS secures
 // it, so it serves plaintext HTTP/1 and unencrypted HTTP/2.
 func Serve(ctx context.Context, config ServeConfig) error {
 	listener, err := netaddr.ParseListen(config.Listen).Listen(ctx)
 	if err != nil {
-		return errors.Wrap(err, "listen for coordination requests")
+		return errors.Wrap(err, "listen for SPECTRE server requests")
 	}
 	handler := health.New(logging.New(NewService().Handler(), logger.EventReceived))
 	protocols := new(http.Protocols)
@@ -72,9 +79,9 @@ func Serve(ctx context.Context, config ServeConfig) error {
 	})
 	defer stop()
 	handler.SetReady(true)
-	logger.FromContext(ctx).InfoContext(ctx, "Coordination service listening", "address", listener.Addr().String())
+	logger.FromContext(ctx).InfoContext(ctx, "SPECTRE server listening", "address", listener.Addr().String())
 	if err := server.Serve(listener); !errors.Is(err, http.ErrServerClosed) {
-		return errors.Wrap(err, "serve coordination requests")
+		return errors.Wrap(err, "serve SPECTRE server requests")
 	}
 	return nil
 }

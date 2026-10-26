@@ -11,8 +11,9 @@ COPY go.mod go.sum ./
 COPY internal/typescript ./internal/typescript
 RUN --mount=type=cache,target=/go/pkg/mod \
     go mod download
-COPY cmd ./cmd
-COPY internal ./internal
+# Dockerfile.dockerignore excludes everything the build does not need, so a new
+# package reaches the build without a change here.
+COPY . .
 
 ARG VERSION=demo
 RUN --mount=type=cache,target=/go/pkg/mod \

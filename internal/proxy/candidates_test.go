@@ -26,11 +26,17 @@ func TestCandidatesQuarantineStatus(t *testing.T) {
 	// Only the first reason is kept.
 	candidates.Quarantine(context.Background(), quarantine.Reason{Kind: quarantine.KindCapacity, Detail: "later"})
 
-	<-candidates.Quarantined()
+	delivered := <-candidates.Quarantined()
 	status, quarantined := candidates.QuarantineStatus().Get()
 	assert.True(t, quarantined)
 	assert.Equal(t, proxy.QuarantineStatus{Reason: gap}, status, assert.Exclude[time.Time]())
 	assert.False(t, status.Since.IsZero())
+	assert.Equal(t, status, delivered)
+	select {
+	case <-candidates.Quarantined():
+		t.Fatal("a later reason was delivered")
+	default:
+	}
 }
 
 func TestCandidatesConcurrencyLimitQuarantines(t *testing.T) {

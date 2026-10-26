@@ -16,9 +16,9 @@ sample-descriptors = exec {
   outputs = ["dist/descriptors/sample.pb"]
 }
 
-coordinator-proto = buf.generate {
-  dir = "internal/coordinator"
+spectre-proto = buf.generate {
   input = "proto"
+  template = "proto/buf.gen.yaml"
 }
 
 # Concurrent cold builds each compile the TypeScript compiler, so warm the cache once first.
@@ -28,7 +28,7 @@ typescript-compiler = go.build { package = "./internal/schema" }
 build-go[go-module] = go.build {
   package = "./..."
   dir = go-module
-  depends_on = [sample-proto, coordinator-proto, typescript-compiler]
+  depends_on = [sample-proto, spectre-proto, typescript-compiler]
 }
 
 # Keep protobuf declarations checked in, like the generated Go bindings.
@@ -88,10 +88,7 @@ protected fmt-tsk = exec {
   inputs = tsk-inputs + ["AGENTS.md"]
   outputs = ["AGENTS.md", ".tsk/.gitignore", ".agents/skills/tsk/SKILL.md", ".claude/skills/tsk/SKILL.md"]
 }
-lint-proto = exec.test {
-  command = "buf lint"
-  inputs = ["buf.yaml", "internal/sample/proto/*.proto", "internal/coordinator/proto/*.proto", "bin/buf"]
-}
+lint-proto = buf.lint {}
 lint-actions = exec {
   command = "actionlint"
   inputs = [".github/workflows/*.yml", "bin/actionlint"]
@@ -132,11 +129,17 @@ explicit sample-forecasts-bin = go.exe {
 explicit spectre-bin = go.exe {
   package = "./cmd/spectre"
   output = "dist/spectre"
-  depends_on = [coordinator-proto, typescript-compiler]
+  depends_on = [spectre-proto, typescript-compiler]
 }
 explicit local-image(version = "dev") = docker.image {
   tag = "spectre:#{version}"
   build_args = { VERSION = version }
+}
+# The demo image carries the sample descriptors, so generate them first.
+explicit demo-image = docker.image {
+  tag = "spectre-demo"
+  dockerfile = "demo/Dockerfile"
+  depends_on = [sample-descriptors]
 }
 explicit publish-release-image(registry : string, image-tag : string, version : string) = docker.image {
   tag = "#{registry}/spectre:#{image-tag}"
@@ -149,6 +152,9 @@ target sample = [sample-bin, sample-forecasts-bin]
 
 # Build the spectre container image.
 target container = [local-image]
+
+# Build the demo container image.
+target demo = [demo-image]
 
 # Publish the spectre container image.
 target publish-container(registry : string, image-tag : string, version : string) = [publish-release-image(registry = registry, image-tag = image-tag, version = version)]

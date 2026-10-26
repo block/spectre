@@ -297,9 +297,12 @@ ignore-package-globs = ['github.com/alecthomas/errors']
 allow-generated-construction = true
 
 [layout]
-# The module root is the public API for custom binaries. The TypeScript shim is a
+# The module root is the public API for custom binaries, and spectrepb is the
+# public API of the SPECTRE server. The TypeScript shim is a
 # separate module whose path mimics TypeScript's own.
 allow = [
   "github.com/block/spectre",
+  "github.com/block/spectre/spectrepb",
+  "github.com/block/spectre/spectrepb/spectrepbconnect",
   "github.com/microsoft/TypeScript/tsc/shim/typescript",
 ]

@@ -8,8 +8,8 @@ import (
 	"github.com/alecthomas/errors"
 	"github.com/alecthomas/kong"
 
-	"github.com/block/spectre/internal/coordinator"
 	"github.com/block/spectre/internal/descriptors"
+	"github.com/block/spectre/internal/server"
 )
 
 // Config contains the command-line configuration for the supervisor.
@@ -45,8 +45,8 @@ type Config struct {
 	// SeccompEgress blocks the candidate from opening IP sockets with seccomp,
 	// so it can only reach dependencies through the egress proxy.
 	SeccompEgress bool `name:"seccomp-egress" negatable:"" default:"true" help:"Block the candidate from opening IPv4 and IPv6 sockets with a seccomp filter, leaving only the egress proxy's unix socket."`
-	// Coordinator reports the mirror's state to the coordination service.
-	Coordinator coordinator.ReporterConfig `embed:""`
+	// Server reports the mirror's quarantines to the SPECTRE server.
+	Server server.ReporterConfig `embed:""`
 	// StartupTimeout bounds how long each process has to start listening.
 	StartupTimeout time.Duration `default:"30s" help:"Maximum time for each process to begin accepting connections."`
 	// ShutdownTimeout bounds graceful shutdown before processes are killed.
@@ -74,12 +74,24 @@ type LimitConfig struct {
 // NewConfig returns the default supervisor configuration.
 func NewConfig() Config {
 	// ApplyDefaults validates required fields, so seed them while applying tag defaults.
-	config := Config{Candidate: "placeholder", Reference: "placeholder"}
+	const placeholder = "placeholder"
+	config := Config{
+		Candidate: placeholder,
+		Reference: placeholder,
+		Server: server.ReporterConfig{
+			Client:      server.ClientConfig{URL: placeholder},
+			Service:     placeholder,
+			Environment: placeholder,
+			Revision:    placeholder,
+		},
+	}
 	if err := kong.ApplyDefaults(&config); err != nil {
 		panic(errors.Wrap(err, "apply supervisor defaults"))
 	}
 	config.Candidate = ""
 	config.Reference = ""
+	// Every reporter field is required, so none has a default to keep.
+	config.Server = server.ReporterConfig{}
 	return config
 }
 
@@ -94,9 +106,6 @@ func (c Config) Validate() error {
 	}
 	if c.MatchWindow <= 0 {
 		return errors.New("match window must be positive")
-	}
-	if err := c.Coordinator.Validate(); err != nil {
-		return errors.WithStack(err)
 	}
 	return errors.WithStack(c.Limits.Validate())
 }

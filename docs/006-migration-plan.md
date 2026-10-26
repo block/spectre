@@ -46,8 +46,6 @@ When custom binaries can add protocols, which ADR 004 lists as a planned extensi
 
 SPECTRE does not build the plan itself. An external agent writes it from the service's source code, using the node types and descriptions that `spectre state types` prints.
 
-`spectre/state.toml` sits beside `spectre/migration.toml`. The migration config describes where the mirror runs and changes rarely. The plan changes at every migration step and is often written by an LLM, so it is a separate file.
-
 Each node is a table under `nodes`, keyed by a kebab-case ID, so TOML itself rejects duplicate IDs. Each IO kind the node has is a table inside it, keyed by direction and then protocol, that holds the kind's settings. A kind with no settings is an empty table.
 
 This example assumes a binary that also has a Kafka protocol server:
@@ -165,30 +163,6 @@ egress[http] [nodes.<id>.egress.http]
 ```
 
 Each description says what the node type covers, followed by the table a node of that type uses and the settings it takes. `library` is described by the plan itself, since no protocol server owns it. It has no table, because a library is a node without IO kinds.
-
-### Status
-
-`spectre status` reports the plan each environment actually runs, not the one in the working tree. For each environment it already finds the commit the mirror runs. It then reads the plan file at that commit from the local git repository, fetching the commit from the repository's remote when it is missing, validates it, and prints a summary under the commit:
-
-```
-invoices
-  production-us-west-2: spectre mirror deployed
-    commit: 3f9c2a1
-    image: ...
-    state: 7 migrated, 12 pending (19 nodes); 3 ready to migrate
-    candidate: healthy
-```
-
-The plan path is relative to the repository root, because it is read from git rather than from disk.
-
-The state line reports why instead of a summary when:
-
-- the commit is unknown, because the platform could not resolve the image;
-- the commit cannot be fetched, with the fetch error;
-- the commit has no plan file;
-- the plan at that commit fails validation, with the first error.
-
-None of these fail the report, like the other per-environment errors.
 
 ## Open questions
 

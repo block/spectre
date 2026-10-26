@@ -22,8 +22,9 @@ type Candidates struct {
 	mu         sync.Mutex
 	closing    bool
 	quarantine Option[QuarantineStatus]
-	// quarantined is closed once quarantine begins.
-	quarantined chan struct{}
+	// quarantined receives the quarantine once, when it begins. It is buffered,
+	// so quarantine never waits for its single consumer.
+	quarantined chan QuarantineStatus
 	runs        map[*CandidateRun]struct{}
 	idle        chan struct{}
 }
@@ -40,7 +41,7 @@ func NewCandidates(config CandidatesConfig) *Candidates {
 	close(idle)
 	return &Candidates{
 		maxInFlight: config.CandidateMaxInFlight,
-		quarantined: make(chan struct{}),
+		quarantined: make(chan QuarantineStatus, 1),
 		runs:        make(map[*CandidateRun]struct{}),
 		idle:        idle,
 	}
@@ -108,8 +109,9 @@ func (c *Candidates) Quarantine(ctx context.Context, reason quarantine.Reason) {
 		c.mu.Unlock()
 		return
 	}
-	c.quarantine = Some(QuarantineStatus{Reason: reason, Since: time.Now()})
-	close(c.quarantined)
+	status := QuarantineStatus{Reason: reason, Since: time.Now()}
+	c.quarantine = Some(status)
+	c.quarantined <- status
 	runs := c.snapshot()
 	c.mu.Unlock()
 
@@ -130,8 +132,9 @@ func (c *Candidates) QuarantineStatus() Option[QuarantineStatus] {
 	return c.quarantine
 }
 
-// Quarantined returns a channel that is closed once quarantine begins.
-func (c *Candidates) Quarantined() <-chan struct{} {
+// Quarantined returns a channel that receives the quarantine once, when it
+// begins. Only one receiver gets it, so it has a single consumer.
+func (c *Candidates) Quarantined() <-chan QuarantineStatus {
 	return c.quarantined
 }
 

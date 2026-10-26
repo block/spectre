@@ -36,3 +36,5 @@ jobs:
       - uses: cashapp/activate-hermit@cea9af7913204a965fd488637a8d1811bba2e616 # ratchet:cashapp/activate-hermit@v1
       - name: Build and test container
         run: bit test-container
+      - name: Build demo container
+        run: bit demo

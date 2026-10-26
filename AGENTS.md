@@ -8,8 +8,9 @@
   allows only `main` and `Run` methods there. Keep a bootstrap helper with
   `//nolint:mainlogic // <reason>`.
 - Do not use global state outside main entry points.
-- Read environment variables only through Kong `env:` tags, then pass
-  configuration explicitly. `forbidigo` rejects the `os` and `syscall` environment functions.
+- Read environment variables only through Kong flags, then pass configuration
+  explicitly. `kong.DefaultEnvars` gives every flag a `SPECTRE_` variable, so do
+  not add `env:` tags, except `env:"-"` to keep a flag out of the environment. `forbidigo` rejects the `os` and `syscall` environment functions.
 - Each package that exposes command-line options owns its Kong-tagged `Config` type.
 - Give every Kong flag, argument, and command a `help:"..."` tag. The `konghelp`
   linter enforces this.
@@ -33,9 +34,12 @@
 
 # Public API
 
-- The root package, `github.com/block/spectre`, is the only public API. Custom
+- The root package, `github.com/block/spectre`, is the only public Go API. Custom
   binaries call its `Main` with options that add extensions to the built-in
   command line. See `docs/004-compile-time-extensions.md`.
+- The SPECTRE service protocol in `proto/spectre/v1` and its generated
+  `spectrepb` packages are also public. Keep its definitions independent of
+  internal types.
 - Expose only extension points that have been explicitly agreed. Add each as one
   public contract and one `With...` option.
 - Never expose an internal type in the public API, even through an alias. Mirror
@@ -129,7 +133,8 @@
 - Name Go test functions and subtests in UpperCamelCase. Never use underscores
   in test function names.
 - Update an existing Go test when appropriate instead of creating a new one.
-- Run necessary tests with `go test -timeout 30s`. Do not generally use `-v`.
+- Run necessary Go tests with `bit test-go run=<regexp>`, which selects tests by
+  name across every Go module.
 
 <!-- BEGIN tsk -->
 # Linters

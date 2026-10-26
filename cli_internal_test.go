@@ -4,23 +4,41 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/alecthomas/assert/v2"
 
+	"github.com/block/spectre/internal/server"
 	"github.com/block/spectre/internal/supervisor"
 )
 
-func TestRunCommandEmbedsConfig(t *testing.T) {
+// reportingFlags are the SPECTRE server flags every supervise command requires.
+func reportingFlags() []string {
+	return []string{"--server-url=http://server.example", "--service=users", "--environment=production", "--revision=abc123"}
+}
+
+// expectedReporting is the reporter config that reportingFlags parse to.
+func expectedReporting() server.ReporterConfig {
+	return server.ReporterConfig{
+		Client:      server.ClientConfig{URL: "http://server.example"},
+		Service:     "users",
+		Environment: "production",
+		Revision:    "abc123",
+	}
+}
+
+func TestSuperviseCommandEmbedsConfig(t *testing.T) {
 	scripts := t.TempDir()
 	schema := writeSchemaDir(t)
 	descriptors := t.TempDir()
 	command := &cli{}
 	parser, err := newParser(command)
 	assert.NoError(t, err)
-	_, err = parser.Parse([]string{
-		"run",
+	_, err = parser.Parse(append([]string{
+		"supervise",
 		"--candidate=run-candidate",
 		"--reference=run-reference",
 		"--destination=forecasts.example=http://127.0.0.1:50053",
@@ -29,7 +47,7 @@ func TestRunCommandEmbedsConfig(t *testing.T) {
 		"--schema-dir=" + schema,
 		"--descriptors-dir=" + descriptors,
 		"--no-limits",
-	})
+	}, reportingFlags()...))
 	assert.NoError(t, err)
 	expected := supervisor.NewConfig()
 	expected.Candidate = "run-candidate"
@@ -40,19 +58,101 @@ func TestRunCommandEmbedsConfig(t *testing.T) {
 	expected.SchemaDir = schema
 	expected.Descriptors.DescriptorsDir = descriptors
 	expected.Limits.Enabled = false
-	assert.Equal(t, expected, command.Run.Supervisor)
+	expected.Server = expectedReporting()
+	assert.Equal(t, expected, command.Supervise.Supervisor)
 }
 
-func TestRunCommandRequiresCandidateAndReference(t *testing.T) {
+func TestSuperviseCommandReadsFlagsFromEnvironment(t *testing.T) {
+	t.Setenv("SPECTRE_SERVER_URL", "http://server.example")
+	t.Setenv("SPECTRE_SERVICE", "invoices")
+	t.Setenv("SPECTRE_ENVIRONMENT", "production-us-west-2")
+	t.Setenv("SPECTRE_REVISION", "3f9c2a1")
+	command := &cli{}
+	parser, err := newParser(command)
+	assert.NoError(t, err)
+	_, err = parser.Parse([]string{
+		"supervise",
+		"--candidate=run-candidate",
+		"--reference=run-reference",
+		"--scripts-dir=" + t.TempDir(),
+		"--schema-dir=" + writeSchemaDir(t),
+	})
+	assert.NoError(t, err)
+	expected := server.ReporterConfig{
+		Client:      server.ClientConfig{URL: "http://server.example"},
+		Service:     "invoices",
+		Environment: "production-us-west-2",
+		Revision:    "3f9c2a1",
+	}
+	assert.Equal(t, expected, command.Supervise.Supervisor.Server)
+}
+
+func TestVersionFlagIgnoresEnvironment(t *testing.T) {
 	parser, err := newParser(&cli{})
 	assert.NoError(t, err)
-
-	_, err = parser.Parse([]string{"run", "--scripts-dir=" + t.TempDir(), "--schema-dir=" + writeSchemaDir(t)})
-
-	assert.Error(t, err)
+	for _, flag := range parser.Model.Flags {
+		if flag.Name == "version" {
+			assert.Equal(t, 0, len(flag.Envs))
+			return
+		}
+	}
+	t.Fatal("no version flag")
 }
 
-func TestRunCommandLoadsConfigFile(t *testing.T) {
+func TestDivergencesCommands(t *testing.T) {
+	command := &cli{}
+	parser, err := newParser(command)
+	assert.NoError(t, err)
+	_, err = parser.Parse([]string{"divergences", "--server-url=http://server.example", "--service=users"})
+	assert.NoError(t, err)
+	assert.Equal(t, "users", command.Divergences.List.Divergences.Service)
+
+	command = &cli{}
+	parser, err = newParser(command)
+	assert.NoError(t, err)
+	_, err = parser.Parse([]string{"divergences", "clear", "--server-url=http://server.example", "--service=users", "--environment=production"})
+	assert.NoError(t, err)
+	expected := server.ClearConfig{Client: server.ClientConfig{URL: "http://server.example"}, Service: "users", Environment: "production"}
+	assert.Equal(t, expected, command.Divergences.Clear.Clear)
+}
+
+func TestServeCommandEmbedsConfig(t *testing.T) {
+	command := &cli{}
+	parser, err := newParser(command)
+	assert.NoError(t, err)
+	_, err = parser.Parse([]string{"serve", "--listen=127.0.0.1:50071"})
+	assert.NoError(t, err)
+	assert.Equal(t, server.ServeConfig{Listen: "127.0.0.1:50071"}, command.Serve.Serve)
+}
+
+func TestSuperviseCommandRequiresFlags(t *testing.T) {
+	complete := append([]string{"--candidate=run-candidate", "--reference=run-reference"}, reportingFlags()...)
+	tests := []struct {
+		name    string
+		missing string
+	}{
+		{name: "Candidate", missing: "--candidate="},
+		{name: "Reference", missing: "--reference="},
+		{name: "ServerURL", missing: "--server-url="},
+		{name: "Service", missing: "--service="},
+		{name: "Environment", missing: "--environment="},
+		{name: "Revision", missing: "--revision="},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			parser, err := newParser(&cli{})
+			assert.NoError(t, err)
+			args := slices.DeleteFunc(slices.Clone(complete), func(arg string) bool { return strings.HasPrefix(arg, test.missing) })
+			args = append([]string{"supervise", "--scripts-dir=" + t.TempDir(), "--schema-dir=" + writeSchemaDir(t)}, args...)
+
+			_, err = parser.Parse(args)
+
+			assert.Error(t, err)
+		})
+	}
+}
+
+func TestSuperviseCommandLoadsConfigFile(t *testing.T) {
 	scripts := t.TempDir()
 	schema := writeSchemaDir(t)
 	descriptors := t.TempDir()
@@ -72,7 +172,7 @@ descriptors-dir = %q
 	command := &cli{}
 	parser, err := newParser(command)
 	assert.NoError(t, err)
-	_, err = parser.Parse([]string{"run", "--config=" + path, "--match-window=3s"})
+	_, err = parser.Parse(append([]string{"supervise", "--config=" + path, "--match-window=3s"}, reportingFlags()...))
 	assert.NoError(t, err)
 	expected := supervisor.NewConfig()
 	expected.Candidate = "run-candidate"
@@ -82,23 +182,24 @@ descriptors-dir = %q
 	expected.ScriptsDir = scripts
 	expected.SchemaDir = schema
 	expected.Descriptors.DescriptorsDir = descriptors
-	assert.Equal(t, expected, command.Run.Supervisor)
+	expected.Server = expectedReporting()
+	assert.Equal(t, expected, command.Supervise.Supervisor)
 }
 
-func TestRunCommandRejectsUnknownConfigKeys(t *testing.T) {
+func TestSuperviseCommandRejectsUnknownConfigKeys(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "spectre.toml")
 	assert.NoError(t, os.WriteFile(path, []byte(`canddate = "run-candidate"`), 0o600))
 	parser, err := newParser(&cli{})
 	assert.NoError(t, err)
 
-	_, err = parser.Parse([]string{
-		"run",
+	_, err = parser.Parse(append([]string{
+		"supervise",
 		"--config=" + path,
 		"--candidate=run-candidate",
 		"--reference=run-reference",
 		"--scripts-dir=" + t.TempDir(),
 		"--schema-dir=" + writeSchemaDir(t),
-	})
+	}, reportingFlags()...))
 
 	assert.EqualError(t, err, path+": unknown configuration keys: canddate")
 }
