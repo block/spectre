@@ -71,7 +71,7 @@ func (c *stateValidateCommand) Run(catalog *boundary.Catalog) error {
 }
 
 // divergencesCommand groups the commands for the divergences mirrors reported.
-type divergencesCommand struct {
+type divergencesCommand struct { //nolint:singleusestruct // A Kong command group; folding it would flatten its subcommands.
 	List  divergencesListCommand  `cmd:"" default:"withargs" help:"List the divergences that mirrors reported. This is the default."`
 	Clear divergencesClearCommand `cmd:"" help:"Clear the divergences of a service environment once they are dealt with."`
 }
