@@ -9,6 +9,8 @@ import (
 	"github.com/alecthomas/kong"
 
 	"github.com/block/spectre/internal/descriptors"
+	"github.com/block/spectre/internal/server"
+	"github.com/block/spectre/internal/server/client"
 )
 
 // Config contains the command-line configuration for the supervisor.
@@ -25,8 +27,6 @@ type Config struct {
 	Reflection bool `name:"reflection" negatable:"" default:"true" help:"Load backend descriptors with gRPC reflection and require them to match; disable to compare using only the static descriptors."`
 	// Listen is the public ingress address that clients send traffic to.
 	Listen string `default:"127.0.0.1:50050" help:"Public ingress address: host:port, or unix:<path|@abstract> for a unix socket."`
-	// StatusListen is the address of the SPECTRE status endpoint (/spectre/v1/status).
-	StatusListen string `name:"status-listen" default:"127.0.0.1:50051" help:"Address serving the SPECTRE status endpoint (/spectre/v1/status): host:port, or unix:<path|@abstract>. Empty disables it."`
 	// SocketDir holds the unix sockets wiring the proxies to the services.
 	SocketDir string `default:"dist/sockets" help:"Directory for the unix sockets wiring the proxies to the services."`
 	// Destinations maps each request host to its upstream URL for egress.
@@ -46,6 +46,8 @@ type Config struct {
 	// SeccompEgress blocks the candidate from opening IP sockets with seccomp,
 	// so it can only reach dependencies through the egress proxy.
 	SeccompEgress bool `name:"seccomp-egress" negatable:"" default:"true" help:"Block the candidate from opening IPv4 and IPv6 sockets with a seccomp filter, leaving only the egress proxy's unix socket."`
+	// Server reports the mirror's quarantines to the SPECTRE server.
+	Server server.ReporterConfig `embed:""`
 	// StartupTimeout bounds how long each process has to start listening.
 	StartupTimeout time.Duration `default:"30s" help:"Maximum time for each process to begin accepting connections."`
 	// ShutdownTimeout bounds graceful shutdown before processes are killed.
@@ -73,12 +75,24 @@ type LimitConfig struct {
 // NewConfig returns the default supervisor configuration.
 func NewConfig() Config {
 	// ApplyDefaults validates required fields, so seed them while applying tag defaults.
-	config := Config{Candidate: "placeholder", Reference: "placeholder"}
+	const placeholder = "placeholder"
+	config := Config{
+		Candidate: placeholder,
+		Reference: placeholder,
+		Server: server.ReporterConfig{
+			Client:      client.Config{URL: placeholder},
+			Service:     placeholder,
+			Environment: placeholder,
+			Revision:    placeholder,
+		},
+	}
 	if err := kong.ApplyDefaults(&config); err != nil {
 		panic(errors.Wrap(err, "apply supervisor defaults"))
 	}
 	config.Candidate = ""
 	config.Reference = ""
+	// Every reporter field is required, so none has a default to keep.
+	config.Server = server.ReporterConfig{}
 	return config
 }
 

@@ -9,7 +9,9 @@ import (
 	"github.com/alecthomas/errors"
 	. "github.com/alecthomas/types/optional"
 
+	"github.com/block/spectre/internal/boundary"
 	"github.com/block/spectre/internal/protocol"
+	"github.com/block/spectre/internal/quarantine"
 	"github.com/block/spectre/internal/schema"
 )
 
@@ -19,9 +21,9 @@ func TestEgressCandidatePairsWithEquivalentReference(t *testing.T) {
 	t.Parallel()
 	const window = 200 * time.Millisecond
 	for name, test := range map[string]struct {
-		referenceRoute   protocol.Route
+		referenceRoute   boundary.Route
 		referenceRequest func(ctx context.Context) (protocol.Message, error)
-		candidateRoute   protocol.Route
+		candidateRoute   boundary.Route
 		candidateRequest func(ctx context.Context) (protocol.Message, error)
 		matched          bool
 	}{
@@ -69,7 +71,11 @@ func TestEgressCandidatePairsWithEquivalentReference(t *testing.T) {
 			}
 			assert.EqualError(t, err, "no matching reference request within 200ms")
 			assert.Equal(t, nil, decision)
-			assert.Equal(t, []string{"no matching reference request within 200ms"}, h.quarantine.Reasons())
+			assert.Equal(t, []quarantine.Reason{{
+				Kind:    quarantine.KindUnmatched,
+				Traffic: Some(quarantine.Traffic{Direction: boundary.Egress, Protocol: fake, Route: test.candidateRoute}),
+				Detail:  "no matching reference request within 200ms",
+			}}, h.quarantine.Recorded())
 			awaitReleases(t, raw, 1)
 		})
 	}
@@ -313,7 +319,7 @@ func TestShutdownWaitsForReferenceHashing(t *testing.T) {
 }
 
 // send forwards a reference request without waiting for it to be hashed.
-func (h *harness) send(t *testing.T, route protocol.Route, request func(ctx context.Context) (protocol.Message, error)) protocol.Exchange {
+func (h *harness) send(t *testing.T, route boundary.Route, request func(ctx context.Context) (protocol.Message, error)) protocol.Exchange {
 	t.Helper()
 	decision, err := h.engine.EgressReference(fake).ProcessRequest(h.ctx, None[protocol.RequestID](), route, notIgnored, request)
 	assert.NoError(t, err)
@@ -323,7 +329,7 @@ func (h *harness) send(t *testing.T, route protocol.Route, request func(ctx cont
 }
 
 // forward sends a reference request and waits until it is hashed.
-func (h *harness) forward(t *testing.T, route protocol.Route, request func(ctx context.Context) (protocol.Message, error)) protocol.Exchange {
+func (h *harness) forward(t *testing.T, route boundary.Route, request func(ctx context.Context) (protocol.Message, error)) protocol.Exchange {
 	t.Helper()
 	exchange := h.send(t, route, request)
 	assert.NoError(t, h.engine.Shutdown(h.ctx))
@@ -356,7 +362,7 @@ func (h *harness) candidate(t *testing.T, request func(ctx context.Context) (pro
 }
 
 // reference forwards a hashed reference request and records its response.
-func (h *harness) reference(t *testing.T, route protocol.Route, request func(ctx context.Context) (protocol.Message, error), raw *countingRaw) {
+func (h *harness) reference(t *testing.T, route boundary.Route, request func(ctx context.Context) (protocol.Message, error), raw *countingRaw) {
 	t.Helper()
 	exchange := h.forward(t, route, request)
 	h.engine.EgressReference(fake).ProcessResponse(h.ctx, exchange, protocol.Response{Raw: raw})

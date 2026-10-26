@@ -26,6 +26,7 @@ import (
 	"github.com/block/spectre/internal/netaddr"
 	"github.com/block/spectre/internal/protocol"
 	"github.com/block/spectre/internal/proxy"
+	"github.com/block/spectre/internal/quarantine"
 	"github.com/block/spectre/internal/state"
 )
 
@@ -45,8 +46,9 @@ type Ingress struct {
 	descriptors    Option[DescriptorLoader]
 	static         *descriptorpb.FileDescriptorSet
 	candidates     *proxy.Candidates
-	// migration maps each route in the migration state to its node's status.
-	migration Option[*route.Map[state.Status]]
+	quarantiner    *nodeQuarantiner
+	// migration maps each route in the migration state to its node.
+	migration Option[*route.Map[stateRoute]]
 	// mu guards decoder, which is set once descriptors are configured.
 	mu      sync.RWMutex
 	decoder Option[*message.Decoder]
@@ -92,13 +94,14 @@ func NewIngress(
 	if err != nil {
 		return nil, errors.Wrap(err, "proxy candidate backend")
 	}
-	migrationRoutes, err := stateRoutes(migration)
+	migrationRoutes, owners, err := stateRoutes(migration)
 	if err != nil {
 		return nil, errors.Wrap(err, "route migration state")
 	}
 	candidates := proxy.NewCandidates(config.Candidates)
 	routes := route.NewMatcher()
-	engine, err := protocol.NewEngine(ctx, engineConfig, map[boundary.Protocol]protocol.Matcher{boundary.ProtocolHTTP: routes}, candidates)
+	quarantiner := newNodeQuarantiner(candidates, owners)
+	engine, err := protocol.NewEngine(ctx, engineConfig, map[boundary.Protocol]protocol.Matcher{boundary.ProtocolHTTP: routes}, quarantiner)
 	if err != nil {
 		return nil, errors.Wrap(err, "configure response comparison")
 	}
@@ -117,6 +120,7 @@ func NewIngress(
 		descriptors:    loader,
 		static:         static,
 		candidates:     candidates,
+		quarantiner:    quarantiner,
 		migration:      migrationRoutes,
 	}
 	requestHandler := logging.New(http.HandlerFunc(ingress.serveProxy), logger.EventReceived)
@@ -124,23 +128,76 @@ func NewIngress(
 	return ingress, nil
 }
 
-// stateRoutes maps the ingress[http] routes of each node to the node's status.
-func stateRoutes(migration Option[state.State]) (Option[*route.Map[state.Status]], error) {
+// stateRoute is a migration state route pattern and the node that lists it.
+type stateRoute struct {
+	pattern  boundary.Route
+	nodeID   string
+	migrated bool
+}
+
+// stateRoutes maps the ingress[http] routes of each node to the node, and each
+// route pattern to the ID of the node that owns it.
+func stateRoutes(migration Option[state.State]) (Option[*route.Map[stateRoute]], map[boundary.Route]string, error) {
+	owners := map[boundary.Route]string{}
 	nodes, ok := migration.Get()
 	if !ok {
-		return None[*route.Map[state.Status]](), nil
+		return None[*route.Map[stateRoute]](), owners, nil
 	}
 	kind := boundary.Kind{Direction: boundary.Ingress, Protocol: boundary.ProtocolHTTP}
-	routes := route.New[state.Status]()
+	routes := route.New[stateRoute]()
 	for _, node := range nodes.Nodes {
 		entries, _ := node.IO[kind][routesSetting].(map[string]any)
 		for _, pattern := range slices.Sorted(maps.Keys(entries)) {
-			if err := routes.Add(pattern, node.Status); err != nil {
-				return None[*route.Map[state.Status]](), errors.Wrapf(err, "node %s", node.ID)
+			listed := stateRoute{pattern: boundary.Route(pattern), nodeID: node.ID, migrated: node.Status == state.Migrated}
+			if err := routes.Add(pattern, listed); err != nil {
+				return None[*route.Map[stateRoute]](), nil, errors.Wrapf(err, "node %s", node.ID)
 			}
+			owners[listed.pattern] = node.ID
 		}
 	}
-	return Some(routes), nil
+	return Some(routes), owners, nil
+}
+
+// nodeQuarantiner names the migration state node that owns an ingress route in
+// each reason, so a quarantine also says which node to fix.
+type nodeQuarantiner struct {
+	candidates *proxy.Candidates
+	// owners maps each state route pattern to its node. A request the state
+	// lists is routed by its pattern, so the lookup keeps the pattern's host.
+	owners map[boundary.Route]string
+}
+
+func newNodeQuarantiner(candidates *proxy.Candidates, owners map[boundary.Route]string) *nodeQuarantiner {
+	return &nodeQuarantiner{candidates: candidates, owners: owners}
+}
+
+func (q *nodeQuarantiner) Quarantine(ctx context.Context, reason quarantine.Reason) {
+	if traffic, ok := reason.Traffic.Get(); ok && traffic.Direction == boundary.Ingress && traffic.Protocol == boundary.ProtocolHTTP {
+		if node, owned := q.owners[traffic.Route]; owned {
+			reason.Node = Some(node)
+		}
+	}
+	q.candidates.Quarantine(ctx, reason)
+}
+
+// route is a request's engine route: the migration state pattern that lists it,
+// whose host lets its node be found, or otherwise its method and escaped path.
+func (i *Ingress) route(request *http.Request) boundary.Route {
+	path := request.URL.EscapedPath()
+	if routes, ok := i.migration.Get(); ok {
+		if listed, _, matched := routes.Match(request.Method, request.Host, path); matched {
+			return listed.pattern
+		}
+	}
+	return boundary.Route(request.Method + " " + path)
+}
+
+func (i *Ingress) reason(kind quarantine.Kind, request *http.Request, detail string) quarantine.Reason {
+	return quarantine.Reason{
+		Kind:    kind,
+		Traffic: Some(quarantine.Traffic{Direction: boundary.Ingress, Protocol: boundary.ProtocolHTTP, Route: i.route(request)}),
+		Detail:  detail,
+	}
 }
 
 func ingressBackends(config IngressConfig) (reference, candidate *netaddr.Endpoint, err error) {
@@ -199,7 +256,7 @@ func (i *Ingress) serveProxy(writer http.ResponseWriter, request *http.Request) 
 		i.referenceProxy.ServeHTTP(writer, referenceRequest)
 		return
 	}
-	route := protocol.Route(request.Method + " " + request.URL.EscapedPath())
+	route := i.route(request)
 	ignored, decode := i.classify(request)
 	reference, err := i.reference.process(request.Context(), None[protocol.RequestID](), route, ignored, unreadRequest)
 	forward, forwarded := reference.(protocol.DecisionForward)
@@ -238,21 +295,22 @@ func (i *Ingress) mirrors(request *http.Request) bool {
 		return true
 	}
 	path := request.URL.EscapedPath()
-	status, _, listed := routes.Match(request.Method, request.Host, path)
+	owner, _, listed := routes.Match(request.Method, request.Host, path)
 	if listed {
-		return status == state.Migrated
+		return owner.migrated
 	}
 	if _, ignored, matched := i.routes.Response(request.Method, path); (matched && ignored.Ok()) || strings.HasPrefix(path, "/grpc.reflection.") {
 		return false
 	}
-	i.candidates.Quarantine(request.Context(), errors.Errorf("route %s %s is in no node of the migration state", request.Method, path))
+	i.candidates.Quarantine(request.Context(), i.reason(quarantine.KindUnlisted, request,
+		"route "+request.Method+" "+path+" is in no node of the migration state"))
 	return false
 }
 
 // mirror makes the reference request body the sole producer of the candidate's body.
 func (i *Ingress) mirror(ctx context.Context, request, referenceRequest *http.Request, abort context.CancelFunc) *streamBody {
 	body := newStreamBody(i.buffer, func(err error) {
-		i.candidates.Quarantine(ctx, err)
+		i.quarantiner.Quarantine(ctx, i.reason(quarantine.KindCapacity, request, err.Error()))
 	}, abort)
 	if request.Body == nil || request.Body == http.NoBody {
 		body.closeWriter(io.EOF)

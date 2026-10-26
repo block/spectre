@@ -307,8 +307,8 @@ func (s *Schema) Operations() []Operation {
 	return operations
 }
 
-// Validate checks that a decoded JSON value is an instance of the named type. It
-// rejects unknown keys and nulls, so a valid payload holds only declared data.
+// Validate checks that a value is an instance of the named type, rejecting unknown
+// keys and nulls. Errors never quote payload keys, as they leave the mirror.
 func (s *Schema) Validate(name TypeRef, value any) error {
 	return s.validate(Value{Kind: KindObject, Type: name}, value, "$")
 }
@@ -357,7 +357,8 @@ func (s *Schema) validate(expected Value, value any, path string) error {
 		}
 		if entries, ok := value.(map[string]any); ok {
 			for _, key := range slices.Sorted(maps.Keys(entries)) {
-				if err := s.validate(*element, entries[key], path+"["+strconv.Quote(key)+"]"); err != nil {
+				// A map key is payload data, so the path holds a wildcard instead.
+				if err := s.validate(*element, entries[key], path+"[*]"); err != nil {
 					return err
 				}
 			}
@@ -378,7 +379,8 @@ func (s *Schema) validateObject(name TypeRef, object map[string]any, path string
 	}
 	for _, key := range slices.Sorted(maps.Keys(object)) {
 		if _, ok := declared.Field(key); !ok {
-			return errors.Errorf("%s: type %q has no field %q", path, name, key)
+			// An undeclared key is payload data, so the error does not name it.
+			return errors.Errorf("%s: type %q has a field it does not declare", path, name)
 		}
 	}
 	for _, field := range declared.Fields {

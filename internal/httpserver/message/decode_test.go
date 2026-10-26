@@ -142,7 +142,7 @@ func TestDecodesResponseStatus(t *testing.T) {
 		"DeclaredHTTPBodyFails": {
 			method: http.MethodGet, path: "/v1/forecast",
 			response: httpResponse(http.StatusBadGateway, "application/json", `{"unknown":1}`),
-			expected: decoded{status: Some("502"), failure: `has no field "unknown"`},
+			expected: decoded{status: Some("502"), failure: `has a field it does not declare`},
 		},
 		"ProtobufBodyFails": {
 			method: http.MethodPost, path: "/test.v1.Service/Get", contentType: "application/x-protobuf",
@@ -221,11 +221,53 @@ func TestDecodesDeclaredHTTPJSONResponses(t *testing.T) {
 		},
 		"UnknownField": {
 			response: httpResponse(http.StatusOK, "application/json", `{"stable":"same","roles":[],"users":[],"count":"0","labels":{},"added":true}`),
-			expected: decoded{status: Some("200"), failure: `type "test.v1.Response" has no field "added"`},
+			expected: decoded{status: Some("200"), failure: `type "test.v1.Response" has a field it does not declare`},
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			assertDecodes(t, decoder, http.MethodGet, "/v1/forecast", "", test.response, test.expected)
+		})
+	}
+}
+
+// Decode failures become quarantine reasons, which leave the mirror.
+func TestDecodeFailuresOmitPayloadValues(t *testing.T) {
+	decoder := newDecoder(t, weatherScripts)
+	for name, test := range map[string]struct {
+		method      string
+		path        string
+		contentType string
+		response    message.Response
+		expected    decoded
+	}{
+		"ProtoJSONValue": {
+			method: http.MethodPost, path: "/test.v1.Service/Get", contentType: "application/json",
+			response: connectResponse(`{"count":"secret"}`),
+			expected: decoded{status: Some("200"), failure: "decode response as test.v1.Response: decode wire payload: invalid ProtoJSON for test.v1.Response"},
+		},
+		"ConnectErrorJSON": {
+			method: http.MethodPost, path: "/test.v1.Service/Get", contentType: "application/json",
+			response: httpResponse(http.StatusNotFound, "application/json", `{"code":secret}`),
+			expected: decoded{status: Some("404"), failure: "Connect error response contains malformed JSON: decode Connect error JSON: invalid JSON at offset 9"},
+		},
+		"GRPCStatus": {
+			method: http.MethodPost, path: "/test.v1.Service/Get", contentType: "application/grpc",
+			response: withHeader(grpcResponse(t, responseProto("same", "", nil), false), "Grpc-Status", "secret"),
+			expected: decoded{failure: "response has no valid gRPC status: parse gRPC status: Atoi: invalid syntax"},
+		},
+		"HTTPJSON": {
+			method: http.MethodGet, path: "/v1/forecast",
+			response: httpResponse(http.StatusOK, "application/json", `{"stable":secret}`),
+			expected: decoded{status: Some("200"), failure: "decode response as test.v1.Response: decode JSON: invalid JSON at offset 11"},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			header := http.Header{}
+			if test.contentType != "" {
+				header.Set("Content-Type", test.contentType)
+			}
+			content := decoder.Responses(test.method, test.path, "", header).Decode(test.response)
+			assert.Equal(t, test.expected, describe(content))
 		})
 	}
 }
@@ -284,7 +326,7 @@ func TestDecodesHTTPJSONWithoutDescriptors(t *testing.T) {
 		"UnknownField": {
 			path:     "/raw",
 			response: connectResponse(`{"stable":"same","added":true}`),
-			expected: decoded{status: Some("200"), failure: `type "raw.Response" has no field "added"`},
+			expected: decoded{status: Some("200"), failure: `type "raw.Response" has a field it does not declare`},
 		},
 		"RequiredField": {
 			path:     "/raw",

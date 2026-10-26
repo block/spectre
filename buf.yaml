@@ -1,6 +1,7 @@
 version: v2
 modules:
   - path: internal/sample/proto
+  - path: proto
 lint:
   use:
     - STANDARD

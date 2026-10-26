@@ -12,6 +12,7 @@ import (
 
 	"github.com/block/spectre/internal/boundary"
 	"github.com/block/spectre/internal/protocol"
+	"github.com/block/spectre/internal/quarantine"
 	"github.com/block/spectre/internal/schema"
 )
 
@@ -23,7 +24,7 @@ var (
 
 func TestIngressComparesResponses(t *testing.T) {
 	for name, test := range map[string]struct {
-		route       protocol.Route
+		route       boundary.Route
 		ignored     Option[string]
 		reference   protocol.Response
 		candidate   protocol.Response
@@ -47,10 +48,11 @@ func TestIngressComparesResponses(t *testing.T) {
 			logged:      map[string]any{"outcome": "divergent", "differences": []any{"$.value"}},
 		},
 		"UntypedMessagesSkipNormalisers": {
-			reference:   protocol.Response{Decode: decoded("OK", message(None[schema.TypeRef](), "london", "first"))},
-			candidate:   protocol.Response{Decode: decoded("OK", message(None[schema.TypeRef](), "london", "second"))},
-			quarantined: []string{"response differences: $.trace"},
-			logged:      map[string]any{"outcome": "divergent", "differences": []any{"$.trace"}},
+			reference: protocol.Response{Decode: decoded("OK", message(None[schema.TypeRef](), "london", "first"))},
+			candidate: protocol.Response{Decode: decoded("OK", message(None[schema.TypeRef](), "london", "second"))},
+			// Untyped keys are payload data, so no path quotes them.
+			quarantined: []string{"response differences: $[*]"},
+			logged:      map[string]any{"outcome": "divergent", "differences": []any{"$[*]"}},
 		},
 		"Status": {
 			reference:   protocol.Response{Decode: decoded("OK", message(responseType, "london", ""))},
@@ -115,9 +117,9 @@ func TestIngressComparesResponses(t *testing.T) {
 		"Ignored": {
 			route:     "ignored",
 			ignored:   ignoredFor,
-			reference:   protocol.Response{Decode: decoded("OK", message(responseType, "london", ""))},
-			candidate:   protocol.Response{Decode: statusOnly("NOT_FOUND")},
-			logged:      map[string]any{"outcome": "skipped", "reason": "ignored for test"},
+			reference: protocol.Response{Decode: decoded("OK", message(responseType, "london", ""))},
+			candidate: protocol.Response{Decode: statusOnly("NOT_FOUND")},
+			logged:    map[string]any{"outcome": "skipped", "reason": "ignored for test"},
 		},
 		"LatencyDelta": {
 			reference: protocol.Response{Decode: statusOnly("OK"), Latency: 10 * time.Millisecond},
@@ -137,7 +139,7 @@ func TestIngressComparesResponses(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			h := newHarness(t, time.Second)
-			route, ignored := protocol.Route("compared"), notIgnored
+			route, ignored := boundary.Route("compared"), notIgnored
 			if test.route != "" {
 				route, ignored = test.route, test.ignored
 			}
@@ -158,7 +160,7 @@ func TestIngressComparesResponses(t *testing.T) {
 
 func TestIngressReportsUnableExchanges(t *testing.T) {
 	for name, test := range map[string]struct {
-		route          protocol.Route
+		route          boundary.Route
 		ignored        Option[string]
 		referenceFails bool
 		candidateFails bool
@@ -202,7 +204,7 @@ func TestIngressReportsUnableExchanges(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			h := newHarness(t, time.Second)
-			route, ignored := protocol.Route("compared"), notIgnored
+			route, ignored := boundary.Route("compared"), notIgnored
 			if test.route != "" {
 				route, ignored = test.route, test.ignored
 			}
@@ -324,7 +326,11 @@ func TestIngressCandidateWaitsForReference(t *testing.T) {
 	h.engine.IngressReference(fake).ProcessResponse(h.ctx, reference, protocol.Response{Decode: statusOnly("OK"), Raw: newRaw("reference")})
 	<-responded
 
-	assert.Equal(t, []string{"response differences: $status"}, h.quarantine.Reasons())
+	assert.Equal(t, []quarantine.Reason{{
+		Kind:        quarantine.KindDivergent,
+		Traffic:     Some(quarantine.Traffic{Direction: boundary.Ingress, Protocol: fake, Route: "compared"}),
+		Differences: []string{"$status"},
+	}}, h.quarantine.Recorded())
 }
 
 func TestIngressIgnoredCandidateReportsWithoutReference(t *testing.T) {
@@ -417,7 +423,7 @@ func TestIngressReleasesResponsesForUnknownExchanges(t *testing.T) {
 }
 
 // mirror starts a reference request and joins its mirrored candidate request.
-func (h *harness) mirror(t *testing.T, route protocol.Route, ignored Option[string]) (reference, candidate protocol.Exchange) {
+func (h *harness) mirror(t *testing.T, route boundary.Route, ignored Option[string]) (reference, candidate protocol.Exchange) {
 	t.Helper()
 	decision, err := h.engine.IngressReference(fake).ProcessRequest(h.ctx, None[protocol.RequestID](), route, ignored, unreadPayload(t))
 	assert.NoError(t, err)
@@ -457,7 +463,7 @@ func message(typeRef Option[schema.TypeRef], value, trace string) Option[protoco
 }
 
 // comparisonRecord is the comparison log record for route with attributes added.
-func comparisonRecord(route protocol.Route, attributes map[string]any) map[string]any {
+func comparisonRecord(route boundary.Route, attributes map[string]any) map[string]any {
 	record := map[string]any{"level": "INFO", "msg": "Response comparison completed", "event": "correlation", "protocol": "fake", "route": string(route)}
 	for key, value := range attributes {
 		record[key] = value

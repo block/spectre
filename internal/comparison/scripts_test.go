@@ -206,19 +206,19 @@ func TestCompareAppliesNormalisers(t *testing.T) {
 			candidate: `{"roles":["writer","reader"],"ignored":"second","stable":"same"}`,
 		},
 		"Int64IsJavaScriptString": {
-			typeName: response,
+			typeName:  response,
 			script:    `spectre.field<v1.Response, "count">((count) => typeof count);`,
 			reference: `{"count":"9007199254740993"}`,
 			candidate: `{"count":"9007199254740994"}`,
 		},
 		"UndefinedForMissingField": {
-			typeName: response,
+			typeName:  response,
 			script:    `spectre.field<v1.Response, "ignored">((value) => value === undefined ? "present" : value);`,
 			reference: `{"stable":"same"}`,
 			candidate: `{"stable":"same","ignored":"present"}`,
 		},
 		"DifferencesRemainAfterNormalisation": {
-			typeName: response,
+			typeName:  response,
 			script:    `spectre.field<v1.Response, "ignored">((value) => value?.toLowerCase());`,
 			reference: `{"stable":"same","ignored":"First"}`,
 			candidate: `{"stable":"same","ignored":"second"}`,
@@ -235,7 +235,7 @@ func TestCompareAppliesNormalisers(t *testing.T) {
 			candidate: `{"stable":"second","ignored":"same"}`,
 		},
 		"MessageNormaliserCanRemoveRoot": {
-			typeName: response,
+			typeName:  response,
 			script:    `spectre.message<v1.Response>(() => undefined);`,
 			reference: `{"stable":"first"}`,
 			candidate: `{"stable":"second"}`,
@@ -250,13 +250,13 @@ func TestCompareAppliesNormalisers(t *testing.T) {
 			candidate: `{"owner":{"name":"alice"}}`,
 		},
 		"MessageNormaliserReceivesUndefinedForMissingMessage": {
-			typeName: response,
+			typeName:  response,
 			script:    `spectre.message<v1.User>((): any => "ignored");`,
 			reference: `{"stable":"same","owner":{"name":"alice"}}`,
 			candidate: `{"stable":"same"}`,
 		},
 		"FieldNormaliserAppliesToRepeatedMessageElements": {
-			typeName: response,
+			typeName:  response,
 			script:    `spectre.field<v1.Response, "users[].name">((name) => name.toLowerCase());`,
 			reference: `{"stable":"same","users":[{"name":"ALICE"},{"name":"BOB"}]}`,
 			candidate: `{"stable":"same","users":[{"name":"alice"},{"name":"bob"}]}`,
@@ -269,7 +269,7 @@ func TestCompareAppliesNormalisers(t *testing.T) {
 			candidate: `{"users":[{"name":"alice"},{"name":"bob"}]}`,
 		},
 		"WithoutNormalisers": {
-			typeName: response,
+			typeName:  response,
 			reference: `{"stable":"first"}`,
 			candidate: `{"stable":"second"}`,
 			expected:  []string{"$.stable"},
@@ -279,7 +279,20 @@ func TestCompareAppliesNormalisers(t *testing.T) {
 			typeName:  None[schema.TypeRef](),
 			reference: `{"stable":"same","ignored":"first"}`,
 			candidate: `{"stable":"same","ignored":"second"}`,
-			expected:  []string{"$.ignored"},
+			// Untyped keys are payload data, so no path quotes them.
+			expected: []string{"$[*]"},
+		},
+		"MapKeysAreNotReported": {
+			typeName:  response,
+			reference: `{"stable":"same","labels":{"alice@example.com":"a"}}`,
+			candidate: `{"stable":"same","labels":{"alice@example.com":"b","bob@example.com":"c"}}`,
+			expected:  []string{"$.labels[*]"},
+		},
+		"DeclaredFieldsUnderListsAreReported": {
+			typeName:  response,
+			reference: `{"stable":"same","users":[{"name":"alice"}]}`,
+			candidate: `{"stable":"same","users":[{"name":"bob"}]}`,
+			expected:  []string{"$.users[0].name"},
 		},
 		"ExplicitDefaultsRemainPresent": {
 			typeName:  Some[schema.TypeRef]("raw.Response"),

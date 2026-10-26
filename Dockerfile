@@ -7,10 +7,9 @@ COPY go.mod go.sum ./
 COPY internal/typescript ./internal/typescript
 RUN --mount=type=cache,target=/go/pkg/mod \
     go mod download
-COPY *.go ./
-COPY cmd/spectre ./cmd/spectre
-COPY status ./status
-COPY internal ./internal
+# .dockerignore excludes everything the build does not need, so a new package
+# reaches the build without a change here.
+COPY . .
 
 ARG TARGETOS
 ARG TARGETARCH
@@ -32,6 +31,8 @@ COPY --from=build /out/spectre /usr/local/bin/
 
 # Run as Alpine's nobody user without requiring name resolution.
 USER 65534:65534
-EXPOSE 50050
-# Supervise a candidate and reference with the embedded proxies via "spectre run".
+# The default ports of "spectre supervise" and "spectre serve".
+EXPOSE 50050 50070
+# Run any spectre command, such as "spectre supervise" for a mirror or
+# "spectre serve" for the SPECTRE server.
 ENTRYPOINT ["spectre"]

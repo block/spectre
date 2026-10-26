@@ -233,7 +233,7 @@ func (d *Decoder) decodePayload(root *schema.Type, selected wire, header http.He
 		}
 		var payload any
 		if err = json.Unmarshal(decompressed, &payload); err != nil {
-			return nil, errors.Wrap(err, "decode JSON")
+			return nil, errors.Wrap(jsonError(err), "decode JSON")
 		}
 		return payload, nil
 	}

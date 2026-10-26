@@ -8,10 +8,17 @@ let go-inputs = ["**/*.go", "go.mod", "go.sum"]
 
 let tsk-inputs = [".tsk/config.toml", ".tsk/lock.toml", ".tsk/**/*.ts", "bin/tsk"]
 
-sample-proto = exec {
-  command = "mkdir -p internal/sample/pb dist/descriptors && buf generate && buf build --as-file-descriptor-set -o dist/descriptors/sample.pb"
-  inputs = ["buf.yaml", "buf.gen.yaml", "internal/sample/proto/*.proto", "bin/buf", "bin/protoc-gen-go", "bin/protoc-gen-connect-go"]
-  output = ["internal/sample/pb/users.pb.go", "internal/sample/pb/service.pb.go", "internal/sample/pb/samplepbconnect/service.connect.go", "dist/descriptors/sample.pb"]
+sample-proto = buf.generate { input = "internal/sample/proto" }
+
+sample-descriptors = exec {
+  command = "mkdir -p dist/descriptors && buf build internal/sample/proto --as-file-descriptor-set -o dist/descriptors/sample.pb"
+  inputs = ["buf.yaml", "internal/sample/proto/*.proto", "bin/buf"]
+  outputs = ["dist/descriptors/sample.pb"]
+}
+
+spectre-proto = buf.generate {
+  input = "proto"
+  template = "proto/buf.gen.yaml"
 }
 
 # Concurrent cold builds each compile the TypeScript compiler, so warm the cache once first.
@@ -21,15 +28,15 @@ typescript-compiler = go.build { package = "./internal/schema" }
 build-go[go-module] = go.build {
   package = "./..."
   dir = go-module
-  depends_on = [sample-proto, typescript-compiler]
+  depends_on = [sample-proto, spectre-proto, typescript-compiler]
 }
 
 # Keep protobuf declarations checked in, like the generated Go bindings.
 sample-schema = exec {
   command = "spectre gen proto --descriptors-dir=dist/descriptors --output=internal/sample/schema"
   inputs = ["internal/descriptors/*.go", "internal/schema/*.go", "internal/typescript/**/*.go", "internal/typescript/go.mod", "*.go", "cmd/spectre/*.go", "go.mod", "go.sum", "scripts/spectre"]
-  output = ["internal/sample/schema/users.d.ts", "internal/sample/schema/service.d.ts"]
-  depends_on = [sample-proto, typescript-compiler]
+  outputs = ["internal/sample/schema/users.d.ts", "internal/sample/schema/service.d.ts"]
+  depends_on = [sample-descriptors, typescript-compiler]
 }
 
 test-go[go-module](package = "./...", run = ".") = go.test {
@@ -79,12 +86,9 @@ fmt-toml = exec {
 protected fmt-tsk = exec {
   command = "tsk init"
   inputs = tsk-inputs + ["AGENTS.md"]
-  output = ["AGENTS.md", ".tsk/.gitignore", ".agents/skills/tsk/SKILL.md", ".claude/skills/tsk/SKILL.md"]
+  outputs = ["AGENTS.md", ".tsk/.gitignore", ".agents/skills/tsk/SKILL.md", ".claude/skills/tsk/SKILL.md"]
 }
-lint-proto = exec.test {
-  command = "buf lint"
-  inputs = ["buf.yaml", "internal/sample/proto/*.proto", "bin/buf"]
-}
+lint-proto = buf.lint {}
 lint-actions = exec {
   command = "actionlint"
   inputs = [".github/workflows/*.yml", "bin/actionlint"]
@@ -125,11 +129,17 @@ explicit sample-forecasts-bin = go.exe {
 explicit spectre-bin = go.exe {
   package = "./cmd/spectre"
   output = "dist/spectre"
-  depends_on = [typescript-compiler]
+  depends_on = [spectre-proto, typescript-compiler]
 }
 explicit local-image(version = "dev") = docker.image {
   tag = "spectre:#{version}"
   build_args = { VERSION = version }
+}
+# The demo image carries the sample descriptors, so generate them first.
+explicit demo-image = docker.image {
+  tag = "spectre-demo"
+  dockerfile = "demo/Dockerfile"
+  depends_on = [sample-descriptors]
 }
 explicit publish-release-image(registry : string, image-tag : string, version : string) = docker.image {
   tag = "#{registry}/spectre:#{image-tag}"
@@ -142,6 +152,9 @@ target sample = [sample-bin, sample-forecasts-bin]
 
 # Build the spectre container image.
 target container = [local-image]
+
+# Build the demo container image.
+target demo = [demo-image]
 
 # Publish the spectre container image.
 target publish-container(registry : string, image-tag : string, version : string) = [publish-release-image(registry = registry, image-tag = image-tag, version = version)]

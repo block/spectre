@@ -125,9 +125,13 @@ func grpcPayload(header http.Header, body []byte, maxBodyBytes int) ([]byte, err
 	}
 }
 
+// unmarshalProtoJSON drops protojson's error text, which quotes the offending
+// input, because decode errors become quarantine reasons that leave the mirror.
 func unmarshalProtoJSON(types *dynamicpb.Types, data []byte, message proto.Message) error {
-	err := (protojson.UnmarshalOptions{Resolver: types}).Unmarshal(data, message)
-	return errors.Wrap(err, "decode ProtoJSON")
+	if err := (protojson.UnmarshalOptions{Resolver: types}).Unmarshal(data, message); err != nil {
+		return errors.Errorf("invalid ProtoJSON for %s", message.ProtoReflect().Descriptor().FullName())
+	}
+	return nil
 }
 
 // payloadValue converts a decoded message to the ProtoJSON value normalisers receive.

@@ -1,17 +1,12 @@
 #!/bin/sh
 # Build and run the SPECTRE supervisor demo in one command. Extra arguments are
-# passed through to "spectre run", e.g. --candidate-cpu-weight=200.
+# passed through to "spectre supervise", e.g. --candidate-cpu-weight=200.
 set -eu
 
 root="$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)"
 cd "$root"
 
-if [ ! -f dist/descriptors/sample.pb ]; then
-  echo "Generating sample descriptors with 'bit sample'..." >&2
-  bit sample
-fi
-
-docker build -f demo/Dockerfile -t spectre-demo .
+bit demo
 
 echo "Starting the demo. Ingress is published on http://127.0.0.1:50050." >&2
 echo "In another terminal try:" >&2

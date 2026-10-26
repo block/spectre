@@ -226,7 +226,6 @@ func assertJSON(t *testing.T, expected string, actual string) {
 	assert.Equal(t, decode(expected), decode(actual))
 }
 
-
 func TestLevelFiltering(t *testing.T) {
 	for _, test := range []struct {
 		name  string

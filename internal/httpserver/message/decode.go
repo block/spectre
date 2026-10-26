@@ -201,7 +201,7 @@ func connectErrorPayload(body []byte) (any, error) {
 	}
 	var payload any
 	if err := json.Unmarshal(body, &payload); err != nil {
-		return nil, errors.Wrap(err, "decode Connect error JSON")
+		return nil, errors.Wrap(jsonError(err), "decode Connect error JSON")
 	}
 	return payload, nil
 }
@@ -258,7 +258,7 @@ func grpcStatus(response Response) (int, error) {
 	}
 	status, err := strconv.Atoi(value)
 	if err != nil {
-		return 0, errors.Wrap(err, "parse gRPC status")
+		return 0, errors.Wrap(numberError(err), "parse gRPC status")
 	}
 	if status < 0 {
 		return 0, errors.Errorf("gRPC status is negative: %d", status)

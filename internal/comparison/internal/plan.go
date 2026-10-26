@@ -6,6 +6,7 @@ import (
 	"slices"
 
 	"github.com/alecthomas/errors"
+	. "github.com/alecthomas/types/optional"
 
 	"github.com/block/spectre/internal/comparison/javascript"
 	"github.com/block/spectre/internal/schema"
@@ -57,21 +58,30 @@ func (p *Plan) Normalise(
 	if err := run.normalise(ctx); err != nil {
 		return nil, err
 	}
-	return newNormalised(document), nil
+	rootValue := schema.Value{Kind: schema.KindObject, Type: root.Name}
+	return newNormalised(document, Some(p.loaded), Some(rootValue)), nil
 }
 
 // Normalised is one payload after every applicable normaliser has run.
 type Normalised struct {
 	payload *document
+	// loaded and root are absent for an untyped payload, whose keys are all payload data.
+	loaded Option[*schema.Schema]
+	root   Option[schema.Value]
 }
 
-func newNormalised(payload *document) *Normalised {
-	return &Normalised{payload: payload}
+func newNormalised(payload *document, loaded Option[*schema.Schema], root Option[schema.Value]) *Normalised {
+	return &Normalised{payload: payload, loaded: loaded, root: root}
 }
 
 // Raw wraps an untyped payload that no normaliser applies to.
 func Raw(payload any) *Normalised {
-	return newNormalised(newDocument(payload))
+	return newNormalised(newDocument(payload), None[*schema.Schema](), None[schema.Value]())
+}
+
+// differ compares against this payload's declared type.
+func (n *Normalised) differ() *differ {
+	return newDiffer(n.loaded, n.root)
 }
 
 func (n *Normalised) document() *document {
@@ -86,6 +96,7 @@ func (n *Normalised) CanonicalJSON() ([]byte, error) {
 }
 
 // Diff returns the paths at which two normalised payloads differ, without values.
+// Both payloads are instances of the reference's declared type.
 func Diff(reference, candidate *Normalised) (differences []string) {
 	root := newDocumentPath(nil)
 	referenceRoot, referencePresent := reference.document().Export().Get()
@@ -93,5 +104,5 @@ func Diff(reference, candidate *Normalised) (differences []string) {
 	if referencePresent != candidatePresent {
 		return []string{root.String()}
 	}
-	return diffValues(referenceRoot, candidateRoot, root, []string{})
+	return reference.differ().compare(referenceRoot, candidateRoot, root)
 }

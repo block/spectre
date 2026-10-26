@@ -2,7 +2,6 @@ package protocol
 
 import (
 	"context"
-	"strings"
 	"sync"
 	"time"
 
@@ -13,6 +12,7 @@ import (
 	"github.com/block/spectre/internal/comparison"
 	"github.com/block/spectre/internal/future"
 	"github.com/block/spectre/internal/logger"
+	"github.com/block/spectre/internal/quarantine"
 )
 
 // outcome classifies one response comparison.
@@ -74,7 +74,7 @@ type ingressOutcome struct {
 // ingressPair is one mirrored request. ingressPairs.mu guards its lifecycle flags.
 type ingressPair struct {
 	protocol  boundary.Protocol
-	route     Route
+	route     boundary.Route
 	requestID RequestID
 	// ignoredReason explains why the responses are never compared.
 	ignoredReason Option[string]
@@ -84,7 +84,7 @@ type ingressPair struct {
 	candidateDone bool
 }
 
-func newIngressPair(protocol boundary.Protocol, requestID RequestID, route Route, ignored Option[string]) *ingressPair {
+func newIngressPair(protocol boundary.Protocol, requestID RequestID, route boundary.Route, ignored Option[string]) *ingressPair {
 	return &ingressPair{
 		protocol: protocol, route: route, requestID: requestID, ignoredReason: ignored,
 		outcome: future.New[ingressOutcome](),
@@ -98,6 +98,14 @@ func (p *ingressPair) id() RequestID {
 // describe returns the log attributes that identify the pair.
 func (p *ingressPair) describe() []any {
 	return []any{"protocol", p.protocol, "route", p.route}
+}
+
+func (p *ingressPair) traffic() quarantine.Traffic {
+	return ingressTraffic(p.protocol, p.route)
+}
+
+func ingressTraffic(protocol boundary.Protocol, route boundary.Route) quarantine.Traffic {
+	return quarantine.Traffic{Direction: boundary.Ingress, Protocol: protocol, Route: route}
 }
 
 // ignored returns why the pair is never compared, if it is not.
@@ -229,7 +237,7 @@ func (p *ingressPair) latencyDelta(candidate time.Duration) Option[time.Duration
 }
 
 // start registers a reference request under a new RequestID.
-func (p *ingressPairs) start(protocol boundary.Protocol, route Route, ignored Option[string]) Decision {
+func (p *ingressPairs) start(protocol boundary.Protocol, route boundary.Route, ignored Option[string]) Decision {
 	requestID, exchange := newRequestID(), newExchange()
 	pair := newIngressPair(protocol, requestID, route, ignored)
 	p.mu.Lock()
@@ -240,10 +248,12 @@ func (p *ingressPairs) start(protocol boundary.Protocol, route Route, ignored Op
 }
 
 // join pairs a candidate request with its reference, quarantining it if it cannot.
-func (p *ingressPairs) join(ctx context.Context, protocol boundary.Protocol, requestID Option[RequestID]) (Decision, error) {
+func (p *ingressPairs) join(ctx context.Context, protocol boundary.Protocol, route boundary.Route, requestID Option[RequestID]) (Decision, error) {
 	exchange, err := p.admit(protocol, requestID)
 	if err != nil {
-		p.quarantine.Quarantine(ctx, err)
+		p.quarantine.Quarantine(ctx, quarantine.Reason{
+			Kind: quarantine.KindPairing, Traffic: Some(ingressTraffic(protocol, route)), Detail: err.Error(),
+		})
 		return nil, err
 	}
 	return DecisionForward{RequestID: requestID, Exchange: exchange}, nil
@@ -371,9 +381,13 @@ func (p *ingressPairs) report(ctx context.Context, pair *ingressPair, result com
 	switch result.outcome {
 	case outcomeEquivalent, outcomeSkipped:
 	case outcomeDivergent:
-		p.quarantine.Quarantine(ctx, errors.Errorf("response differences: %s", strings.Join(result.differences, ", ")))
+		p.quarantine.Quarantine(ctx, quarantine.Reason{
+			Kind: quarantine.KindDivergent, Traffic: Some(pair.traffic()), Differences: result.differences,
+		})
 	case outcomeUnable:
-		p.quarantine.Quarantine(ctx, errors.Errorf("response comparison failed: %s", result.reason))
+		p.quarantine.Quarantine(ctx, quarantine.Reason{
+			Kind: quarantine.KindUnable, Traffic: Some(pair.traffic()), Detail: "response comparison failed: " + result.reason,
+		})
 	}
 }
 
@@ -387,7 +401,7 @@ func newIngressReference(pairs *ingressPairs, protocol boundary.Protocol) *ingre
 	return &ingressReference{pairs: pairs, protocol: protocol}
 }
 
-func (r *ingressReference) ProcessRequest(_ context.Context, _ Option[RequestID], route Route, ignored Option[string],
+func (r *ingressReference) ProcessRequest(_ context.Context, _ Option[RequestID], route boundary.Route, ignored Option[string],
 	_ func(ctx context.Context) (Message, error),
 ) (Decision, error) {
 	return r.pairs.start(r.protocol, route, ignored), nil
@@ -412,10 +426,10 @@ func newIngressCandidate(pairs *ingressPairs, protocol boundary.Protocol) *ingre
 	return &ingressCandidate{pairs: pairs, protocol: protocol}
 }
 
-func (c *ingressCandidate) ProcessRequest(ctx context.Context, requestID Option[RequestID], _ Route, _ Option[string],
+func (c *ingressCandidate) ProcessRequest(ctx context.Context, requestID Option[RequestID], route boundary.Route, _ Option[string],
 	_ func(ctx context.Context) (Message, error),
 ) (Decision, error) {
-	return c.pairs.join(ctx, c.protocol, requestID)
+	return c.pairs.join(ctx, c.protocol, route, requestID)
 }
 
 func (c *ingressCandidate) ProcessResponse(ctx context.Context, exchange Exchange, response Response) {

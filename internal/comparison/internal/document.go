@@ -96,6 +96,10 @@ func (p documentPath) appendField(name string) documentPath {
 	return p.append(newFieldPathPart(name))
 }
 
+func (p documentPath) appendAnyKey() documentPath {
+	return p.append(newAnyKeyPathPart())
+}
+
 func (p documentPath) appendIndex(index int) documentPath {
 	return p.append(newIndexPathPart(index))
 }
@@ -198,6 +202,10 @@ func (p documentPath) String() string {
 			fmt.Fprintf(&output, "[%d]", index)
 			continue
 		}
+		if part.isAnyKey() {
+			output.WriteString("[*]")
+			continue
+		}
 		name, _ := part.fieldName()
 		if isIdentifier(name) {
 			output.WriteByte('.')
@@ -213,10 +221,17 @@ type pathPart struct {
 	name    string
 	index   int
 	indexed bool
+	// anyKey stands for an object key that is payload data, so a reported
+	// difference path never quotes it. Only difference paths hold it.
+	anyKey bool
 }
 
 func newFieldPathPart(name string) pathPart {
 	return pathPart{name: name}
+}
+
+func newAnyKeyPathPart() pathPart {
+	return pathPart{anyKey: true}
 }
 
 func newIndexPathPart(index int) pathPart {
@@ -227,8 +242,12 @@ func (p pathPart) arrayIndex() (index int, indexed bool) {
 	return p.index, p.indexed
 }
 
+func (p pathPart) isAnyKey() bool {
+	return p.anyKey
+}
+
 func (p pathPart) fieldName() (name string, named bool) {
-	return p.name, !p.indexed
+	return p.name, !p.indexed && !p.anyKey
 }
 
 func (p pathPart) equals(other pathPart) bool {

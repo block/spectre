@@ -301,11 +301,11 @@ func (e *Egress) serveCandidate(writer http.ResponseWriter, request *http.Reques
 
 // route names a request by the endpoint pattern it matches, so requests that
 // differ only in path wildcards pair. Others are named by host, ignoring any port, and path.
-func (e *Egress) route(request *http.Request) protocol.Route {
+func (e *Egress) route(request *http.Request) boundary.Route {
 	if endpoint, _, declared := e.routes.Request(request.Method, request.Host, request.URL.EscapedPath()); declared {
-		return protocol.Route(endpoint.Pattern)
+		return boundary.Route(endpoint.Pattern)
 	}
-	return protocol.Route(request.Method + " " + hostname(request.Host) + request.URL.EscapedPath())
+	return boundary.Route(request.Method + " " + hostname(request.Host) + request.URL.EscapedPath())
 }
 
 // newMessageRequest describes a request without its body, detached from the

@@ -10,8 +10,8 @@ import (
 
 	"github.com/alecthomas/assert/v2"
 
-	"github.com/block/spectre/internal/netaddr"
 	"github.com/block/spectre/internal/httpserver"
+	"github.com/block/spectre/internal/netaddr"
 )
 
 // A unix-socket backend reaches many upstreams over one connection and routes by

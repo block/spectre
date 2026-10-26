@@ -2,6 +2,7 @@ package httpserver_test
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -27,6 +28,7 @@ import (
 	"github.com/block/spectre/internal/httpserver"
 	"github.com/block/spectre/internal/logger"
 	"github.com/block/spectre/internal/protocol"
+	"github.com/block/spectre/internal/quarantine"
 	"github.com/block/spectre/internal/state"
 )
 
@@ -1096,15 +1098,72 @@ status = "migrated"
 	case <-time.After(time.Second):
 		t.Fatal("migrated route was not mirrored")
 	}
-	assert.Zero(t, handler.Candidates().QuarantineStatus().Reason)
+	assert.False(t, handler.Candidates().QuarantineStatus().Ok())
 
 	serve(http.MethodGet, "/unlisted")
-	assert.EqualError(t, handler.Candidates().QuarantineStatus().Reason, "route GET /unlisted is in no node of the migration state")
+	status, quarantined := handler.Candidates().QuarantineStatus().Get()
+	assert.True(t, quarantined)
+	assert.Equal(t, quarantine.Reason{
+		Kind:    quarantine.KindUnlisted,
+		Traffic: Some(quarantine.Traffic{Direction: boundary.Ingress, Protocol: boundary.ProtocolHTTP, Route: "GET /unlisted"}),
+		Detail:  "route GET /unlisted is in no node of the migration state",
+	}, status.Reason)
 	assert.NoError(t, handler.Shutdown(t.Context()))
 	assert.Equal(t, 0, len(candidatePaths))
 	referenceMu.Lock()
 	defer referenceMu.Unlock()
 	assert.Equal(t, []string{"/pending/a", "/ignored/a", "/grpc.reflection.v1.ServerReflection/ServerReflectionInfo", "/migrated/a", "/unlisted"}, referencePaths)
+}
+
+func TestQuarantineNamesNodeOfRoute(t *testing.T) {
+	transport := roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+		if request.URL.Host == candidateAddress {
+			return jsonResponse(request, `{"value":"candidate"}`), nil
+		}
+		return jsonResponse(request, `{"value":"reference"}`), nil
+	})
+	catalog, err := boundary.NewCatalog(httpserver.Supports()...)
+	assert.NoError(t, err)
+	tests := []struct {
+		name    string
+		pattern string
+		url     string
+	}{
+		{name: "AnyHost", pattern: "GET /compared/{name}", url: "http://proxy.example/compared/a"},
+		// A pattern with a host must keep it when the quarantine names the node.
+		{name: "Host", pattern: "GET api.example/compared/{name}", url: "http://api.example/compared/a"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			migration, err := state.Parse(fmt.Appendf(nil, `
+[nodes.forecasts]
+status = "migrated"
+[nodes.forecasts.ingress.http.routes]
+%q = {}
+`, test.pattern), catalog)
+			assert.NoError(t, err)
+			config := newTestConfig(t, "http://127.0.0.1:50051", "http://"+candidateAddress)
+			handler, err := httpserver.NewIngress(t.Context(), config, newEngineConfig(t), transport, Some[httpserver.DescriptorLoader](matchingDescriptorLoader()), Some(migration))
+			assert.NoError(t, err)
+			serveIngress(t.Context(), t, handler)
+
+			handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, test.url, nil))
+			select {
+			case <-handler.Candidates().Quarantined():
+			case <-time.After(time.Second):
+				t.Fatal("divergence did not quarantine the candidate")
+			}
+
+			status, _ := handler.Candidates().QuarantineStatus().Get()
+			assert.Equal(t, quarantine.Reason{
+				Kind:        quarantine.KindDivergent,
+				Traffic:     Some(quarantine.Traffic{Direction: boundary.Ingress, Protocol: boundary.ProtocolHTTP, Route: boundary.Route(test.pattern)}),
+				Node:        Some("forecasts"),
+				Differences: []string{"$.value"},
+			}, status.Reason)
+			assert.NoError(t, handler.Shutdown(t.Context()))
+		})
+	}
 }
 
 func TestRejectsInvalidStateRoute(t *testing.T) {
