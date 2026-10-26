@@ -101,16 +101,36 @@ because constructors take the whole config, and so are protobuf messages.`,
       }
       return found;
     };
+    // extendsPath reports whether access is the operand of a further field, index, or dereference.
+    const extendsPath = (access: Cursor) => {
+      switch (access.parentEdgeKind()) {
+        case edge.ParenExpr_X:
+        case edge.IndexExpr_X:
+        case edge.StarExpr_X:
+          return true;
+        case edge.SelectorExpr_X:
+          return info.selections.get(access.parent().node() as ast.SelectorExpr)?.kind() === types.FieldVal;
+        default:
+          return false;
+      }
+    };
     // isRead reports whether a selector through a holder only reads data from it.
     const isRead = (selector: Cursor) => {
       const selection = info.selections.get(selector.node() as ast.SelectorExpr);
-      const kind = selector.parentEdgeKind();
       if (selection?.kind() === types.FieldVal) {
+        // A write can go through a longer path, as in holder.State.Count++.
+        let access = selector;
+        while (extendsPath(access)) {
+          access = access.parent();
+        }
+        const kind = access.parentEdgeKind();
         return kind !== edge.AssignStmt_Lhs && kind !== edge.IncDecStmt_X && kind !== edge.UnaryExpr_X;
       }
+      // A method value that is not called keeps the receiver for later calls.
       const signature = selection?.type();
       return (
         selection?.kind() === types.MethodVal &&
+        selector.parentEdgeKind() === edge.CallExpr_Fun &&
         signature?.$type === "Signature" &&
         (signature.params()?.len() ?? 0) === 0 &&
         (signature.results()?.len() ?? 0) > 0

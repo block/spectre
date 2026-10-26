@@ -21,6 +21,13 @@ func (c *Candidates) Shutdown(ctx context.Context) error {
 }
 func (c *Candidates) close() {}
 
+// State has enough data fields to be worth narrowing.
+type State struct {
+	Status  Status
+	Reasons []string
+	A, B, C int
+}
+
 // Small has too few members to be worth narrowing.
 type Small struct{ Value int }
 

@@ -33,6 +33,29 @@ func Forward(candidates *proxy.Candidates) {
 	Wait(candidates)
 }
 
+// A method value observes the receiver when it is called later.
+func StatusFunc(candidates *proxy.Candidates) func() proxy.Status {
+	return candidates.QuarantineStatus
+}
+
+// A read through a nested field is still a read.
+func Reason(state *proxy.State) string { // want `parameter state holds State only to read Status; depend on that instead`
+	return state.Status.Reason
+}
+
+// Writing through a nested field or an index is a real dependency.
+func Clear(state *proxy.State) {
+	state.Status.Reason = ""
+}
+
+func Rename(state *proxy.State) {
+	state.Reasons[0] = ""
+}
+
+func Count(state *proxy.State) {
+	(state.A)++
+}
+
 // A value is data, not a shared object.
 func ByValue(candidates proxy.Candidates) proxy.Status {
 	return candidates.QuarantineStatus()
