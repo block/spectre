@@ -44,7 +44,7 @@ func (c *initCommand) Run(ctx context.Context) error {
 }
 
 // stateCommand groups the commands that read a service's migration state.
-type stateCommand struct {
+type stateCommand struct { //nolint:singleusestruct // A Kong command group; folding it would flatten its subcommands.
 	Types    stateTypesCommand    `cmd:"" help:"Describe each node type the migration state can use."`
 	Validate stateValidateCommand `cmd:"" help:"Check the migration state for errors, and warn about nodes ingress never reaches."`
 }
@@ -90,7 +90,7 @@ func (c *runCommand) Run(ctx context.Context, catalog *boundary.Catalog) error {
 }
 
 // genCommand groups the schema declaration generators.
-type genCommand struct {
+type genCommand struct { //nolint:singleusestruct // A Kong command group; folding it would flatten its subcommands.
 	Proto      protoCommand      `cmd:"" help:"Generate TypeScript schema declarations from protobuf descriptor sets."`
 	JSONSchema jsonSchemaCommand `cmd:"" name:"json-schema" help:"Generate a TypeScript schema declaration from JSON Schema files."`
 	Module     moduleCommand     `cmd:"" help:"Write the spectre script API declaration for editors."`

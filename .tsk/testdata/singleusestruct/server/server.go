@@ -76,22 +76,6 @@ type TwiceCommand struct {
 	Secondary TwiceConfig `embed:"" prefix:"secondary-"`
 }
 
-type PrefixConfig struct {
-	Port int `help:"Port to use."`
-}
-
-type PrefixCommand struct {
-	Prefix PrefixConfig `embed:"" prefix:"prefix-"`
-}
-
-type subCommand struct {
-	Force bool `help:"Overwrite."`
-}
-
-type parentCommand struct {
-	Sub subCommand `cmd:"" help:"Run the subcommand."`
-}
-
 type TestedConfig struct { // want `TestedConfig is used only by TestedCommand; move its fields into TestedCommand`
 	Debug bool `help:"Print debug output."`
 }

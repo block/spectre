@@ -5,7 +5,7 @@ import * as token from "go/token";
 import * as types from "go/types";
 import * as edge from "golang.org/x/tools/go/ast/edge";
 import type { Cursor } from "golang.org/x/tools/go/ast/inspector";
-import { lookupTag, namedStruct } from "./structtag";
+import { namedStruct } from "./structtag";
 
 // A holder is the one struct with a field of a candidate type.
 interface Holder {
@@ -24,9 +24,8 @@ uses it.
 
 The linter sees one package, so it cannot tell whether another package uses an
 exported struct; keep one that it must with a //nolint comment. Uses in tests do
-not count, because folding the struct only means updating them too. Generated types
-are exempt. So is a field with a Kong prefix or envprefix tag, because folding
-it in would rename its flags, and a cmd:"" field, which is a subcommand.`,
+not count, because folding the struct only means updating them too. Generated
+types are exempt.`,
   requires: [inspect],
   run(pass) {
     const info = pass.typesInfo;
@@ -101,18 +100,7 @@ function holderOf(info: types.Info, ident: Cursor, excluded: (pos: token.Pos) =>
   if (spec.parent().parentEdgeKind() !== edge.File_Decls || excluded(field.pos())) {
     return null;
   }
-  const tag = unquote(field.tag?.value ?? "");
-  if (["cmd", "prefix", "envprefix"].some((key) => lookupTag(tag, key) !== undefined)) {
-    return null;
-  }
   const name = (spec.node() as ast.TypeSpec).name;
   const holder = name === null ? null : info.defs.get(name);
   return holder?.$type === "TypeName" ? holder : null;
-}
-
-function unquote(literal: string): string {
-  if (literal.startsWith("`")) {
-    return literal.slice(1, -1);
-  }
-  return literal === "" ? "" : (JSON.parse(literal) as string);
 }
