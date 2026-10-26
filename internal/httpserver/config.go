@@ -12,18 +12,24 @@ import (
 	"github.com/block/spectre/internal/proxy"
 )
 
-// Config contains the configuration shared by ingress and egress.
-type Config struct {
+// TransportConfig contains the limits the backend transport shares with the servers.
+type TransportConfig struct {
 	// MaxInFlightRequests limits concurrent proxied requests.
 	MaxInFlightRequests int `default:"256" help:"Maximum concurrent proxied requests."`
+	// MaxHeaderBytes limits the size of request and response headers.
+	MaxHeaderBytes int `default:"65536" help:"Maximum request header size in bytes."`
+}
+
+// Config contains the configuration shared by ingress and egress.
+type Config struct {
+	// TransportConfig holds the limits shared with the backend transport.
+	TransportConfig `embed:""`
 	// MaxConnections limits concurrent client connections.
 	MaxConnections int `default:"512" help:"Maximum concurrent client connections."`
 	// ReadHeaderTimeout limits the duration spent reading request headers.
 	ReadHeaderTimeout time.Duration `default:"10s" help:"Maximum duration for reading request headers."`
 	// IdleTimeout limits how long an idle client connection remains open.
 	IdleTimeout time.Duration `default:"1m" help:"Maximum idle client connection duration."`
-	// MaxHeaderBytes limits the size of request and response headers.
-	MaxHeaderBytes int `default:"65536" help:"Maximum request header size in bytes."`
 	// ShutdownTimeout limits graceful server shutdown.
 	ShutdownTimeout time.Duration `default:"10s" help:"Maximum graceful shutdown duration."`
 	// ComparisonMaxBodyBytes limits each captured request or response body.

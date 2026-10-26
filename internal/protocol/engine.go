@@ -15,7 +15,7 @@ import (
 
 // Engine owns the in-flight state that every Acceptor shares.
 type Engine struct {
-	scripts *comparison.Scripts
+	schema  *schema.Schema
 	ingress *ingressPairs
 	egress  *egressQueue
 }
@@ -48,7 +48,7 @@ func NewEngine(
 		}
 	}
 	return &Engine{
-		scripts: scripts,
+		schema:  scripts.Schema(),
 		ingress: newIngressPairs(scripts, quarantine),
 		egress:  newEgressQueue(scripts, config.MatchWindow, quarantine),
 	}, nil
@@ -67,7 +67,7 @@ func endpointDeclaration(endpoint javascript.Endpoint) Declaration {
 
 // Schema returns the types that servers decode messages as.
 func (e *Engine) Schema() *schema.Schema {
-	return e.scripts.Schema()
+	return e.schema
 }
 
 // IngressReference returns the acceptor for requests to the reference service.

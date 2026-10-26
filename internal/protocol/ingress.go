@@ -322,20 +322,20 @@ func (p *ingressPairs) candidateResponse(ctx context.Context, exchange Exchange,
 	}
 	reference, err := pair.awaitReference(ctx)
 	if err != nil {
-		p.unfinished(ctx, pair, err)
+		p.unfinished(ctx, pair.describe(), err)
 		return
 	}
 	result := compareResponses(ctx, p.scripts, reference, response)
 	// A comparison cut short by the candidate's own deadline says nothing about it.
 	if result.outcome == outcomeUnable && ctx.Err() != nil {
-		p.unfinished(ctx, pair, errors.Errorf("%s: %s", ctx.Err(), result.reason))
+		p.unfinished(ctx, pair.describe(), errors.Errorf("%s: %s", ctx.Err(), result.reason))
 		return
 	}
 	p.report(ctx, pair, result, response.Latency)
 }
 
-func (p *ingressPairs) unfinished(ctx context.Context, pair *ingressPair, err error) {
-	logger.FromContext(ctx).WarnContext(context.WithoutCancel(ctx), "Response comparison did not finish", append(pair.describe(), "error", err)...)
+func (p *ingressPairs) unfinished(ctx context.Context, attributes []any, err error) {
+	logger.FromContext(ctx).WarnContext(context.WithoutCancel(ctx), "Response comparison did not finish", append(attributes, "error", err)...)
 }
 
 func (p *ingressPairs) candidateUnable(ctx context.Context, exchange Exchange, reason error) {

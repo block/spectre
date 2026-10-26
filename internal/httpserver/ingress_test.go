@@ -122,7 +122,7 @@ func TestUsesConfiguredH2CProtocol(t *testing.T) {
 	}))
 	t.Cleanup(candidate.Close)
 	config := newTestConfig(t, "h2c://"+listener.Addr().String(), candidate.URL)
-	transport := httpserver.NewTransport(config.Config)
+	transport := httpserver.NewTransport(config.TransportConfig)
 	t.Cleanup(transport.CloseIdleConnections)
 	handler, err := newIngress(t, config, newEngineConfig(t), transport, Some[httpserver.DescriptorLoader](matchingDescriptorLoader()))
 	assert.NoError(t, err)
@@ -162,7 +162,7 @@ func TestForwardsToUnixSocketBackends(t *testing.T) {
 	}))
 
 	config := newTestConfig(t, "http+unix:"+referenceSocket, "http+unix:"+candidateSocket)
-	transport := httpserver.NewTransport(config.Config)
+	transport := httpserver.NewTransport(config.TransportConfig)
 	t.Cleanup(transport.CloseIdleConnections)
 	handler, err := newIngress(t, config, newEngineConfig(t), transport, Some[httpserver.DescriptorLoader](matchingDescriptorLoader()))
 	assert.NoError(t, err)
