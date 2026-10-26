@@ -142,7 +142,7 @@ func TestDecodesResponseStatus(t *testing.T) {
 		"DeclaredHTTPBodyFails": {
 			method: http.MethodGet, path: "/v1/forecast",
 			response: httpResponse(http.StatusBadGateway, "application/json", `{"unknown":1}`),
-			expected: decoded{status: Some("502"), failure: `has no field "unknown"`},
+			expected: decoded{status: Some("502"), failure: `has a field it does not declare`},
 		},
 		"ProtobufBodyFails": {
 			method: http.MethodPost, path: "/test.v1.Service/Get", contentType: "application/x-protobuf",
@@ -221,7 +221,7 @@ func TestDecodesDeclaredHTTPJSONResponses(t *testing.T) {
 		},
 		"UnknownField": {
 			response: httpResponse(http.StatusOK, "application/json", `{"stable":"same","roles":[],"users":[],"count":"0","labels":{},"added":true}`),
-			expected: decoded{status: Some("200"), failure: `type "test.v1.Response" has no field "added"`},
+			expected: decoded{status: Some("200"), failure: `type "test.v1.Response" has a field it does not declare`},
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -326,7 +326,7 @@ func TestDecodesHTTPJSONWithoutDescriptors(t *testing.T) {
 		"UnknownField": {
 			path:     "/raw",
 			response: connectResponse(`{"stable":"same","added":true}`),
-			expected: decoded{status: Some("200"), failure: `type "raw.Response" has no field "added"`},
+			expected: decoded{status: Some("200"), failure: `type "raw.Response" has a field it does not declare`},
 		},
 		"RequiredField": {
 			path:     "/raw",

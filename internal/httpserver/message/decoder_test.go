@@ -198,7 +198,7 @@ func TestRejectsUnidentifiableRequests(t *testing.T) {
 		message string
 	}{
 		"UnknownQueryParameter": {request: forecastRequest("london", "unknown=1"), message: `bind query parameter "unknown": type "weather.HTTPQuery" has no field "unknown"`},
-		"UnknownBodyField":      {request: searchRequest(`{"unknown":1}`), message: `has no field "unknown"`},
+		"UnknownBodyField":      {request: searchRequest(`{"unknown":1}`), message: `has a field it does not declare`},
 		"InvalidValue":          {request: forecastRequest("london", "days=many"), message: `parse field "days"`},
 		"UnknownEnumValue":      {request: forecastRequest("london", "units=KELVIN"), message: `value is not a declared enum literal`},
 		"RepeatedSingular":      {request: forecastRequest("london", "days=1&days=2"), message: `field "days" is not repeated`},

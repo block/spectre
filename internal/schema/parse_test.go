@@ -200,14 +200,14 @@ declare module "m" {
 		"Complete":        {value: map[string]any{"name": "a", "count": 1.0, "flag": true, "kind": "x", "items": []any{map[string]any{"id": "b"}}, "byKey": map[string]any{"k": map[string]any{"id": "c"}}}},
 		"NotObject":       {value: []any{}, error: "$: expected m.A, found an array"},
 		"MissingRequired": {value: map[string]any{}, error: `$: required field "name" of type "m.A" is missing`},
-		"UnknownField":    {value: map[string]any{"name": "a", "other": 1.0}, error: `$: type "m.A" has no field "other"`},
+		"UnknownField":    {value: map[string]any{"name": "a", "other": 1.0}, error: `$: type "m.A" has a field it does not declare`},
 		"Null":            {value: map[string]any{"name": "a", "count": nil}, error: "$.count: expected number, found null"},
 		"WrongScalar":     {value: map[string]any{"name": 1.0}, error: "$.name: expected string, found a number"},
 		"WrongLiteral":    {value: map[string]any{"name": "a", "kind": "z"}, error: `$.kind: value is not one of "x" | "y"`},
 		"NumberLiteral":   {value: map[string]any{"name": "a", "ratio": "NaN"}},
 		"NumberString":    {value: map[string]any{"name": "a", "ratio": "Infinity"}, error: `$.ratio: expected number | "NaN", found a string`},
 		"NestedElement":   {value: map[string]any{"name": "a", "items": []any{map[string]any{}}}, error: `$.items[0]: required field "id" of type "m.B" is missing`},
-		"NestedMapValue":  {value: map[string]any{"name": "a", "byKey": map[string]any{"k": "v"}}, error: `$.byKey["k"]: expected m.B, found a string`},
+		"NestedMapValue":  {value: map[string]any{"name": "a", "byKey": map[string]any{"alice@example.com": "v"}}, error: `$.byKey[*]: expected m.B, found a string`},
 	} {
 		t.Run(name, func(t *testing.T) {
 			err := loaded.Validate("m.A", test.value)
