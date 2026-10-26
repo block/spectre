@@ -14,6 +14,7 @@ import (
 	"github.com/block/spectre/internal/logger"
 	"github.com/block/spectre/internal/scaffold"
 	"github.com/block/spectre/internal/server"
+	"github.com/block/spectre/internal/server/client"
 	"github.com/block/spectre/internal/state"
 	"github.com/block/spectre/internal/supervisor"
 	"github.com/block/spectre/internal/terminal"
@@ -81,7 +82,8 @@ type divergencesListCommand struct {
 }
 
 func (c *divergencesListCommand) Run(ctx context.Context) error {
-	return errors.WithStack(server.WriteDivergences(ctx, os.Stdout, c.Divergences, terminal.NewPalette(terminal.ColorEnabled(os.Stdout))))
+	spectreServer := client.New(c.Divergences.Client)
+	return errors.WithStack(server.WriteDivergences(ctx, os.Stdout, spectreServer, c.Divergences, terminal.NewPalette(terminal.ColorEnabled(os.Stdout))))
 }
 
 // divergencesClearCommand clears the divergences of a service environment.
@@ -90,7 +92,7 @@ type divergencesClearCommand struct {
 }
 
 func (c *divergencesClearCommand) Run(ctx context.Context) error {
-	return errors.WithStack(server.ClearDivergences(ctx, c.Clear))
+	return errors.WithStack(client.New(c.Clear.Client).ClearDivergences(ctx, c.Clear.Service, c.Clear.Environment))
 }
 
 // serveCommand runs the SPECTRE server.

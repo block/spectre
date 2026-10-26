@@ -20,6 +20,7 @@ import (
 	"github.com/block/spectre/internal/proxy"
 	"github.com/block/spectre/internal/quarantine"
 	"github.com/block/spectre/internal/server"
+	"github.com/block/spectre/internal/server/client"
 	"github.com/block/spectre/internal/terminal"
 	pb "github.com/block/spectre/spectrepb"
 	"github.com/block/spectre/spectrepb/spectrepbconnect"
@@ -28,7 +29,7 @@ import (
 func TestDivergencesKeepLatestQuarantine(t *testing.T) {
 	httpServer := httptest.NewServer(server.NewService().Handler())
 	t.Cleanup(httpServer.Close)
-	client := spectrepbconnect.NewSpectreServiceClient(httpServer.Client(), httpServer.URL)
+	rpc := spectrepbconnect.NewSpectreServiceClient(httpServer.Client(), httpServer.URL)
 	first := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
 	divergent := func(since time.Time, route string) *pb.Divergence {
 		return &pb.Divergence{
@@ -57,7 +58,7 @@ func TestDivergencesKeepLatestQuarantine(t *testing.T) {
 		},
 	}
 	report := func(divergence *pb.Divergence) {
-		_, err := client.Quarantine(t.Context(), connect.NewRequest(&pb.QuarantineRequest{Divergence: divergence}))
+		_, err := rpc.Quarantine(t.Context(), connect.NewRequest(&pb.QuarantineRequest{Divergence: divergence}))
 		assert.NoError(t, err)
 	}
 	report(unmatched)
@@ -70,17 +71,18 @@ func TestDivergencesKeepLatestQuarantine(t *testing.T) {
 	report(divergent(first.Add(-time.Minute), "GET /v1/users/{id}/avatar"))
 
 	expected := &pb.ListDivergencesResponse{Divergences: []*pb.Divergence{latest, unmatched}}
-	all, err := client.ListDivergences(t.Context(), connect.NewRequest(&pb.ListDivergencesRequest{}))
+	all, err := rpc.ListDivergences(t.Context(), connect.NewRequest(&pb.ListDivergencesRequest{}))
 	assert.NoError(t, err)
 	assert.True(t, proto.Equal(expected, all.Msg), "%v", all.Msg)
 
-	staging, err := client.ListDivergences(t.Context(), connect.NewRequest(&pb.ListDivergencesRequest{Environment: proto.String("staging")}))
+	staging, err := rpc.ListDivergences(t.Context(), connect.NewRequest(&pb.ListDivergencesRequest{Environment: proto.String("staging")}))
 	assert.NoError(t, err)
 	assert.True(t, proto.Equal(&pb.ListDivergencesResponse{Divergences: []*pb.Divergence{unmatched}}, staging.Msg), "%v", staging.Msg)
 
 	var text strings.Builder
-	config := server.DivergencesConfig{Query: server.QueryConfig{Client: server.ClientConfig{URL: httpServer.URL}}}
-	assert.NoError(t, server.WriteDivergences(t.Context(), &text, config, terminal.NewPalette(false)))
+	spectreServer := client.New(client.Config{URL: httpServer.URL})
+	config := server.DivergencesConfig{}
+	assert.NoError(t, server.WriteDivergences(t.Context(), &text, spectreServer, config, terminal.NewPalette(false)))
 	assert.Equal(t, `users abc123 production
   ingress http GET /v1/users: response differences: body.name (node users)
   quarantined 2026-10-01T12:01:00Z
@@ -90,9 +92,9 @@ users abc123 staging
 `, text.String())
 
 	var data strings.Builder
-	config.Query.JSON = true
+	config.JSON = true
 	config.Node = "users"
-	assert.NoError(t, server.WriteDivergences(t.Context(), &data, config, terminal.NewPalette(false)))
+	assert.NoError(t, server.WriteDivergences(t.Context(), &data, spectreServer, config, terminal.NewPalette(false)))
 	decoded := &pb.ListDivergencesResponse{}
 	assert.NoError(t, protojson.Unmarshal([]byte(data.String()), decoded))
 	assert.True(t, proto.Equal(&pb.ListDivergencesResponse{Divergences: []*pb.Divergence{latest}}, decoded), "%v", decoded)
@@ -101,7 +103,7 @@ users abc123 staging
 func TestClearDivergencesOfServiceEnvironment(t *testing.T) {
 	httpServer := httptest.NewServer(server.NewService().Handler())
 	t.Cleanup(httpServer.Close)
-	client := spectrepbconnect.NewSpectreServiceClient(httpServer.Client(), httpServer.URL)
+	rpc := spectrepbconnect.NewSpectreServiceClient(httpServer.Client(), httpServer.URL)
 	divergence := func(environment string, direction pb.Direction) *pb.Divergence {
 		return &pb.Divergence{
 			Service:     "users",
@@ -117,25 +119,24 @@ func TestClearDivergencesOfServiceEnvironment(t *testing.T) {
 		divergence("production", pb.Direction_DIRECTION_EGRESS),
 		staging,
 	} {
-		_, err := client.Quarantine(t.Context(), connect.NewRequest(&pb.QuarantineRequest{Divergence: reported}))
+		_, err := rpc.Quarantine(t.Context(), connect.NewRequest(&pb.QuarantineRequest{Divergence: reported}))
 		assert.NoError(t, err)
 	}
 
-	config := server.ClearConfig{Client: server.ClientConfig{URL: httpServer.URL}, Service: "users", Environment: "production"}
-	assert.NoError(t, server.ClearDivergences(t.Context(), config))
+	assert.NoError(t, client.New(client.Config{URL: httpServer.URL}).ClearDivergences(t.Context(), "users", "production"))
 
-	remaining, err := client.ListDivergences(t.Context(), connect.NewRequest(&pb.ListDivergencesRequest{}))
+	remaining, err := rpc.ListDivergences(t.Context(), connect.NewRequest(&pb.ListDivergencesRequest{}))
 	assert.NoError(t, err)
 	assert.True(t, proto.Equal(&pb.ListDivergencesResponse{Divergences: []*pb.Divergence{staging}}, remaining.Msg), "%v", remaining.Msg)
 
-	_, err = client.ClearDivergences(t.Context(), connect.NewRequest(&pb.ClearDivergencesRequest{Service: "users"}))
+	_, err = rpc.ClearDivergences(t.Context(), connect.NewRequest(&pb.ClearDivergencesRequest{Service: "users"}))
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 }
 
 func TestQuarantineRejectsInvalidDivergence(t *testing.T) {
 	httpServer := httptest.NewServer(server.NewService().Handler())
 	t.Cleanup(httpServer.Close)
-	client := spectrepbconnect.NewSpectreServiceClient(httpServer.Client(), httpServer.URL)
+	rpc := spectrepbconnect.NewSpectreServiceClient(httpServer.Client(), httpServer.URL)
 	valid := func() *pb.Divergence {
 		return &pb.Divergence{
 			Service:     "users",
@@ -167,7 +168,7 @@ func TestQuarantineRejectsInvalidDivergence(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			_, err := client.Quarantine(t.Context(), connect.NewRequest(&pb.QuarantineRequest{Divergence: test.divergence}))
+			_, err := rpc.Quarantine(t.Context(), connect.NewRequest(&pb.QuarantineRequest{Divergence: test.divergence}))
 			assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 		})
 	}
@@ -191,12 +192,12 @@ func TestReporterRetriesQuarantine(t *testing.T) {
 	ingress := make(chan proxy.QuarantineStatus, 1)
 	egress := make(chan proxy.QuarantineStatus, 1)
 	config := server.ReporterConfig{
-		Client:      server.ClientConfig{URL: httpServer.URL},
+		Client:      client.Config{URL: httpServer.URL},
 		Service:     "users",
 		Environment: "production",
 		Revision:    "abc123",
 	}
-	reporter := server.NewReporter(config, server.Source{Direction: boundary.Ingress, Quarantined: ingress}, server.Source{Direction: boundary.Egress, Quarantined: egress})
+	reporter := server.NewReporter(config, client.New(config.Client), server.Source{Direction: boundary.Ingress, Quarantined: ingress}, server.Source{Direction: boundary.Egress, Quarantined: egress})
 	ctx, cancel := context.WithCancel(t.Context())
 	t.Cleanup(cancel)
 	go reporter.Run(ctx)
@@ -209,8 +210,8 @@ func TestReporterRetriesQuarantine(t *testing.T) {
 	}}
 	<-reports
 
-	client := spectrepbconnect.NewSpectreServiceClient(httpServer.Client(), httpServer.URL)
-	quarantined, err := client.ListDivergences(t.Context(), connect.NewRequest(&pb.ListDivergencesRequest{}))
+	rpc := spectrepbconnect.NewSpectreServiceClient(httpServer.Client(), httpServer.URL)
+	quarantined, err := rpc.ListDivergences(t.Context(), connect.NewRequest(&pb.ListDivergencesRequest{}))
 	assert.NoError(t, err)
 	expected := &pb.ListDivergencesResponse{Divergences: []*pb.Divergence{{
 		Service:     "users",

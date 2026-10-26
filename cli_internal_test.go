@@ -12,6 +12,7 @@ import (
 	"github.com/alecthomas/assert/v2"
 
 	"github.com/block/spectre/internal/server"
+	"github.com/block/spectre/internal/server/client"
 	"github.com/block/spectre/internal/supervisor"
 )
 
@@ -23,7 +24,7 @@ func reportingFlags() []string {
 // expectedReporting is the reporter config that reportingFlags parse to.
 func expectedReporting() server.ReporterConfig {
 	return server.ReporterConfig{
-		Client:      server.ClientConfig{URL: "http://server.example"},
+		Client:      client.Config{URL: "http://server.example"},
 		Service:     "users",
 		Environment: "production",
 		Revision:    "abc123",
@@ -79,7 +80,7 @@ func TestSuperviseCommandReadsFlagsFromEnvironment(t *testing.T) {
 	})
 	assert.NoError(t, err)
 	expected := server.ReporterConfig{
-		Client:      server.ClientConfig{URL: "http://server.example"},
+		Client:      client.Config{URL: "http://server.example"},
 		Service:     "invoices",
 		Environment: "production-us-west-2",
 		Revision:    "3f9c2a1",
@@ -112,7 +113,7 @@ func TestDivergencesCommands(t *testing.T) {
 	assert.NoError(t, err)
 	_, err = parser.Parse([]string{"divergences", "clear", "--server-url=http://server.example", "--service=users", "--environment=production"})
 	assert.NoError(t, err)
-	expected := server.ClearConfig{Client: server.ClientConfig{URL: "http://server.example"}, Service: "users", Environment: "production"}
+	expected := server.ClearConfig{Client: client.Config{URL: "http://server.example"}, Service: "users", Environment: "production"}
 	assert.Equal(t, expected, command.Divergences.Clear.Clear)
 }
 

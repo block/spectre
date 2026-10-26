@@ -10,6 +10,7 @@ import (
 
 	"github.com/block/spectre/internal/descriptors"
 	"github.com/block/spectre/internal/server"
+	"github.com/block/spectre/internal/server/client"
 )
 
 // Config contains the command-line configuration for the supervisor.
@@ -79,7 +80,7 @@ func NewConfig() Config {
 		Candidate: placeholder,
 		Reference: placeholder,
 		Server: server.ReporterConfig{
-			Client:      server.ClientConfig{URL: placeholder},
+			Client:      client.Config{URL: placeholder},
 			Service:     placeholder,
 			Environment: placeholder,
 			Revision:    placeholder,

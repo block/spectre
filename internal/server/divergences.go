@@ -4,22 +4,20 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"net/http"
 	"time"
 
-	"connectrpc.com/connect"
 	"github.com/alecthomas/errors"
 	. "github.com/alecthomas/types/optional"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/block/spectre/internal/server/client"
 	"github.com/block/spectre/internal/terminal"
 	pb "github.com/block/spectre/spectrepb"
-	"github.com/block/spectre/spectrepb/spectrepbconnect"
 )
 
-// WriteDivergences writes the divergences the SPECTRE server holds.
-func WriteDivergences(ctx context.Context, w io.Writer, config DivergencesConfig, palette terminal.Palette) error {
+// WriteDivergences writes the divergences that server holds.
+func WriteDivergences(ctx context.Context, w io.Writer, server *client.Client, config DivergencesConfig, palette terminal.Palette) error {
 	// No reported value is empty, so an empty flag leaves its filter unset.
 	request := &pb.ListDivergencesRequest{
 		Service:     Zero(config.Service).Ptr(),
@@ -27,15 +25,14 @@ func WriteDivergences(ctx context.Context, w io.Writer, config DivergencesConfig
 		Revision:    Zero(config.Revision).Ptr(),
 		Node:        Zero(config.Node).Ptr(),
 	}
-	client := spectrepbconnect.NewSpectreServiceClient(&http.Client{}, config.Query.Client.URL)
-	response, err := client.ListDivergences(ctx, connect.NewRequest(request))
+	response, err := server.ListDivergences(ctx, request)
 	if err != nil {
-		return errors.Wrap(err, "list divergences")
+		return errors.WithStack(err)
 	}
-	if config.Query.JSON {
-		return writeJSON(w, response.Msg)
+	if config.JSON {
+		return writeJSON(w, response)
 	}
-	divergences := response.Msg.GetDivergences()
+	divergences := response.GetDivergences()
 	if len(divergences) == 0 {
 		_, err := fmt.Fprintln(w, palette.Dim("No divergences."))
 		return errors.Wrap(err, "write divergences")
@@ -53,14 +50,6 @@ func WriteDivergences(ctx context.Context, w io.Writer, config DivergencesConfig
 		}
 	}
 	return nil
-}
-
-// ClearDivergences removes the divergences of one service environment from the SPECTRE server.
-func ClearDivergences(ctx context.Context, config ClearConfig) error {
-	request := &pb.ClearDivergencesRequest{Service: config.Service, Environment: config.Environment}
-	client := spectrepbconnect.NewSpectreServiceClient(&http.Client{}, config.Client.URL)
-	_, err := client.ClearDivergences(ctx, connect.NewRequest(request))
-	return errors.Wrap(err, "clear divergences")
 }
 
 // describe renders a quarantine as the mirror logged it, with the direction,

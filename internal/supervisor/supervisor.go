@@ -20,6 +20,7 @@ import (
 	"github.com/block/spectre/internal/netaddr"
 	"github.com/block/spectre/internal/protocol"
 	"github.com/block/spectre/internal/server"
+	"github.com/block/spectre/internal/server/client"
 	"github.com/block/spectre/internal/state"
 )
 
@@ -213,7 +214,7 @@ func (s *Supervisor) startAll(ctx context.Context) error {
 // startReporter reports both proxies' quarantines to the SPECTRE server.
 // Reporting never stops the mirror.
 func (s *Supervisor) startReporter(ctx context.Context) {
-	reporter := server.NewReporter(s.config.Server,
+	reporter := server.NewReporter(s.config.Server, client.New(s.config.Server.Client),
 		server.Source{Direction: boundary.Ingress, Quarantined: s.ingress.Candidates().Quarantined()},
 		server.Source{Direction: boundary.Egress, Quarantined: s.egress.Candidates().Quarantined()},
 	)
