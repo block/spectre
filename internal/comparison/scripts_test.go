@@ -206,19 +206,19 @@ func TestCompareAppliesNormalisers(t *testing.T) {
 			candidate: `{"roles":["writer","reader"],"ignored":"second","stable":"same"}`,
 		},
 		"Int64IsJavaScriptString": {
-			typeName: response,
+			typeName:  response,
 			script:    `spectre.field<v1.Response, "count">((count) => typeof count);`,
 			reference: `{"count":"9007199254740993"}`,
 			candidate: `{"count":"9007199254740994"}`,
 		},
 		"UndefinedForMissingField": {
-			typeName: response,
+			typeName:  response,
 			script:    `spectre.field<v1.Response, "ignored">((value) => value === undefined ? "present" : value);`,
 			reference: `{"stable":"same"}`,
 			candidate: `{"stable":"same","ignored":"present"}`,
 		},
 		"DifferencesRemainAfterNormalisation": {
-			typeName: response,
+			typeName:  response,
 			script:    `spectre.field<v1.Response, "ignored">((value) => value?.toLowerCase());`,
 			reference: `{"stable":"same","ignored":"First"}`,
 			candidate: `{"stable":"same","ignored":"second"}`,
@@ -235,7 +235,7 @@ func TestCompareAppliesNormalisers(t *testing.T) {
 			candidate: `{"stable":"second","ignored":"same"}`,
 		},
 		"MessageNormaliserCanRemoveRoot": {
-			typeName: response,
+			typeName:  response,
 			script:    `spectre.message<v1.Response>(() => undefined);`,
 			reference: `{"stable":"first"}`,
 			candidate: `{"stable":"second"}`,
@@ -250,13 +250,13 @@ func TestCompareAppliesNormalisers(t *testing.T) {
 			candidate: `{"owner":{"name":"alice"}}`,
 		},
 		"MessageNormaliserReceivesUndefinedForMissingMessage": {
-			typeName: response,
+			typeName:  response,
 			script:    `spectre.message<v1.User>((): any => "ignored");`,
 			reference: `{"stable":"same","owner":{"name":"alice"}}`,
 			candidate: `{"stable":"same"}`,
 		},
 		"FieldNormaliserAppliesToRepeatedMessageElements": {
-			typeName: response,
+			typeName:  response,
 			script:    `spectre.field<v1.Response, "users[].name">((name) => name.toLowerCase());`,
 			reference: `{"stable":"same","users":[{"name":"ALICE"},{"name":"BOB"}]}`,
 			candidate: `{"stable":"same","users":[{"name":"alice"},{"name":"bob"}]}`,
@@ -269,7 +269,7 @@ func TestCompareAppliesNormalisers(t *testing.T) {
 			candidate: `{"users":[{"name":"alice"},{"name":"bob"}]}`,
 		},
 		"WithoutNormalisers": {
-			typeName: response,
+			typeName:  response,
 			reference: `{"stable":"first"}`,
 			candidate: `{"stable":"second"}`,
 			expected:  []string{"$.stable"},
