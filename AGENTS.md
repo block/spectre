@@ -136,6 +136,19 @@
 - Run necessary Go tests with `bit test-go run=<regexp>`, which selects tests by
   name across every Go module.
 
+# Linter offers
+
+These rules make the correction rule in the Linters section below concrete.
+
+- Treat any review comment or question that leads you to change code as a
+  correction. "Why is this a separate type?" counts as much as "don't do this".
+- Treat each user message as its own task. Make the offer in the response that
+  applies the correction, not later.
+- If the three conditions plausibly hold, offer. The user decides whether the
+  linter is worth it.
+- End that response with one sentence that names the rule and says how a linter
+  would detect it.
+
 <!-- BEGIN tsk -->
 # Linters
 
