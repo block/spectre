@@ -4,7 +4,7 @@
 # behind both proxies, with the candidate's egress sandboxed and host resources
 # split between the services. See demo/README.md.
 
-FROM golang:1.27.1-alpine3.24 AS build
+FROM golang:1.27.3-alpine3.24 AS build
 
 WORKDIR /src
 COPY go.mod go.sum ./
@@ -22,7 +22,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
       -o /out/ \
       ./cmd/spectre ./cmd/spectre-sample ./cmd/spectre-sample-forecasts
 
-FROM alpine:3.24.2
+FROM alpine:3.24.3
 
 # hadolint ignore=DL3018
 RUN apk add --no-cache ca-certificates

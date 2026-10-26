@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 
-FROM --platform=$BUILDPLATFORM golang:1.27.1-alpine3.24 AS build
+FROM --platform=$BUILDPLATFORM golang:1.27.3-alpine3.24 AS build
 
 WORKDIR /src
 COPY go.mod go.sum ./
@@ -21,7 +21,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
       -ldflags="-s -w -buildid= -X github.com/block/spectre/internal.Version=${VERSION}" \
       -o /out/ ./cmd/spectre
 
-FROM alpine:3.24.2
+FROM alpine:3.24.3
 
 LABEL org.opencontainers.image.source="https://github.com/block/spectre"
 

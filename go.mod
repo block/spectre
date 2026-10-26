@@ -3,8 +3,8 @@ module github.com/block/spectre
 go 1.27.1
 
 require (
-	connectrpc.com/connect v1.21.0
-	connectrpc.com/grpcreflect v1.3.0
+	connectrpc.com/connect v1.21.1
+	connectrpc.com/grpcreflect v1.3.1
 	github.com/alecthomas/assert/v2 v2.11.0
 	github.com/alecthomas/errors v0.9.1
 	github.com/alecthomas/kong v1.16.1
@@ -13,14 +13,14 @@ require (
 	github.com/block/scaffolder v1.12.0
 	github.com/gobwas/glob v1.0.0
 	github.com/grafana/sobek v0.0.0-20260915160442-8a431c44cd7b
-	github.com/lmittmann/tint v1.2.0
+	github.com/lmittmann/tint v1.2.1
 	github.com/microsoft/TypeScript/tsc/shim/typescript v0.0.0
 	github.com/pelletier/go-toml v1.9.5
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
 	go.jetify.com/typeid v1.3.0
-	golang.org/x/mod v0.41.0
-	golang.org/x/net v0.59.0
-	golang.org/x/sync v0.23.0
+	golang.org/x/mod v0.42.0
+	golang.org/x/net v0.61.0
+	golang.org/x/sync v0.24.0
 	golang.org/x/sys v0.49.0
 	google.golang.org/protobuf v1.36.12
 )
@@ -40,7 +40,7 @@ require (
 	github.com/klauspost/cpuid/v2 v2.2.10 // indirect
 	github.com/microsoft/TypeScript/tsc v0.0.0-20261001235638-09b1db061731 // indirect
 	github.com/zeebo/xxh3 v1.1.0 // indirect
-	golang.org/x/text v0.42.0 // indirect
+	golang.org/x/text v0.43.0 // indirect
 )
 
 // TypeScript 7 has no public Go API, and Go only lets packages under
