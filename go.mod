@@ -12,7 +12,7 @@ require (
 	github.com/alecthomas/types v0.20.1
 	github.com/block/scaffolder v1.12.0
 	github.com/gobwas/glob v1.0.0
-	github.com/grafana/sobek v0.0.0-20260915160442-8a431c44cd7b
+	github.com/grafana/sobek v0.0.0-20261021132036-87a47258b7dc
 	github.com/lmittmann/tint v1.2.0
 	github.com/microsoft/TypeScript/tsc/shim/typescript v0.0.0
 	github.com/pelletier/go-toml v1.9.5
@@ -20,7 +20,7 @@ require (
 	go.jetify.com/typeid v1.3.0
 	golang.org/x/mod v0.41.0
 	golang.org/x/net v0.59.0
-	golang.org/x/sync v0.23.0
+	golang.org/x/sync v0.24.0
 	golang.org/x/sys v0.49.0
 	google.golang.org/protobuf v1.36.12
 )
@@ -30,7 +30,7 @@ require (
 	github.com/alecthomas/repr v0.5.2 // indirect
 	github.com/block/getit v0.1.0 // indirect
 	github.com/dlclark/regexp2 v1.11.4 // indirect
-	github.com/dlclark/regexp2/v2 v2.8.0 // indirect
+	github.com/dlclark/regexp2/v2 v2.9.1 // indirect
 	github.com/dop251/goja v0.0.0-20260311135729-065cd970411c // indirect
 	github.com/go-sourcemap/sourcemap v2.1.4+incompatible // indirect
 	github.com/gofrs/uuid/v5 v5.2.0 // indirect
@@ -40,7 +40,7 @@ require (
 	github.com/klauspost/cpuid/v2 v2.2.10 // indirect
 	github.com/microsoft/TypeScript/tsc v0.0.0-20261001235638-09b1db061731 // indirect
 	github.com/zeebo/xxh3 v1.1.0 // indirect
-	golang.org/x/text v0.42.0 // indirect
+	golang.org/x/text v0.43.0 // indirect
 )
 
 // TypeScript 7 has no public Go API, and Go only lets packages under
