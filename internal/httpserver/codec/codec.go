@@ -64,7 +64,7 @@ func (c *Codec) Decode(name schema.TypeRef, format Format, header http.Header, b
 	message := dynamicpb.NewMessage(descriptor)
 	switch format {
 	case ConnectJSON:
-		if err := unmarshalProtoJSON(c.registry, body, message); err != nil {
+		if err := unmarshalProtoJSON(c.registry.Types(), body, message); err != nil {
 			return nil, err
 		}
 	case GRPC, Protobuf:
@@ -85,7 +85,7 @@ func (c *Codec) Decode(name schema.TypeRef, format Format, header http.Header, b
 	default:
 		return nil, errors.Errorf("unknown wire format: %d", format)
 	}
-	return payloadValue(c.registry, message, maxBodyBytes)
+	return payloadValue(c.registry.Types(), message, maxBodyBytes)
 }
 
 func grpcPayload(header http.Header, body []byte, maxBodyBytes int) ([]byte, error) {
@@ -125,14 +125,14 @@ func grpcPayload(header http.Header, body []byte, maxBodyBytes int) ([]byte, err
 	}
 }
 
-func unmarshalProtoJSON(loaded *descriptors.Registry, data []byte, message proto.Message) error {
-	err := (protojson.UnmarshalOptions{Resolver: loaded.Types()}).Unmarshal(data, message)
+func unmarshalProtoJSON(types *dynamicpb.Types, data []byte, message proto.Message) error {
+	err := (protojson.UnmarshalOptions{Resolver: types}).Unmarshal(data, message)
 	return errors.Wrap(err, "decode ProtoJSON")
 }
 
 // payloadValue converts a decoded message to the ProtoJSON value normalisers receive.
-func payloadValue(loaded *descriptors.Registry, message proto.Message, maxBodyBytes int) (any, error) {
-	data, err := (protojson.MarshalOptions{Resolver: loaded.Types(), EmitDefaultValues: true}).Marshal(message)
+func payloadValue(types *dynamicpb.Types, message proto.Message, maxBodyBytes int) (any, error) {
+	data, err := (protojson.MarshalOptions{Resolver: types, EmitDefaultValues: true}).Marshal(message)
 	if err != nil {
 		return nil, errors.Wrap(err, "encode ProtoJSON")
 	}
