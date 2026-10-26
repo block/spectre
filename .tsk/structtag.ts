@@ -34,11 +34,12 @@ const kongKeys = [
   "xor",
 ];
 
-/** Reports whether any field of a struct has a Kong tag. */
-export function isKongStruct(struct: types.Struct): boolean {
+/** Reports whether any field of a struct has a Kong tag other than the ignored keys. */
+export function isKongStruct(struct: types.Struct, ignore: string[] = []): boolean {
+  const keys = kongKeys.filter((key) => !ignore.includes(key));
   for (let i = 0; i < struct.numFields(); i++) {
     const tag = struct.tag(i);
-    if (kongKeys.some((key) => lookupTag(tag, key) !== undefined)) {
+    if (keys.some((key) => lookupTag(tag, key) !== undefined)) {
       return true;
     }
   }
