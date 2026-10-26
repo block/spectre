@@ -19,7 +19,7 @@ type Transport struct {
 }
 
 // NewTransport constructs transports for HTTP/1, encrypted HTTP/2, and h2c.
-func NewTransport(config Config) *Transport {
+func NewTransport(config TransportConfig) *Transport {
 	standardProtocols := new(http.Protocols)
 	standardProtocols.SetHTTP1(true)
 	standardProtocols.SetHTTP2(true)

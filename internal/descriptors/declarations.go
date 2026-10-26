@@ -11,6 +11,7 @@ import (
 	"github.com/alecthomas/errors"
 	. "github.com/alecthomas/types/optional"
 	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/reflect/protoregistry"
 	"google.golang.org/protobuf/types/descriptorpb"
 
 	"github.com/block/spectre/internal/schema"
@@ -56,12 +57,12 @@ func isUntypedMessage(name protoreflect.FullName) (unsupported bool) {
 
 // schemaFiles returns the paths of files a payload can reach through field,
 // method, or enum references, leaving out files imported only for options.
-func schemaFiles(registry *Registry) map[string]bool {
+func schemaFiles(files *protoregistry.Files) map[string]bool {
 	imported := map[string]bool{}
 	hasContent := map[string]bool{}
 	hasService := map[string]bool{}
 	edges := map[string][]string{}
-	registry.Files().RangeFiles(func(file protoreflect.FileDescriptor) bool {
+	files.RangeFiles(func(file protoreflect.FileDescriptor) bool {
 		if file.Messages().Len() > 0 || file.Enums().Len() > 0 || file.Services().Len() > 0 {
 			hasContent[file.Path()] = true
 		}
@@ -147,7 +148,7 @@ func Declarations(ctx context.Context, set *descriptorpb.FileDescriptorSet) (map
 		return nil, errors.Wrap(err, "resolve descriptor set")
 	}
 	declarations := map[string]string{}
-	reachable := schemaFiles(registry)
+	reachable := schemaFiles(registry.Files())
 	var renderErr error
 	registry.Files().RangeFiles(func(file protoreflect.FileDescriptor) bool {
 		if !reachable[file.Path()] {

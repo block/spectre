@@ -1,10 +1,10 @@
-import { defineAnalyzer } from "tsk";
+import { defineAnalyzer, defineFact } from "tsk";
 import { inspect } from "tsk/passes";
 import * as ast from "go/ast";
 import * as types from "go/types";
 import * as edge from "golang.org/x/tools/go/ast/edge";
 import type { Cursor } from "golang.org/x/tools/go/ast/inspector";
-import { isKongStruct, namedStruct } from "./structtag";
+import { namedStruct } from "./structtag";
 
 interface Config {
   /** The most distinct members a holder may use and still be reported. */
@@ -20,23 +20,44 @@ interface Usage {
   depends: boolean;
 }
 
+// generated marks a type declared in a generated file. A dependent package has
+// only the type, not its file, so the declaring package exports this fact.
+const generated = defineFact<boolean>("generated");
+
 export default defineAnalyzer<Config>({
   name: "narrowdeps",
   doc: `report parameters and fields that hold a large type for one piece of its data
 
-A function parameter or struct field holding a pointer to a struct from another
-package of this module, with many methods and fields, but which is only used to
-read one or two of them, couples its code to everything else that type does.
-Depend on the data instead: the field's value, or the getter's result.
+A function parameter or struct field holding a struct from this module, with
+many fields and methods, but which is only used to read one or two of them,
+couples its code to everything else that type does. Depend on the data instead:
+the field's value, or the getter's result.
 
-A read is a field read or a call to a method without parameters that returns a
-value. A holder is not reported when it is also used otherwise: passed on whole,
-assigned, written through, or called for behaviour. A callee it is passed to is
-reported first, which then exposes the caller. Kong config types are exempt,
-because constructors take the whole config, and so are protobuf messages.`,
+A read is a field read or a call to a getter: a method without parameters that
+returns something other than only an error. Getters do not count towards a
+type's size, because they expose its fields again. A holder is not reported when
+it is also used otherwise: passed on whole, assigned, written through, or called
+for behaviour. A callee it is passed to is reported first, which then exposes
+the caller. A method's parameter of its own receiver type is exempt, as the
+other operand, and so are generated types, because their generator sets their
+shape.`,
   requires: [inspect],
+  facts: [generated],
   config: { maxUsed: 2, minMembers: 5 },
   run(pass) {
+    const generatedFiles = new Set(pass.files.filter((file) => ast.isGenerated(file)).map((file) => pass.fset.position(file.pos()).filename));
+    const scope = pass.pkg.scope();
+    for (const name of scope?.names() ?? []) {
+      const object = scope?.lookup(name);
+      if (object?.$type === "TypeName" && generatedFiles.has(pass.fset.position(object.pos()).filename)) {
+        pass.exportObjectFact(object, generated, true);
+      }
+    }
+    const isGenerated = (type: types.Named) => {
+      const object = type.obj();
+      return object !== null && pass.importObjectFact(object, generated) === true;
+    };
+
     const module = pass.module?.path;
     if (module === undefined) {
       return;
@@ -51,32 +72,42 @@ because constructors take the whole config, and so are protobuf messages.`,
 
     // Holders are the parameters and struct fields whose type is large enough to report.
     const holders = new Map<types.Var, { type: types.Named; kind: "parameter" | "field"; ident: ast.Ident }>();
-    const consider = (ident: ast.Ident, kind: "parameter" | "field") => {
+    // A parameter of its method's receiver type is the other operand, as in a.Less(b).
+    const consider = (ident: ast.Ident, kind: "parameter" | "field", receiver: types.TypeName | null) => {
       const variable = info.defs.get(ident);
       if (variable?.$type !== "Var" || isTest(ident.pos())) {
         return;
       }
-      // A struct held by value is data; only a pointer holds a shared object.
-      const named = types.unalias(variable.type())?.$type === "Pointer" ? namedStruct(variable.type()) : null;
+      const named = namedStruct(variable.type());
       if (named === null) {
         return;
       }
       const [type, struct] = named;
-      const pkg = type.obj()?.pkg() ?? null;
-      if (!inModule(pkg) || pkg?.path() === pass.pkg.path() || isKongStruct(struct) || isProtoMessage(type)) {
+      if (!inModule(type.obj()?.pkg() ?? null) || isGenerated(type) || (receiver !== null && type.obj() === receiver)) {
         return;
       }
-      if (type.numMethods() + struct.numFields() >= pass.config.minMembers) {
+      // Getters expose the fields again, so only fields and other methods count.
+      let size = struct.numFields();
+      for (let i = 0; i < type.numMethods(); i++) {
+        const signature = type.method(i)?.signature() ?? null;
+        if (signature !== null && !isGetter(signature)) {
+          size++;
+        }
+      }
+      if (size >= pass.config.minMembers) {
         holders.set(variable, { type, kind, ident });
       }
     };
     // Function literals are skipped, because whoever calls them sets their signature.
     for (const cursor of root.preorder(ast.FuncDecl)) {
-      const fn = (cursor.node() as ast.FuncDecl).type;
-      for (const field of fn?.params?.list ?? []) {
+      const decl = cursor.node() as ast.FuncDecl;
+      const fn = decl.name === null ? null : info.defs.get(decl.name);
+      const recv = fn?.$type === "Func" ? (fn.signature()?.recv() ?? null) : null;
+      const receiver = namedStruct(recv?.type() ?? null)?.[0].obj() ?? null;
+      for (const field of decl.type?.params?.list ?? []) {
         for (const name of field?.names ?? []) {
           if (name !== null) {
-            consider(name, "parameter");
+            consider(name, "parameter", receiver);
           }
         }
       }
@@ -86,7 +117,7 @@ because constructors take the whole config, and so are protobuf messages.`,
       for (const field of struct.fields?.list ?? []) {
         for (const name of field?.names ?? []) {
           if (name !== null) {
-            consider(name, "field");
+            consider(name, "field", null);
           }
         }
       }
@@ -132,8 +163,7 @@ because constructors take the whole config, and so are protobuf messages.`,
         selection?.kind() === types.MethodVal &&
         selector.parentEdgeKind() === edge.CallExpr_Fun &&
         signature?.$type === "Signature" &&
-        (signature.params()?.len() ?? 0) === 0 &&
-        (signature.results()?.len() ?? 0) > 0
+        isGetter(signature)
       );
     };
     for (const [ident, object] of info.uses) {
@@ -179,12 +209,14 @@ because constructors take the whole config, and so are protobuf messages.`,
   },
 });
 
-// Protobuf messages are plain data, so reading a few of their fields is their purpose.
-function isProtoMessage(type: types.Named): boolean {
-  for (let i = 0; i < type.numMethods(); i++) {
-    if (type.method(i)?.name() === "ProtoReflect") {
-      return true;
-    }
+// isGetter reports whether a method reads data: it takes nothing and returns
+// something. A method returning only an error, such as Flush, acts instead.
+function isGetter(signature: types.Signature): boolean {
+  const results = signature.results();
+  const count = results?.len() ?? 0;
+  if ((signature.params()?.len() ?? 0) !== 0 || count === 0) {
+    return false;
   }
-  return false;
+  const errorType = types.Universe?.lookup("error")?.type() ?? null;
+  return !(count === 1 && types.identical(results?.at(0)?.type() ?? null, errorType));
 }

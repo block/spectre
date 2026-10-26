@@ -31,7 +31,7 @@ func TestReverseProxyPreservesHostForUnixBackend(t *testing.T) {
 
 	target, err := netaddr.ParseBackend("http+unix:" + socket)
 	assert.NoError(t, err)
-	reverse, err := httpserver.NewReverseProxy(t.Context(), target, httpserver.NewTransport(httpserver.NewConfig()), false)
+	reverse, err := httpserver.NewReverseProxy(t.Context(), target, httpserver.NewTransport(httpserver.NewConfig().TransportConfig), false)
 	assert.NoError(t, err)
 
 	request := httptest.NewRequest(http.MethodGet, "http://upstream.example/path", nil)
@@ -56,7 +56,7 @@ func TestReverseProxyUsesTargetHostForTCPBackend(t *testing.T) {
 
 	target, err := netaddr.ParseBackend(backend.URL)
 	assert.NoError(t, err)
-	reverse, err := httpserver.NewReverseProxy(t.Context(), target, httpserver.NewTransport(httpserver.NewConfig()), false)
+	reverse, err := httpserver.NewReverseProxy(t.Context(), target, httpserver.NewTransport(httpserver.NewConfig().TransportConfig), false)
 	assert.NoError(t, err)
 
 	request := httptest.NewRequest(http.MethodGet, "http://inbound.example/path", nil)

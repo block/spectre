@@ -53,7 +53,7 @@ func main() {
 		if !ok {
 			kctx.Fatalf("forecast provider %q is not a backend", cli.Forecasts)
 		}
-		transport := httpserver.NewTransport(httpserver.NewConfig())
+		transport := httpserver.NewTransport(httpserver.NewConfig().TransportConfig)
 		defer transport.CloseIdleConnections()
 		forecasts = Some(sample.NewForecastClient(target, cli.ForecastsHost, transport.ForBackend(provider)))
 	}

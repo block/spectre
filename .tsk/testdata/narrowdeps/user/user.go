@@ -33,6 +33,16 @@ func Forward(candidates *proxy.Candidates) {
 	Wait(candidates)
 }
 
+// A method returning only an error is behaviour, not a read.
+func Drain(candidates *proxy.Candidates) error {
+	return candidates.Flush()
+}
+
+// Getters do not make a type large.
+func Unwrap(wrapped proxy.Wrapped) int {
+	return wrapped.Value()
+}
+
 // A method value observes the receiver when it is called later.
 func StatusFunc(candidates *proxy.Candidates) func() proxy.Status {
 	return candidates.QuarantineStatus
@@ -56,8 +66,7 @@ func Count(state *proxy.State) {
 	(state.A)++
 }
 
-// A value is data, not a shared object.
-func ByValue(candidates proxy.Candidates) proxy.Status {
+func ByValue(candidates proxy.Candidates) proxy.Status { // want `parameter candidates holds Candidates only to read QuarantineStatus; depend on that instead`
 	return candidates.QuarantineStatus()
 }
 
@@ -65,12 +74,13 @@ func Small(small *proxy.Small) int {
 	return small.Get()
 }
 
-func Configured(config *proxy.Config) string {
+// A config that is mostly unused holds fields its constructor does not need.
+func Configured(config proxy.Config) string { // want `parameter config holds Config only to read URL; depend on that instead`
 	return config.URL
 }
 
-func Proto(message *proxy.Message) int {
-	return message.GetA()
+func FromGenerated(generated *proxy.Generated) int {
+	return generated.GetA()
 }
 
 // A function literal's signature belongs to its caller.
@@ -80,7 +90,9 @@ func Literal(all []*proxy.Candidates) int {
 	})
 }
 
-// A type from the same package is not a boundary.
 type local struct{ a, b, c, d, e int }
 
-func Local(l *local) int { return l.a }
+func Local(l *local) int { return l.a } // want `parameter l holds local only to read a; depend on that instead`
+
+// A parameter of the receiver's type is the other operand.
+func (l *local) less(other *local) bool { return l.a < other.a }

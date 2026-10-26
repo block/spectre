@@ -30,7 +30,7 @@ import (
 // Egress serves reference and candidate traffic on separate listeners. Candidate
 // requests never reach a dependency under any condition.
 type Egress struct {
-	config           EgressConfig
+	config           Config
 	transport        http.RoundTripper
 	engine           *protocol.Engine
 	routes           *route.Matcher
@@ -68,7 +68,7 @@ func NewEgress(
 		candidateListen,
 		netaddr.ParseListen(config.HealthListen),
 	}
-	destinations, err := egressDestinations(ctx, config, transport, listeners)
+	destinations, err := egressDestinations(ctx, config.Destinations, transport, listeners)
 	if err != nil {
 		return nil, err
 	}
@@ -90,7 +90,7 @@ func NewEgress(
 	budget := proxy.NewBudget(config.RecordingBufferBytes)
 	recordingBudget := func() *proxy.Budget { return budget }
 	egress := &Egress{
-		config:         config,
+		config:         config.Config,
 		transport:      transport,
 		engine:         engine,
 		routes:         routes,
@@ -115,13 +115,13 @@ type destination struct {
 }
 
 // egressDestinations returns the configured destinations in host pattern order.
-func egressDestinations(ctx context.Context, config EgressConfig, transport http.RoundTripper,
+func egressDestinations(ctx context.Context, upstreams map[string]string, transport http.RoundTripper,
 	listeners []*netaddr.Endpoint,
 ) ([]destination, error) {
-	destinations := make([]destination, 0, len(config.Destinations))
+	destinations := make([]destination, 0, len(upstreams))
 	seen := map[string]bool{}
-	for _, host := range slices.Sorted(maps.Keys(config.Destinations)) {
-		upstream := config.Destinations[host]
+	for _, host := range slices.Sorted(maps.Keys(upstreams)) {
+		upstream := upstreams[host]
 		name := strings.ToLower(host)
 		if name == "" || strings.Contains(name, ":") {
 			return nil, errors.Errorf("destination host %q must be a host name without a port", host)
@@ -159,7 +159,7 @@ func (e *Egress) Serve(ctx context.Context, reference net.Listener, candidate ne
 		NewBinding(probes, e.health),
 	}
 	lifecycle := NewLifecycle(e.markReady, e.stop, e.drain)
-	return errors.Wrap(Serve(ctx, e.config.Config, bindings, lifecycle), "serve egress")
+	return errors.Wrap(Serve(ctx, e.config, bindings, lifecycle), "serve egress")
 }
 
 // Candidates reports the egress candidate quarantine state.

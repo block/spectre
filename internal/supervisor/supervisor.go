@@ -199,10 +199,10 @@ func (s *Supervisor) startAll(ctx context.Context) error {
 	if err := s.launchService(ctx, candidate, "unix", s.candidateSock); err != nil {
 		return err
 	}
-	if err := s.place(reference, roleReference); err != nil {
+	if err := s.place(reference.pid(), roleReference); err != nil {
 		return err
 	}
-	if err := s.place(candidate, roleCandidate); err != nil {
+	if err := s.place(candidate.pid(), roleCandidate); err != nil {
 		return err
 	}
 	if err := s.startIngress(ctx); err != nil {
@@ -251,7 +251,7 @@ func (s *Supervisor) startStatus(ctx context.Context, started time.Time) error {
 // startEgress builds the egress proxy, opens its listeners, and serves it.
 func (s *Supervisor) startEgress(ctx context.Context) error {
 	config := s.egressConfig()
-	transport := httpserver.NewTransport(config.Config)
+	transport := httpserver.NewTransport(config.TransportConfig)
 	proxyContext := withProxyLogger(ctx, "egress")
 	handler, err := httpserver.NewEgress(proxyContext, config, s.engineConfig(), transport)
 	if err != nil {
@@ -273,7 +273,7 @@ func (s *Supervisor) startEgress(ctx context.Context) error {
 // startIngress builds the ingress proxy, opens its listener, and serves it.
 func (s *Supervisor) startIngress(ctx context.Context) error {
 	config := s.ingressConfig()
-	transport := httpserver.NewTransport(config.Config)
+	transport := httpserver.NewTransport(config.TransportConfig)
 	loader := Some[httpserver.DescriptorLoader](descriptors.NewReflectionLoader())
 	proxyContext := withProxyLogger(ctx, "ingress")
 	handler, err := httpserver.NewIngress(proxyContext, config, s.engineConfig(), transport, loader, s.migration)
@@ -319,13 +319,13 @@ func (s *Supervisor) launchService(ctx context.Context, process *managedProcess,
 	return nil
 }
 
-// place moves a started service into its cgroup leaf when limits are enabled.
-func (s *Supervisor) place(process *managedProcess, role string) error {
+// place moves a started service's process into its cgroup leaf when limits are enabled.
+func (s *Supervisor) place(pid int, role string) error {
 	control, ok := s.limits.Get()
 	if !ok {
 		return nil
 	}
-	return control.place(role, process.pid())
+	return control.place(role, pid)
 }
 
 // waitForExit blocks until the context is cancelled or a component exits.

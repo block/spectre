@@ -19,7 +19,16 @@ func (c *Candidates) QuarantineStatus() Status         { return c.status }
 func (c *Candidates) Shutdown(ctx context.Context) error {
 	return nil
 }
-func (c *Candidates) close() {}
+func (c *Candidates) close()       {}
+func (c *Candidates) Flush() error { return nil }
+
+// Wrapped has many getters but one field, so it is small.
+type Wrapped struct{ value int }
+
+func (w Wrapped) Value() int  { return w.value }
+func (w Wrapped) Double() int { return w.value * 2 }
+func (w Wrapped) Triple() int { return w.value * 3 }
+func (w Wrapped) Square() int { return w.value * w.value }
 
 // State has enough data fields to be worth narrowing.
 type State struct {
@@ -33,15 +42,9 @@ type Small struct{ Value int }
 
 func (s *Small) Get() int { return s.Value }
 
-// Config is a Kong config, which constructors take whole.
+// Config is a Kong config.
 type Config struct {
 	URL     string `help:"URL."`
 	Service string `help:"Service."`
 	A, B, C int
 }
-
-// Message is a protobuf message, which is plain data.
-type Message struct{ a, b, c, d, e int }
-
-func (m *Message) ProtoReflect() int { return 0 }
-func (m *Message) GetA() int         { return m.a }

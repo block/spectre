@@ -13,7 +13,7 @@ import (
 // unary method. Raw HTTP declarations may have no protobuf counterpart.
 func CheckAgreement(registry *Registry, loaded *schema.Schema) error {
 	var agreementErr error
-	reachable := schemaFiles(registry)
+	reachable := schemaFiles(registry.Files())
 	registry.Files().RangeFiles(func(file protoreflect.FileDescriptor) bool {
 		if !reachable[file.Path()] {
 			return true
