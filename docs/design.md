@@ -32,15 +32,15 @@ Requests to the pod are intercepted by SPECTRE's ingress proxy, trace IDs regist
 
 Outbound requests to dependencies from both reference and candidate service implementations are intercepted by SPECTRE's egress proxy, including writes to databases, queues, and other services. Each request from the *reference implementation* is passed through to the dependency. When the request from the candidate implementation arrives it is compared to the reference request for semantic equivalence. Requests are matched by their trace ID, registered during ingress. If equivalent, the response to the reference implementation's request is also returned to the candidate implementation. Otherwise, the candidate implementation is quarantined and its divergence logged to the capture service.
 
-## Validation {#validation}
+## Validation
 
 Validation will need tuning and improvement over time. It will be per-protocol, and likely customisable per service. For example, for gRPC we'll need to be able to decode the raw protobuf, compare fields, ignore non-deterministic data such as timestamps and ID's, handle organisation-specific annotations, handle PII, and so on. For MySQL we'll need to be able to normalise and compare queries across different ORMs, though a better solution here might be custom libraries that mimic the previous system's queries.
 
-## Quarantine {#quarantine}
+## Quarantine
 
 As soon as a validation failure occurs, the candidate service will be quarantined and no further traffic will be sent to it. This is done because we will be unable to guarantee that the service is in a valid state, and we want to prevent further spiralling.
 
-## Capture {#capture}
+## Capture
 
 When divergence is detected, a *representation* of the relevant data structures (e.g. inbound request+response, MySQL query, etc.) will be sent to the capture service for subsequent feedback into the migration LLM. The raw data structures may contain PII, so great care must be taken to ensure this process is secure. There are several approaches we can take here, with increasing degrees of both risk and migration efficacy:
 
