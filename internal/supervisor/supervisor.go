@@ -135,7 +135,7 @@ func (s *Supervisor) prepareWiring() error {
 
 // sandboxActive reports whether the candidate egress sandbox will be applied.
 func (s *Supervisor) sandboxActive() bool {
-	return s.config.Sandbox.EgressEnabled && egressSandboxSupported()
+	return s.config.SeccompEgress && egressSandboxSupported()
 }
 
 // setupLimits prepares the cgroup leaves when limits are enabled and supported.

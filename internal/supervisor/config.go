@@ -43,8 +43,9 @@ type Config struct {
 	Descriptors descriptors.Config `embed:""`
 	// Limits configures the cgroup resource split between the services.
 	Limits LimitConfig `embed:""`
-	// Sandbox configures the candidate egress sandbox.
-	Sandbox SandboxConfig `embed:""`
+	// SeccompEgress blocks the candidate from opening IP sockets with seccomp,
+	// so it can only reach dependencies through the egress proxy.
+	SeccompEgress bool `name:"seccomp-egress" negatable:"" default:"true" help:"Block the candidate from opening IPv4 and IPv6 sockets with a seccomp filter, leaving only the egress proxy's unix socket."`
 	// StartupTimeout bounds how long each process has to start listening.
 	StartupTimeout time.Duration `default:"30s" help:"Maximum time for each process to begin accepting connections."`
 	// ShutdownTimeout bounds graceful shutdown before processes are killed.
@@ -67,13 +68,6 @@ type LimitConfig struct {
 	CandidateMemoryShare uint `name:"candidate-memory-share" default:"1" help:"Candidate share of the memory budget, relative to the reference share."`
 	// ReferenceMemoryShare is the reference share of the memory budget.
 	ReferenceMemoryShare uint `name:"reference-memory-share" default:"1" help:"Reference share of the memory budget."`
-}
-
-// SandboxConfig contains the candidate egress sandbox configuration.
-type SandboxConfig struct {
-	// EgressEnabled blocks the candidate from opening IP sockets with seccomp,
-	// so it can only reach dependencies through the egress proxy.
-	EgressEnabled bool `name:"seccomp-egress" negatable:"" default:"true" help:"Block the candidate from opening IPv4 and IPv6 sockets with a seccomp filter, leaving only the egress proxy's unix socket."`
 }
 
 // NewConfig returns the default supervisor configuration.
