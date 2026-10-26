@@ -18,7 +18,6 @@ import (
 	"github.com/block/spectre/internal/httpserver"
 	"github.com/block/spectre/internal/logger"
 	"github.com/block/spectre/internal/supervisor"
-	"github.com/block/spectre/status"
 )
 
 // Command is a top-level command. Kong parses its tagged fields before Run.
@@ -31,8 +30,7 @@ type Option func(registered *extensions)
 
 // extensions collects what the options register, before the parser is built.
 type extensions struct {
-	kongOptions     []kong.Option
-	statusPlatforms *status.Registry
+	kongOptions []kong.Option
 }
 
 // WithCommand adds a top-level command. command must be a pointer to a struct,
@@ -40,14 +38,6 @@ type extensions struct {
 func WithCommand(name string, help string, command Command) Option {
 	return func(registered *extensions) {
 		registered.kongOptions = append(registered.kongOptions, kong.DynamicCommand(name, help, "", command))
-	}
-}
-
-// WithStatusPlatform registers the deploy platform the status command inspects
-// for a plan that names it; an unregistered platform falls back to a failing dummy.
-func WithStatusPlatform(name string, factory status.PlatformFactory) Option {
-	return func(registered *extensions) {
-		registered.statusPlatforms.Register(name, factory)
 	}
 }
 
@@ -98,7 +88,7 @@ func Main(options ...Option) {
 
 // newParser builds the parser for command with every registered extension.
 func newParser(command *cli, options ...Option) (*kong.Kong, error) {
-	registered := &extensions{statusPlatforms: status.NewRegistry()}
+	registered := &extensions{}
 	for _, option := range options {
 		option(registered)
 	}
@@ -109,7 +99,7 @@ func newParser(command *cli, options ...Option) (*kong.Kong, error) {
 	kongOptions := append([]kong.Option{
 		kong.Vars{"version": internal.Version, "template_repo": ""},
 		kong.Configuration(kongtoml.Loader),
-		kong.Bind(registered.statusPlatforms, catalog),
+		kong.Bind(catalog),
 	}, registered.kongOptions...)
 	parser, err := kong.New(command, kongOptions...)
 	if err != nil {

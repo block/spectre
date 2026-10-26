@@ -8,6 +8,7 @@ import (
 	"github.com/alecthomas/errors"
 	"github.com/alecthomas/kong"
 
+	"github.com/block/spectre/internal/coordinator"
 	"github.com/block/spectre/internal/descriptors"
 )
 
@@ -25,8 +26,6 @@ type Config struct {
 	Reflection bool `name:"reflection" negatable:"" default:"true" help:"Load backend descriptors with gRPC reflection and require them to match; disable to compare using only the static descriptors."`
 	// Listen is the public ingress address that clients send traffic to.
 	Listen string `default:"127.0.0.1:50050" help:"Public ingress address: host:port, or unix:<path|@abstract> for a unix socket."`
-	// StatusListen is the address of the SPECTRE status endpoint (/spectre/v1/status).
-	StatusListen string `name:"status-listen" default:"127.0.0.1:50051" help:"Address serving the SPECTRE status endpoint (/spectre/v1/status): host:port, or unix:<path|@abstract>. Empty disables it."`
 	// SocketDir holds the unix sockets wiring the proxies to the services.
 	SocketDir string `default:"dist/sockets" help:"Directory for the unix sockets wiring the proxies to the services."`
 	// Destinations maps each request host to its upstream URL for egress.
@@ -46,6 +45,8 @@ type Config struct {
 	// SeccompEgress blocks the candidate from opening IP sockets with seccomp,
 	// so it can only reach dependencies through the egress proxy.
 	SeccompEgress bool `name:"seccomp-egress" negatable:"" default:"true" help:"Block the candidate from opening IPv4 and IPv6 sockets with a seccomp filter, leaving only the egress proxy's unix socket."`
+	// Coordinator reports the mirror's state to the coordination service.
+	Coordinator coordinator.ReporterConfig `embed:""`
 	// StartupTimeout bounds how long each process has to start listening.
 	StartupTimeout time.Duration `default:"30s" help:"Maximum time for each process to begin accepting connections."`
 	// ShutdownTimeout bounds graceful shutdown before processes are killed.
@@ -93,6 +94,9 @@ func (c Config) Validate() error {
 	}
 	if c.MatchWindow <= 0 {
 		return errors.New("match window must be positive")
+	}
+	if err := c.Coordinator.Validate(); err != nil {
+		return errors.WithStack(err)
 	}
 	return errors.WithStack(c.Limits.Validate())
 }

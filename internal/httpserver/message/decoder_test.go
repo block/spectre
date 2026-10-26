@@ -21,6 +21,7 @@ import (
 	"github.com/block/spectre/internal/httpserver/message"
 	"github.com/block/spectre/internal/httpserver/route"
 	"github.com/block/spectre/internal/protocol"
+	"github.com/block/spectre/internal/quarantine"
 	"github.com/block/spectre/internal/schema"
 )
 
@@ -219,6 +220,25 @@ func TestRejectsUnidentifiableRequests(t *testing.T) {
 	}
 }
 
+// Request failures become quarantine reasons, which leave the mirror.
+func TestRequestFailuresOmitValues(t *testing.T) {
+	decoder := newDecoder(t, weatherScripts)
+	for name, test := range map[string]struct {
+		request message.Request
+		message string
+	}{
+		"Number":      {request: forecastRequest("london", "days=secret"), message: `bind query parameter "days": parse field "days": parse number: ParseFloat: invalid syntax`},
+		"QueryEscape": {request: forecastRequest("london", "days=%zzsecret"), message: "query is not valid URL encoding"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := decoder.Request(test.request)
+			assert.Error(t, err)
+			assert.Contains(t, err.Error(), test.message)
+			assert.NotContains(t, err.Error(), "secret")
+		})
+	}
+}
+
 func TestRejectsUnbindableEndpoints(t *testing.T) {
 	for name, test := range map[string]struct {
 		pattern string
@@ -274,7 +294,7 @@ func TestBindsTextWithoutDescriptors(t *testing.T) {
 // discardQuarantine accepts quarantine requests, which decoding never makes.
 type discardQuarantine struct{}
 
-func (discardQuarantine) Quarantine(_ context.Context, _ error) {}
+func (discardQuarantine) Quarantine(_ context.Context, _ quarantine.Reason) {}
 
 // buildDecoder declares the scripts' endpoints through the engine, as servers do.
 func buildDecoder(t *testing.T, set *descriptorpb.FileDescriptorSet, declarations, scripts map[string]string) (*message.Decoder, error) {

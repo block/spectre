@@ -9,6 +9,7 @@ import (
 
 	"github.com/block/spectre/internal/boundary"
 	"github.com/block/spectre/internal/comparison/javascript"
+	"github.com/block/spectre/internal/coordinator"
 	"github.com/block/spectre/internal/descriptors"
 	"github.com/block/spectre/internal/jsonschema"
 	"github.com/block/spectre/internal/logger"
@@ -16,7 +17,6 @@ import (
 	"github.com/block/spectre/internal/state"
 	"github.com/block/spectre/internal/supervisor"
 	"github.com/block/spectre/internal/terminal"
-	"github.com/block/spectre/status"
 )
 
 // cli is the built-in command line. Extensions add to it, so custom binaries
@@ -26,10 +26,11 @@ type cli struct {
 	Config  kong.ConfigFlag  `placeholder:"FILE" help:"Load flag values from a TOML file. Command-line flags take precedence."`
 	Version kong.VersionFlag `help:"Print the version and exit."`
 
-	Run    runCommand    `cmd:"" help:"Run the supervisor with the embedded proxies, splitting resources between a candidate and a reference."`
-	Gen    genCommand    `cmd:"" help:"Generate TypeScript schema declarations and the script API."`
-	Status statusCommand `cmd:"" help:"Report the SPECTRE migration status and mirror deployment for a service."`
-	State  stateCommand  `cmd:"" help:"Describe a service's migration state."`
+	Run         runCommand         `cmd:"" help:"Run the supervisor with the embedded proxies, splitting resources between a candidate and a reference."`
+	Gen         genCommand         `cmd:"" help:"Generate TypeScript schema declarations and the script API."`
+	Divergences divergencesCommand `cmd:"" help:"List the divergences that mirrors reported to the coordination service."`
+	Coordinator coordinatorCommand `cmd:"" help:"Run the SPECTRE coordination service."`
+	State       stateCommand       `cmd:"" help:"Describe a service's migration state."`
 
 	Init initCommand `cmd:"" help:"Set a service checkout up for a SPECTRE migration from a template."`
 }
@@ -67,13 +68,27 @@ func (c *stateValidateCommand) Run(catalog *boundary.Catalog) error {
 	return errors.WithStack(state.Validate(os.Stdout, c.State, terminal.NewPalette(terminal.ColorEnabled(os.Stdout)), catalog))
 }
 
-// statusCommand reports the SPECTRE migration status for a service.
-type statusCommand struct {
-	Config status.Config `embed:""`
+// divergencesCommand lists the divergences mirrors reported.
+type divergencesCommand struct {
+	Divergences coordinator.DivergencesConfig `embed:""`
 }
 
-func (c *statusCommand) Run(ctx context.Context, registry *status.Registry) error {
-	return errors.WithStack(status.Report(ctx, c.Config, registry))
+func (c *divergencesCommand) Run(ctx context.Context) error {
+	return errors.WithStack(coordinator.WriteDivergences(ctx, os.Stdout, c.Divergences, terminal.NewPalette(terminal.ColorEnabled(os.Stdout))))
+}
+
+// coordinatorCommand groups the coordination service commands.
+type coordinatorCommand struct {
+	Serve coordinatorServeCommand `cmd:"" help:"Serve the coordination service, which mirrors report their state to."`
+}
+
+// coordinatorServeCommand runs the coordination service.
+type coordinatorServeCommand struct {
+	Serve coordinator.ServeConfig `embed:""`
+}
+
+func (c *coordinatorServeCommand) Run(ctx context.Context) error {
+	return errors.WithStack(coordinator.Serve(ctx, c.Serve))
 }
 
 // runCommand supervises the candidate and reference behind the embedded proxies.

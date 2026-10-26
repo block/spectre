@@ -243,6 +243,11 @@ pkg = '^math/rand$'
 msg = 'Use log/slog instead, see https://go.dev/blog/slog'
 pkg = '^log$'
 
+[[forbidigo.forbid]]
+msg = 'Use errors.AsType[T] instead'
+pkg = '^github.com/alecthomas/errors$'
+pattern = '^errors\.As$'
+
 [funcorder]
 struct-method = false
 
@@ -296,6 +301,5 @@ allow-generated-construction = true
 # separate module whose path mimics TypeScript's own.
 allow = [
   "github.com/block/spectre",
-  "github.com/block/spectre/status",
   "github.com/microsoft/TypeScript/tsc/shim/typescript",
 ]

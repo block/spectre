@@ -27,6 +27,10 @@ type Protocol string
 // ProtocolHTTP is the protocol of HTTP servers, including gRPC and Connect.
 const ProtocolHTTP Protocol = "http"
 
+// Route is a protocol's canonical request route, e.g. "GET forecasts.example/v1/forecasts/{location}".
+// Equal routes must have identical text, because egress pairing hashes it.
+type Route string
+
 // Kind is one kind of IO that a proxy intercepts, written "ingress[http]".
 type Kind struct {
 	Direction Direction

@@ -9,7 +9,6 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     go mod download
 COPY *.go ./
 COPY cmd/spectre ./cmd/spectre
-COPY status ./status
 COPY internal ./internal
 
 ARG TARGETOS

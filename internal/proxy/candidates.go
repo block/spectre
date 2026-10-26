@@ -10,6 +10,7 @@ import (
 	. "github.com/alecthomas/types/optional"
 
 	"github.com/block/spectre/internal/logger"
+	"github.com/block/spectre/internal/quarantine"
 )
 
 // Candidates admits candidate work and tracks it so quarantine and shutdown can
@@ -20,17 +21,17 @@ type Candidates struct {
 	// mu serializes admission with quarantine and shutdown.
 	mu         sync.Mutex
 	closing    bool
-	quarantine QuarantineStatus
-	runs       map[*CandidateRun]struct{}
-	idle       chan struct{}
+	quarantine Option[QuarantineStatus]
+	// quarantined is closed once quarantine begins.
+	quarantined chan struct{}
+	runs        map[*CandidateRun]struct{}
+	idle        chan struct{}
 }
 
-// QuarantineStatus reports why candidate traffic is quarantined, if it is.
+// QuarantineStatus is a quarantine in effect: why it began and when.
 type QuarantineStatus struct {
-	// Reason is the error that triggered quarantine, nil while healthy.
-	Reason error
-	// Since is when quarantine began, zero while healthy.
-	Since time.Time
+	Reason quarantine.Reason
+	Since  time.Time
 }
 
 // NewCandidates tracks candidate work, quarantining beyond the configured concurrent runs.
@@ -39,6 +40,7 @@ func NewCandidates(config CandidatesConfig) *Candidates {
 	close(idle)
 	return &Candidates{
 		maxInFlight: config.CandidateMaxInFlight,
+		quarantined: make(chan struct{}),
 		runs:        make(map[*CandidateRun]struct{}),
 		idle:        idle,
 	}
@@ -63,7 +65,7 @@ func (r *CandidateRun) cancel() {
 func (c *Candidates) Start(ctx context.Context, cancel context.CancelFunc) Option[*CandidateRun] {
 	run, capacityExceeded := c.admit(cancel)
 	if capacityExceeded {
-		c.Quarantine(ctx, errors.New("candidate concurrency limit exceeded"))
+		c.Quarantine(ctx, quarantine.Reason{Kind: quarantine.KindCapacity, Detail: "candidate concurrency limit exceeded"})
 	}
 	return run
 }
@@ -71,7 +73,7 @@ func (c *Candidates) Start(ctx context.Context, cancel context.CancelFunc) Optio
 func (c *Candidates) admit(cancel context.CancelFunc) (run Option[*CandidateRun], capacityExceeded bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.closing || c.quarantine.Reason != nil {
+	if c.closing || c.quarantine.Ok() {
 		return None[*CandidateRun](), false
 	}
 	if len(c.runs) >= c.maxInFlight {
@@ -96,20 +98,18 @@ func (c *Candidates) Finish(run *CandidateRun) {
 	}
 }
 
-// Quarantine refuses all further candidate work and cancels active runs.
-func (c *Candidates) Quarantine(ctx context.Context, reason error) {
-	// A non-nil reason is the quarantine signal, so never store nil.
-	if reason == nil {
-		reason = errors.New("candidate quarantined")
-	}
+// Quarantine refuses all further candidate work and cancels active runs. Only
+// the first reason is kept.
+func (c *Candidates) Quarantine(ctx context.Context, reason quarantine.Reason) {
 	// Publish quarantine before cancelling active runs so concurrent admission
 	// cannot send more traffic to the candidate.
 	c.mu.Lock()
-	if c.quarantine.Reason != nil {
+	if c.quarantine.Ok() {
 		c.mu.Unlock()
 		return
 	}
-	c.quarantine = QuarantineStatus{Reason: reason, Since: time.Now()}
+	c.quarantine = Some(QuarantineStatus{Reason: reason, Since: time.Now()})
+	close(c.quarantined)
 	runs := c.snapshot()
 	c.mu.Unlock()
 
@@ -119,15 +119,20 @@ func (c *Candidates) Quarantine(ctx context.Context, reason error) {
 		for _, run := range runs {
 			run.cancel()
 		}
-		logger.FromContext(ctx).ErrorContext(context.WithoutCancel(ctx), "Candidate quarantined", "event", logger.EventQuarantine, "reason", reason)
+		logger.FromContext(ctx).ErrorContext(context.WithoutCancel(ctx), "Candidate quarantined", "event", logger.EventQuarantine, "reason", reason.String())
 	}()
 }
 
-// QuarantineStatus reports the current quarantine state and the reason for it.
-func (c *Candidates) QuarantineStatus() QuarantineStatus {
+// QuarantineStatus reports the quarantine in effect, if any.
+func (c *Candidates) QuarantineStatus() Option[QuarantineStatus] {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.quarantine
+}
+
+// Quarantined returns a channel that is closed once quarantine begins.
+func (c *Candidates) Quarantined() <-chan struct{} {
+	return c.quarantined
 }
 
 // Close refuses further candidate work and cancels active runs without waiting.

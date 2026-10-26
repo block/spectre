@@ -9,12 +9,9 @@ import (
 	. "github.com/alecthomas/types/optional"
 	"go.jetify.com/typeid"
 
+	"github.com/block/spectre/internal/quarantine"
 	"github.com/block/spectre/internal/schema"
 )
-
-// Route is a protocol's canonical request route, e.g. "GET forecasts.example/v1/forecasts/{location}".
-// Equal routes must have identical text, because egress pairing hashes it.
-type Route string
 
 type requestPrefix struct{}
 
@@ -61,7 +58,7 @@ type Matcher interface {
 
 // Quarantiner stops all candidate traffic.
 type Quarantiner interface {
-	Quarantine(ctx context.Context, reason error)
+	Quarantine(ctx context.Context, reason quarantine.Reason)
 }
 
 // Raw is a server's own record of a response, which an intercept replays.

@@ -27,7 +27,8 @@ func bindHTTPParameters(loaded *schema.Schema, root *schema.Type, object map[str
 	}
 	query, err := url.ParseQuery(request.RawQuery)
 	if err != nil {
-		return errors.Wrap(err, "parse query")
+		// The escape error quotes the query, which may carry values.
+		return errors.New("query is not valid URL encoding")
 	}
 	for _, name := range slices.Sorted(maps.Keys(query)) {
 		if err := bindField(loaded, root, object, name, query[name], true); err != nil {
@@ -140,7 +141,7 @@ func parseScalar(value schema.Value, raw string) (any, error) {
 		}
 		number, err := strconv.ParseFloat(raw, 64)
 		if err != nil {
-			return nil, errors.Wrap(err, "parse number")
+			return nil, errors.Wrap(numberError(err), "parse number")
 		}
 		if math.IsInf(number, 0) || math.IsNaN(number) {
 			return nil, errors.New("number must be finite")
@@ -148,7 +149,10 @@ func parseScalar(value schema.Value, raw string) (any, error) {
 		return number, nil
 	case schema.KindBoolean:
 		boolean, err := strconv.ParseBool(raw)
-		return boolean, errors.Wrap(err, "parse boolean")
+		if err != nil {
+			return nil, errors.Wrap(numberError(err), "parse boolean")
+		}
+		return boolean, nil
 	case schema.KindEnum:
 		if !slices.Contains(value.Literals, raw) {
 			return nil, errors.New("value is not a declared enum literal")

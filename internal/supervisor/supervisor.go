@@ -4,7 +4,6 @@ import (
 	"context"
 	"log/slog"
 	"net"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,13 +14,13 @@ import (
 	. "github.com/alecthomas/types/optional"
 
 	"github.com/block/spectre/internal/boundary"
+	"github.com/block/spectre/internal/coordinator"
 	"github.com/block/spectre/internal/descriptors"
 	"github.com/block/spectre/internal/httpserver"
 	"github.com/block/spectre/internal/logger"
 	"github.com/block/spectre/internal/netaddr"
 	"github.com/block/spectre/internal/protocol"
 	"github.com/block/spectre/internal/state"
-	"github.com/block/spectre/internal/status"
 )
 
 // subsystemKey labels the component that wrote a line, in SPECTRE's logs and the
@@ -187,7 +186,6 @@ func (s *Supervisor) cleanupLimits(ctx context.Context) {
 // startAll brings up the proxies and services in dependency order, waiting for
 // each service to accept connections before the next.
 func (s *Supervisor) startAll(ctx context.Context) error {
-	started := time.Now()
 	if err := s.startEgress(ctx); err != nil {
 		return err
 	}
@@ -208,43 +206,24 @@ func (s *Supervisor) startAll(ctx context.Context) error {
 	if err := s.startIngress(ctx); err != nil {
 		return err
 	}
-	return s.startStatus(ctx, started)
+	return s.startReporter(ctx)
 }
 
-// startStatus serves both proxies' quarantine state on the SPECTRE status
-// endpoint. It is best-effort: its failure never stops the mirror.
-func (s *Supervisor) startStatus(ctx context.Context, started time.Time) error {
-	if s.config.StatusListen == "" {
+// startReporter reports both proxies' quarantine state to the coordination
+// service, when one is configured. Reporting never stops the mirror.
+func (s *Supervisor) startReporter(ctx context.Context) error {
+	if !s.config.Coordinator.Enabled() {
 		return nil
 	}
-	listener, err := netaddr.ParseListen(s.config.StatusListen).Listen(ctx)
-	if err != nil {
-		return errors.Wrap(err, "listen for status")
-	}
-	handler := status.NewHandler(started,
-		status.Source{Name: "ingress", Reporter: s.ingress.Candidates()},
-		status.Source{Name: "egress", Reporter: s.egress.Candidates()},
+	reporter, err := coordinator.NewReporter(s.config.Coordinator,
+		coordinator.Source{Name: "ingress", Candidates: s.ingress.Candidates()},
+		coordinator.Source{Name: "egress", Candidates: s.egress.Candidates()},
 	)
-	server := &http.Server{
-		Handler: handler,
-		// Guard the loopback listener against a client that stalls mid-headers.
-		ReadHeaderTimeout: 5 * time.Second,
-		BaseContext:       func(net.Listener) context.Context { return ctx },
+	if err != nil {
+		return errors.Wrap(err, "configure coordination reporting")
 	}
-	go func() {
-		<-ctx.Done()
-		shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), s.config.ShutdownTimeout)
-		defer cancel()
-		if err := server.Shutdown(shutdownCtx); err != nil {
-			s.log.DebugContext(ctx, "Status endpoint shutdown", "error", err)
-		}
-	}()
-	go func() {
-		if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			s.log.WarnContext(ctx, "Status endpoint stopped", "error", err)
-		}
-	}()
-	s.log.InfoContext(ctx, "Status endpoint listening", "address", listener.Addr().String())
+	go reporter.Run(logger.WithLogger(ctx, s.log))
+	s.log.InfoContext(ctx, "Reporting to the coordination service", "url", s.config.Coordinator.Client.URL)
 	return nil
 }
 

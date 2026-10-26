@@ -20,6 +20,7 @@ import (
 	"github.com/block/spectre/internal/boundary"
 	"github.com/block/spectre/internal/logger"
 	"github.com/block/spectre/internal/protocol"
+	"github.com/block/spectre/internal/quarantine"
 )
 
 const (
@@ -171,16 +172,27 @@ func (m *recordingMatcher) Declare(pattern string, declaration protocol.Declarat
 
 type recordingQuarantiner struct {
 	mu      sync.Mutex
-	reasons []string
+	reasons []quarantine.Reason
 }
 
-func (q *recordingQuarantiner) Quarantine(_ context.Context, reason error) {
+func (q *recordingQuarantiner) Quarantine(_ context.Context, reason quarantine.Reason) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	q.reasons = append(q.reasons, reason.Error())
+	q.reasons = append(q.reasons, reason)
 }
 
+// Reasons describes each recorded reason as the logs do.
 func (q *recordingQuarantiner) Reasons() []string {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	var described []string
+	for _, reason := range q.reasons {
+		described = append(described, reason.String())
+	}
+	return described
+}
+
+func (q *recordingQuarantiner) Recorded() []quarantine.Reason {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	return slices.Clone(q.reasons)
