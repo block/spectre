@@ -1,0 +1,13 @@
+[[case]]
+name = "default"
+packages = ["tags"]
+
+[[case.config.rules]]
+key = "env"
+allow = ["-"]
+reason = "kong.DefaultEnvars names its variable"
+
+[[case.config.rules]]
+key = "yaml"
+allow = ["-"]
+reason = "encode with JSON"

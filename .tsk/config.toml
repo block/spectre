@@ -97,6 +97,7 @@ skip-tests = [
   'wrapcheck',
   'gochecknoglobals',
   'methodfile',
+  'forbiddentag',
 ]
 
 # golangci-lint's std-error-handling preset: these errors rarely need handling.
@@ -306,3 +307,9 @@ allow = [
   "github.com/block/spectre/spectrepb/spectrepbconnect",
   "github.com/microsoft/TypeScript/tsc/shim/typescript",
 ]
+
+# Tests may parse flags without kong.DefaultEnvars, so they are skipped above.
+[[forbiddentag.rules]]
+key = "env"
+allow = ["-"]
+reason = "kong.DefaultEnvars names its variable"
