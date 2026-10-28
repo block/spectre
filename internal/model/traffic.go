@@ -2,7 +2,13 @@
 // boundary through its proxies, and why a candidate was quarantined.
 package model
 
-import "fmt"
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+
+	"github.com/alecthomas/errors"
+)
 
 // Direction names the proxy that carries traffic: ingress into the service, or
 // egress from it to a dependency.
@@ -38,7 +44,16 @@ func (k IOKind) String() string {
 
 // Traffic identifies one request route of a kind of IO.
 type Traffic struct {
-	Direction Direction
-	Protocol  Protocol
-	Route     Route
+	Direction Direction `json:"direction"`
+	Protocol  Protocol  `json:"protocol"`
+	Route     Route     `json:"route"`
+}
+
+// UnmarshalJSON rejects unknown fields. Option decodes with json.Unmarshal, so
+// a reason's traffic must enforce strict decoding itself.
+func (t *Traffic) UnmarshalJSON(data []byte) error {
+	type plain Traffic
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	return errors.WithStack(decoder.Decode((*plain)(t)))
 }

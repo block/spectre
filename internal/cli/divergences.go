@@ -7,12 +7,11 @@ import (
 
 	"github.com/alecthomas/errors"
 	. "github.com/alecthomas/types/optional"
-	"google.golang.org/protobuf/encoding/protojson"
-	"google.golang.org/protobuf/proto"
 
+	"github.com/block/spectre/internal/model"
 	"github.com/block/spectre/internal/server"
 	"github.com/block/spectre/internal/server/client"
-	pb "github.com/block/spectre/spectrepb"
+	"github.com/block/spectre/internal/server/wire"
 )
 
 // divergencesCommand groups the commands for the divergences mirrors reported.
@@ -33,33 +32,28 @@ type divergencesListCommand struct {
 
 func (c *divergencesListCommand) Run(ctx context.Context, out Output) error {
 	// No reported value is empty, so an empty flag leaves its filter unset.
-	request := &pb.ListDivergencesRequest{
-		Service:     Zero(c.Service).Ptr(),
-		Environment: Zero(c.Environment).Ptr(),
-		Revision:    Zero(c.Revision).Ptr(),
-		Node:        Zero(c.Node).Ptr(),
+	filter := model.DivergenceFilter{
+		Service:     Zero(c.Service),
+		Environment: Zero(c.Environment),
+		Revision:    Zero(c.Revision),
+		Node:        Zero(c.Node),
 	}
-	response, err := client.New(c.Client).ListDivergences(ctx, request)
+	divergences, err := client.New(c.Client).ListDivergences(ctx, filter)
 	if err != nil {
 		return errors.WithStack(err)
 	}
 	if c.JSON {
-		return writeJSON(out, response)
+		return writeJSON(out, divergences)
 	}
-	divergences := response.GetDivergences()
 	palette := out.Palette
 	if len(divergences) == 0 {
 		_, err := fmt.Fprintln(out.Writer, palette.Dim("No divergences."))
 		return errors.Wrap(err, "write divergences")
 	}
 	for _, divergence := range divergences {
-		description, err := describe(divergence)
-		if err != nil {
-			return err
-		}
-		since := "quarantined " + divergence.GetQuarantine().GetSince().AsTime().UTC().Format(time.RFC3339)
-		_, err = fmt.Fprintf(out.Writer, "%s %s %s\n  %s\n  %s\n", palette.Bold(divergence.GetService()), divergence.GetRevision(),
-			palette.Dim(divergence.GetEnvironment()), palette.Red(description), palette.Dim(since))
+		since := "quarantined " + divergence.Quarantine.Since.UTC().Format(time.RFC3339)
+		_, err = fmt.Fprintf(out.Writer, "%s %s %s\n  %s\n  %s\n", palette.Bold(divergence.Service), divergence.Revision,
+			palette.Dim(divergence.Environment), palette.Red(describe(divergence.Direction, divergence.Quarantine.Reason)), palette.Dim(since))
 		if err != nil {
 			return errors.Wrap(err, "write divergences")
 		}
@@ -78,15 +72,7 @@ func (c *divergencesClearCommand) Run(ctx context.Context) error {
 
 // describe renders a quarantine as the mirror logged it, with the direction,
 // route, and node it names.
-func describe(divergence *pb.Divergence) (string, error) {
-	direction, err := server.DirectionFromMessage(divergence.GetDirection())
-	if err != nil {
-		return "", errors.Wrap(err, "describe divergence")
-	}
-	reason, err := server.ReasonFromMessage(divergence.GetQuarantine())
-	if err != nil {
-		return "", errors.Wrap(err, "describe divergence")
-	}
+func describe(direction model.Direction, reason model.QuarantineReason) string {
 	text := fmt.Sprintf("%s: %s", direction, reason)
 	if traffic, ok := reason.Traffic.Get(); ok {
 		text = fmt.Sprintf("%s %s %s: %s", direction, traffic.Protocol, traffic.Route, reason)
@@ -94,13 +80,14 @@ func describe(divergence *pb.Divergence) (string, error) {
 	if node, ok := reason.Node.Get(); ok {
 		text += fmt.Sprintf(" (node %s)", node)
 	}
-	return text, nil
+	return text
 }
 
-func writeJSON(out Output, message proto.Message) error {
-	data, err := protojson.MarshalOptions{Multiline: true}.Marshal(message)
+// writeJSON prints divergences as the SPECTRE service protocol's list response.
+func writeJSON(out Output, divergences []model.Divergence) error {
+	data, err := wire.DivergencesJSON(divergences)
 	if err != nil {
-		return errors.Wrap(err, "encode JSON")
+		return errors.WithStack(err)
 	}
 	_, err = fmt.Fprintln(out.Writer, string(data))
 	return errors.Wrap(err, "write JSON")

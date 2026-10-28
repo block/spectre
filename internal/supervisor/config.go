@@ -9,8 +9,8 @@ import (
 	"github.com/alecthomas/kong"
 
 	"github.com/block/spectre/internal/descriptors"
-	"github.com/block/spectre/internal/server"
 	"github.com/block/spectre/internal/server/client"
+	"github.com/block/spectre/internal/server/reporter"
 )
 
 // Config contains the command-line configuration for the supervisor.
@@ -47,7 +47,7 @@ type Config struct {
 	// so it can only reach dependencies through the egress proxy.
 	SeccompEgress bool `name:"seccomp-egress" negatable:"" default:"true" help:"Block the candidate from opening IPv4 and IPv6 sockets with a seccomp filter, leaving only the egress proxy's unix socket."`
 	// Server reports the mirror's quarantines to the SPECTRE server.
-	Server server.ReporterConfig `embed:""`
+	Server reporter.Config `embed:""`
 	// StartupTimeout bounds how long each process has to start listening.
 	StartupTimeout time.Duration `default:"30s" help:"Maximum time for each process to begin accepting connections."`
 	// ShutdownTimeout bounds graceful shutdown before processes are killed.
@@ -79,7 +79,7 @@ func NewConfig() Config {
 	config := Config{
 		Candidate: placeholder,
 		Reference: placeholder,
-		Server: server.ReporterConfig{
+		Server: reporter.Config{
 			Client:      client.Config{URL: placeholder},
 			Service:     placeholder,
 			Environment: placeholder,
@@ -92,7 +92,7 @@ func NewConfig() Config {
 	config.Candidate = ""
 	config.Reference = ""
 	// Every reporter field is required, so none has a default to keep.
-	config.Server = server.ReporterConfig{}
+	config.Server = reporter.Config{}
 	return config
 }
 

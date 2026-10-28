@@ -10,6 +10,8 @@ import (
 	"github.com/alecthomas/errors"
 
 	"github.com/block/spectre/internal/logger"
+	"github.com/block/spectre/internal/model"
+	"github.com/block/spectre/internal/server/wire"
 	pb "github.com/block/spectre/spectrepb"
 	"github.com/block/spectre/spectrepb/spectrepbconnect"
 )
@@ -37,8 +39,8 @@ func New(config Config) *Client {
 
 // Quarantine records a mirror's quarantine. A mirror reports each one only once,
 // so failures retry with backoff until the server accepts or rejects it.
-func (c *Client) Quarantine(ctx context.Context, divergence *pb.Divergence) error {
-	request := &pb.QuarantineRequest{Divergence: divergence}
+func (c *Client) Quarantine(ctx context.Context, divergence model.Divergence) error {
+	request := &pb.QuarantineRequest{Divergence: wire.DivergenceMessage(divergence)}
 	for delay := minRetryDelay; ; delay = min(delay*2, maxRetryDelay) {
 		err := c.quarantineOnce(ctx, request)
 		if err == nil || ctx.Err() != nil || connect.CodeOf(err) == connect.CodeInvalidArgument {
@@ -60,13 +62,21 @@ func (c *Client) quarantineOnce(ctx context.Context, request *pb.QuarantineReque
 	return errors.Wrap(err, "report quarantine")
 }
 
-// ListDivergences returns the divergences that match request's filters.
-func (c *Client) ListDivergences(ctx context.Context, request *pb.ListDivergencesRequest) (*pb.ListDivergencesResponse, error) {
-	response, err := c.rpc.ListDivergences(ctx, connect.NewRequest(request))
+// ListDivergences returns the divergences that filter selects, ordered by source.
+func (c *Client) ListDivergences(ctx context.Context, filter model.DivergenceFilter) ([]model.Divergence, error) {
+	response, err := c.rpc.ListDivergences(ctx, connect.NewRequest(wire.FilterMessage(filter)))
 	if err != nil {
 		return nil, errors.Wrap(err, "list divergences")
 	}
-	return response.Msg, nil
+	divergences := make([]model.Divergence, 0, len(response.Msg.GetDivergences()))
+	for _, message := range response.Msg.GetDivergences() {
+		divergence, err := wire.DivergenceFromMessage(message)
+		if err != nil {
+			return nil, errors.Wrap(err, "list divergences")
+		}
+		divergences = append(divergences, divergence)
+	}
+	return divergences, nil
 }
 
 // ClearDivergences removes the divergences of one service environment.
