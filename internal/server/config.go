@@ -17,16 +17,6 @@ type ServeConfig struct {
 	Listen string `default:"127.0.0.1:50070" help:"Address for the SPECTRE server: host:port, or unix:<path|@abstract>."`
 }
 
-// DivergencesConfig selects the divergences that the divergences command lists.
-type DivergencesConfig struct {
-	Client      client.Config `embed:""`
-	JSON        bool          `help:"Print JSON instead of text."`
-	Service     string        `help:"Only list divergences of this service."`
-	Environment string        `help:"Only list divergences in this environment."`
-	Revision    string        `help:"Only list divergences of this candidate revision."`
-	Node        string        `help:"Only list divergences on routes of this migration state node."`
-}
-
 // ClearConfig names the service environment whose divergences to clear.
 type ClearConfig struct {
 	Client      client.Config `embed:""`

@@ -5,7 +5,7 @@ import (
 
 	"github.com/alecthomas/assert/v2"
 
-	"github.com/block/spectre/internal/terminal"
+	"github.com/block/spectre/internal/cli/terminal"
 )
 
 func TestWrap(t *testing.T) {

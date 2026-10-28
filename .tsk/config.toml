@@ -2,6 +2,7 @@ imports = ["github.com/alecthomas/tsk//linters"]
 
 disable-all = true
 enable = [
+  'architecture',
   'asasalint',
   'asciicheck',
   'bidichk',
@@ -39,7 +40,6 @@ enable = [
   'layout',
   'lockguard',
   'loggercheck',
-  'mainlogic',
   'makezero',
   'methodfile',
   'mirror',

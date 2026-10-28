@@ -1,8 +1,9 @@
-package spectre
+// Package cli is the built-in command line: its commands and the terminal
+// output they write. It is the only package that writes to the terminal.
+package cli
 
 import (
 	"context"
-	"os"
 
 	"github.com/alecthomas/errors"
 	"github.com/alecthomas/kong"
@@ -14,15 +15,12 @@ import (
 	"github.com/block/spectre/internal/logger"
 	"github.com/block/spectre/internal/scaffold"
 	"github.com/block/spectre/internal/server"
-	"github.com/block/spectre/internal/server/client"
-	"github.com/block/spectre/internal/state"
 	"github.com/block/spectre/internal/supervisor"
-	"github.com/block/spectre/internal/terminal"
 )
 
-// cli is the built-in command line. Extensions add to it, so custom binaries
-// never copy it.
-type cli struct {
+// CommandLine is the built-in command line. Extensions add to it, so custom
+// binaries never copy it.
+type CommandLine struct {
 	Log    logger.Config   `embed:"" prefix:"log-"`
 	Config kong.ConfigFlag `placeholder:"FILE" help:"Load flag values from a TOML file. Command-line flags take precedence."`
 	// A deployment's own SPECTRE_VERSION must not make every command exit.
@@ -44,55 +42,6 @@ type initCommand struct {
 
 func (c *initCommand) Run(ctx context.Context) error {
 	return errors.WithStack(scaffold.Init(ctx, c.Init))
-}
-
-// stateCommand groups the commands that read a service's migration state.
-type stateCommand struct { //nolint:singleusestruct // A Kong command group; folding it would flatten its subcommands.
-	Types    stateTypesCommand    `cmd:"" help:"Describe each node type the migration state can use."`
-	Validate stateValidateCommand `cmd:"" help:"Check the migration state for errors, and warn about nodes ingress never reaches."`
-}
-
-// stateTypesCommand describes the node types for an agent that writes the migration state.
-type stateTypesCommand struct {
-	Types state.TypesConfig `embed:""`
-}
-
-func (c *stateTypesCommand) Run(catalog *boundary.Catalog) error {
-	return errors.WithStack(state.WriteTypes(os.Stdout, c.Types, terminal.NewPalette(terminal.ColorEnabled(os.Stdout)), catalog))
-}
-
-// stateValidateCommand checks a migration state file.
-type stateValidateCommand struct {
-	State state.Config `embed:""`
-}
-
-func (c *stateValidateCommand) Run(catalog *boundary.Catalog) error {
-	return errors.WithStack(state.Validate(os.Stdout, c.State, terminal.NewPalette(terminal.ColorEnabled(os.Stdout)), catalog))
-}
-
-// divergencesCommand groups the commands for the divergences mirrors reported.
-type divergencesCommand struct { //nolint:singleusestruct // A Kong command group; folding it would flatten its subcommands.
-	List  divergencesListCommand  `cmd:"" default:"withargs" help:"List the divergences that mirrors reported. This is the default."`
-	Clear divergencesClearCommand `cmd:"" help:"Clear the divergences of a service environment once they are dealt with."`
-}
-
-// divergencesListCommand lists the divergences mirrors reported.
-type divergencesListCommand struct {
-	Divergences server.DivergencesConfig `embed:""`
-}
-
-func (c *divergencesListCommand) Run(ctx context.Context) error {
-	spectreServer := client.New(c.Divergences.Client)
-	return errors.WithStack(server.WriteDivergences(ctx, os.Stdout, spectreServer, c.Divergences, terminal.NewPalette(terminal.ColorEnabled(os.Stdout))))
-}
-
-// divergencesClearCommand clears the divergences of a service environment.
-type divergencesClearCommand struct {
-	Clear server.ClearConfig `embed:""`
-}
-
-func (c *divergencesClearCommand) Run(ctx context.Context) error {
-	return errors.WithStack(client.New(c.Clear.Client).ClearDivergences(ctx, c.Clear.Service, c.Clear.Environment))
 }
 
 // serveCommand runs the SPECTRE server.

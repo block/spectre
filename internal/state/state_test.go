@@ -1,9 +1,6 @@
 package state_test
 
 import (
-	"bytes"
-	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/alecthomas/assert/v2"
@@ -11,7 +8,6 @@ import (
 
 	"github.com/block/spectre/internal/boundary"
 	"github.com/block/spectre/internal/state"
-	"github.com/block/spectre/internal/terminal"
 )
 
 var (
@@ -190,47 +186,4 @@ depends_on = ["money"]
 `), testCatalog(t))
 	assert.NoError(t, err)
 	assert.Equal(t, []state.Problem{{Line: 12, Message: "nodes.job: no ingress node reaches it, so SPECTRE cannot verify it"}}, parsed.Unreached())
-}
-
-func TestValidate(t *testing.T) {
-	for name, test := range map[string]struct {
-		toml     string
-		expected string
-		err      string
-	}{
-		"Valid": {
-			toml:     "[nodes.api.ingress.rpc.methods]\n\n[nodes.job]\nstatus = \"migrated\"\n",
-			expected: "STATE:3: warning: nodes.job: no ingress node reaches it, so SPECTRE cannot verify it\nSTATE is valid: 2 nodes, 1 migrated\n",
-		},
-		"Invalid": {
-			toml:     "[nodes.a]\nstatus = \"done\"\ncolour = \"red\"\n",
-			expected: "STATE:2: error: nodes.a.status: must be \"pending\" or \"migrated\"\nSTATE:3: error: nodes.a.colour: unknown key; a node holds depends_on, status, ingress, and egress\n",
-			err:      "STATE is invalid",
-		},
-	} {
-		t.Run(name, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "state.toml")
-			assert.NoError(t, os.WriteFile(path, []byte(test.toml), 0o600))
-			var out bytes.Buffer
-
-			err := state.Validate(&out, state.Config{StateFile: path}, terminal.NewPalette(false), testCatalog(t))
-
-			if test.err != "" {
-				assert.EqualError(t, err, replacePath(test.err, path))
-			} else {
-				assert.NoError(t, err)
-			}
-			assert.Equal(t, replacePath(test.expected, path), out.String())
-		})
-	}
-}
-
-func TestValidateMissingFile(t *testing.T) {
-	err := state.Validate(&bytes.Buffer{}, state.Config{StateFile: filepath.Join(t.TempDir(), "state.toml")}, terminal.NewPalette(false), testCatalog(t))
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "read migration state")
-}
-
-func replacePath(text, path string) string {
-	return string(bytes.ReplaceAll([]byte(text), []byte("STATE"), []byte(path)))
 }

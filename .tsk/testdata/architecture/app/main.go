@@ -8,6 +8,6 @@ func (c *cli) AfterApply() error { return nil } // want `AfterApply must move to
 
 func helper() error { return nil } // want `helper must move to internal/`
 
-func startup() error { return nil } //nolint:mainlogic // startup only
+func startup() error { return nil } //nolint:architecture // startup only
 
 func main() { _ = (&cli{}).Run() }

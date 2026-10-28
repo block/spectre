@@ -3,11 +3,13 @@ package state
 import (
 	"fmt"
 	"maps"
+	"os"
 	"regexp"
 	"slices"
 	"strconv"
 	"strings"
 
+	"github.com/alecthomas/errors"
 	"github.com/pelletier/go-toml"
 
 	"github.com/block/spectre/internal/boundary"
@@ -89,6 +91,21 @@ const (
 )
 
 var nodeIDPattern = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
+
+// Config locates the migration state file.
+type Config struct {
+	// StateFile is the path to the migration state TOML file.
+	StateFile string `default:"spectre/state.toml" type:"path" help:"Path to the migration state TOML file."`
+}
+
+// Load reads and parses the migration state file at path.
+func Load(path string, catalog *boundary.Catalog) (State, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return State{}, errors.Wrap(err, "read migration state")
+	}
+	return errors.WithStack2(Parse(data, catalog))
+}
 
 // Parse reads a migration state and checks it against the IO kinds the catalog
 // supports. An invalid state returns an *InvalidError.

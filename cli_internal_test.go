@@ -11,6 +11,7 @@ import (
 
 	"github.com/alecthomas/assert/v2"
 
+	"github.com/block/spectre/internal/cli"
 	"github.com/block/spectre/internal/server"
 	"github.com/block/spectre/internal/server/client"
 	"github.com/block/spectre/internal/supervisor"
@@ -35,7 +36,7 @@ func TestSuperviseCommandEmbedsConfig(t *testing.T) {
 	scripts := t.TempDir()
 	schema := writeSchemaDir(t)
 	descriptors := t.TempDir()
-	command := &cli{}
+	command := &cli.CommandLine{}
 	parser, err := newParser(command)
 	assert.NoError(t, err)
 	_, err = parser.Parse(append([]string{
@@ -68,7 +69,7 @@ func TestSuperviseCommandReadsFlagsFromEnvironment(t *testing.T) {
 	t.Setenv("SPECTRE_SERVICE", "invoices")
 	t.Setenv("SPECTRE_ENVIRONMENT", "production-us-west-2")
 	t.Setenv("SPECTRE_REVISION", "3f9c2a1")
-	command := &cli{}
+	command := &cli.CommandLine{}
 	parser, err := newParser(command)
 	assert.NoError(t, err)
 	_, err = parser.Parse([]string{
@@ -89,7 +90,7 @@ func TestSuperviseCommandReadsFlagsFromEnvironment(t *testing.T) {
 }
 
 func TestVersionFlagIgnoresEnvironment(t *testing.T) {
-	parser, err := newParser(&cli{})
+	parser, err := newParser(&cli.CommandLine{})
 	assert.NoError(t, err)
 	for _, flag := range parser.Model.Flags {
 		if flag.Name == "version" {
@@ -101,14 +102,14 @@ func TestVersionFlagIgnoresEnvironment(t *testing.T) {
 }
 
 func TestDivergencesCommands(t *testing.T) {
-	command := &cli{}
+	command := &cli.CommandLine{}
 	parser, err := newParser(command)
 	assert.NoError(t, err)
 	_, err = parser.Parse([]string{"divergences", "--server-url=http://server.example", "--service=users"})
 	assert.NoError(t, err)
-	assert.Equal(t, "users", command.Divergences.List.Divergences.Service)
+	assert.Equal(t, "users", command.Divergences.List.Service)
 
-	command = &cli{}
+	command = &cli.CommandLine{}
 	parser, err = newParser(command)
 	assert.NoError(t, err)
 	_, err = parser.Parse([]string{"divergences", "clear", "--server-url=http://server.example", "--service=users", "--environment=production"})
@@ -118,7 +119,7 @@ func TestDivergencesCommands(t *testing.T) {
 }
 
 func TestServeCommandEmbedsConfig(t *testing.T) {
-	command := &cli{}
+	command := &cli.CommandLine{}
 	parser, err := newParser(command)
 	assert.NoError(t, err)
 	_, err = parser.Parse([]string{"serve", "--listen=127.0.0.1:50071"})
@@ -141,7 +142,7 @@ func TestSuperviseCommandRequiresFlags(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			parser, err := newParser(&cli{})
+			parser, err := newParser(&cli.CommandLine{})
 			assert.NoError(t, err)
 			args := slices.DeleteFunc(slices.Clone(complete), func(arg string) bool { return strings.HasPrefix(arg, test.missing) })
 			args = append([]string{"supervise", "--scripts-dir=" + t.TempDir(), "--schema-dir=" + writeSchemaDir(t)}, args...)
@@ -170,7 +171,7 @@ descriptors-dir = %q
 "forecasts.example" = "http://127.0.0.1:50053"
 `, scripts, schema, descriptors)), 0o600)
 	assert.NoError(t, err)
-	command := &cli{}
+	command := &cli.CommandLine{}
 	parser, err := newParser(command)
 	assert.NoError(t, err)
 	_, err = parser.Parse(append([]string{"supervise", "--config=" + path, "--match-window=3s"}, reportingFlags()...))
@@ -190,7 +191,7 @@ descriptors-dir = %q
 func TestSuperviseCommandRejectsUnknownConfigKeys(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "spectre.toml")
 	assert.NoError(t, os.WriteFile(path, []byte(`canddate = "run-candidate"`), 0o600))
-	parser, err := newParser(&cli{})
+	parser, err := newParser(&cli.CommandLine{})
 	assert.NoError(t, err)
 
 	_, err = parser.Parse(append([]string{
@@ -207,7 +208,7 @@ func TestSuperviseCommandRejectsUnknownConfigKeys(t *testing.T) {
 
 func TestProxySubcommandsRemoved(t *testing.T) {
 	for _, name := range []string{"__ingress", "__egress"} {
-		parser, err := newParser(&cli{})
+		parser, err := newParser(&cli.CommandLine{})
 		assert.NoError(t, err)
 		_, err = parser.Parse([]string{name})
 		assert.Error(t, err)
