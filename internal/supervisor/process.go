@@ -2,11 +2,13 @@ package supervisor
 
 import (
 	"os/exec"
+	"syscall"
 
 	"github.com/alecthomas/errors"
 )
 
-// managedProcess is one child process the supervisor runs and stops.
+// managedProcess is one child process the supervisor runs and stops, together
+// with everything it starts in its process group.
 type managedProcess struct {
 	name   string
 	cmd    *exec.Cmd
@@ -39,8 +41,19 @@ func (p *managedProcess) pid() int {
 	return p.cmd.Process.Pid
 }
 
-// wait blocks until the process exits and its output has been passed through.
+// wait blocks until the process exits and its output has been passed through,
+// then kills what is left of its process group so nothing it started outlives it.
 func (p *managedProcess) wait() error {
 	err := p.cmd.Wait()
-	return errors.Wrapf(errors.Join(err, p.stdout.Flush()), "%s exited", p.name)
+	killErr := errors.Wrapf(signalGroup(p.pid(), syscall.SIGKILL), "kill %s process group", p.name)
+	return errors.Wrapf(errors.Join(err, killErr, p.stdout.Flush()), "%s exited", p.name)
+}
+
+// signalGroup sends sig to every process in the group pgid leads. A group with
+// no processes left is not an error.
+func signalGroup(pgid int, sig syscall.Signal) error {
+	if err := syscall.Kill(-pgid, sig); err != nil && !errors.Is(err, syscall.ESRCH) {
+		return errors.WithStack(err)
+	}
+	return nil
 }

@@ -9,6 +9,9 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
+	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -96,6 +99,53 @@ func TestServiceProcessCandidateSandboxed(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, []string{selfExe, SandboxArg, "/bin/sh", "-c", "run-candidate --port 1"}, process.command().Args)
 	assert.True(t, slices.Contains(process.command().Env, "SPECTRE_EGRESS=http+unix:/sockets/egress-candidate.sock"))
+}
+
+func TestServiceStopStopsItsChildren(t *testing.T) {
+	for name, child := range map[string]string{
+		// The shell dies on SIGTERM without passing it on, as dash does for sh -c.
+		"Terminated":  "sleep 300",
+		"IgnoresTerm": "sh -c 'trap \"\" TERM; exec sleep 300'",
+	} {
+		t.Run(name, func(t *testing.T) {
+			s, _ := testSupervisor(t)
+			s.config.ShutdownTimeout = 200 * time.Millisecond
+			pidFile := filepath.Join(t.TempDir(), "child.pid")
+			s.config.Reference = child + " & echo $! >" + pidFile + "; wait"
+			ctx, cancel := context.WithCancel(t.Context())
+			process := s.serviceProcess(ctx, roleReference, "http+unix:/egress.sock", "unix:/reference.sock", false)
+			assert.NoError(t, process.start())
+			childPID := waitForPID(t, pidFile)
+
+			cancel()
+			assert.Error(t, process.wait())
+			waitForExit(t, childPID)
+		})
+	}
+}
+
+// waitForPID reads the PID a service writes to path once it has started a child.
+func waitForPID(t *testing.T, path string) int {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		data, err := os.ReadFile(path)
+		if pid, convErr := strconv.Atoi(strings.TrimSpace(string(data))); err == nil && convErr == nil {
+			return pid
+		}
+		assert.True(t, time.Now().Before(deadline), "service never wrote its child's PID")
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// waitForExit waits for pid to exit and be reaped.
+func waitForExit(t *testing.T, pid int) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for syscall.Kill(pid, 0) == nil {
+		assert.True(t, time.Now().Before(deadline), "child %d outlived its service", pid)
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 func TestEgressConfig(t *testing.T) {

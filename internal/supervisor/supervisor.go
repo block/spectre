@@ -345,11 +345,12 @@ func (s *Supervisor) serviceProcess(ctx context.Context, role string, egressURL 
 	return newManagedProcess(role, cmd, stdout)
 }
 
-// command builds a child command that terminates gracefully on context
-// cancellation, escalating to a kill after the shutdown timeout.
+// command builds a child command in its own process group. Context cancellation
+// terminates the whole group, escalating to a kill after the shutdown timeout.
 func (s *Supervisor) command(ctx context.Context, name string, arg ...string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, name, arg...) //nolint:gosec // G204: the supervisor runs operator-provided service commands by design
-	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error { return signalGroup(cmd.Process.Pid, syscall.SIGTERM) }
 	cmd.WaitDelay = s.config.ShutdownTimeout
 	return cmd
 }
