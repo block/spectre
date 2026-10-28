@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"net/url"
 	"strconv"
 
 	"github.com/alecthomas/errors"
@@ -11,6 +12,19 @@ import (
 
 	"github.com/block/spectre/internal/model"
 )
+
+func init() {
+	for _, scheme := range []string{"redis", "rediss"} {
+		register(scheme, func(ctx context.Context, storageURL *url.URL) (Store, error) {
+			// Returning a nil *Redis directly would make a non-nil Store.
+			store, err := NewRedis(ctx, storageURL)
+			if err != nil {
+				return nil, err
+			}
+			return store, nil
+		})
+	}
+}
 
 // divergencesKey is the Redis hash that maps each sourceField to its divergence
 // as JSON.
@@ -24,9 +38,9 @@ type Redis struct {
 
 var _ Store = (*Redis)(nil)
 
-// NewRedis connects to the Redis server the configuration names.
-func NewRedis(ctx context.Context, config Config) (*Redis, error) {
-	options, err := redis.ParseURL(config.RedisURL)
+// NewRedis connects to the Redis server at a redis:// or rediss:// URL.
+func NewRedis(ctx context.Context, storageURL *url.URL) (*Redis, error) {
+	options, err := redis.ParseURL(storageURL.String())
 	if err != nil {
 		return nil, errors.Wrap(err, "redis URL")
 	}

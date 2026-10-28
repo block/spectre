@@ -2,10 +2,15 @@ package storage
 
 import (
 	"context"
+	"net/url"
 	"sync"
 
 	"github.com/block/spectre/internal/model"
 )
+
+func init() {
+	register("memory", func(context.Context, *url.URL) (Store, error) { return NewMemory(), nil })
+}
 
 // Memory keeps divergences in memory, so a restart loses them. Stored
 // divergences share their slices with callers, who never mutate them.
