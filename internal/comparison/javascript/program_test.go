@@ -11,8 +11,8 @@ import (
 	"github.com/alecthomas/assert/v2"
 	. "github.com/alecthomas/types/optional"
 
-	"github.com/block/spectre/internal/boundary"
 	"github.com/block/spectre/internal/comparison/javascript"
+	"github.com/block/spectre/internal/model"
 	"github.com/block/spectre/internal/schema"
 )
 
@@ -40,8 +40,8 @@ func TestProgramOwnsDeclarations(t *testing.T) {
 	})
 	assert.NoError(t, err)
 
-	assert.Equal(t, []endpoint{{"http", "GET /v1/forecast", "test.v1.Response"}, {"http", "GET /v2/forecast", "test.v1.Response"}}, endpoints(program, boundary.Ingress))
-	assert.Equal(t, []endpoint{{"http", "GET weather.example/v1/forecast", "test.v1.Response"}}, endpoints(program, boundary.Egress))
+	assert.Equal(t, []endpoint{{"http", "GET /v1/forecast", "test.v1.Response"}, {"http", "GET /v2/forecast", "test.v1.Response"}}, endpoints(program, model.Ingress))
+	assert.Equal(t, []endpoint{{"http", "GET weather.example/v1/forecast", "test.v1.Response"}}, endpoints(program, model.Egress))
 	assert.Equal(t, []javascript.FieldTarget{javascript.NewFieldTarget("test.v1.Response", "value")}, program.Fields())
 	assert.Equal(t, []schema.TypeRef{"test.v1.User"}, program.Messages())
 	operation, err := program.Schema().Operation("test.v1.UserService.GetUser")
@@ -58,7 +58,7 @@ func TestIgnoreRegistersIgnoredEndpoint(t *testing.T) {
 	})
 	assert.NoError(t, err)
 
-	got := program.Endpoints(boundary.Ingress)
+	got := program.Endpoints(model.Ingress)
 	assert.Equal(t, 2, len(got))
 	// The matched endpoint keeps its type and is compared.
 	assert.Equal(t, "GET /v1/forecast", got[0].Pattern())
@@ -74,8 +74,8 @@ func TestLoadsEmptyScriptsDirectory(t *testing.T) {
 	program, err := compile(t, fstest.MapFS{"README.md": {Data: []byte("Not a script.")}})
 	assert.NoError(t, err)
 
-	assert.Equal(t, []endpoint{}, endpoints(program, boundary.Ingress))
-	assert.Equal(t, []endpoint{}, endpoints(program, boundary.Egress))
+	assert.Equal(t, []endpoint{}, endpoints(program, model.Ingress))
+	assert.Equal(t, []endpoint{}, endpoints(program, model.Egress))
 	assert.Equal(t, []javascript.FieldTarget{}, program.Fields())
 	assert.Equal(t, 0, len(program.Messages()))
 	evaluator, err := program.NewEvaluator(t.Context())
@@ -581,7 +581,7 @@ func TestRejectsScriptSymlinks(t *testing.T) {
 func TestProtocolsAreNotValidatedUntilConfigure(t *testing.T) {
 	program, err := newProgram(t, untyped+`ingress.match("test.v1.Response", "sql", "query");`)
 	assert.NoError(t, err)
-	assert.Equal(t, []endpoint{{"sql", "query", "test.v1.Response"}}, endpoints(program, boundary.Ingress))
+	assert.Equal(t, []endpoint{{"sql", "query", "test.v1.Response"}}, endpoints(program, model.Ingress))
 }
 
 func TestRejectsDuplicateFieldsAcrossScripts(t *testing.T) {
@@ -622,12 +622,12 @@ func TestFieldRegistrationsPreserveExplicitTypeAndPath(t *testing.T) {
 }
 
 type endpoint struct {
-	protocol boundary.Protocol
+	protocol model.Protocol
 	pattern  string
 	typeName schema.TypeRef
 }
 
-func endpoints(program *javascript.Program, direction boundary.Direction) []endpoint {
+func endpoints(program *javascript.Program, direction model.Direction) []endpoint {
 	declared := []endpoint{}
 	for _, value := range program.Endpoints(direction) {
 		declared = append(declared, endpoint{value.Protocol(), value.Pattern(), value.Type()})

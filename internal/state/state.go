@@ -12,7 +12,7 @@ import (
 	"github.com/alecthomas/errors"
 	"github.com/pelletier/go-toml"
 
-	"github.com/block/spectre/internal/boundary"
+	"github.com/block/spectre/internal/model"
 )
 
 // Status says where a node's code lives.
@@ -37,7 +37,7 @@ type Node struct {
 	DependsOn []string
 	Status    Status
 	// IO holds the settings of each IO kind the node has. A library has none.
-	IO map[boundary.Kind]map[string]any
+	IO map[model.IOKind]map[string]any
 	// Line is where the node's table starts in the file, or 0 when unknown.
 	Line int
 }
@@ -99,7 +99,7 @@ type Config struct {
 }
 
 // Load reads and parses the migration state file at path.
-func Load(path string, catalog *boundary.Catalog) (State, error) {
+func Load(path string, catalog *Catalog) (State, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return State{}, errors.Wrap(err, "read migration state")
@@ -109,7 +109,7 @@ func Load(path string, catalog *boundary.Catalog) (State, error) {
 
 // Parse reads a migration state and checks it against the IO kinds the catalog
 // supports. An invalid state returns an *InvalidError.
-func Parse(data []byte, catalog *boundary.Catalog) (State, error) {
+func Parse(data []byte, catalog *Catalog) (State, error) {
 	tree, err := toml.LoadBytes(data)
 	if err != nil {
 		return State{}, &InvalidError{Problems: []Problem{syntaxProblem(err)}}
@@ -150,7 +150,7 @@ func (s State) Unreached() []Problem {
 
 func (n Node) hasIngress() bool {
 	for kind := range n.IO {
-		if kind.Direction == boundary.Ingress {
+		if kind.Direction == model.Ingress {
 			return true
 		}
 	}
@@ -160,11 +160,11 @@ func (n Node) hasIngress() bool {
 // parser collects every problem in a state file instead of stopping at the first.
 type parser struct {
 	root     *toml.Tree
-	catalog  *boundary.Catalog
+	catalog  *Catalog
 	problems []Problem
 }
 
-func newParser(root *toml.Tree, catalog *boundary.Catalog) *parser {
+func newParser(root *toml.Tree, catalog *Catalog) *parser {
 	return &parser{root: root, catalog: catalog}
 }
 
@@ -227,7 +227,7 @@ func (p *parser) state() State {
 }
 
 func (p *parser) node(path []string, table *toml.Tree) Node {
-	node := Node{ID: path[len(path)-1], Status: Pending, IO: map[boundary.Kind]map[string]any{}, Line: p.line(path)}
+	node := Node{ID: path[len(path)-1], Status: Pending, IO: map[model.IOKind]map[string]any{}, Line: p.line(path)}
 	for _, key := range sortedKeys(table) {
 		keyPath := append(slices.Clone(path), key)
 		value := table.GetPath([]string{key})
@@ -241,10 +241,10 @@ func (p *parser) node(path []string, table *toml.Tree) Node {
 				continue
 			}
 			node.Status = Status(status)
-		case string(boundary.Ingress), string(boundary.Egress):
-			p.kinds(keyPath, boundary.Direction(key), value, node.IO)
+		case string(model.Ingress), string(model.Egress):
+			p.kinds(keyPath, model.Direction(key), value, node.IO)
 		default:
-			p.reportf(keyPath, "unknown key; a node holds depends_on, status, %s, and %s", boundary.Ingress, boundary.Egress)
+			p.reportf(keyPath, "unknown key; a node holds depends_on, status, %s, and %s", model.Ingress, model.Egress)
 		}
 	}
 	return node
@@ -268,7 +268,7 @@ func (p *parser) dependsOn(path []string, value any) []string {
 	return ids
 }
 
-func (p *parser) kinds(path []string, direction boundary.Direction, value any, io map[boundary.Kind]map[string]any) {
+func (p *parser) kinds(path []string, direction model.Direction, value any, io map[model.IOKind]map[string]any) {
 	protocols, ok := value.(*toml.Tree)
 	if !ok {
 		p.reportf(path, "must be a table keyed by protocol")
@@ -276,7 +276,7 @@ func (p *parser) kinds(path []string, direction boundary.Direction, value any, i
 	}
 	for _, protocol := range sortedKeys(protocols) {
 		kindPath := append(slices.Clone(path), protocol)
-		kind := boundary.Kind{Direction: direction, Protocol: boundary.Protocol(protocol)}
+		kind := model.IOKind{Direction: direction, Protocol: model.Protocol(protocol)}
 		support, supported := p.catalog.Support(kind)
 		if !supported {
 			p.reportf(kindPath, "%s is not a supported IO kind; run spectre state types for the supported ones", kind)
@@ -294,7 +294,7 @@ func (p *parser) kinds(path []string, direction boundary.Direction, value any, i
 
 // settings checks a table against the settings it may hold, and each entry of a
 // keyed setting against the settings an entry may hold.
-func (p *parser) settings(path []string, table *toml.Tree, settings []boundary.Setting) {
+func (p *parser) settings(path []string, table *toml.Tree, settings []Setting) {
 	for _, setting := range settings {
 		if setting.Required && !table.HasPath([]string{setting.Name}) {
 			p.reportf(path, "%s is required", setting.Name)
@@ -302,7 +302,7 @@ func (p *parser) settings(path []string, table *toml.Tree, settings []boundary.S
 	}
 	for _, key := range sortedKeys(table) {
 		settingPath := append(slices.Clone(path), key)
-		index := slices.IndexFunc(settings, func(setting boundary.Setting) bool { return setting.Name == key })
+		index := slices.IndexFunc(settings, func(setting Setting) bool { return setting.Name == key })
 		if index < 0 {
 			p.reportf(settingPath, "unknown setting")
 			continue

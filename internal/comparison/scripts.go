@@ -9,9 +9,9 @@ import (
 	"github.com/alecthomas/errors"
 	. "github.com/alecthomas/types/optional"
 
-	"github.com/block/spectre/internal/boundary"
 	comparisoninternal "github.com/block/spectre/internal/comparison/internal"
 	"github.com/block/spectre/internal/comparison/javascript"
+	"github.com/block/spectre/internal/model"
 	"github.com/block/spectre/internal/schema"
 )
 
@@ -62,7 +62,7 @@ func (s *Scripts) Schema() *schema.Schema {
 
 // Endpoints returns every declared endpoint, ingress first, in declaration order.
 func (s *Scripts) Endpoints() []javascript.Endpoint {
-	return append(s.program.Endpoints(boundary.Ingress), s.program.Endpoints(boundary.Egress)...)
+	return append(s.program.Endpoints(model.Ingress), s.program.Endpoints(model.Egress)...)
 }
 
 // Compare normalises both payloads as typeName and returns the paths at which

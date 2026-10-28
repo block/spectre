@@ -8,7 +8,6 @@ import (
 
 	"github.com/alecthomas/errors"
 
-	"github.com/block/spectre/internal/boundary"
 	"github.com/block/spectre/internal/cli/terminal"
 	"github.com/block/spectre/internal/state"
 )
@@ -24,7 +23,7 @@ type stateTypesCommand struct {
 	JSON bool `help:"Print JSON instead of text."`
 }
 
-func (c *stateTypesCommand) Run(out Output, catalog *boundary.Catalog) error {
+func (c *stateTypesCommand) Run(out Output, catalog *state.Catalog) error {
 	types := state.NodeTypes(catalog)
 	if c.JSON {
 		encoder := json.NewEncoder(out.Writer)
@@ -46,7 +45,7 @@ type stateValidateCommand struct {
 	State state.Config `embed:""`
 }
 
-func (c *stateValidateCommand) Run(out Output, catalog *boundary.Catalog) error {
+func (c *stateValidateCommand) Run(out Output, catalog *state.Catalog) error {
 	path := c.State.StateFile
 	loaded, err := state.Load(path, catalog)
 	if invalid, ok := errors.AsType[*state.InvalidError](err); ok {
@@ -95,7 +94,7 @@ func nodeTypeText(palette terminal.Palette, nodeType state.NodeType) string {
 
 // writeSettings renders each setting at indent, with the entries of a keyed
 // table nested one level deeper.
-func writeSettings(section *strings.Builder, palette terminal.Palette, settings []boundary.Setting, indent string) {
+func writeSettings(section *strings.Builder, palette terminal.Palette, settings []state.Setting, indent string) {
 	for _, setting := range settings {
 		requirement := palette.Dim("(optional)")
 		if setting.Required {

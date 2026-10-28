@@ -5,13 +5,11 @@ import (
 	. "github.com/alecthomas/types/optional"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	"github.com/block/spectre/internal/boundary"
-	"github.com/block/spectre/internal/proxy"
-	"github.com/block/spectre/internal/quarantine"
+	"github.com/block/spectre/internal/model"
 	pb "github.com/block/spectre/spectrepb"
 )
 
-func quarantineMessage(status proxy.QuarantineStatus) *pb.Quarantine {
+func quarantineMessage(status model.Quarantine) *pb.Quarantine {
 	reason := status.Reason
 	message := &pb.Quarantine{
 		Since:       timestamppb.New(status.Since),
@@ -34,12 +32,12 @@ func quarantineMessage(status proxy.QuarantineStatus) *pb.Quarantine {
 
 // ReasonFromMessage restores the reason a mirror reported. Protobuf getters
 // return plain strings, so the wire format is where named types are restored.
-func ReasonFromMessage(message *pb.Quarantine) (quarantine.Reason, error) {
+func ReasonFromMessage(message *pb.Quarantine) (model.QuarantineReason, error) {
 	kind, err := kindFromMessage(message.GetKind())
 	if err != nil {
-		return quarantine.Reason{}, err
+		return model.QuarantineReason{}, err
 	}
-	reason := quarantine.Reason{
+	reason := model.QuarantineReason{
 		Kind:        kind,
 		Node:        Zero(message.GetNode()),
 		Differences: message.GetDifferences(),
@@ -48,71 +46,71 @@ func ReasonFromMessage(message *pb.Quarantine) (quarantine.Reason, error) {
 	if traffic := message.GetTraffic(); traffic != nil {
 		direction, err := DirectionFromMessage(traffic.GetDirection())
 		if err != nil {
-			return quarantine.Reason{}, err
+			return model.QuarantineReason{}, err
 		}
-		reason.Traffic = Some(quarantine.Traffic{
+		reason.Traffic = Some(model.Traffic{
 			Direction: direction,
-			Protocol:  boundary.Protocol(traffic.GetProtocol()), //nolint:typeboundary // protobuf getters return plain strings
-			Route:     boundary.Route(traffic.GetRoute()),       //nolint:typeboundary // protobuf getters return plain strings
+			Protocol:  model.Protocol(traffic.GetProtocol()), //nolint:typeboundary // protobuf getters return plain strings
+			Route:     model.Route(traffic.GetRoute()),       //nolint:typeboundary // protobuf getters return plain strings
 		})
 	}
 	return reason, nil
 }
 
-func kindMessage(kind quarantine.Kind) pb.Quarantine_Kind {
+func kindMessage(kind model.QuarantineKind) pb.Quarantine_Kind {
 	switch kind {
-	case quarantine.KindDivergent:
+	case model.QuarantineDivergent:
 		return pb.Quarantine_KIND_DIVERGENT
-	case quarantine.KindUnable:
+	case model.QuarantineUnable:
 		return pb.Quarantine_KIND_UNABLE
-	case quarantine.KindUnmatched:
+	case model.QuarantineUnmatched:
 		return pb.Quarantine_KIND_UNMATCHED
-	case quarantine.KindUnlisted:
+	case model.QuarantineUnlisted:
 		return pb.Quarantine_KIND_UNLISTED
-	case quarantine.KindCapacity:
+	case model.QuarantineCapacity:
 		return pb.Quarantine_KIND_CAPACITY
-	case quarantine.KindPairing:
+	case model.QuarantinePairing:
 		return pb.Quarantine_KIND_PAIRING
 	}
 	return pb.Quarantine_KIND_UNSPECIFIED
 }
 
-func kindFromMessage(kind pb.Quarantine_Kind) (quarantine.Kind, error) {
+func kindFromMessage(kind pb.Quarantine_Kind) (model.QuarantineKind, error) {
 	switch kind {
 	case pb.Quarantine_KIND_DIVERGENT:
-		return quarantine.KindDivergent, nil
+		return model.QuarantineDivergent, nil
 	case pb.Quarantine_KIND_UNABLE:
-		return quarantine.KindUnable, nil
+		return model.QuarantineUnable, nil
 	case pb.Quarantine_KIND_UNMATCHED:
-		return quarantine.KindUnmatched, nil
+		return model.QuarantineUnmatched, nil
 	case pb.Quarantine_KIND_UNLISTED:
-		return quarantine.KindUnlisted, nil
+		return model.QuarantineUnlisted, nil
 	case pb.Quarantine_KIND_CAPACITY:
-		return quarantine.KindCapacity, nil
+		return model.QuarantineCapacity, nil
 	case pb.Quarantine_KIND_PAIRING:
-		return quarantine.KindPairing, nil
+		return model.QuarantinePairing, nil
 	case pb.Quarantine_KIND_UNSPECIFIED:
 	}
 	return "", errors.Errorf("unknown quarantine kind %s", kind)
 }
 
-func directionMessage(direction boundary.Direction) pb.Direction {
+func directionMessage(direction model.Direction) pb.Direction {
 	switch direction {
-	case boundary.Ingress:
+	case model.Ingress:
 		return pb.Direction_DIRECTION_INGRESS
-	case boundary.Egress:
+	case model.Egress:
 		return pb.Direction_DIRECTION_EGRESS
 	}
 	return pb.Direction_DIRECTION_UNSPECIFIED
 }
 
 // DirectionFromMessage restores the direction a mirror reported.
-func DirectionFromMessage(direction pb.Direction) (boundary.Direction, error) {
+func DirectionFromMessage(direction pb.Direction) (model.Direction, error) {
 	switch direction {
 	case pb.Direction_DIRECTION_INGRESS:
-		return boundary.Ingress, nil
+		return model.Ingress, nil
 	case pb.Direction_DIRECTION_EGRESS:
-		return boundary.Egress, nil
+		return model.Egress, nil
 	case pb.Direction_DIRECTION_UNSPECIFIED:
 	}
 	return "", errors.Errorf("unknown direction %s", direction)

@@ -9,8 +9,8 @@ import (
 	"github.com/alecthomas/errors"
 	. "github.com/alecthomas/types/optional"
 
-	"github.com/block/spectre/internal/boundary"
 	"github.com/block/spectre/internal/logger"
+	"github.com/block/spectre/internal/model"
 	"github.com/block/spectre/internal/protocol"
 	"github.com/block/spectre/internal/proxy"
 )
@@ -50,7 +50,7 @@ func newPoint(acceptor protocol.Acceptor, budget func() *proxy.Budget, abortCanc
 }
 
 // process asks the engine what to do with a request.
-func (p *point) process(ctx context.Context, requestID Option[protocol.RequestID], route boundary.Route,
+func (p *point) process(ctx context.Context, requestID Option[protocol.RequestID], route model.Route,
 	ignored Option[string], request func(ctx context.Context) (protocol.Message, error),
 ) (protocol.Decision, error) {
 	return errors.WithStack2(p.acceptor.ProcessRequest(ctx, requestID, route, ignored, request))

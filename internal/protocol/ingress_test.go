@@ -10,9 +10,8 @@ import (
 	"github.com/alecthomas/errors"
 	. "github.com/alecthomas/types/optional"
 
-	"github.com/block/spectre/internal/boundary"
+	"github.com/block/spectre/internal/model"
 	"github.com/block/spectre/internal/protocol"
-	"github.com/block/spectre/internal/quarantine"
 	"github.com/block/spectre/internal/schema"
 )
 
@@ -24,7 +23,7 @@ var (
 
 func TestIngressComparesResponses(t *testing.T) {
 	for name, test := range map[string]struct {
-		route       boundary.Route
+		route       model.Route
 		ignored     Option[string]
 		reference   protocol.Response
 		candidate   protocol.Response
@@ -139,7 +138,7 @@ func TestIngressComparesResponses(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			h := newHarness(t, time.Second)
-			route, ignored := boundary.Route("compared"), notIgnored
+			route, ignored := model.Route("compared"), notIgnored
 			if test.route != "" {
 				route, ignored = test.route, test.ignored
 			}
@@ -160,7 +159,7 @@ func TestIngressComparesResponses(t *testing.T) {
 
 func TestIngressReportsUnableExchanges(t *testing.T) {
 	for name, test := range map[string]struct {
-		route          boundary.Route
+		route          model.Route
 		ignored        Option[string]
 		referenceFails bool
 		candidateFails bool
@@ -204,7 +203,7 @@ func TestIngressReportsUnableExchanges(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			h := newHarness(t, time.Second)
-			route, ignored := boundary.Route("compared"), notIgnored
+			route, ignored := model.Route("compared"), notIgnored
 			if test.route != "" {
 				route, ignored = test.route, test.ignored
 			}
@@ -240,7 +239,7 @@ func TestIngressReportsUnableExchanges(t *testing.T) {
 
 func TestIngressCandidateMustJoinAReference(t *testing.T) {
 	for name, test := range map[string]struct {
-		candidate boundary.Protocol
+		candidate model.Protocol
 		// joins is how many candidates join successfully first.
 		joins            int
 		referenceEnded   bool
@@ -326,9 +325,9 @@ func TestIngressCandidateWaitsForReference(t *testing.T) {
 	h.engine.IngressReference(fake).ProcessResponse(h.ctx, reference, protocol.Response{Decode: statusOnly("OK"), Raw: newRaw("reference")})
 	<-responded
 
-	assert.Equal(t, []quarantine.Reason{{
-		Kind:        quarantine.KindDivergent,
-		Traffic:     Some(quarantine.Traffic{Direction: boundary.Ingress, Protocol: fake, Route: "compared"}),
+	assert.Equal(t, []model.QuarantineReason{{
+		Kind:        model.QuarantineDivergent,
+		Traffic:     Some(model.Traffic{Direction: model.Ingress, Protocol: fake, Route: "compared"}),
 		Differences: []string{"$status"},
 	}}, h.quarantine.Recorded())
 }
@@ -423,7 +422,7 @@ func TestIngressReleasesResponsesForUnknownExchanges(t *testing.T) {
 }
 
 // mirror starts a reference request and joins its mirrored candidate request.
-func (h *harness) mirror(t *testing.T, route boundary.Route, ignored Option[string]) (reference, candidate protocol.Exchange) {
+func (h *harness) mirror(t *testing.T, route model.Route, ignored Option[string]) (reference, candidate protocol.Exchange) {
 	t.Helper()
 	decision, err := h.engine.IngressReference(fake).ProcessRequest(h.ctx, None[protocol.RequestID](), route, ignored, unreadPayload(t))
 	assert.NoError(t, err)
@@ -463,7 +462,7 @@ func message(typeRef Option[schema.TypeRef], value, trace string) Option[protoco
 }
 
 // comparisonRecord is the comparison log record for route with attributes added.
-func comparisonRecord(route boundary.Route, attributes map[string]any) map[string]any {
+func comparisonRecord(route model.Route, attributes map[string]any) map[string]any {
 	record := map[string]any{"level": "INFO", "msg": "Response comparison completed", "event": "correlation", "protocol": "fake", "route": string(route)}
 	for key, value := range attributes {
 		record[key] = value

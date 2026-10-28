@@ -9,7 +9,7 @@ import (
 	. "github.com/alecthomas/types/optional"
 	"go.jetify.com/typeid"
 
-	"github.com/block/spectre/internal/quarantine"
+	"github.com/block/spectre/internal/model"
 	"github.com/block/spectre/internal/schema"
 )
 
@@ -58,7 +58,7 @@ type Matcher interface {
 
 // Quarantiner stops all candidate traffic.
 type Quarantiner interface {
-	Quarantine(ctx context.Context, reason quarantine.Reason)
+	Quarantine(ctx context.Context, reason model.QuarantineReason)
 }
 
 // Raw is a server's own record of a response, which an intercept replays.

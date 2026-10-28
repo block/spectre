@@ -8,13 +8,13 @@ import (
 	"github.com/alecthomas/errors"
 	"github.com/alecthomas/kong"
 
-	"github.com/block/spectre/internal/boundary"
 	"github.com/block/spectre/internal/comparison/javascript"
 	"github.com/block/spectre/internal/descriptors"
 	"github.com/block/spectre/internal/jsonschema"
 	"github.com/block/spectre/internal/logger"
 	"github.com/block/spectre/internal/scaffold"
 	"github.com/block/spectre/internal/server"
+	"github.com/block/spectre/internal/state"
 	"github.com/block/spectre/internal/supervisor"
 )
 
@@ -58,7 +58,7 @@ type superviseCommand struct {
 	Supervisor supervisor.Config `embed:""`
 }
 
-func (c *superviseCommand) Run(ctx context.Context, catalog *boundary.Catalog) error {
+func (c *superviseCommand) Run(ctx context.Context, catalog *state.Catalog) error {
 	super, err := supervisor.New(ctx, c.Supervisor, catalog)
 	if err != nil {
 		return errors.WithStack(err)

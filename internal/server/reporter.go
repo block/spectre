@@ -4,18 +4,17 @@ import (
 	"context"
 	"sync"
 
-	"github.com/block/spectre/internal/boundary"
 	"github.com/block/spectre/internal/logger"
-	"github.com/block/spectre/internal/proxy"
+	"github.com/block/spectre/internal/model"
 	"github.com/block/spectre/internal/server/client"
 	pb "github.com/block/spectre/spectrepb"
 )
 
 // Source is a proxy whose quarantine a mirror reports.
 type Source struct {
-	Direction boundary.Direction
+	Direction model.Direction
 	// Quarantined receives the proxy's quarantine once, when it begins.
-	Quarantined <-chan proxy.QuarantineStatus
+	Quarantined <-chan model.Quarantine
 }
 
 // Reporter sends each quarantine of a mirror's sources to the SPECTRE server.
@@ -43,7 +42,7 @@ func (r *Reporter) Run(ctx context.Context) {
 // reportSource waits for the source to quarantine, then reports it. A failed
 // report is only logged, so the SPECTRE server never blocks the mirror.
 func (r *Reporter) reportSource(ctx context.Context, source Source) {
-	var status proxy.QuarantineStatus
+	var status model.Quarantine
 	select {
 	case status = <-source.Quarantined:
 	case <-ctx.Done():
