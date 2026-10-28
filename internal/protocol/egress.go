@@ -10,11 +10,10 @@ import (
 	"github.com/alecthomas/errors"
 	. "github.com/alecthomas/types/optional"
 
-	"github.com/block/spectre/internal/boundary"
 	"github.com/block/spectre/internal/comparison"
 	"github.com/block/spectre/internal/future"
 	"github.com/block/spectre/internal/logger"
-	"github.com/block/spectre/internal/quarantine"
+	"github.com/block/spectre/internal/model"
 )
 
 // egressQueue pairs candidate and reference requests of the same hash in arrival
@@ -93,7 +92,7 @@ func (q *egressQueue) shutdown(ctx context.Context) error {
 }
 
 // hash identifies a request by its protocol, route, and normalised payload.
-func (q *egressQueue) hash(ctx context.Context, protocol boundary.Protocol, route boundary.Route, side string,
+func (q *egressQueue) hash(ctx context.Context, protocol model.Protocol, route model.Route, side string,
 	request func(ctx context.Context) (Message, error),
 ) (comparison.Hash, error) {
 	message, err := request(ctx)
@@ -104,7 +103,7 @@ func (q *egressQueue) hash(ctx context.Context, protocol boundary.Protocol, rout
 }
 
 // forward registers a reference request and hashes it in the background.
-func (q *egressQueue) forward(ctx context.Context, protocol boundary.Protocol, route boundary.Route,
+func (q *egressQueue) forward(ctx context.Context, protocol model.Protocol, route model.Route,
 	request func(ctx context.Context) (Message, error),
 ) Decision {
 	exchange := newExchange()
@@ -120,7 +119,7 @@ func (q *egressQueue) forward(ctx context.Context, protocol boundary.Protocol, r
 		hash, err := q.hash(background, protocol, route, "reference", request)
 		if err != nil {
 			pending.abandon()
-			q.quarantine.Quarantine(background, egressReason(quarantine.KindUnable, protocol, route, errors.Wrap(err, "identify reference request")))
+			q.quarantine.Quarantine(background, egressReason(model.QuarantineUnable, protocol, route, errors.Wrap(err, "identify reference request")))
 			return
 		}
 		q.add(hash, pending)
@@ -129,7 +128,7 @@ func (q *egressQueue) forward(ctx context.Context, protocol boundary.Protocol, r
 }
 
 // intercept answers a candidate request with an equivalent reference response.
-func (q *egressQueue) intercept(ctx context.Context, protocol boundary.Protocol, route boundary.Route,
+func (q *egressQueue) intercept(ctx context.Context, protocol model.Protocol, route model.Route,
 	request func(ctx context.Context) (Message, error),
 ) (Decision, error) {
 	raw, kind, err := q.match(ctx, protocol, route, request)
@@ -146,29 +145,29 @@ func (q *egressQueue) intercept(ctx context.Context, protocol boundary.Protocol,
 }
 
 // match returns the reference response to replay, or why there is none.
-func (q *egressQueue) match(ctx context.Context, protocol boundary.Protocol, route boundary.Route,
+func (q *egressQueue) match(ctx context.Context, protocol model.Protocol, route model.Route,
 	request func(ctx context.Context) (Message, error),
-) (Raw, quarantine.Kind, error) {
+) (Raw, model.QuarantineKind, error) {
 	waiter := newEgressWaiter(q.arrive())
 	hash, err := q.hash(ctx, protocol, route, "candidate", request)
 	if err != nil {
-		return nil, quarantine.KindUnable, errors.Wrap(err, "identify candidate request")
+		return nil, model.QuarantineUnable, errors.Wrap(err, "identify candidate request")
 	}
 	pending, err := q.claim(ctx, hash, waiter)
 	if err != nil {
-		return nil, quarantine.KindUnmatched, err
+		return nil, model.QuarantineUnmatched, err
 	}
 	raw, err := pending.wait(ctx)
 	if err != nil {
-		return nil, quarantine.KindUnable, err
+		return nil, model.QuarantineUnable, err
 	}
 	return raw, "", nil
 }
 
-func egressReason(kind quarantine.Kind, protocol boundary.Protocol, route boundary.Route, err error) quarantine.Reason {
-	return quarantine.Reason{
+func egressReason(kind model.QuarantineKind, protocol model.Protocol, route model.Route, err error) model.QuarantineReason {
+	return model.QuarantineReason{
 		Kind:    kind,
-		Traffic: Some(quarantine.Traffic{Direction: boundary.Egress, Protocol: protocol, Route: route}),
+		Traffic: Some(model.Traffic{Direction: model.Egress, Protocol: protocol, Route: route}),
 		Detail:  err.Error(),
 	}
 }
@@ -400,14 +399,14 @@ func (e *egressExchange) wait(ctx context.Context) (Raw, error) {
 // the background, so failing to identify a request never affects the reference.
 type egressReference struct {
 	queue    *egressQueue
-	protocol boundary.Protocol
+	protocol model.Protocol
 }
 
-func newEgressReference(queue *egressQueue, protocol boundary.Protocol) *egressReference {
+func newEgressReference(queue *egressQueue, protocol model.Protocol) *egressReference {
 	return &egressReference{queue: queue, protocol: protocol}
 }
 
-func (r *egressReference) ProcessRequest(ctx context.Context, _ Option[RequestID], route boundary.Route, _ Option[string],
+func (r *egressReference) ProcessRequest(ctx context.Context, _ Option[RequestID], route model.Route, _ Option[string],
 	request func(ctx context.Context) (Message, error),
 ) (Decision, error) {
 	return r.queue.forward(ctx, r.protocol, route, request), nil
@@ -432,14 +431,14 @@ func (r *egressReference) Unable(ctx context.Context, exchange Exchange, reason 
 // response. A request that cannot be matched quarantines the candidate.
 type egressCandidate struct {
 	queue    *egressQueue
-	protocol boundary.Protocol
+	protocol model.Protocol
 }
 
-func newEgressCandidate(queue *egressQueue, protocol boundary.Protocol) *egressCandidate {
+func newEgressCandidate(queue *egressQueue, protocol model.Protocol) *egressCandidate {
 	return &egressCandidate{queue: queue, protocol: protocol}
 }
 
-func (c *egressCandidate) ProcessRequest(ctx context.Context, _ Option[RequestID], route boundary.Route, _ Option[string],
+func (c *egressCandidate) ProcessRequest(ctx context.Context, _ Option[RequestID], route model.Route, _ Option[string],
 	request func(ctx context.Context) (Message, error),
 ) (Decision, error) {
 	return c.queue.intercept(ctx, c.protocol, route, request)

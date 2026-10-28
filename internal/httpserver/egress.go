@@ -15,13 +15,13 @@ import (
 	. "github.com/alecthomas/types/optional"
 	"github.com/gobwas/glob"
 
-	"github.com/block/spectre/internal/boundary"
 	"github.com/block/spectre/internal/descriptors"
 	"github.com/block/spectre/internal/httpserver/message"
 	"github.com/block/spectre/internal/httpserver/middleware/health"
 	"github.com/block/spectre/internal/httpserver/middleware/logging"
 	"github.com/block/spectre/internal/httpserver/route"
 	"github.com/block/spectre/internal/logger"
+	"github.com/block/spectre/internal/model"
 	"github.com/block/spectre/internal/netaddr"
 	"github.com/block/spectre/internal/protocol"
 	"github.com/block/spectre/internal/proxy"
@@ -78,7 +78,7 @@ func NewEgress(
 	}
 	candidates := proxy.NewCandidates(config.Candidates)
 	routes := route.NewMatcher()
-	engine, err := protocol.NewEngine(ctx, engineConfig, map[boundary.Protocol]protocol.Matcher{boundary.ProtocolHTTP: routes}, candidates)
+	engine, err := protocol.NewEngine(ctx, engineConfig, map[model.Protocol]protocol.Matcher{model.ProtocolHTTP: routes}, candidates)
 	if err != nil {
 		return nil, errors.Wrap(err, "configure request hashing")
 	}
@@ -99,8 +99,8 @@ func NewEgress(
 		candidates:     candidates,
 		requests:       make(chan struct{}, config.MaxInFlightRequests),
 		decoder:        decoder,
-		referencePoint: newPoint(engine.EgressReference(boundary.ProtocolHTTP), recordingBudget, false, true),
-		candidatePoint: newPoint(engine.EgressCandidate(boundary.ProtocolHTTP), recordingBudget, false, true),
+		referencePoint: newPoint(engine.EgressReference(model.ProtocolHTTP), recordingBudget, false, true),
+		candidatePoint: newPoint(engine.EgressCandidate(model.ProtocolHTTP), recordingBudget, false, true),
 		health:         health.New(http.NotFoundHandler()),
 	}
 	egress.referenceHandler = logging.New(http.HandlerFunc(egress.serveReference), logger.EventReceived)
@@ -301,11 +301,11 @@ func (e *Egress) serveCandidate(writer http.ResponseWriter, request *http.Reques
 
 // route names a request by the endpoint pattern it matches, so requests that
 // differ only in path wildcards pair. Others are named by host, ignoring any port, and path.
-func (e *Egress) route(request *http.Request) boundary.Route {
+func (e *Egress) route(request *http.Request) model.Route {
 	if endpoint, _, declared := e.routes.Request(request.Method, request.Host, request.URL.EscapedPath()); declared {
-		return boundary.Route(endpoint.Pattern)
+		return model.Route(endpoint.Pattern)
 	}
-	return boundary.Route(request.Method + " " + hostname(request.Host) + request.URL.EscapedPath())
+	return model.Route(request.Method + " " + hostname(request.Host) + request.URL.EscapedPath())
 }
 
 // newMessageRequest describes a request without its body, detached from the

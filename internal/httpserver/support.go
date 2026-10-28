@@ -1,7 +1,8 @@
 package httpserver
 
 import (
-	"github.com/block/spectre/internal/boundary"
+	"github.com/block/spectre/internal/model"
+	"github.com/block/spectre/internal/state"
 )
 
 // routesSetting names the ingress[http] setting that lists a node's routes.
@@ -9,12 +10,12 @@ const routesSetting = "routes"
 
 // Supports returns the kinds of IO the HTTP server proxies, described for an
 // agent that sorts a service's code into them.
-func Supports() []boundary.Support {
-	return []boundary.Support{
+func Supports() []state.Support {
+	return []state.Support{
 		{
-			Kind:        boundary.Kind{Direction: boundary.Ingress, Protocol: boundary.ProtocolHTTP},
+			Kind:        model.IOKind{Direction: model.Ingress, Protocol: model.ProtocolHTTP},
 			Description: "Module that receives HTTP requests to the service, including gRPC and Connect.",
-			Settings: []boundary.Setting{{
+			Settings: []state.Setting{{
 				Name:        routesSetting,
 				Required:    true,
 				Description: "Each route the node handles.",
@@ -23,7 +24,7 @@ func Supports() []boundary.Support {
 			}},
 		},
 		{
-			Kind:        boundary.Kind{Direction: boundary.Egress, Protocol: boundary.ProtocolHTTP},
+			Kind:        model.IOKind{Direction: model.Egress, Protocol: model.ProtocolHTTP},
 			Description: "Module that sends HTTP requests to another service, including gRPC and Connect.",
 		},
 	}

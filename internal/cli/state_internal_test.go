@@ -8,19 +8,19 @@ import (
 
 	"github.com/alecthomas/assert/v2"
 
-	"github.com/block/spectre/internal/boundary"
 	"github.com/block/spectre/internal/cli/terminal"
+	"github.com/block/spectre/internal/model"
 	"github.com/block/spectre/internal/state"
 )
 
 func TestStateTypesCommand(t *testing.T) {
-	catalog, err := boundary.NewCatalog(
-		boundary.Support{Kind: boundary.Kind{Direction: boundary.Egress, Protocol: "rpc"}, Description: "Calls <dependencies>."},
-		boundary.Support{
-			Kind:        boundary.Kind{Direction: boundary.Ingress, Protocol: "rpc"},
+	catalog, err := state.NewCatalog(
+		state.Support{Kind: model.IOKind{Direction: model.Egress, Protocol: "rpc"}, Description: "Calls <dependencies>."},
+		state.Support{
+			Kind:        model.IOKind{Direction: model.Ingress, Protocol: "rpc"},
 			Description: "Serves requests.",
-			Settings: []boundary.Setting{
-				{Name: "methods", Required: true, Description: "Each method served.", Key: "method name", Entry: []boundary.Setting{
+			Settings: []state.Setting{
+				{Name: "methods", Required: true, Description: "Each method served.", Key: "method name", Entry: []state.Setting{
 					{Name: "timeout", Description: "How long a call may take."},
 				}},
 				{Name: "services", Description: "Each service served.", Key: "service name"},
@@ -120,11 +120,11 @@ func TestStateTypesCommand(t *testing.T) {
 	}
 }
 
-func testCatalog(t *testing.T) *boundary.Catalog {
+func testCatalog(t *testing.T) *state.Catalog {
 	t.Helper()
-	catalog, err := boundary.NewCatalog(boundary.Support{
-		Kind:     boundary.Kind{Direction: boundary.Ingress, Protocol: "rpc"},
-		Settings: []boundary.Setting{{Name: "methods", Required: true, Key: "method name"}},
+	catalog, err := state.NewCatalog(state.Support{
+		Kind:     model.IOKind{Direction: model.Ingress, Protocol: "rpc"},
+		Settings: []state.Setting{{Name: "methods", Required: true, Key: "method name"}},
 	})
 	assert.NoError(t, err)
 	return catalog

@@ -2,11 +2,7 @@
 // moves, the IO each performs, and how far each has got.
 package state
 
-import (
-	"fmt"
-
-	"github.com/block/spectre/internal/boundary"
-)
+import "fmt"
 
 // Library is the node type of shared code that performs no IO.
 const Library = "library"
@@ -23,11 +19,11 @@ type NodeType struct {
 	// Table is where a node of an IO kind holds its settings, or empty for library.
 	Table string `json:"table,omitzero"`
 	// Settings are the fields the table can hold.
-	Settings []boundary.Setting `json:"settings,omitzero"`
+	Settings []Setting `json:"settings,omitzero"`
 }
 
 // NodeTypes returns library, then each kind of IO the catalog supports.
-func NodeTypes(catalog *boundary.Catalog) []NodeType {
+func NodeTypes(catalog *Catalog) []NodeType {
 	supports := catalog.Supports()
 	types := make([]NodeType, 0, len(supports)+1)
 	types = append(types, NodeType{Name: Library, Description: libraryDescription})

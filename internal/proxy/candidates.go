@@ -10,7 +10,7 @@ import (
 	. "github.com/alecthomas/types/optional"
 
 	"github.com/block/spectre/internal/logger"
-	"github.com/block/spectre/internal/quarantine"
+	"github.com/block/spectre/internal/model"
 )
 
 // Candidates admits candidate work and tracks it so quarantine and shutdown can
@@ -21,18 +21,12 @@ type Candidates struct {
 	// mu serializes admission with quarantine and shutdown.
 	mu         sync.Mutex
 	closing    bool
-	quarantine Option[QuarantineStatus]
+	quarantine Option[model.Quarantine]
 	// quarantined receives the quarantine once, when it begins. It is buffered,
 	// so quarantine never waits for its single consumer.
-	quarantined chan QuarantineStatus
+	quarantined chan model.Quarantine
 	runs        map[*CandidateRun]struct{}
 	idle        chan struct{}
-}
-
-// QuarantineStatus is a quarantine in effect: why it began and when.
-type QuarantineStatus struct {
-	Reason quarantine.Reason
-	Since  time.Time
 }
 
 // NewCandidates tracks candidate work, quarantining beyond the configured concurrent runs.
@@ -41,7 +35,7 @@ func NewCandidates(config CandidatesConfig) *Candidates {
 	close(idle)
 	return &Candidates{
 		maxInFlight: config.CandidateMaxInFlight,
-		quarantined: make(chan QuarantineStatus, 1),
+		quarantined: make(chan model.Quarantine, 1),
 		runs:        make(map[*CandidateRun]struct{}),
 		idle:        idle,
 	}
@@ -66,7 +60,7 @@ func (r *CandidateRun) cancel() {
 func (c *Candidates) Start(ctx context.Context, cancel context.CancelFunc) Option[*CandidateRun] {
 	run, capacityExceeded := c.admit(cancel)
 	if capacityExceeded {
-		c.Quarantine(ctx, quarantine.Reason{Kind: quarantine.KindCapacity, Detail: "candidate concurrency limit exceeded"})
+		c.Quarantine(ctx, model.QuarantineReason{Kind: model.QuarantineCapacity, Detail: "candidate concurrency limit exceeded"})
 	}
 	return run
 }
@@ -101,7 +95,7 @@ func (c *Candidates) Finish(run *CandidateRun) {
 
 // Quarantine refuses all further candidate work and cancels active runs. Only
 // the first reason is kept.
-func (c *Candidates) Quarantine(ctx context.Context, reason quarantine.Reason) {
+func (c *Candidates) Quarantine(ctx context.Context, reason model.QuarantineReason) {
 	// Publish quarantine before cancelling active runs so concurrent admission
 	// cannot send more traffic to the candidate.
 	c.mu.Lock()
@@ -109,7 +103,7 @@ func (c *Candidates) Quarantine(ctx context.Context, reason quarantine.Reason) {
 		c.mu.Unlock()
 		return
 	}
-	status := QuarantineStatus{Reason: reason, Since: time.Now()}
+	status := model.Quarantine{Reason: reason, Since: time.Now()}
 	c.quarantine = Some(status)
 	c.quarantined <- status
 	runs := c.snapshot()
@@ -126,7 +120,7 @@ func (c *Candidates) Quarantine(ctx context.Context, reason quarantine.Reason) {
 }
 
 // QuarantineStatus reports the quarantine in effect, if any.
-func (c *Candidates) QuarantineStatus() Option[QuarantineStatus] {
+func (c *Candidates) QuarantineStatus() Option[model.Quarantine] {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.quarantine
@@ -134,7 +128,7 @@ func (c *Candidates) QuarantineStatus() Option[QuarantineStatus] {
 
 // Quarantined returns a channel that receives the quarantine once, when it
 // begins. Only one receiver gets it, so it has a single consumer.
-func (c *Candidates) Quarantined() <-chan QuarantineStatus {
+func (c *Candidates) Quarantined() <-chan model.Quarantine {
 	return c.quarantined
 }
 

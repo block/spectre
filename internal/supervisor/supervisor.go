@@ -13,10 +13,10 @@ import (
 	"github.com/alecthomas/errors"
 	. "github.com/alecthomas/types/optional"
 
-	"github.com/block/spectre/internal/boundary"
 	"github.com/block/spectre/internal/descriptors"
 	"github.com/block/spectre/internal/httpserver"
 	"github.com/block/spectre/internal/logger"
+	"github.com/block/spectre/internal/model"
 	"github.com/block/spectre/internal/netaddr"
 	"github.com/block/spectre/internal/protocol"
 	"github.com/block/spectre/internal/server"
@@ -64,7 +64,7 @@ type exit struct {
 
 // New validates config and returns a supervisor that logs to ctx's logger. The
 // catalog checks the migration state, if config names one.
-func New(ctx context.Context, config Config, catalog *boundary.Catalog) (*Supervisor, error) {
+func New(ctx context.Context, config Config, catalog *state.Catalog) (*Supervisor, error) {
 	if config.Candidate == "" || config.Reference == "" {
 		return nil, errors.New("candidate and reference commands are required")
 	}
@@ -215,8 +215,8 @@ func (s *Supervisor) startAll(ctx context.Context) error {
 // Reporting never stops the mirror.
 func (s *Supervisor) startReporter(ctx context.Context) {
 	reporter := server.NewReporter(s.config.Server, client.New(s.config.Server.Client),
-		server.Source{Direction: boundary.Ingress, Quarantined: s.ingress.Candidates().Quarantined()},
-		server.Source{Direction: boundary.Egress, Quarantined: s.egress.Candidates().Quarantined()},
+		server.Source{Direction: model.Ingress, Quarantined: s.ingress.Candidates().Quarantined()},
+		server.Source{Direction: model.Egress, Quarantined: s.egress.Candidates().Quarantined()},
 	)
 	go reporter.Run(logger.WithLogger(ctx, s.log))
 	s.log.InfoContext(ctx, "Reporting to the SPECTRE server", "url", s.config.Server.Client.URL)

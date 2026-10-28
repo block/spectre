@@ -6,21 +6,21 @@ import (
 	"github.com/alecthomas/assert/v2"
 	"github.com/alecthomas/errors"
 
-	"github.com/block/spectre/internal/boundary"
+	"github.com/block/spectre/internal/model"
 	"github.com/block/spectre/internal/state"
 )
 
 var (
-	rpcIngress = boundary.Kind{Direction: boundary.Ingress, Protocol: "rpc"}
-	rpcEgress  = boundary.Kind{Direction: boundary.Egress, Protocol: "rpc"}
+	rpcIngress = model.IOKind{Direction: model.Ingress, Protocol: "rpc"}
+	rpcEgress  = model.IOKind{Direction: model.Egress, Protocol: "rpc"}
 )
 
-func testCatalog(t *testing.T) *boundary.Catalog {
+func testCatalog(t *testing.T) *state.Catalog {
 	t.Helper()
-	catalog, err := boundary.NewCatalog(
-		boundary.Support{Kind: rpcEgress},
-		boundary.Support{Kind: rpcIngress, Settings: []boundary.Setting{
-			{Name: "methods", Required: true, Key: "method name", Unique: true, Entry: []boundary.Setting{{Name: "timeout"}}},
+	catalog, err := state.NewCatalog(
+		state.Support{Kind: rpcEgress},
+		state.Support{Kind: rpcIngress, Settings: []state.Setting{
+			{Name: "methods", Required: true, Key: "method name", Unique: true, Entry: []state.Setting{{Name: "timeout"}}},
 			{Name: "group"},
 		}},
 	)
@@ -49,11 +49,11 @@ methods = { Get = {}, Put = { timeout = "1s" } }
 [nodes.api.egress.rpc]
 `,
 			expected: state.State{Nodes: []state.Node{
-				{ID: "api", Line: 5, DependsOn: []string{"money"}, Status: state.Pending, IO: map[boundary.Kind]map[string]any{
+				{ID: "api", Line: 5, DependsOn: []string{"money"}, Status: state.Pending, IO: map[model.IOKind]map[string]any{
 					rpcIngress: {"group": "public", "methods": map[string]any{"Get": map[string]any{}, "Put": map[string]any{"timeout": "1s"}}},
 					rpcEgress:  {},
 				}},
-				{ID: "money", Line: 2, Status: state.Migrated, IO: map[boundary.Kind]map[string]any{}},
+				{ID: "money", Line: 2, Status: state.Migrated, IO: map[model.IOKind]map[string]any{}},
 			}},
 		},
 	} {

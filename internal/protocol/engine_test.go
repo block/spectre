@@ -17,15 +17,14 @@ import (
 	"github.com/alecthomas/errors"
 	. "github.com/alecthomas/types/optional"
 
-	"github.com/block/spectre/internal/boundary"
 	"github.com/block/spectre/internal/logger"
+	"github.com/block/spectre/internal/model"
 	"github.com/block/spectre/internal/protocol"
-	"github.com/block/spectre/internal/quarantine"
 )
 
 const (
-	fake  = boundary.Protocol("fake")
-	other = boundary.Protocol("other")
+	fake  = model.Protocol("fake")
+	other = model.Protocol("other")
 )
 
 const schemaDeclarations = `
@@ -55,7 +54,7 @@ func TestNewEngineDeclaresEndpointsToTheirMatchers(t *testing.T) {
 	config := newConfig(t, fakeScript+`ingress.match("test.v1.Response", "other", "elsewhere");`, time.Second)
 
 	//nolint:exhaustive // the engine is tested with fake protocols, not real ones
-	_, err := protocol.NewEngine(t.Context(), config, map[boundary.Protocol]protocol.Matcher{fake: fakeMatcher, other: otherMatcher},
+	_, err := protocol.NewEngine(t.Context(), config, map[model.Protocol]protocol.Matcher{fake: fakeMatcher, other: otherMatcher},
 		&recordingQuarantiner{})
 
 	assert.NoError(t, err)
@@ -97,7 +96,7 @@ func TestNewEngineRejectsInvalidSetup(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			_, err := protocol.NewEngine(t.Context(), newConfig(t, test.script, time.Second),
 				//nolint:exhaustive // the engine is tested with fake protocols, not real ones
-				map[boundary.Protocol]protocol.Matcher{fake: test.matcher}, test.quarantine)
+				map[model.Protocol]protocol.Matcher{fake: test.matcher}, test.quarantine)
 			assert.EqualError(t, err, test.expected)
 		})
 	}
@@ -119,7 +118,7 @@ func newHarness(t *testing.T, window time.Duration) *harness {
 	ctx := logger.WithLogger(t.Context(), slog.New(slog.NewJSONHandler(logs, &slog.HandlerOptions{Level: slog.LevelInfo})))
 	engine, err := protocol.NewEngine(ctx, newConfig(t, fakeScript, window),
 		//nolint:exhaustive // the engine is tested with fake protocols, not real ones
-		map[boundary.Protocol]protocol.Matcher{fake: &recordingMatcher{}}, quarantine)
+		map[model.Protocol]protocol.Matcher{fake: &recordingMatcher{}}, quarantine)
 	assert.NoError(t, err)
 	return &harness{ctx: ctx, engine: engine, quarantine: quarantine, logs: logs}
 }
@@ -172,10 +171,10 @@ func (m *recordingMatcher) Declare(pattern string, declaration protocol.Declarat
 
 type recordingQuarantiner struct {
 	mu      sync.Mutex
-	reasons []quarantine.Reason
+	reasons []model.QuarantineReason
 }
 
-func (q *recordingQuarantiner) Quarantine(_ context.Context, reason quarantine.Reason) {
+func (q *recordingQuarantiner) Quarantine(_ context.Context, reason model.QuarantineReason) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	q.reasons = append(q.reasons, reason)
@@ -192,7 +191,7 @@ func (q *recordingQuarantiner) Reasons() []string {
 	return described
 }
 
-func (q *recordingQuarantiner) Recorded() []quarantine.Reason {
+func (q *recordingQuarantiner) Recorded() []model.QuarantineReason {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	return slices.Clone(q.reasons)

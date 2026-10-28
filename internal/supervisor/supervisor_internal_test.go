@@ -15,9 +15,9 @@ import (
 	"github.com/alecthomas/assert/v2"
 	. "github.com/alecthomas/types/optional"
 
-	"github.com/block/spectre/internal/boundary"
 	"github.com/block/spectre/internal/httpserver"
 	"github.com/block/spectre/internal/logger"
+	"github.com/block/spectre/internal/model"
 	"github.com/block/spectre/internal/state"
 )
 
@@ -29,9 +29,9 @@ func testSupervisor(t *testing.T) (*Supervisor, Config) {
 	return s, config
 }
 
-func testCatalog(t *testing.T) *boundary.Catalog {
+func testCatalog(t *testing.T) *state.Catalog {
 	t.Helper()
-	catalog, err := boundary.NewCatalog(httpserver.Supports()...)
+	catalog, err := state.NewCatalog(httpserver.Supports()...)
 	assert.NoError(t, err)
 	return catalog
 }
@@ -45,7 +45,7 @@ func TestLoadsMigrationState(t *testing.T) {
 		"NoStateFile": {expected: None[state.State]()},
 		"Valid": {
 			state:    "[nodes.money]\nstatus = \"migrated\"\n",
-			expected: Some(state.State{Nodes: []state.Node{{ID: "money", Status: state.Migrated, IO: map[boundary.Kind]map[string]any{}, Line: 1}}}),
+			expected: Some(state.State{Nodes: []state.Node{{ID: "money", Status: state.Migrated, IO: map[model.IOKind]map[string]any{}, Line: 1}}}),
 		},
 		"Invalid": {
 			state: "[nodes.money]\nstatus = \"done\"\n",

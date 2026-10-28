@@ -7,9 +7,9 @@ import (
 	"github.com/alecthomas/errors"
 	"go.jetify.com/typeid"
 
-	"github.com/block/spectre/internal/boundary"
 	"github.com/block/spectre/internal/comparison"
 	"github.com/block/spectre/internal/comparison/javascript"
+	"github.com/block/spectre/internal/model"
 	"github.com/block/spectre/internal/schema"
 )
 
@@ -25,7 +25,7 @@ type Engine struct {
 func NewEngine(
 	ctx context.Context,
 	config Config,
-	matchers map[boundary.Protocol]Matcher,
+	matchers map[model.Protocol]Matcher,
 	quarantine Quarantiner,
 ) (*Engine, error) {
 	if quarantine == nil {
@@ -56,7 +56,7 @@ func NewEngine(
 
 func endpointDeclaration(endpoint javascript.Endpoint) Declaration {
 	switch {
-	case endpoint.Direction() == boundary.Egress:
+	case endpoint.Direction() == model.Egress:
 		return DeclarationRequest{Type: endpoint.Type()}
 	case endpoint.Ignore():
 		return DeclarationIgnore{Reason: fmt.Sprintf("endpoint %q is ignored", endpoint.Pattern())}
@@ -71,22 +71,22 @@ func (e *Engine) Schema() *schema.Schema {
 }
 
 // IngressReference returns the acceptor for requests to the reference service.
-func (e *Engine) IngressReference(protocol boundary.Protocol) Acceptor {
+func (e *Engine) IngressReference(protocol model.Protocol) Acceptor {
 	return newIngressReference(e.ingress, protocol)
 }
 
 // IngressCandidate returns the acceptor for mirrored requests to the candidate service.
-func (e *Engine) IngressCandidate(protocol boundary.Protocol) Acceptor {
+func (e *Engine) IngressCandidate(protocol model.Protocol) Acceptor {
 	return newIngressCandidate(e.ingress, protocol)
 }
 
 // EgressReference returns the acceptor for the reference's dependency requests.
-func (e *Engine) EgressReference(protocol boundary.Protocol) Acceptor {
+func (e *Engine) EgressReference(protocol model.Protocol) Acceptor {
 	return newEgressReference(e.egress, protocol)
 }
 
 // EgressCandidate returns the acceptor for the candidate's dependency requests.
-func (e *Engine) EgressCandidate(protocol boundary.Protocol) Acceptor {
+func (e *Engine) EgressCandidate(protocol model.Protocol) Acceptor {
 	return newEgressCandidate(e.egress, protocol)
 }
 

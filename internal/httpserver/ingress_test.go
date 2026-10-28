@@ -23,12 +23,11 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/descriptorpb"
 
-	"github.com/block/spectre/internal/boundary"
 	"github.com/block/spectre/internal/descriptors"
 	"github.com/block/spectre/internal/httpserver"
 	"github.com/block/spectre/internal/logger"
+	"github.com/block/spectre/internal/model"
 	"github.com/block/spectre/internal/protocol"
-	"github.com/block/spectre/internal/quarantine"
 	"github.com/block/spectre/internal/state"
 )
 
@@ -1069,7 +1068,7 @@ func TestMirrorsOnlyRoutesOfMigratedNodes(t *testing.T) {
 		}
 		return noContentResponse(request), nil
 	})
-	catalog, err := boundary.NewCatalog(httpserver.Supports()...)
+	catalog, err := state.NewCatalog(httpserver.Supports()...)
 	assert.NoError(t, err)
 	migration, err := state.Parse([]byte(`
 [nodes.migrated]
@@ -1103,9 +1102,9 @@ status = "migrated"
 	serve(http.MethodGet, "/unlisted")
 	status, quarantined := handler.Candidates().QuarantineStatus().Get()
 	assert.True(t, quarantined)
-	assert.Equal(t, quarantine.Reason{
-		Kind:    quarantine.KindUnlisted,
-		Traffic: Some(quarantine.Traffic{Direction: boundary.Ingress, Protocol: boundary.ProtocolHTTP, Route: "GET /unlisted"}),
+	assert.Equal(t, model.QuarantineReason{
+		Kind:    model.QuarantineUnlisted,
+		Traffic: Some(model.Traffic{Direction: model.Ingress, Protocol: model.ProtocolHTTP, Route: "GET /unlisted"}),
 		Detail:  "route GET /unlisted is in no node of the migration state",
 	}, status.Reason)
 	assert.NoError(t, handler.Shutdown(t.Context()))
@@ -1122,7 +1121,7 @@ func TestQuarantineNamesNodeOfRoute(t *testing.T) {
 		}
 		return jsonResponse(request, `{"value":"reference"}`), nil
 	})
-	catalog, err := boundary.NewCatalog(httpserver.Supports()...)
+	catalog, err := state.NewCatalog(httpserver.Supports()...)
 	assert.NoError(t, err)
 	tests := []struct {
 		name    string
@@ -1155,9 +1154,9 @@ status = "migrated"
 			}
 
 			status, _ := handler.Candidates().QuarantineStatus().Get()
-			assert.Equal(t, quarantine.Reason{
-				Kind:        quarantine.KindDivergent,
-				Traffic:     Some(quarantine.Traffic{Direction: boundary.Ingress, Protocol: boundary.ProtocolHTTP, Route: boundary.Route(test.pattern)}),
+			assert.Equal(t, model.QuarantineReason{
+				Kind:        model.QuarantineDivergent,
+				Traffic:     Some(model.Traffic{Direction: model.Ingress, Protocol: model.ProtocolHTTP, Route: model.Route(test.pattern)}),
 				Node:        Some("forecasts"),
 				Differences: []string{"$.value"},
 			}, status.Reason)
@@ -1170,8 +1169,8 @@ func TestRejectsInvalidStateRoute(t *testing.T) {
 	migration := state.State{Nodes: []state.Node{{
 		ID:     "api",
 		Status: state.Migrated,
-		IO: map[boundary.Kind]map[string]any{
-			{Direction: boundary.Ingress, Protocol: boundary.ProtocolHTTP}: {"routes": map[string]any{"/no-method": map[string]any{}}},
+		IO: map[model.IOKind]map[string]any{
+			{Direction: model.Ingress, Protocol: model.ProtocolHTTP}: {"routes": map[string]any{"/no-method": map[string]any{}}},
 		},
 	}}}
 	config := newTestConfig(t, "http://127.0.0.1:50051", "http://"+candidateAddress)

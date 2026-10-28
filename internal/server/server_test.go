@@ -14,9 +14,7 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	"github.com/block/spectre/internal/boundary"
-	"github.com/block/spectre/internal/proxy"
-	"github.com/block/spectre/internal/quarantine"
+	"github.com/block/spectre/internal/model"
 	"github.com/block/spectre/internal/server"
 	"github.com/block/spectre/internal/server/client"
 	pb "github.com/block/spectre/spectrepb"
@@ -166,23 +164,23 @@ func TestReporterRetriesQuarantine(t *testing.T) {
 		}
 	}))
 	t.Cleanup(httpServer.Close)
-	ingress := make(chan proxy.QuarantineStatus, 1)
-	egress := make(chan proxy.QuarantineStatus, 1)
+	ingress := make(chan model.Quarantine, 1)
+	egress := make(chan model.Quarantine, 1)
 	config := server.ReporterConfig{
 		Client:      client.Config{URL: httpServer.URL},
 		Service:     "users",
 		Environment: "production",
 		Revision:    "abc123",
 	}
-	reporter := server.NewReporter(config, client.New(config.Client), server.Source{Direction: boundary.Ingress, Quarantined: ingress}, server.Source{Direction: boundary.Egress, Quarantined: egress})
+	reporter := server.NewReporter(config, client.New(config.Client), server.Source{Direction: model.Ingress, Quarantined: ingress}, server.Source{Direction: model.Egress, Quarantined: egress})
 	ctx, cancel := context.WithCancel(t.Context())
 	t.Cleanup(cancel)
 	go reporter.Run(ctx)
 
 	since := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
-	egress <- proxy.QuarantineStatus{Since: since, Reason: quarantine.Reason{
-		Kind:    quarantine.KindUnmatched,
-		Traffic: Some(quarantine.Traffic{Direction: boundary.Egress, Protocol: boundary.ProtocolHTTP, Route: "POST api.example/v1/charges"}),
+	egress <- model.Quarantine{Since: since, Reason: model.QuarantineReason{
+		Kind:    model.QuarantineUnmatched,
+		Traffic: Some(model.Traffic{Direction: model.Egress, Protocol: model.ProtocolHTTP, Route: "POST api.example/v1/charges"}),
 		Detail:  "no matching reference call",
 	}}
 	<-reports

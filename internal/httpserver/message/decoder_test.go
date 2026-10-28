@@ -16,12 +16,11 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/descriptorpb"
 
-	"github.com/block/spectre/internal/boundary"
 	"github.com/block/spectre/internal/descriptors"
 	"github.com/block/spectre/internal/httpserver/message"
 	"github.com/block/spectre/internal/httpserver/route"
+	"github.com/block/spectre/internal/model"
 	"github.com/block/spectre/internal/protocol"
-	"github.com/block/spectre/internal/quarantine"
 	"github.com/block/spectre/internal/schema"
 )
 
@@ -294,7 +293,7 @@ func TestBindsTextWithoutDescriptors(t *testing.T) {
 // discardQuarantine accepts quarantine requests, which decoding never makes.
 type discardQuarantine struct{}
 
-func (discardQuarantine) Quarantine(_ context.Context, _ quarantine.Reason) {}
+func (discardQuarantine) Quarantine(_ context.Context, _ model.QuarantineReason) {}
 
 // buildDecoder declares the scripts' endpoints through the engine, as servers do.
 func buildDecoder(t *testing.T, set *descriptorpb.FileDescriptorSet, declarations, scripts map[string]string) (*message.Decoder, error) {
@@ -303,7 +302,7 @@ func buildDecoder(t *testing.T, set *descriptorpb.FileDescriptorSet, declaration
 	config.Comparison.Schema.SchemaDir = writeFiles(t, declarations)
 	config.Comparison.ScriptsDir = writeFiles(t, scripts)
 	routes := route.NewMatcher()
-	matchers := map[boundary.Protocol]protocol.Matcher{boundary.ProtocolHTTP: routes}
+	matchers := map[model.Protocol]protocol.Matcher{model.ProtocolHTTP: routes}
 	engine, err := protocol.NewEngine(t.Context(), config, matchers, discardQuarantine{})
 	assert.NoError(t, err)
 	return message.New(engine.Schema(), set, routes, maxBodyBytes)

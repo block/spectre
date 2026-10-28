@@ -1,51 +1,18 @@
-// Package boundary names the kinds of IO that cross a service's boundary, and
-// so pass through SPECTRE's proxies.
-package boundary
+package state
 
 import (
 	"cmp"
-	"fmt"
 	"slices"
 
 	"github.com/alecthomas/errors"
+
+	"github.com/block/spectre/internal/model"
 )
-
-// Direction names the proxy that carries traffic: ingress into the service, or
-// egress from it to a dependency.
-type Direction string
-
-const (
-	// Ingress traffic is requests to the proxied service.
-	Ingress Direction = "ingress"
-	// Egress traffic is requests from the service to a dependency.
-	Egress Direction = "egress"
-)
-
-// Protocol names the protocol that a proxy intercepts, e.g. "http".
-type Protocol string
-
-// ProtocolHTTP is the protocol of HTTP servers, including gRPC and Connect.
-const ProtocolHTTP Protocol = "http"
-
-// Route is a protocol's canonical request route, e.g. "GET forecasts.example/v1/forecasts/{location}".
-// Equal routes must have identical text, because egress pairing hashes it.
-type Route string
-
-// Kind is one kind of IO that a proxy intercepts, written "ingress[http]".
-type Kind struct {
-	Direction Direction
-	Protocol  Protocol
-}
-
-// String returns the kind as written in the migration state, e.g. "ingress[http]".
-func (k Kind) String() string {
-	return fmt.Sprintf("%s[%s]", k.Direction, k.Protocol)
-}
 
 // Support is a kind of IO that a protocol server proxies, with a description of
 // the code that performs it and the settings a migration state node of it takes.
 type Support struct {
-	Kind        Kind
+	Kind        model.IOKind
 	Description string
 	Settings    []Setting
 }
@@ -90,7 +57,7 @@ func (c *Catalog) Supports() []Support {
 }
 
 // Support returns what the catalog supports for kind, if it supports it.
-func (c *Catalog) Support(kind Kind) (Support, bool) {
+func (c *Catalog) Support(kind model.IOKind) (Support, bool) {
 	for _, support := range c.supports {
 		if support.Kind == kind {
 			return support, true
@@ -99,8 +66,8 @@ func (c *Catalog) Support(kind Kind) (Support, bool) {
 	return Support{}, false
 }
 
-func directionOrder(direction Direction) int {
-	if direction == Ingress {
+func directionOrder(direction model.Direction) int {
+	if direction == model.Ingress {
 		return 0
 	}
 	return 1
