@@ -23,7 +23,8 @@ func TestStores(t *testing.T) {
 		open func(t *testing.T) storage.Store
 	}{
 		{name: "Memory", open: func(*testing.T) storage.Store { return storage.NewMemory() }},
-		{name: "Redis", open: openRedis},
+		{name: "Redis", open: openRedis("redis")},
+		{name: "RedisCluster", open: openRedis("redis-cluster")},
 	}
 	tests := []struct {
 		name string
@@ -55,8 +56,12 @@ func TestOpen(t *testing.T) {
 	}{
 		{name: "Memory", url: "memory://"},
 		{name: "Redis", url: "redis://" + server.Addr()},
+		{name: "RedisCluster", url: "redis-cluster://" + server.Addr()},
 		{name: "InvalidRedisURL", url: "redis://localhost/notadatabase", err: "redis URL"},
+		{name: "RedisClusterDatabase", url: "redis-cluster://" + server.Addr() + "/1", err: "no databases"},
+		{name: "InvalidRedisClusterURL", url: "redis-cluster://" + server.Addr() + "?db=1", err: "unexpected option: db"},
 		{name: "UnreachableRedis", url: "redis://127.0.0.1:1", err: "connect to Redis"},
+		{name: "UnreachableRedisCluster", url: "redis-cluster://127.0.0.1:1", err: "connect to Redis"},
 		{name: "UnknownScheme", url: "disk:///var/lib/spectre", err: `unknown storage scheme "disk"`},
 	}
 	for _, test := range tests {
@@ -88,12 +93,16 @@ func TestRedisRejectsUnknownFields(t *testing.T) {
 	assert.Contains(t, err.Error(), `unknown field "method"`)
 }
 
-func openRedis(t *testing.T) storage.Store {
-	t.Helper()
-	server := miniredis.RunT(t)
-	store, err := storage.NewRedis(t.Context(), parseURL(t, "redis://"+server.Addr()))
-	assert.NoError(t, err)
-	return store
+// openRedis opens a store on a fresh miniredis, which acts as a cluster of one
+// node owning every slot when the scheme selects a cluster client.
+func openRedis(scheme string) func(t *testing.T) storage.Store {
+	return func(t *testing.T) storage.Store {
+		t.Helper()
+		server := miniredis.RunT(t)
+		store, err := storage.NewRedis(t.Context(), parseURL(t, scheme+"://"+server.Addr()))
+		assert.NoError(t, err)
+		return store
+	}
 }
 
 func parseURL(t *testing.T, raw string) *url.URL {
