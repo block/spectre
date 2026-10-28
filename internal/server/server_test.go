@@ -17,12 +17,13 @@ import (
 	"github.com/block/spectre/internal/model"
 	"github.com/block/spectre/internal/server"
 	"github.com/block/spectre/internal/server/client"
+	"github.com/block/spectre/internal/server/storage"
 	pb "github.com/block/spectre/spectrepb"
 	"github.com/block/spectre/spectrepb/spectrepbconnect"
 )
 
 func TestDivergencesKeepLatestQuarantine(t *testing.T) {
-	httpServer := httptest.NewServer(server.NewService().Handler())
+	httpServer := httptest.NewServer(server.NewService(storage.NewMemory()).Handler())
 	t.Cleanup(httpServer.Close)
 	rpc := spectrepbconnect.NewSpectreServiceClient(httpServer.Client(), httpServer.URL)
 	first := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
@@ -76,7 +77,7 @@ func TestDivergencesKeepLatestQuarantine(t *testing.T) {
 }
 
 func TestClearDivergencesOfServiceEnvironment(t *testing.T) {
-	httpServer := httptest.NewServer(server.NewService().Handler())
+	httpServer := httptest.NewServer(server.NewService(storage.NewMemory()).Handler())
 	t.Cleanup(httpServer.Close)
 	rpc := spectrepbconnect.NewSpectreServiceClient(httpServer.Client(), httpServer.URL)
 	divergence := func(environment string, direction pb.Direction) *pb.Divergence {
@@ -109,7 +110,7 @@ func TestClearDivergencesOfServiceEnvironment(t *testing.T) {
 }
 
 func TestQuarantineRejectsInvalidDivergence(t *testing.T) {
-	httpServer := httptest.NewServer(server.NewService().Handler())
+	httpServer := httptest.NewServer(server.NewService(storage.NewMemory()).Handler())
 	t.Cleanup(httpServer.Close)
 	rpc := spectrepbconnect.NewSpectreServiceClient(httpServer.Client(), httpServer.URL)
 	valid := func() *pb.Divergence {
@@ -152,7 +153,7 @@ func TestQuarantineRejectsInvalidDivergence(t *testing.T) {
 func TestReporterRetriesQuarantine(t *testing.T) {
 	reports := make(chan struct{}, 8)
 	var attempts atomic.Int32
-	service := server.NewService().Handler()
+	service := server.NewService(storage.NewMemory()).Handler()
 	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		if request.URL.Path == spectrepbconnect.SpectreServiceQuarantineProcedure && attempts.Add(1) == 1 {
 			http.Error(w, "unavailable", http.StatusServiceUnavailable)

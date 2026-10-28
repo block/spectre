@@ -14,12 +14,13 @@ import (
 
 	"github.com/block/spectre/internal/server"
 	"github.com/block/spectre/internal/server/client"
+	"github.com/block/spectre/internal/server/storage"
 	pb "github.com/block/spectre/spectrepb"
 	"github.com/block/spectre/spectrepb/spectrepbconnect"
 )
 
 func TestDivergencesListCommand(t *testing.T) {
-	httpServer := httptest.NewServer(server.NewService().Handler())
+	httpServer := httptest.NewServer(server.NewService(storage.NewMemory()).Handler())
 	t.Cleanup(httpServer.Close)
 	rpc := spectrepbconnect.NewSpectreServiceClient(httpServer.Client(), httpServer.URL)
 	first := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)

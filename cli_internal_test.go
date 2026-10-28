@@ -14,6 +14,7 @@ import (
 	"github.com/block/spectre/internal/cli"
 	"github.com/block/spectre/internal/server"
 	"github.com/block/spectre/internal/server/client"
+	"github.com/block/spectre/internal/server/storage"
 	"github.com/block/spectre/internal/supervisor"
 )
 
@@ -122,9 +123,13 @@ func TestServeCommandEmbedsConfig(t *testing.T) {
 	command := &cli.CommandLine{}
 	parser, err := newParser(command)
 	assert.NoError(t, err)
-	_, err = parser.Parse([]string{"serve", "--listen=127.0.0.1:50071"})
+	_, err = parser.Parse([]string{"serve", "--listen=127.0.0.1:50071", "--storage=redis", "--redis-url=redis://localhost:6379/0"})
 	assert.NoError(t, err)
-	assert.Equal(t, server.ServeConfig{Listen: "127.0.0.1:50071"}, command.Serve.Serve)
+	expected := server.ServeConfig{
+		Listen:  "127.0.0.1:50071",
+		Storage: storage.Config{Storage: storage.BackendRedis, RedisURL: "redis://localhost:6379/0"},
+	}
+	assert.Equal(t, expected, command.Serve.Serve)
 }
 
 func TestSuperviseCommandRequiresFlags(t *testing.T) {
