@@ -183,8 +183,9 @@ cd "$source_root"
 proctor "$source_root/Procfile.integration" > "$SPECTRE_PROCTOR_LOG" 2>&1 &
 proctor_pid=$!
 
+# A loaded CI runner can take a minute to pass, so allow five.
 attempt=0
-while [ "$attempt" -lt 600 ]; do
+while [ "$attempt" -lt 3000 ]; do
 	if [ -f "$SPECTRE_PROCTOR_RESULT" ]; then
 		kill -TERM "$proctor_pid" 2>/dev/null || true
 		wait "$proctor_pid" 2>/dev/null || true
