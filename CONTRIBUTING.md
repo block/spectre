@@ -67,7 +67,10 @@ and `docker.io/blockossreleases/spectre`.
 `spectre serve` collects the quarantines that mirrors report. It listens on
 `127.0.0.1:50070` by default and keeps them in memory, so a restart loses them.
 To keep them in Redis instead, pass a Redis URL to `--storage`, such as
-`--storage=redis://localhost:6379/0`.
+`--storage=redis://localhost:6379/0`. For a Redis Cluster, use the
+`redis-cluster` scheme, or `rediss-cluster` for TLS, and list further seed
+nodes with `addr`, such as
+`--storage=redis-cluster://localhost:7000?addr=localhost:7001`.
 
 Every mirror reports to a server, so `spectre supervise` requires its URL,
 `--server-url`, and the mirror's identity, `--service`, `--environment`, and

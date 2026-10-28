@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/url"
 	"strconv"
+	"strings"
 
 	"github.com/alecthomas/errors"
 	"github.com/redis/go-redis/v9"
@@ -14,7 +15,7 @@ import (
 )
 
 func init() {
-	for _, scheme := range []string{"redis", "rediss"} {
+	for _, scheme := range []string{"redis", "rediss", "redis" + clusterSuffix, "rediss" + clusterSuffix} {
 		register(scheme, func(ctx context.Context, storageURL *url.URL) (Store, error) {
 			// Returning a nil *Redis directly would make a non-nil Store.
 			store, err := NewRedis(ctx, storageURL)
@@ -26,30 +27,57 @@ func init() {
 	}
 }
 
+// clusterSuffix marks a scheme that connects to a Redis Cluster. go-redis parses
+// cluster URLs with the plain schemes, so the suffix is the only way to tell.
+const clusterSuffix = "-cluster"
+
 // divergencesKey is the Redis hash that maps each sourceField to its divergence
 // as JSON.
 const divergencesKey = "spectre:divergences"
 
-// Redis keeps divergences in a Redis hash, so they outlive the SPECTRE server
-// and are shared by every server using the same Redis database.
+// Redis keeps divergences in one hash, shared by servers using the same database.
+// Commands touch only that key, so in a cluster one node's slot serves them all.
 type Redis struct {
-	client *redis.Client
+	client redis.UniversalClient
 }
 
 var _ Store = (*Redis)(nil)
 
-// NewRedis connects to the Redis server at a redis:// or rediss:// URL.
+// NewRedis connects to the Redis server at a redis:// or rediss:// URL, or to
+// the Redis Cluster at a redis-cluster:// or rediss-cluster:// URL.
 func NewRedis(ctx context.Context, storageURL *url.URL) (*Redis, error) {
-	options, err := redis.ParseURL(storageURL.String())
+	client, err := newRedisClient(storageURL)
 	if err != nil {
 		return nil, errors.Wrap(err, "redis URL")
 	}
-	client := redis.NewClient(options)
 	if err := client.Ping(ctx).Err(); err != nil {
 		_ = client.Close() //nolint:errcheck // The connection failed, so closing has nothing to report.
 		return nil, errors.Wrap(err, "connect to Redis")
 	}
 	return &Redis{client: client}, nil
+}
+
+func newRedisClient(storageURL *url.URL) (redis.UniversalClient, error) {
+	scheme, cluster := strings.CutSuffix(storageURL.Scheme, clusterSuffix)
+	goRedisURL := *storageURL
+	goRedisURL.Scheme = scheme
+	if !cluster {
+		options, err := redis.ParseURL(goRedisURL.String())
+		if err != nil {
+			return nil, errors.WithStack(err)
+		}
+		return redis.NewClient(options), nil
+	}
+	// go-redis ignores the path of a cluster URL, which would otherwise silently
+	// store divergences in database 0 instead of the one the path names.
+	if strings.Trim(goRedisURL.Path, "/") != "" {
+		return nil, errors.Errorf("a Redis Cluster has no databases to select with path %q", goRedisURL.Path)
+	}
+	options, err := redis.ParseClusterURL(goRedisURL.String())
+	if err != nil {
+		return nil, errors.WithStack(err)
+	}
+	return redis.NewClusterClient(options), nil
 }
 
 // Record keeps a divergence unless its source has already reported a later quarantine.

@@ -1,5 +1,6 @@
 // Package storage keeps the divergences that mirrors report to the SPECTRE
-// server. A URL selects the backend by its scheme, such as memory:// or redis://.
+// server. A URL selects the backend by its scheme, such as memory://, redis://,
+// or redis-cluster://.
 package storage
 
 import (
@@ -25,7 +26,7 @@ func register(scheme string, constructor Constructor) {
 
 // Config selects where the SPECTRE server keeps divergences.
 type Config struct {
-	Storage *url.URL `default:"memory://" placeholder:"URL" help:"Where to keep divergences: memory://, which a restart loses, or a Redis URL such as redis://localhost:6379/0."`
+	Storage *url.URL `default:"memory://" placeholder:"URL" help:"Where to keep divergences: memory://, which a restart loses, a Redis URL such as redis://localhost:6379/0, or a Redis Cluster URL such as redis-cluster://localhost:7000?addr=localhost:7001."`
 }
 
 // Validate checks that a backend serves the storage URL's scheme.
