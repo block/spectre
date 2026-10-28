@@ -44,6 +44,10 @@
 - The SPECTRE service protocol in `proto/spectre/v1` and its generated
   `spectrepb` packages are also public. Keep its definitions independent of
   internal types.
+- Use protocol messages only at the SPECTRE server's API boundary: its handler
+  in `internal/server`, the conversions in `internal/server/wire`, and
+  `internal/server/client`. Everything else uses `internal/model` types. The
+  `architecture` linter enforces this.
 - Expose only extension points that have been explicitly agreed. Add each as one
   public contract and one `With...` option.
 - Never expose an internal type in the public API, even through an alias. Mirror

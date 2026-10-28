@@ -4,14 +4,14 @@ import (
 	"context"
 	"sync"
 
-	pb "github.com/block/spectre/spectrepb"
+	"github.com/block/spectre/internal/model"
 )
 
-// Memory keeps divergences in memory, so a restart loses them. Stored messages
-// are never mutated, so they may be shared.
+// Memory keeps divergences in memory, so a restart loses them. Stored
+// divergences share their slices with callers, who never mutate them.
 type Memory struct {
 	mu          sync.Mutex
-	divergences map[sourceKey]*pb.Divergence
+	divergences map[sourceKey]model.Divergence
 }
 
 var _ Store = (*Memory)(nil)
@@ -19,20 +19,20 @@ var _ Store = (*Memory)(nil)
 // sourceKey identifies the proxy of one direction of a service environment's mirror.
 type sourceKey struct {
 	service, environment string
-	direction            pb.Direction
+	direction            model.Direction
 }
 
 // NewMemory returns an empty in-memory store.
 func NewMemory() *Memory {
-	return &Memory{divergences: map[sourceKey]*pb.Divergence{}}
+	return &Memory{divergences: map[sourceKey]model.Divergence{}}
 }
 
 // Record keeps a divergence unless its source has already reported a later quarantine.
-func (m *Memory) Record(_ context.Context, divergence *pb.Divergence) error {
-	key := sourceKey{service: divergence.GetService(), environment: divergence.GetEnvironment(), direction: divergence.GetDirection()}
+func (m *Memory) Record(_ context.Context, divergence model.Divergence) error {
+	key := sourceKey{service: divergence.Service, environment: divergence.Environment, direction: divergence.Direction}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if existing, ok := m.divergences[key]; ok && quarantinedAfter(existing, divergence) {
+	if existing, ok := m.divergences[key]; ok && quarantinedAfter(existing.Quarantine, divergence.Quarantine) {
 		return nil
 	}
 	m.divergences[key] = divergence
@@ -52,10 +52,10 @@ func (m *Memory) Clear(_ context.Context, service, environment string) error {
 }
 
 // List returns every stored divergence, in no particular order.
-func (m *Memory) List(_ context.Context) ([]*pb.Divergence, error) {
+func (m *Memory) List(_ context.Context) ([]model.Divergence, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	divergences := make([]*pb.Divergence, 0, len(m.divergences))
+	divergences := make([]model.Divergence, 0, len(m.divergences))
 	for _, divergence := range m.divergences {
 		divergences = append(divergences, divergence)
 	}

@@ -14,6 +14,7 @@ import (
 	"github.com/block/spectre/internal/cli"
 	"github.com/block/spectre/internal/server"
 	"github.com/block/spectre/internal/server/client"
+	"github.com/block/spectre/internal/server/reporter"
 	"github.com/block/spectre/internal/server/storage"
 	"github.com/block/spectre/internal/supervisor"
 )
@@ -24,8 +25,8 @@ func reportingFlags() []string {
 }
 
 // expectedReporting is the reporter config that reportingFlags parse to.
-func expectedReporting() server.ReporterConfig {
-	return server.ReporterConfig{
+func expectedReporting() reporter.Config {
+	return reporter.Config{
 		Client:      client.Config{URL: "http://server.example"},
 		Service:     "users",
 		Environment: "production",
@@ -81,7 +82,7 @@ func TestSuperviseCommandReadsFlagsFromEnvironment(t *testing.T) {
 		"--schema-dir=" + writeSchemaDir(t),
 	})
 	assert.NoError(t, err)
-	expected := server.ReporterConfig{
+	expected := reporter.Config{
 		Client:      client.Config{URL: "http://server.example"},
 		Service:     "invoices",
 		Environment: "production-us-west-2",

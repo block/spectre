@@ -8,7 +8,7 @@ import (
 	"github.com/alecthomas/errors"
 	"github.com/redis/go-redis/v9"
 
-	pb "github.com/block/spectre/spectrepb"
+	"github.com/block/spectre/internal/model"
 )
 
 // Backend names where the SPECTRE server keeps divergences.
@@ -47,11 +47,11 @@ func (c Config) Validate() error {
 // divergences before recording them and never mutate stored or listed ones.
 type Store interface {
 	// Record keeps a divergence unless its source has already reported a later quarantine.
-	Record(ctx context.Context, divergence *pb.Divergence) error
+	Record(ctx context.Context, divergence model.Divergence) error
 	// Clear removes the divergences of both directions of a service environment's mirror.
 	Clear(ctx context.Context, service, environment string) error
 	// List returns every stored divergence, in no particular order.
-	List(ctx context.Context) ([]*pb.Divergence, error)
+	List(ctx context.Context) ([]model.Divergence, error)
 	Close() error
 }
 
@@ -71,6 +71,6 @@ func Open(ctx context.Context, config Config) (Store, error) {
 
 // quarantinedAfter reports whether existing began after incoming. A retry from a
 // mirror that has since restarted and quarantined again must not replace it.
-func quarantinedAfter(existing, incoming *pb.Divergence) bool {
-	return existing.GetQuarantine().GetSince().AsTime().After(incoming.GetQuarantine().GetSince().AsTime())
+func quarantinedAfter(existing, incoming model.Quarantine) bool {
+	return existing.Since.After(incoming.Since)
 }

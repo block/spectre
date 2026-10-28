@@ -1,17 +1,19 @@
 package storage
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"strconv"
 
 	"github.com/alecthomas/errors"
 	"github.com/redis/go-redis/v9"
-	"google.golang.org/protobuf/proto"
 
-	pb "github.com/block/spectre/spectrepb"
+	"github.com/block/spectre/internal/model"
 )
 
-// divergencesKey is the Redis hash that maps each sourceField to its divergence.
+// divergencesKey is the Redis hash that maps each sourceField to its divergence
+// as JSON.
 const divergencesKey = "spectre:divergences"
 
 // Redis keeps divergences in a Redis hash, so they outlive the SPECTRE server
@@ -37,9 +39,9 @@ func NewRedis(ctx context.Context, config Config) (*Redis, error) {
 }
 
 // Record keeps a divergence unless its source has already reported a later quarantine.
-func (r *Redis) Record(ctx context.Context, divergence *pb.Divergence) error {
-	field := sourceField(divergence.GetService(), divergence.GetEnvironment(), divergence.GetDirection())
-	value, err := proto.Marshal(divergence)
+func (r *Redis) Record(ctx context.Context, divergence model.Divergence) error {
+	field := sourceField(divergence.Service, divergence.Environment, divergence.Direction)
+	value, err := json.Marshal(divergence)
 	if err != nil {
 		return errors.Wrap(err, "encode divergence")
 	}
@@ -53,11 +55,11 @@ func (r *Redis) Record(ctx context.Context, divergence *pb.Divergence) error {
 			case err != nil:
 				return errors.Wrap(err, "read divergence")
 			default:
-				stored := &pb.Divergence{}
-				if err := proto.Unmarshal(existing, stored); err != nil {
-					return errors.Wrap(err, "decode divergence")
+				stored, err := decodeDivergence(existing)
+				if err != nil {
+					return err
 				}
-				if quarantinedAfter(stored, divergence) {
+				if quarantinedAfter(stored.Quarantine, divergence.Quarantine) {
 					return nil
 				}
 			}
@@ -75,23 +77,23 @@ func (r *Redis) Record(ctx context.Context, divergence *pb.Divergence) error {
 // Clear removes the divergences of both directions of a service environment's mirror.
 func (r *Redis) Clear(ctx context.Context, service, environment string) error {
 	err := r.client.HDel(ctx, divergencesKey,
-		sourceField(service, environment, pb.Direction_DIRECTION_INGRESS),
-		sourceField(service, environment, pb.Direction_DIRECTION_EGRESS),
+		sourceField(service, environment, model.Ingress),
+		sourceField(service, environment, model.Egress),
 	).Err()
 	return errors.Wrap(err, "clear divergences")
 }
 
 // List returns every stored divergence, in no particular order.
-func (r *Redis) List(ctx context.Context) ([]*pb.Divergence, error) {
+func (r *Redis) List(ctx context.Context) ([]model.Divergence, error) {
 	values, err := r.client.HVals(ctx, divergencesKey).Result()
 	if err != nil {
 		return nil, errors.Wrap(err, "list divergences")
 	}
-	divergences := make([]*pb.Divergence, 0, len(values))
+	divergences := make([]model.Divergence, 0, len(values))
 	for _, value := range values {
-		divergence := &pb.Divergence{}
-		if err := proto.Unmarshal([]byte(value), divergence); err != nil {
-			return nil, errors.Wrap(err, "decode divergence")
+		divergence, err := decodeDivergence([]byte(value))
+		if err != nil {
+			return nil, err
 		}
 		divergences = append(divergences, divergence)
 	}
@@ -105,6 +107,18 @@ func (r *Redis) Close() error {
 
 // sourceField identifies the proxy of one direction of a service environment's
 // mirror. Quoting keeps the parts unambiguous whatever characters they hold.
-func sourceField(service, environment string, direction pb.Direction) string {
-	return strconv.Quote(service) + " " + strconv.Quote(environment) + " " + direction.String()
+func sourceField(service, environment string, direction model.Direction) string {
+	return strconv.Quote(service) + " " + strconv.Quote(environment) + " " + string(direction)
+}
+
+// decodeDivergence rejects unknown fields, so a stored format that has drifted
+// fails loudly instead of losing data.
+func decodeDivergence(data []byte) (model.Divergence, error) {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	var divergence model.Divergence
+	if err := decoder.Decode(&divergence); err != nil {
+		return model.Divergence{}, errors.Wrap(err, "decode divergence")
+	}
+	return divergence, nil
 }

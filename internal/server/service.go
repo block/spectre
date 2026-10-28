@@ -14,6 +14,7 @@ import (
 	"github.com/block/spectre/internal/logger"
 	"github.com/block/spectre/internal/netaddr"
 	"github.com/block/spectre/internal/server/storage"
+	"github.com/block/spectre/internal/server/wire"
 	pb "github.com/block/spectre/spectrepb"
 	"github.com/block/spectre/spectrepb/spectrepbconnect"
 )
@@ -37,8 +38,8 @@ func (s *Service) Handler() http.Handler {
 
 // Quarantine records that a mirror quarantined its candidate.
 func (s *Service) Quarantine(ctx context.Context, request *connect.Request[pb.QuarantineRequest]) (*connect.Response[pb.QuarantineResponse], error) {
-	divergence := request.Msg.GetDivergence()
-	if err := validateDivergence(divergence); err != nil {
+	divergence, err := wire.DivergenceFromMessage(request.Msg.GetDivergence())
+	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 	if err := s.store.Record(ctx, divergence); err != nil {
@@ -53,7 +54,11 @@ func (s *Service) ListDivergences(ctx context.Context, request *connect.Request[
 	if err != nil {
 		return nil, connect.NewError(connect.CodeUnavailable, err)
 	}
-	return connect.NewResponse(&pb.ListDivergencesResponse{Divergences: filterDivergences(divergences, request.Msg)}), nil
+	response := &pb.ListDivergencesResponse{}
+	for _, divergence := range filterDivergences(divergences, wire.FilterFromMessage(request.Msg)) {
+		response.Divergences = append(response.Divergences, wire.DivergenceMessage(divergence))
+	}
+	return connect.NewResponse(response), nil
 }
 
 // ClearDivergences removes the divergences of one service environment.
