@@ -2,6 +2,7 @@ package spectre
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -124,11 +125,11 @@ func TestServeCommandEmbedsConfig(t *testing.T) {
 	command := &cli.CommandLine{}
 	parser, err := newParser(command)
 	assert.NoError(t, err)
-	_, err = parser.Parse([]string{"serve", "--listen=127.0.0.1:50071", "--storage=redis", "--redis-url=redis://localhost:6379/0"})
+	_, err = parser.Parse([]string{"serve", "--listen=127.0.0.1:50071", "--storage=redis://localhost:6379/0"})
 	assert.NoError(t, err)
 	expected := server.ServeConfig{
 		Listen:  "127.0.0.1:50071",
-		Storage: storage.Config{Storage: storage.BackendRedis, RedisURL: "redis://localhost:6379/0"},
+		Storage: storage.Config{Storage: &url.URL{Scheme: "redis", Host: "localhost:6379", Path: "/0"}},
 	}
 	assert.Equal(t, expected, command.Serve.Serve)
 }

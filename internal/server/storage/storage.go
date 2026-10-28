@@ -1,46 +1,48 @@
 // Package storage keeps the divergences that mirrors report to the SPECTRE
-// server, either in memory or in Redis.
+// server. A URL selects the backend by its scheme, such as memory:// or redis://.
 package storage
 
 import (
 	"context"
+	"net/url"
 
 	"github.com/alecthomas/errors"
-	"github.com/redis/go-redis/v9"
 
 	"github.com/block/spectre/internal/model"
 )
 
-// Backend names where the SPECTRE server keeps divergences.
-type Backend string
+// Constructor opens a store at a URL whose scheme it is registered for.
+type Constructor func(ctx context.Context, storageURL *url.URL) (Store, error)
 
-// Backends the SPECTRE server can keep divergences in.
-const (
-	BackendMemory Backend = "memory"
-	BackendRedis  Backend = "redis"
-)
+// constructors maps each URL scheme to its backend. Backends write it only from
+// init, so reading it needs no lock.
+var constructors = map[string]Constructor{} //nolint:gochecknoglobals // Backends register themselves.
+
+// register makes Open use constructor for URLs with scheme. Call it only from init.
+func register(scheme string, constructor Constructor) {
+	constructors[scheme] = constructor
+}
 
 // Config selects where the SPECTRE server keeps divergences.
 type Config struct {
-	Storage  Backend `default:"memory" enum:"memory,redis" help:"Where to keep divergences: memory, which a restart loses, or redis."`
-	RedisURL string  `name:"redis-url" placeholder:"URL" help:"URL of the Redis server that keeps divergences when storage is redis, such as redis://localhost:6379/0."`
+	Storage *url.URL `default:"memory://" placeholder:"URL" help:"Where to keep divergences: memory://, which a restart loses, or a Redis URL such as redis://localhost:6379/0."`
 }
 
-// Validate checks that the selected backend is configured.
+// Validate checks that a backend serves the storage URL's scheme.
 func (c Config) Validate() error {
-	switch c.Storage {
-	case BackendMemory:
-		return nil
-	case BackendRedis:
-		if c.RedisURL == "" {
-			return errors.New("redis storage needs a Redis URL")
-		}
-		if _, err := redis.ParseURL(c.RedisURL); err != nil {
-			return errors.Wrap(err, "redis URL")
-		}
-		return nil
+	_, err := c.constructor()
+	return err
+}
+
+func (c Config) constructor() (Constructor, error) {
+	if c.Storage == nil {
+		return nil, errors.New("storage URL is required")
 	}
-	return errors.Errorf("unknown storage %q", c.Storage)
+	constructor, ok := constructors[c.Storage.Scheme]
+	if !ok {
+		return nil, errors.Errorf("unknown storage scheme %q", c.Storage.Scheme)
+	}
+	return constructor, nil
 }
 
 // Store keeps the latest divergence of each mirror direction. Callers validate
@@ -55,18 +57,13 @@ type Store interface {
 	Close() error
 }
 
-// Open returns the store the configuration selects.
+// Open returns the store the configuration's URL selects.
 func Open(ctx context.Context, config Config) (Store, error) {
-	if err := config.Validate(); err != nil {
+	constructor, err := config.constructor()
+	if err != nil {
 		return nil, err
 	}
-	switch config.Storage {
-	case BackendMemory:
-		return NewMemory(), nil
-	case BackendRedis:
-		return NewRedis(ctx, config)
-	}
-	return nil, errors.Errorf("unknown storage %q", config.Storage)
+	return constructor(ctx, config.Storage)
 }
 
 // quarantinedAfter reports whether existing began after incoming. A retry from a

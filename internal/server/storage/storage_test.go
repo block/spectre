@@ -2,6 +2,7 @@ package storage_test
 
 import (
 	"cmp"
+	"net/url"
 	"slices"
 	"strconv"
 	"sync"
@@ -48,20 +49,19 @@ func TestStores(t *testing.T) {
 func TestOpen(t *testing.T) {
 	server := miniredis.RunT(t)
 	tests := []struct {
-		name   string
-		config storage.Config
-		err    string
+		name string
+		url  string
+		err  string
 	}{
-		{name: "Memory", config: storage.Config{Storage: storage.BackendMemory}},
-		{name: "Redis", config: storage.Config{Storage: storage.BackendRedis, RedisURL: "redis://" + server.Addr()}},
-		{name: "RedisWithoutURL", config: storage.Config{Storage: storage.BackendRedis}, err: "redis storage needs a Redis URL"},
-		{name: "InvalidRedisURL", config: storage.Config{Storage: storage.BackendRedis, RedisURL: "http://localhost"}, err: "redis URL"},
-		{name: "UnreachableRedis", config: storage.Config{Storage: storage.BackendRedis, RedisURL: "redis://127.0.0.1:1"}, err: "connect to Redis"},
-		{name: "UnknownBackend", config: storage.Config{Storage: "disk"}, err: `unknown storage "disk"`},
+		{name: "Memory", url: "memory://"},
+		{name: "Redis", url: "redis://" + server.Addr()},
+		{name: "InvalidRedisURL", url: "redis://localhost/notadatabase", err: "redis URL"},
+		{name: "UnreachableRedis", url: "redis://127.0.0.1:1", err: "connect to Redis"},
+		{name: "UnknownScheme", url: "disk:///var/lib/spectre", err: `unknown storage scheme "disk"`},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			store, err := storage.Open(t.Context(), test.config)
+			store, err := storage.Open(t.Context(), storage.Config{Storage: parseURL(t, test.url)})
 			if test.err != "" {
 				assert.Contains(t, err.Error(), test.err)
 				return
@@ -72,9 +72,14 @@ func TestOpen(t *testing.T) {
 	}
 }
 
+func TestOpenRequiresURL(t *testing.T) {
+	_, err := storage.Open(t.Context(), storage.Config{})
+	assert.EqualError(t, err, "storage URL is required")
+}
+
 func TestRedisRejectsUnknownFields(t *testing.T) {
 	server := miniredis.RunT(t)
-	store, err := storage.NewRedis(t.Context(), storage.Config{Storage: storage.BackendRedis, RedisURL: "redis://" + server.Addr()})
+	store, err := storage.NewRedis(t.Context(), parseURL(t, "redis://"+server.Addr()))
 	assert.NoError(t, err)
 	t.Cleanup(func() { assert.NoError(t, store.Close()) })
 	server.HSet("spectre:divergences", `"users" "production" ingress`,
@@ -86,9 +91,16 @@ func TestRedisRejectsUnknownFields(t *testing.T) {
 func openRedis(t *testing.T) storage.Store {
 	t.Helper()
 	server := miniredis.RunT(t)
-	store, err := storage.NewRedis(t.Context(), storage.Config{Storage: storage.BackendRedis, RedisURL: "redis://" + server.Addr()})
+	store, err := storage.NewRedis(t.Context(), parseURL(t, "redis://"+server.Addr()))
 	assert.NoError(t, err)
 	return store
+}
+
+func parseURL(t *testing.T, raw string) *url.URL {
+	t.Helper()
+	parsed, err := url.Parse(raw)
+	assert.NoError(t, err)
+	return parsed
 }
 
 func testKeepsLatestQuarantine(t *testing.T, store storage.Store) {
