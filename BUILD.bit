@@ -56,7 +56,7 @@ test-response-comparison-integration = exec.test {
 }
 test-release-version = exec.test {
   command = "scripts/release-version.test.sh"
-  inputs = [".gitsv/config.yml", "scripts/release-version.test.sh", "bin/git-sv"]
+  inputs = [".svu.yml", "scripts/release-version.test.sh", "bin/svu"]
 }
 # tsk test fails when no linter has test data.
 test-tsk = exec.test {

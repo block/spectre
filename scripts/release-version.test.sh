@@ -9,8 +9,7 @@ done < <(git rev-parse --local-env-vars)
 testdir="$(mktemp -d)"
 trap 'rm -rf "$testdir"' EXIT
 
-mkdir -p "$testdir/.gitsv"
-cp "$root/.gitsv/config.yml" "$testdir/.gitsv/config.yml"
+cp "$root/.svu.yml" "$testdir/.svu.yml"
 git -C "$testdir" init -q
 git -C "$testdir" config user.name "Release Test"
 git -C "$testdir" config user.email "release-test@example.invalid"
@@ -27,7 +26,7 @@ commit_change() {
 expect_version() {
   local expected="$1"
   local actual
-  actual="$(cd "$testdir" && git-sv --log-level error next-version)"
+  actual="$(cd "$testdir" && svu next)"
   if [[ "$actual" != "$expected" ]]; then
     printf 'expected version %q, got %q\n' "$expected" "$actual" >&2
     exit 1
@@ -35,32 +34,38 @@ expect_version() {
 }
 
 commit_change "chore: establish baseline"
-git -C "$testdir" tag v1.2.3
+git -C "$testdir" tag v0.2.3
 
+# The release workflow skips a release when the next version is unchanged.
 commit_change "docs: clarify usage"
-expect_version ""
+expect_version "v0.2.3"
 commit_change "chore: update tooling"
-expect_version ""
+expect_version "v0.2.3"
 commit_change "custom: internal maintenance"
-expect_version ""
+expect_version "v0.2.3"
 
 commit_change "fix: correct output"
-expect_version "1.2.4"
-git -C "$testdir" tag v1.2.4
-
-commit_change "perf: reduce allocations"
-expect_version "1.2.5"
-git -C "$testdir" tag v1.2.5
-
-commit_change "revert: restore prior behavior"
-expect_version "1.2.6"
-git -C "$testdir" tag v1.2.6
+expect_version "v0.2.4"
+git -C "$testdir" tag v0.2.4
 
 commit_change "feat: add comparison mode"
-expect_version "1.3.0"
-git -C "$testdir" tag v1.3.0
+expect_version "v0.3.0"
+git -C "$testdir" tag v0.3.0
+
+commit_change "feat!: replace comparison format"
+expect_version "v0.4.0"
+git -C "$testdir" tag v0.4.0
+
+commit_change "fix: correct output
+
+BREAKING CHANGE: output differs"
+expect_version "v0.5.0"
+git -C "$testdir" tag v0.5.0
+
+# Leaving v0 needs a manual tag; after that, breaking changes bump major.
+git -C "$testdir" tag v1.0.0
 
 commit_change "chore!: replace release format"
-expect_version "2.0.0"
+expect_version "v2.0.0"
 
 printf 'Release version regression tests passed\n'

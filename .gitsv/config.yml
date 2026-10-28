@@ -1,9 +1,3 @@
-versioning:
-  update-major: []
-  update-minor: [feat]
-  update-patch: [fix, perf, revert]
-  ignore-unknown: true
-
 tag:
   pattern: "v%d.%d.%d"
   filter: "v*"

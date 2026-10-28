@@ -2,6 +2,9 @@ module github.com/block/spectre
 
 go 1.27.1
 
+// v1 was tagged by mistake from a breaking change while still on v0.
+retract [v1.0.0, v1.8.1]
+
 require (
 	connectrpc.com/connect v1.21.0
 	connectrpc.com/grpcreflect v1.3.0
