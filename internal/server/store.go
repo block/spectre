@@ -33,14 +33,14 @@ func (s *store) record(divergence *pb.Divergence) error {
 	if divergence.GetService() == "" || divergence.GetEnvironment() == "" || divergence.GetRevision() == "" {
 		return errors.New("divergence needs a service, environment, and revision")
 	}
-	if _, err := directionFromMessage(divergence.GetDirection()); err != nil {
+	if _, err := DirectionFromMessage(divergence.GetDirection()); err != nil {
 		return err
 	}
 	quarantine := divergence.GetQuarantine()
 	if quarantine.GetSince() == nil {
 		return errors.New("divergence needs a quarantine with its start time")
 	}
-	if _, err := reasonFromMessage(quarantine); err != nil {
+	if _, err := ReasonFromMessage(quarantine); err != nil {
 		return errors.Wrap(err, "quarantine")
 	}
 	key := sourceKey{service: divergence.GetService(), environment: divergence.GetEnvironment(), direction: divergence.GetDirection()}

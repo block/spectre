@@ -4,9 +4,9 @@
 - `scripts/spectre` is the launcher. For each other binary, add a symlink named after the binary in `./scripts` pointing to `spectre`.
 - Keep all initialisation and bootstrap code in the main entry point. For
   `spectre`, that is `Main` in the root package, which `cmd/spectre` only calls.
-- Do not put application logic in main entry points. The `mainlogic` linter
+- Do not put application logic in main entry points. The `architecture` linter
   allows only `main` and `Run` methods there. Keep a bootstrap helper with
-  `//nolint:mainlogic // <reason>`.
+  `//nolint:architecture // <reason>`.
 - Do not use global state outside main entry points.
 - Read environment variables only through Kong flags, then pass configuration
   explicitly. `kong.DefaultEnvars` gives every flag a `SPECTRE_` variable, so do
@@ -20,6 +20,10 @@
 - Use `kong.ApplyDefaults()` in config constructors so Kong tags remain the single source of default values.
   The `configdefaults` linter enforces this.
 - Define config validation as a `Validate()` method on the package-owned `Config` type.
+- Keep the built-in commands and all terminal output in `internal/cli`, with
+  each command's behaviour in its `Run` method. Domain packages return data and
+  never write to the terminal. The `architecture` linter allows only
+  `internal/cli` and its sub-packages to import `internal/cli/terminal`.
 - Put all other code in the top-level `internal` directory unless it is explicitly part of a public API.
 - Define each type in the lowest package that owns its concept, not where it is
   first needed. Before adding a named type, check lower packages for the same

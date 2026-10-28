@@ -32,9 +32,9 @@ func quarantineMessage(status proxy.QuarantineStatus) *pb.Quarantine {
 	return message
 }
 
-// reasonFromMessage restores the reason a mirror reported. Protobuf getters
+// ReasonFromMessage restores the reason a mirror reported. Protobuf getters
 // return plain strings, so the wire format is where named types are restored.
-func reasonFromMessage(message *pb.Quarantine) (quarantine.Reason, error) {
+func ReasonFromMessage(message *pb.Quarantine) (quarantine.Reason, error) {
 	kind, err := kindFromMessage(message.GetKind())
 	if err != nil {
 		return quarantine.Reason{}, err
@@ -46,7 +46,7 @@ func reasonFromMessage(message *pb.Quarantine) (quarantine.Reason, error) {
 		Detail:      message.GetDetail(),
 	}
 	if traffic := message.GetTraffic(); traffic != nil {
-		direction, err := directionFromMessage(traffic.GetDirection())
+		direction, err := DirectionFromMessage(traffic.GetDirection())
 		if err != nil {
 			return quarantine.Reason{}, err
 		}
@@ -106,7 +106,8 @@ func directionMessage(direction boundary.Direction) pb.Direction {
 	return pb.Direction_DIRECTION_UNSPECIFIED
 }
 
-func directionFromMessage(direction pb.Direction) (boundary.Direction, error) {
+// DirectionFromMessage restores the direction a mirror reported.
+func DirectionFromMessage(direction pb.Direction) (boundary.Direction, error) {
 	switch direction {
 	case pb.Direction_DIRECTION_INGRESS:
 		return boundary.Ingress, nil

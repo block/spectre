@@ -12,11 +12,12 @@ import (
 	"github.com/alecthomas/kong"
 
 	"github.com/block/spectre/internal"
+	"github.com/block/spectre/internal/cli"
 )
 
 func TestWithCommandAddsCommand(t *testing.T) {
 	extension := &imageCommand{}
-	command := &cli{}
+	command := &cli.CommandLine{}
 	parser, err := newParser(command, WithCommand("image", "Build an image.", extension))
 	assert.NoError(t, err)
 
@@ -31,7 +32,7 @@ func TestWithCommandAddsCommand(t *testing.T) {
 }
 
 func TestWithCommandKeepsBuiltInCommands(t *testing.T) {
-	parser, err := newParser(&cli{}, WithCommand("image", "Build an image.", &imageCommand{}))
+	parser, err := newParser(&cli.CommandLine{}, WithCommand("image", "Build an image.", &imageCommand{}))
 	assert.NoError(t, err)
 
 	kctx, err := parser.Parse([]string{"gen", "module", "--output=spectre.d.ts"})
@@ -42,7 +43,7 @@ func TestWithCommandKeepsBuiltInCommands(t *testing.T) {
 
 func TestWithKongOptionsAddsVars(t *testing.T) {
 	extension := &pushCommand{}
-	parser, err := newParser(&cli{},
+	parser, err := newParser(&cli.CommandLine{},
 		WithCommand("push", "Push an image.", extension),
 		WithKongOptions(kong.Vars{"registry": "registry.example.com"}),
 	)
@@ -60,7 +61,7 @@ func TestWithTemplateRepoSetsDefault(t *testing.T) {
 	assert.NoError(t, os.CopyFS(filepath.Join(repo, "custom"), fstest.MapFS{
 		"{{ .name }}.txt": {Data: []byte(`{{ range split .envs }}[{{ . }}]{{ end }}`)},
 	}))
-	parser, err := newParser(&cli{}, WithTemplateRepo(repo))
+	parser, err := newParser(&cli.CommandLine{}, WithTemplateRepo(repo))
 	assert.NoError(t, err)
 
 	kctx, err := parser.Parse([]string{"init", dir, "--template=custom", "--var=name=svc", "--var=envs=staging, production"})

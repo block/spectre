@@ -1,17 +1,19 @@
-package state_test
+package cli
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/alecthomas/assert/v2"
 
 	"github.com/block/spectre/internal/boundary"
+	"github.com/block/spectre/internal/cli/terminal"
 	"github.com/block/spectre/internal/state"
-	"github.com/block/spectre/internal/terminal"
 )
 
-func TestWriteTypes(t *testing.T) {
+func TestStateTypesCommand(t *testing.T) {
 	catalog, err := boundary.NewCatalog(
 		boundary.Support{Kind: boundary.Kind{Direction: boundary.Egress, Protocol: "rpc"}, Description: "Calls <dependencies>."},
 		boundary.Support{
@@ -30,7 +32,7 @@ func TestWriteTypes(t *testing.T) {
 	library := state.NodeTypes(catalog)[0].Description
 
 	for name, test := range map[string]struct {
-		config   state.TypesConfig
+		command  stateTypesCommand
 		palette  terminal.Palette
 		expected string
 	}{
@@ -61,7 +63,7 @@ func TestWriteTypes(t *testing.T) {
 				"  \033[2mNo settings.\033[0m\n",
 		},
 		"JSON": {
-			config:  state.TypesConfig{JSON: true},
+			command: stateTypesCommand{JSON: true},
 			palette: terminal.NewPalette(true),
 			expected: `[
   {
@@ -111,9 +113,64 @@ func TestWriteTypes(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			var out bytes.Buffer
 
-			assert.NoError(t, state.WriteTypes(&out, test.config, test.palette, catalog))
+			assert.NoError(t, test.command.Run(Output{Writer: &out, Palette: test.palette}, catalog))
 
 			assert.Equal(t, test.expected, out.String())
 		})
 	}
+}
+
+func testCatalog(t *testing.T) *boundary.Catalog {
+	t.Helper()
+	catalog, err := boundary.NewCatalog(boundary.Support{
+		Kind:     boundary.Kind{Direction: boundary.Ingress, Protocol: "rpc"},
+		Settings: []boundary.Setting{{Name: "methods", Required: true, Key: "method name"}},
+	})
+	assert.NoError(t, err)
+	return catalog
+}
+
+func TestStateValidateCommand(t *testing.T) {
+	for name, test := range map[string]struct {
+		toml     string
+		expected string
+		err      string
+	}{
+		"Valid": {
+			toml:     "[nodes.api.ingress.rpc.methods]\n\n[nodes.job]\nstatus = \"migrated\"\n",
+			expected: "STATE:3: warning: nodes.job: no ingress node reaches it, so SPECTRE cannot verify it\nSTATE is valid: 2 nodes, 1 migrated\n",
+		},
+		"Invalid": {
+			toml:     "[nodes.a]\nstatus = \"done\"\ncolour = \"red\"\n",
+			expected: "STATE:2: error: nodes.a.status: must be \"pending\" or \"migrated\"\nSTATE:3: error: nodes.a.colour: unknown key; a node holds depends_on, status, ingress, and egress\n",
+			err:      "STATE is invalid",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "state.toml")
+			assert.NoError(t, os.WriteFile(path, []byte(test.toml), 0o600))
+			command := stateValidateCommand{State: state.Config{StateFile: path}}
+			var out bytes.Buffer
+
+			err := command.Run(Output{Writer: &out}, testCatalog(t))
+
+			if test.err != "" {
+				assert.EqualError(t, err, replacePath(test.err, path))
+			} else {
+				assert.NoError(t, err)
+			}
+			assert.Equal(t, replacePath(test.expected, path), out.String())
+		})
+	}
+}
+
+func TestStateValidateCommandMissingFile(t *testing.T) {
+	command := stateValidateCommand{State: state.Config{StateFile: filepath.Join(t.TempDir(), "state.toml")}}
+	err := command.Run(Output{Writer: &bytes.Buffer{}}, testCatalog(t))
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "read migration state")
+}
+
+func replacePath(text, path string) string {
+	return string(bytes.ReplaceAll([]byte(text), []byte("STATE"), []byte(path)))
 }

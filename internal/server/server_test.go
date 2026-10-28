@@ -4,7 +4,6 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -12,7 +11,6 @@ import (
 	"connectrpc.com/connect"
 	"github.com/alecthomas/assert/v2"
 	. "github.com/alecthomas/types/optional"
-	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
@@ -21,7 +19,6 @@ import (
 	"github.com/block/spectre/internal/quarantine"
 	"github.com/block/spectre/internal/server"
 	"github.com/block/spectre/internal/server/client"
-	"github.com/block/spectre/internal/terminal"
 	pb "github.com/block/spectre/spectrepb"
 	"github.com/block/spectre/spectrepb/spectrepbconnect"
 )
@@ -78,26 +75,6 @@ func TestDivergencesKeepLatestQuarantine(t *testing.T) {
 	staging, err := rpc.ListDivergences(t.Context(), connect.NewRequest(&pb.ListDivergencesRequest{Environment: proto.String("staging")}))
 	assert.NoError(t, err)
 	assert.True(t, proto.Equal(&pb.ListDivergencesResponse{Divergences: []*pb.Divergence{unmatched}}, staging.Msg), "%v", staging.Msg)
-
-	var text strings.Builder
-	spectreServer := client.New(client.Config{URL: httpServer.URL})
-	config := server.DivergencesConfig{}
-	assert.NoError(t, server.WriteDivergences(t.Context(), &text, spectreServer, config, terminal.NewPalette(false)))
-	assert.Equal(t, `users abc123 production
-  ingress http GET /v1/users: response differences: body.name (node users)
-  quarantined 2026-10-01T12:01:00Z
-users abc123 staging
-  egress: no matching reference call
-  quarantined 2026-10-01T12:00:00Z
-`, text.String())
-
-	var data strings.Builder
-	config.JSON = true
-	config.Node = "users"
-	assert.NoError(t, server.WriteDivergences(t.Context(), &data, spectreServer, config, terminal.NewPalette(false)))
-	decoded := &pb.ListDivergencesResponse{}
-	assert.NoError(t, protojson.Unmarshal([]byte(data.String()), decoded))
-	assert.True(t, proto.Equal(&pb.ListDivergencesResponse{Divergences: []*pb.Divergence{latest}}, decoded), "%v", decoded)
 }
 
 func TestClearDivergencesOfServiceEnvironment(t *testing.T) {

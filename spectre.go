@@ -15,6 +15,7 @@ import (
 
 	"github.com/block/spectre/internal"
 	"github.com/block/spectre/internal/boundary"
+	"github.com/block/spectre/internal/cli"
 	"github.com/block/spectre/internal/httpserver"
 	"github.com/block/spectre/internal/logger"
 	"github.com/block/spectre/internal/supervisor"
@@ -69,7 +70,7 @@ func Main(options ...Option) {
 		return
 	}
 
-	command := &cli{}
+	command := &cli.CommandLine{}
 	parser, err := newParser(command, options...)
 	if err != nil {
 		logger.New(logger.NewConfig(), os.Stderr).Error("Invalid command line", "error", err)
@@ -82,12 +83,12 @@ func Main(options ...Option) {
 	defer stop()
 	ctx = logger.WithLogger(ctx, log)
 	kctx.BindTo(ctx, (*context.Context)(nil))
-	kctx.Bind(log)
+	kctx.Bind(log, cli.NewOutput(os.Stdout))
 	kctx.FatalIfErrorf(kctx.Run())
 }
 
 // newParser builds the parser for command with every registered extension.
-func newParser(command *cli, options ...Option) (*kong.Kong, error) {
+func newParser(command *cli.CommandLine, options ...Option) (*kong.Kong, error) {
 	registered := &extensions{}
 	for _, option := range options {
 		option(registered)
