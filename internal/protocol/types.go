@@ -9,6 +9,7 @@ import (
 	. "github.com/alecthomas/types/optional"
 	"go.jetify.com/typeid"
 
+	"github.com/block/spectre/internal/comparison/javascript"
 	"github.com/block/spectre/internal/model"
 	"github.com/block/spectre/internal/schema"
 )
@@ -32,28 +33,28 @@ type Exchange struct {
 	typeid.TypeID[exchangePrefix]
 }
 
-// Declaration is what a script declares for a protocol pattern.
+// Declaration is what a script declares for a protocol.
 //
 //sumtype:decl
 type Declaration interface{ declaration() }
 
-// DeclarationRequest types the requests that egress forwards to a dependency.
-type DeclarationRequest struct{ Type schema.TypeRef }
+// DeclarationRequest types the requests to a pattern that egress forwards to a dependency.
+type DeclarationRequest struct {
+	Pattern string
+	Type    schema.TypeRef
+}
 
-// DeclarationResponse types the responses that ingress compares.
-type DeclarationResponse struct{ Type schema.TypeRef }
+// DeclarationRule decides how ingress compares the responses the rule selects.
+// The engine declares rules in order, and the first that selects a response decides.
+type DeclarationRule struct{ Rule javascript.Rule } //nolint:narrowdeps // Matchers read the whole rule.
 
-// DeclarationIgnore skips comparison of ingress responses.
-type DeclarationIgnore struct{ Reason string }
-
-func (DeclarationRequest) declaration()  {}
-func (DeclarationResponse) declaration() {}
-func (DeclarationIgnore) declaration()   {}
+func (DeclarationRequest) declaration() {}
+func (DeclarationRule) declaration()    {}
 
 // Matcher owns a protocol's pattern table. The engine passes it every script
 // declaration for its protocol at startup, so invalid patterns fail startup.
 type Matcher interface {
-	Declare(pattern string, declaration Declaration) error
+	Declare(declaration Declaration) error
 }
 
 // Quarantiner stops all candidate traffic.
@@ -80,16 +81,20 @@ type Response struct {
 	Latency time.Duration
 	// Decode is called only to compare, on the candidate's time rather than the
 	// reference's, and while the engine still holds Raw.
-	Decode func() Content
+	Decode func(ctx context.Context) Content
 }
 
-// Content is a response's comparable content. Comparison checks Status when both
-// sides know it, then Failure, then Message.
+// Content is a response's comparable content. Comparison skips it when Ignored,
+// then checks Status when both sides know it, then Failure, then Message.
 type Content struct {
 	// Status is absent only when Failure explains why.
 	Status  Option[string]
 	Message Option[Message]
 	Failure Option[error]
+	// Ignored explains why the response is never compared.
+	Ignored Option[string]
+	// Rule is the rule that selected the response; its normaliser sees an HTTP Status.
+	Rule Option[javascript.Rule]
 }
 
 // Decision tells a server what to do with a request.

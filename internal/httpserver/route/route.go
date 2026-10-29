@@ -54,9 +54,10 @@ func (w *matchWriter[T]) record(value T, wildcards []string, request *http.Reque
 	}
 }
 
-// matched returns the recorded value and wildcards, if a pattern for the method matched.
+// matched returns the recorded value and wildcards, if a pattern for the method,
+// or one naming no method, matched.
 func (w *matchWriter[T]) matched(requestMethod string) (value T, wildcards map[string]string, matched bool) {
-	if w.pattern == "" || strings.Fields(w.pattern)[0] != requestMethod {
+	if fields := strings.Fields(w.pattern); len(fields) == 0 || (len(fields) == 2 && fields[0] != requestMethod) {
 		var unmatched T
 		return unmatched, nil, false
 	}
@@ -86,6 +87,11 @@ func (m *Map[T]) Add(pattern string, value T) error {
 	if len(strings.Fields(pattern)) != 2 {
 		return errors.Errorf("route pattern %q must have the form \"<METHOD> [<host>]/<path>\"", pattern)
 	}
+	return m.add(pattern, value)
+}
+
+// add assigns a value to a pattern of any form ServeMux accepts.
+func (m *Map[T]) add(pattern string, value T) error {
 	return register(m.mux, pattern, newValueHandler(value, Wildcards(pattern)))
 }
 
@@ -129,4 +135,28 @@ func Wildcards(pattern string) []string {
 		names = append(names, strings.TrimSuffix(inner, "..."))
 	}
 	return names
+}
+
+// Pattern is one "[<METHOD> ][<host>]/<path>" pattern. Without a method it
+// matches every method; otherwise, as in Map, a GET pattern does not match HEAD.
+type Pattern struct {
+	routes *Map[struct{}]
+}
+
+// NewPattern checks a pattern and returns a matcher for it.
+func NewPattern(pattern string) (*Pattern, error) {
+	if fields := len(strings.Fields(pattern)); fields != 1 && fields != 2 {
+		return nil, errors.Errorf("route pattern %q must have the form \"[<METHOD> ][<host>]/<path>\"", pattern)
+	}
+	routes := New[struct{}]()
+	if err := routes.add(pattern, struct{}{}); err != nil {
+		return nil, err
+	}
+	return &Pattern{routes: routes}, nil
+}
+
+// Match reports whether a request matches the pattern; requestPath must be escaped.
+func (p *Pattern) Match(requestMethod, requestHost, requestPath string) (matched bool) {
+	_, _, matched = p.routes.Match(requestMethod, requestHost, requestPath)
+	return matched
 }

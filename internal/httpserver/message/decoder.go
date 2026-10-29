@@ -2,6 +2,7 @@
 package message
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/url"
@@ -11,6 +12,7 @@ import (
 	. "github.com/alecthomas/types/optional"
 	"google.golang.org/protobuf/types/descriptorpb"
 
+	"github.com/block/spectre/internal/comparison/javascript"
 	"github.com/block/spectre/internal/httpserver/codec"
 	"github.com/block/spectre/internal/httpserver/route"
 	"github.com/block/spectre/internal/protocol"
@@ -23,12 +25,21 @@ type Decoder struct {
 	schema       *schema.Schema
 	codec        *codec.Codec
 	routes       *route.Matcher
+	selector     RuleSelector
 	maxBodyBytes int
+}
+
+// RuleSelector picks the first of an inbound request's rules that selects a response.
+type RuleSelector interface {
+	SelectRule(ctx context.Context, rules []javascript.Rule, request javascript.Request, status int) (Option[javascript.Rule], error)
 }
 
 // New checks the descriptors against the schema, and every declared request
 // wildcard against its type, before decoding anything.
-func New(loaded *schema.Schema, set *descriptorpb.FileDescriptorSet, routes *route.Matcher, maxBodyBytes int) (*Decoder, error) {
+func New(loaded *schema.Schema, set *descriptorpb.FileDescriptorSet, routes *route.Matcher, selector RuleSelector, maxBodyBytes int) (*Decoder, error) {
+	if selector == nil {
+		return nil, errors.New("rule selector is required")
+	}
 	wire, err := codec.New(loaded, set)
 	if err != nil {
 		return nil, errors.Wrap(err, "configure wire decoding")
@@ -44,7 +55,7 @@ func New(loaded *schema.Schema, set *descriptorpb.FileDescriptorSet, routes *rou
 			}
 		}
 	}
-	return &Decoder{schema: loaded, codec: wire, routes: routes, maxBodyBytes: maxBodyBytes}, nil
+	return &Decoder{schema: loaded, codec: wire, routes: routes, selector: selector, maxBodyBytes: maxBodyBytes}, nil
 }
 
 // Request is one captured dependency request.
@@ -100,45 +111,71 @@ func (d *Decoder) Request(request Request) (protocol.Message, error) {
 
 // Responses decides how ingress compares the responses to one request.
 func (d *Decoder) Responses(method, path, rawQuery string, header http.Header) ResponsePlan {
+	request := javascript.Request{Method: method, Path: path}
 	if excludedRequestPath(path) {
-		return ignoredPlan("gRPC namespace is excluded from response comparison")
+		return ignoredResponsePlan(d, request, "gRPC namespace is excluded from response comparison")
 	}
-	ref := None[schema.TypeRef]()
-	if declared, ignored, matched := d.routes.Response(method, path); matched {
-		if reason, ok := ignored.Get(); ok {
-			return ignoredPlan(reason)
-		}
-		ref = Some(declared)
+	rules, ignored := d.routes.Responses(method, path)
+	if reason, ok := ignored.Get(); ok {
+		return ignoredResponsePlan(d, request, reason)
 	}
+	requested, err := requestWire(header.Get("Content-Type"))
+	if err != nil {
+		requested = wireHTTPJSON
+	}
+	return newResponsePlan(d, request, rules, requested, d.unruled(method, path, rawQuery, header))
+}
+
+// selectRule returns the first of rules that selects a response.
+func (d *Decoder) selectRule(ctx context.Context, rules []javascript.Rule, request javascript.Request, status int) (Option[javascript.Rule], error) {
+	return errors.WithStack2(d.selector.SelectRule(ctx, rules, request, status))
+}
+
+func (d *Decoder) decompress(header http.Header, body []byte) ([]byte, error) {
+	return decompressHTTPBody(header, body, d.maxBodyBytes)
+}
+
+// unruled decodes responses no rule selects as their RPC method's output.
+func (d *Decoder) unruled(method, path, rawQuery string, header http.Header) decoding {
 	selected, err := requestWire(header.Get("Content-Type"))
-	_, declared := ref.Get()
 	switch {
-	case declared && selected != wireGRPC && selected != wireProtobuf:
-		selected = wireHTTPJSON
 	case err != nil && header.Get("Content-Type") == "" && connectGet(method, rawQuery):
 		selected = wireConnectJSON
 	case err != nil:
-		return ignoredPlan(err.Error())
+		return ignoredDecoding(err.Error())
 	}
-	name, declared := ref.Get()
-	if !declared {
-		if operation, streaming := d.streamingMethod(path); streaming {
-			return ignoredPlan("streaming RPC comparison is not supported: " + operation)
-		}
-		operation, err := d.conventionalMethod(path)
-		if err != nil {
-			return failedPlan(err)
-		}
-		name = operation.Response
+	if operation, streaming := d.streamingMethod(path); streaming {
+		return ignoredDecoding("streaming RPC comparison is not supported: " + operation)
+	}
+	operation, err := d.conventionalMethod(path)
+	if err != nil {
+		return failedDecoding(err)
+	}
+	root, err := d.schema.Type(operation.Response)
+	if err != nil {
+		return failedDecoding(errors.Wrap(err, "endpoint type is unusable"))
+	}
+	return newDecoding(d, root, selected, method)
+}
+
+// matched decodes the responses a rule selects as its type, or as text. Their
+// bodies are HTTP JSON unless the request is gRPC or protobuf.
+func (d *Decoder) matched(action javascript.ActionMatch, requested wire, method string) decoding {
+	name, typed := action.Type.Get()
+	if !typed {
+		return textDecoding(d, method)
+	}
+	selected := requested
+	if selected != wireGRPC && selected != wireProtobuf {
+		selected = wireHTTPJSON
 	}
 	root, err := d.schema.Type(name)
 	if err != nil {
-		return failedPlan(errors.Wrap(err, "endpoint type is unusable"))
+		return failedDecoding(errors.Wrap(err, "endpoint type is unusable"))
 	}
-	return newResponsePlan(d, root, selected, method)
+	return newDecoding(d, root, selected, method)
 }
 
-// connectGet recognises a Connect GET request, which carries its message in the query.
 func connectGet(method, rawQuery string) bool {
 	query, err := url.ParseQuery(rawQuery)
 	return err == nil && method == http.MethodGet && query.Get("encoding") == "json"

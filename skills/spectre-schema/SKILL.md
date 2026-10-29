@@ -11,10 +11,14 @@ Both proxies load every script in `spectre/scripts/`.
 A script imports the `spectre` module; run `spectre gen module --output=spectre/spectre.d.ts` to get its declaration for an editor.
 Keep it out of `spectre/schema/`, which cannot redeclare the module.
 
-- Type each route's responses with `ingress.match<Response>("http", "<METHOD> /<path>")`.
-- Skip a route that cannot be compared with `ingress.ignore("http", "<METHOD> /<path>")`.
+- Type each route's responses with `ingress.http("<METHOD> /<path>").match<Response>()`.
+- Skip a route that cannot be compared with `ingress.http("<METHOD> /<path>").ignore()`.
   Ignored routes never quarantine the candidate. Ask the user whether to ignore
   the health check, such as `GET /_status`.
+- Rules apply in order, and the first that selects a response decides. Narrow a
+  rule by status with `.status(500)` or `.status((status) => status >= 500)`. To
+  compare only the status of errors whose bodies differ, declare
+  `ingress.http("/").status(500).match<Text>(({ status }) => ({ status }))` first.
 - Type each dependency call with `egress.match<Request>("http", "<METHOD> <host>/<path>")`,
   so egress can pair the candidate's call with the reference's. Keep one script
   per dependency.

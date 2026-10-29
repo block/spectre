@@ -18,6 +18,7 @@ type decoded struct {
 	status  Option[string]
 	message Option[protocol.Message]
 	failure string
+	ignored Option[string]
 }
 
 func TestDecodesRPCResponses(t *testing.T) {
@@ -120,7 +121,7 @@ func TestDecodesConnectGetResponses(t *testing.T) {
 	assert.Equal(t, None[string](), plan.Ignored())
 
 	assert.Equal(t, decoded{status: Some("200"), message: typed("test.v1.Response", responseValue(map[string]any{"stable": "same"}))},
-		describe(plan.Decode(connectResponse(`{"stable":"same"}`))))
+		describe(plan.Decode(t.Context(), connectResponse(`{"stable":"same"}`))))
 }
 
 func TestDecodesResponseStatus(t *testing.T) {
@@ -266,7 +267,7 @@ func TestDecodeFailuresOmitPayloadValues(t *testing.T) {
 			if test.contentType != "" {
 				header.Set("Content-Type", test.contentType)
 			}
-			content := decoder.Responses(test.method, test.path, "", header).Decode(test.response)
+			content := decoder.Responses(test.method, test.path, "", header).Decode(t.Context(), test.response)
 			assert.Equal(t, test.expected, describe(content))
 		})
 	}
@@ -285,10 +286,93 @@ func TestDeclaredEndpointsSelectWireByContentType(t *testing.T) {
 		"MissingMethod":   {path: "/test.v1.Service/Missing", contentType: "application/grpc", response: grpcResponse(t, responseProto("first", "", nil), false), status: "grpc-status 0"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			decoder := newDecoder(t, `spectre.ingress.match<v1.Response>("http", "POST `+test.path+`");`)
+			decoder := newDecoder(t, `spectre.ingress.http("POST `+test.path+`").match<v1.Response>();`)
 
 			expected := decoded{status: Some(test.status), message: typed("test.v1.Response", responseValue(map[string]any{"stable": "first"}))}
 			assertDecodes(t, decoder, http.MethodPost, test.path, test.contentType, test.response, expected)
+		})
+	}
+}
+
+func TestRulesSelectEachResponse(t *testing.T) {
+	decoder := newDecoder(t, `
+		spectre.ingress.http("GET /_status").ignore();
+		spectre.ingress.http("/").status(500).match<spectre.Text>(({ status }) => ({ status }));
+		spectre.ingress.http((request) => request.path.startsWith("/v2/")).status((status) => status === 503).ignore();
+		spectre.ingress.http("GET /v1/forecast").match<v1.Response>();
+		spectre.ingress.http("GET /v2/forecast").match<v1.Response>();
+	`)
+	body := `{"stable":"same","roles":[],"users":[],"count":"0","labels":{}}`
+	forecast := typed("test.v1.Response", responseValue(map[string]any{"stable": "same"}))
+	for name, test := range map[string]struct {
+		method      string
+		path        string
+		contentType string
+		response    message.Response
+		expected    decoded
+		rule        string
+	}{
+		"StatusRule": {
+			method: http.MethodGet, path: "/v1/forecast", response: httpResponse(http.StatusInternalServerError, "text/html", "<html></html>"),
+			expected: decoded{status: Some("500"), message: Some(protocol.Message{Type: None[schema.TypeRef](), Value: "<html></html>"})},
+			rule:     `http("/").status(500)`,
+		},
+		"RouteRule": {
+			method: http.MethodGet, path: "/v1/forecast", response: httpResponse(http.StatusOK, "application/json", body),
+			expected: decoded{status: Some("200"), message: forecast},
+			rule:     `http("GET /v1/forecast")`,
+		},
+		"FunctionsIgnore": {
+			method: http.MethodGet, path: "/v2/forecast", response: httpResponse(http.StatusServiceUnavailable, "text/plain", "down"),
+			expected: decoded{status: Some("503"), ignored: Some("rule http(<function>).status(<function>) ignores the response")},
+		},
+		"FunctionsReject": {
+			method: http.MethodGet, path: "/v2/forecast", response: httpResponse(http.StatusOK, "application/json", body),
+			expected: decoded{status: Some("200"), message: forecast},
+			rule:     `http("GET /v2/forecast")`,
+		},
+		"AnyMethod": {
+			method: http.MethodPost, path: "/test.v1.Service/Get", contentType: "application/json",
+			response: httpResponse(http.StatusInternalServerError, "text/html", "<html></html>"),
+			expected: decoded{status: Some("500"), message: Some(protocol.Message{Type: None[schema.TypeRef](), Value: "<html></html>"})},
+			rule:     `http("/").status(500)`,
+		},
+		"NoRuleSelects": {
+			method: http.MethodPost, path: "/test.v1.Service/Get", contentType: "application/json",
+			response: connectResponse(body),
+			expected: decoded{status: Some("200"), message: forecast},
+		},
+		"NoRuleSelectsUnsupportedRequest": {
+			method: http.MethodPost, path: "/v1/forecast", response: httpResponse(http.StatusOK, "application/json", body),
+			expected: decoded{status: Some("200"), ignored: Some("request content type is not supported: mime: no media type")},
+		},
+		"EmptyText": {
+			method: http.MethodHead, path: "/v1/forecast", response: httpResponse(http.StatusInternalServerError, "text/html", ""),
+			expected: decoded{status: Some("500")},
+			rule:     `http("/").status(500)`,
+		},
+		"TextNotUTF8": {
+			method: http.MethodGet, path: "/v1/forecast", response: httpResponse(http.StatusInternalServerError, "text/html", "\xff"),
+			expected: decoded{status: Some("500"), failure: "Text body is not UTF-8"},
+			rule:     `http("/").status(500)`,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			header := http.Header{}
+			if test.contentType != "" {
+				header.Set("Content-Type", test.contentType)
+			}
+			plan := decoder.Responses(test.method, test.path, "", header)
+			assert.Equal(t, None[string](), plan.Ignored())
+
+			content := plan.Decode(t.Context(), test.response)
+
+			assert.Equal(t, test.expected, describe(content))
+			rule := ""
+			if selected, ok := content.Rule.Get(); ok {
+				rule = selected.String()
+			}
+			assert.Equal(t, test.rule, rule)
 		})
 	}
 }
@@ -400,7 +484,7 @@ func assertDecodes(t *testing.T, decoder *message.Decoder, method, path, content
 	if contentType != "" {
 		header.Set("Content-Type", contentType)
 	}
-	content := decoder.Responses(method, path, "", header).Decode(response)
+	content := decoder.Responses(method, path, "", header).Decode(t.Context(), response)
 	actual := describe(content)
 	if err, failed := content.Failure.Get(); failed && expected.failure != "" {
 		assert.Contains(t, err.Error(), expected.failure)
@@ -411,7 +495,7 @@ func assertDecodes(t *testing.T, decoder *message.Decoder, method, path, content
 
 // describe flattens content so that whole values compare, with the failure as its message.
 func describe(content protocol.Content) decoded {
-	actual := decoded{status: content.Status, message: content.Message}
+	actual := decoded{status: content.Status, message: content.Message, ignored: content.Ignored}
 	if err, failed := content.Failure.Get(); failed {
 		actual.failure = err.Error()
 	}

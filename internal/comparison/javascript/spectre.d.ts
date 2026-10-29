@@ -46,12 +46,39 @@ declare module "spectre" {
   /** The value a normaliser for path P of T receives and returns. */
   export type FieldValue<T, P> = Extract<Fields<T>, [P, unknown]>[1];
 
+  /** A body compared as exact text, without parsing or validation. */
+  export interface Text {
+    readonly __spectreText: never;
+  }
+
+  /** An inbound HTTP request, as a rule's request function sees it. */
+  export interface HTTPRequest {
+    readonly method: string;
+    /** The escaped path, without the query. */
+    readonly path: string;
+  }
+
+  /** The comparable parts of a response. Members left out are not compared. */
+  export interface Response<T> {
+    status?: number;
+    body?: T extends Text ? string : T;
+  }
+
+  /** Selects responses; rules apply in declaration order, and the first that selects a response decides. */
+  export interface HTTPRule {
+    /** Narrows the rule to responses with one of these statuses, or whose status the function accepts. */
+    status(...codes: number[]): HTTPRule;
+    status(select: (status: number) => boolean): HTTPRule;
+    /** Decodes the selected responses' bodies as T, then normalises each response. */
+    match<T extends object>(normalise?: (response: Response<T>) => Response<T>): void;
+    /** Skips comparison of the selected responses; they are never quarantined. */
+    ignore(): void;
+  }
+
   /** The proxied service's inbound endpoints. */
   export const ingress: {
-    /** Types the service's responses for requests matching "<METHOD> /<path>". */
-    match<T extends object>(protocol: "http", pattern: string): void;
-    /** Skips comparison for requests matching "<METHOD> /<path>"; they are never quarantined. */
-    ignore(protocol: "http", pattern: string): void;
+    /** Starts a rule for requests matching "[<METHOD> ]/<path>", or that the function accepts. */
+    http(select: string | ((request: HTTPRequest) => boolean)): HTTPRule;
   };
   /** The service's outbound calls to its dependencies. */
   export const egress: {

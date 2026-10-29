@@ -96,3 +96,36 @@ func TestListsWildcards(t *testing.T) {
 		})
 	}
 }
+
+func TestPatternsMatchRequests(t *testing.T) {
+	for name, test := range map[string]struct {
+		pattern string
+		method  string
+		path    string
+		matched bool
+	}{
+		"AnyMethod":     {pattern: "/", method: http.MethodPost, path: "/v2/forecast", matched: true},
+		"AnyMethodHead": {pattern: "/v2/", method: http.MethodHead, path: "/v2/forecast", matched: true},
+		"OtherPrefix":   {pattern: "/v2/", method: http.MethodGet, path: "/v1/forecast"},
+		"Method":        {pattern: "GET /v2/{name}", method: http.MethodGet, path: "/v2/forecast", matched: true},
+		"WrongMethod":   {pattern: "GET /v2/{name}", method: http.MethodPost, path: "/v2/forecast"},
+		"GetIsNotHead":  {pattern: "GET /v2/{name}", method: http.MethodHead, path: "/v2/forecast"},
+		"ExactPathOnly": {pattern: "GET /v2/forecast", method: http.MethodGet, path: "/v2/forecast/today"},
+		"HostNeedsHost": {pattern: "GET weather.example/v2/forecast", method: http.MethodGet, path: "/v2/forecast"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			pattern, err := route.NewPattern(test.pattern)
+			assert.NoError(t, err)
+			assert.Equal(t, test.matched, pattern.Match(test.method, "", test.path))
+		})
+	}
+}
+
+func TestRejectsInvalidPattern(t *testing.T) {
+	for name, pattern := range map[string]string{"Empty": " ", "Extra": "GET host /v2", "Invalid": "/{"} {
+		t.Run(name, func(t *testing.T) {
+			_, err := route.NewPattern(pattern)
+			assert.Error(t, err)
+		})
+	}
+}

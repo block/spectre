@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"maps"
 	"path"
+	"reflect"
 	"slices"
 	"strings"
 	"time"
@@ -34,6 +35,7 @@ type Program struct {
 	entry     *sobek.SourceTextModuleRecord
 	spectre   *spectreModule
 	endpoints []Endpoint
+	rules     []Rule
 	fields    []FieldTarget
 	messages  []schema.TypeRef
 }
@@ -73,6 +75,7 @@ func NewProgram(ctx context.Context, evaluationTimeout time.Duration, declaratio
 		entry:     module,
 		spectre:   loader.spectreModule(),
 		endpoints: registered.endpoints,
+		rules:     registered.rules,
 		fields:    registered.fields,
 		messages:  registered.messages,
 	}, nil
@@ -121,6 +124,11 @@ func (p *Program) Endpoints(direction model.Direction) []Endpoint {
 	return endpoints
 }
 
+// Rules returns the ingress rules in declaration order.
+func (p *Program) Rules() []Rule {
+	return slices.Clone(p.rules)
+}
+
 // Fields returns the declared type names and JSON field paths, sorted by type then path.
 func (p *Program) Fields() []FieldTarget {
 	return slices.Clone(p.fields)
@@ -139,6 +147,7 @@ func (p *Program) NewEvaluator(ctx context.Context) (*Evaluator, error) {
 		return nil, err
 	}
 	if !slices.Equal(registered.endpoints, p.endpoints) ||
+		!reflect.DeepEqual(registered.rules, p.rules) ||
 		!slices.Equal(registered.fields, p.fields) ||
 		!slices.Equal(registered.messages, p.messages) {
 		evaluator.Close()

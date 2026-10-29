@@ -3,7 +3,9 @@ package comparison
 import (
 	"context"
 	"crypto/sha256"
+	"math"
 	"os"
+	"slices"
 	"time"
 
 	"github.com/alecthomas/errors"
@@ -41,11 +43,17 @@ func New(ctx context.Context, config Config) (*Scripts, error) {
 	loaded := program.Schema()
 	scripts := &Scripts{program: program, timeout: config.ComparisonTimeout}
 	for _, endpoint := range scripts.Endpoints() {
-		if endpoint.Ignore() {
-			continue
-		}
 		if _, err := loaded.Type(endpoint.Type()); err != nil {
 			return nil, errors.Wrapf(err, "resolve endpoint %q", endpoint.Pattern())
+		}
+	}
+	for _, rule := range scripts.Rules() {
+		if match, ok := rule.Action().(javascript.ActionMatch); ok {
+			if name, typed := match.Type.Get(); typed {
+				if _, err := loaded.Type(name); err != nil {
+					return nil, errors.Wrapf(err, "resolve rule %s", rule)
+				}
+			}
 		}
 	}
 	scripts.plan, err = comparisoninternal.NewPlan(loaded, program.Fields(), program.Messages())
@@ -63,6 +71,137 @@ func (s *Scripts) Schema() *schema.Schema {
 // Endpoints returns every declared endpoint, ingress first, in declaration order.
 func (s *Scripts) Endpoints() []javascript.Endpoint {
 	return append(s.program.Endpoints(model.Ingress), s.program.Endpoints(model.Egress)...)
+}
+
+// Rules returns the ingress rules in declaration order.
+func (s *Scripts) Rules() []javascript.Rule {
+	return s.program.Rules()
+}
+
+// SelectRule returns the first rule that selects a response. rules must be in
+// declaration order, and the request must match each rule's pattern, if it has one.
+func (s *Scripts) SelectRule(ctx context.Context, rules []javascript.Rule, request javascript.Request, status int) (Option[javascript.Rule], error) {
+	ctx, cancel := context.WithTimeout(ctx, s.timeout)
+	defer cancel()
+	evaluator := None[*javascript.Evaluator]()
+	defer func() {
+		if created, ok := evaluator.Get(); ok {
+			created.Close()
+		}
+	}()
+	// Functions share one evaluator, created only once a rule needs it.
+	script := func() (*javascript.Evaluator, error) {
+		if created, ok := evaluator.Get(); ok {
+			return created, nil
+		}
+		created, err := s.program.NewEvaluator(ctx)
+		if err != nil {
+			return nil, errors.Wrap(err, "initialise JavaScript evaluator")
+		}
+		evaluator = Some(created)
+		return created, nil
+	}
+	for _, rule := range rules {
+		selected, err := selects(rule, request, status, script)
+		if err != nil {
+			return None[javascript.Rule](), err
+		}
+		if selected {
+			return Some(rule), nil
+		}
+	}
+	return None[javascript.Rule](), nil
+}
+
+func selects(rule javascript.Rule, request javascript.Request, status int, script func() (*javascript.Evaluator, error)) (bool, error) {
+	if _, scripted := rule.Request().(javascript.RequestScript); scripted {
+		evaluator, err := script()
+		if err != nil {
+			return false, err
+		}
+		if selected, err := evaluator.SelectsRequest(rule, request); err != nil || !selected {
+			return false, errors.WithStack(err)
+		}
+	}
+	switch selector := rule.Status().(type) {
+	case javascript.StatusAny:
+		return true, nil
+	case javascript.StatusCodes:
+		return slices.Contains(selector.Codes, status), nil
+	case javascript.StatusScript:
+		evaluator, err := script()
+		if err != nil {
+			return false, err
+		}
+		return errors.WithStack2(evaluator.SelectsStatus(rule, status))
+	}
+	return false, errors.Errorf("rule %s has an unknown status selector", rule)
+}
+
+// NormaliseResponse applies a rule's normaliser to one response. A None status
+// or body is not compared, and a returned body must still be the rule's type.
+func (s *Scripts) NormaliseResponse(ctx context.Context, rule javascript.Rule, status int, body Option[any]) (Option[int], Option[any], error) {
+	match, ok := rule.Action().(javascript.ActionMatch)
+	if !ok || !match.Normalises {
+		return Some(status), body, nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, s.timeout)
+	defer cancel()
+	evaluator, err := s.program.NewEvaluator(ctx)
+	if err != nil {
+		return None[int](), None[any](), errors.Wrap(err, "initialise JavaScript evaluator")
+	}
+	defer evaluator.Close()
+	argument := map[string]any{"status": status}
+	if value, present := body.Get(); present {
+		argument["body"] = value
+	}
+	result, err := evaluator.NormaliseResponse(rule, argument)
+	if err != nil {
+		return None[int](), None[any](), errors.WithStack(err)
+	}
+	return s.normalisedResponse(match, result)
+}
+
+// normalisedResponse checks a normaliser's result: an object with at most a
+// status and a body of the rule's type.
+func (s *Scripts) normalisedResponse(match javascript.ActionMatch, result Option[any]) (Option[int], Option[any], error) {
+	value, _ := result.Get()
+	response, ok := value.(map[string]any)
+	if !ok {
+		return None[int](), None[any](), errors.New("response normaliser must return an object")
+	}
+	status := None[int]()
+	body := None[any]()
+	for key, member := range response {
+		switch key {
+		case "status":
+			code, number := member.(float64)
+			if !number || code != math.Trunc(code) || code < 100 || code > 599 {
+				return None[int](), None[any](), errors.New("normalised status must be an integer from 100 to 599")
+			}
+			status = Some(int(code))
+		case "body":
+			body = Some(member)
+		default:
+			return None[int](), None[any](), errors.Errorf("normalised response has an unknown member %q", key)
+		}
+	}
+	value, present := body.Get()
+	if !present {
+		return status, body, nil
+	}
+	name, typed := match.Type.Get()
+	if !typed {
+		if _, text := value.(string); !text {
+			return None[int](), None[any](), errors.New("normalised Text body must be a string")
+		}
+		return status, body, nil
+	}
+	if err := s.plan.Schema().Validate(name, value); err != nil {
+		return None[int](), None[any](), errors.Wrap(err, "validate normalised body")
+	}
+	return status, body, nil
 }
 
 // Compare normalises both payloads as typeName and returns the paths at which

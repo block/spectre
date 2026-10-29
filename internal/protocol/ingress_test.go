@@ -109,7 +109,7 @@ func TestIngressComparesResponses(t *testing.T) {
 		},
 		"StatusUnknownWithoutFailure": {
 			reference:   protocol.Response{Decode: statusOnly("OK")},
-			candidate:   protocol.Response{Decode: func() protocol.Content { return protocol.Content{} }},
+			candidate:   protocol.Response{Decode: func(context.Context) protocol.Content { return protocol.Content{} }},
 			quarantined: []string{"response comparison failed: response status is unknown"},
 			logged:      map[string]any{"outcome": "unable", "reason": "response status is unknown"},
 		},
@@ -153,6 +153,85 @@ func TestIngressComparesResponses(t *testing.T) {
 			assert.Equal(t, []map[string]any{comparisonRecord(route, test.logged)}, h.records(t, "Response comparison completed"))
 			assert.Equal(t, 1, referenceRaw.Releases())
 			assert.Equal(t, 1, candidateRaw.Releases())
+		})
+	}
+}
+
+func TestIngressAppliesRules(t *testing.T) {
+	type side struct {
+		content protocol.Content
+		// rule is the index of the harness rule that selected the response.
+		rule Option[int]
+	}
+	const normalised, bodyOnly = 2, 3
+	for name, test := range map[string]struct {
+		reference   side
+		candidate   side
+		quarantined []string
+		logged      map[string]any
+	}{
+		"BothIgnored": {
+			reference: side{content: protocol.Content{Status: Some("503"), Ignored: Some("rule ignores the response")}},
+			candidate: side{content: protocol.Content{Status: Some("503"), Ignored: Some("rule ignores the response")}},
+			logged:    map[string]any{"outcome": "skipped", "reason": "rule ignores the response"},
+		},
+		"OneIgnored": {
+			reference:   side{content: protocol.Content{Status: Some("503"), Ignored: Some("rule ignores the response")}},
+			candidate:   side{content: protocol.Content{Status: Some("200")}},
+			quarantined: []string{"response differences: $status"},
+			logged:      map[string]any{"outcome": "divergent", "differences": []any{"$status"}},
+		},
+		"OneIgnoredWithSameStatus": {
+			reference:   side{content: protocol.Content{Status: Some("503"), Ignored: Some("rule ignores the response")}},
+			candidate:   side{content: protocol.Content{Status: Some("503")}},
+			quarantined: []string{"response comparison failed: only one response is ignored"},
+			logged:      map[string]any{"outcome": "unable", "reason": "only one response is ignored"},
+		},
+		"NormalisedStatus": {
+			reference: side{content: protocol.Content{Status: Some("200"), Message: message(responseType, "london", "")}, rule: Some(normalised)},
+			candidate: side{content: protocol.Content{Status: Some("201"), Message: message(responseType, "london", "")}, rule: Some(normalised)},
+			logged:    map[string]any{"outcome": "equivalent"},
+		},
+		"NormalisedBodyDiffers": {
+			reference:   side{content: protocol.Content{Status: Some("200"), Message: message(responseType, "london", "")}, rule: Some(normalised)},
+			candidate:   side{content: protocol.Content{Status: Some("201"), Message: message(responseType, "paris", "")}, rule: Some(normalised)},
+			quarantined: []string{"response differences: $.value"},
+			logged:      map[string]any{"outcome": "divergent", "differences": []any{"$.value"}},
+		},
+		"StatusNotCompared": {
+			reference: side{content: protocol.Content{Status: Some("200"), Message: message(responseType, "london", "")}, rule: Some(bodyOnly)},
+			candidate: side{content: protocol.Content{Status: Some("500"), Message: message(responseType, "london", "")}, rule: Some(bodyOnly)},
+			logged:    map[string]any{"outcome": "equivalent"},
+		},
+		"UndecodableComparesRawStatus": {
+			reference:   side{content: protocol.Content{Status: Some("500"), Failure: Some(errors.New("bad body"))}, rule: Some(bodyOnly)},
+			candidate:   side{content: protocol.Content{Status: Some("200"), Message: message(responseType, "london", "")}, rule: Some(bodyOnly)},
+			quarantined: []string{"response differences: $status"},
+			logged:      map[string]any{"outcome": "divergent", "differences": []any{"$status"}},
+		},
+		"NormaliserNeedsHTTPStatus": {
+			reference:   side{content: protocol.Content{Status: Some("OK")}, rule: Some(bodyOnly)},
+			candidate:   side{content: protocol.Content{Status: Some("OK")}, rule: Some(bodyOnly)},
+			quarantined: []string{`response comparison failed: reference: rule http("GET /bodyonly") needs an HTTP status`},
+			logged:      map[string]any{"outcome": "unable", "reason": `reference: rule http("GET /bodyonly") needs an HTTP status`},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t, time.Second)
+			response := func(side side, raw *countingRaw) protocol.Response {
+				content := side.content
+				if index, ok := side.rule.Get(); ok {
+					content.Rule = Some(h.rules[index])
+				}
+				return protocol.Response{Raw: raw, Decode: func(context.Context) protocol.Content { return content }}
+			}
+			reference, candidate := h.mirror(t, "compared", notIgnored)
+
+			h.engine.IngressReference(fake).ProcessResponse(h.ctx, reference, response(test.reference, newRaw("reference")))
+			h.engine.IngressCandidate(fake).ProcessResponse(h.ctx, candidate, response(test.candidate, newRaw("candidate")))
+
+			assert.Equal(t, test.quarantined, h.quarantine.Reasons())
+			assert.Equal(t, []map[string]any{comparisonRecord("compared", test.logged)}, h.records(t, "Response comparison completed"))
 		})
 	}
 }
@@ -335,7 +414,7 @@ func TestIngressCandidateWaitsForReference(t *testing.T) {
 func TestIngressIgnoredCandidateReportsWithoutReference(t *testing.T) {
 	h := newHarness(t, time.Second)
 	reference, candidate := h.mirror(t, "ignored", ignoredFor)
-	undecoded := func() protocol.Content {
+	undecoded := func(context.Context) protocol.Content {
 		t.Error("ignored response was decoded")
 		return protocol.Content{}
 	}
@@ -364,7 +443,7 @@ func TestIngressCandidateCancelledDuringComparisonDoesNotQuarantine(t *testing.T
 	referenceRaw, candidateRaw := newRaw("reference"), newRaw("candidate")
 	ctx, cancel := context.WithCancel(h.ctx)
 	defer cancel()
-	interrupted := func() protocol.Content {
+	interrupted := func(context.Context) protocol.Content {
 		cancel()
 		return protocol.Content{Failure: Some(errors.New("read interrupted"))}
 	}
@@ -444,17 +523,21 @@ func unreadPayload(t *testing.T) func(ctx context.Context) (protocol.Message, er
 }
 
 // decoded returns a Decode func for a response with a known status and message.
-func decoded(status string, message Option[protocol.Message]) func() protocol.Content {
-	return func() protocol.Content { return protocol.Content{Status: Some(status), Message: message} }
+func decoded(status string, message Option[protocol.Message]) func(context.Context) protocol.Content {
+	return func(context.Context) protocol.Content {
+		return protocol.Content{Status: Some(status), Message: message}
+	}
 }
 
-func statusOnly(status string) func() protocol.Content {
+func statusOnly(status string) func(context.Context) protocol.Content {
 	return decoded(status, None[protocol.Message]())
 }
 
 // undecodable returns a Decode func whose body failed to decode.
-func undecodable(status Option[string], reason string) func() protocol.Content {
-	return func() protocol.Content { return protocol.Content{Status: status, Failure: Some(errors.New(reason))} }
+func undecodable(status Option[string], reason string) func(context.Context) protocol.Content {
+	return func(context.Context) protocol.Content {
+		return protocol.Content{Status: status, Failure: Some(errors.New(reason))}
+	}
 }
 
 func message(typeRef Option[schema.TypeRef], value, trace string) Option[protocol.Message] {
