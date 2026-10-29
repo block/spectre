@@ -122,7 +122,7 @@ func typeArguments(checker *ts.Checker, loaded *schema.Schema, call *ts.Node) (O
 	if function == string(targetField) {
 		expected = 2
 	}
-	// display names the call the way a script writes it, e.g. "egress.match".
+	// display names the call the way a script writes it, e.g. "IngressHTTPRule.match".
 	display := function
 	if owner := ts.MemberOwnerName(declaration); owner != "" {
 		display = owner + "." + function
@@ -132,7 +132,7 @@ func typeArguments(checker *ts.Checker, loaded *schema.Schema, call *ts.Node) (O
 		return None[insertion](), errors.Errorf("%s: spectre.%s needs %d explicit type argument(s)", ts.Location(call), display, expected)
 	}
 	resolved := checker.GetTypeFromTypeNode(types[0])
-	name, err := bodyTypeName(resolved, display == "HTTPRule."+matchMethod)
+	name, err := bodyTypeName(resolved, display == "IngressHTTPRule."+matchMethod)
 	if err != nil {
 		return None[insertion](), errors.Errorf("%s: spectre.%s type argument %s: %v", ts.Location(types[0]), display, checker.TypeToString(resolved), err)
 	}

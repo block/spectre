@@ -129,17 +129,16 @@ func TestRejectsInvalidScripts(t *testing.T) {
 func TestRejectsEndpointsAbsentFromSchema(t *testing.T) {
 	for name, test := range map[string]struct {
 		typeName string
-		declare  string
 		pattern  string
 	}{
-		"Missing":   {typeName: "test.v1.Missing", declare: "spectre.egress.match", pattern: "GET weather.example/v1/forecast"},
-		"Operation": {typeName: "test.v1.Service.Get", declare: "spectre.egress.match", pattern: "GET weather.example/v1/forecast"},
-		"NotAName":  {typeName: "not a name", declare: "spectre.egress.match", pattern: "GET weather.example/v1/forecast"},
+		"Missing":   {typeName: "test.v1.Missing", pattern: "GET weather.example/v1/forecast"},
+		"Operation": {typeName: "test.v1.Service.Get", pattern: "GET weather.example/v1/forecast"},
+		"NotAName":  {typeName: "not a name", pattern: "GET weather.example/v1/forecast"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			// The cast skips type checking, so the type reaches the schema check.
 			config := newConfig(t, map[string]string{
-				"weather.ts": module(`(` + test.declare + ` as any)("` + test.typeName + `", "http", "` + test.pattern + `");`),
+				"weather.ts": module(`(spectre.egress.http("` + test.pattern + `").match as any)("` + test.typeName + `");`),
 			})
 			_, err := comparison.New(t.Context(), config)
 			assert.Error(t, err)
@@ -237,7 +236,7 @@ func TestLoadsEveryScriptAsOneSet(t *testing.T) {
 		"users/user.ts": module(`
 			import {lower} from "../helpers/strings";
 			spectre.message<v1.User>((user) => user === undefined ? undefined : {name: lower(user.name)});
-			spectre.egress.match<v1.Query>("http", "GET weather.example/v1/forecast");
+			spectre.egress.http("GET weather.example/v1/forecast").match<v1.Query>();
 		`),
 		"weather.ts": module(`
 			import {lower} from "./helpers/strings";

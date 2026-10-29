@@ -24,6 +24,8 @@ import (
 	"github.com/block/spectre/internal/protocol"
 )
 
+// fake and other are protocols no script declares, so the engine pipelines are
+// tested apart from HTTP.
 const (
 	fake  = model.Protocol("fake")
 	other = model.Protocol("other")
@@ -36,71 +38,61 @@ declare module "test.v1" {
 }
 `
 
-// untyped declares endpoints for protocols the TypeScript API does not list.
-const untyped = `
+const fakeScript = `
 import * as spectre from "spectre";
 import type * as v1 from "test.v1";
-const { ingress, egress } = spectre as unknown as Record<string, { match: (...args: unknown[]) => void; ignore: (...args: unknown[]) => void }>;
-`
-
-const fakeScript = untyped + `
 spectre.ingress.http("GET /compared").match<v1.Response>();
 spectre.ingress.http("GET /ignored").ignore();
 spectre.ingress.http("GET /normalised").match<v1.Response>(({ status, body }) => ({ status: status === 201 ? 200 : status, body }));
 spectre.ingress.http("GET /bodyonly").match<v1.Response>(({ body }) => ({ body }));
-egress.match("test.v1.Query", "fake", "query");
+spectre.egress.http("GET fake.example/query").match<v1.Query>();
 spectre.field<v1.Response, "trace">(() => undefined);
 spectre.field<v1.Query, "trace">(() => undefined);
 `
 
 func TestNewEngineDeclaresEndpointsToTheirMatchers(t *testing.T) {
-	fakeMatcher, otherMatcher := &recordingMatcher{}, &recordingMatcher{}
-	config := newConfig(t, fakeScript+`egress.match("test.v1.Query", "other", "elsewhere");`, time.Second)
+	fakeMatcher, httpMatcher := &recordingMatcher{}, &recordingMatcher{}
+	config := newConfig(t, fakeScript, time.Second)
 
 	//nolint:exhaustive // the engine is tested with fake protocols, not real ones
 	_, err := protocol.NewEngine(t.Context(), config,
-		map[model.Protocol]protocol.Matcher{fake: fakeMatcher, other: otherMatcher, model.ProtocolHTTP: fakeMatcher}, &recordingQuarantiner{})
+		map[model.Protocol]protocol.Matcher{fake: fakeMatcher, model.ProtocolHTTP: httpMatcher}, &recordingQuarantiner{})
 
 	assert.NoError(t, err)
 	assert.Equal(t, []string{
-		`egress endpoint "query"`,
+		`egress endpoint "GET fake.example/query"`,
 		`ingress rule http("GET /compared")`,
 		`ingress rule http("GET /ignored")`,
 		`ingress rule http("GET /normalised")`,
 		`ingress rule http("GET /bodyonly")`,
-	}, fakeMatcher.declared)
-	assert.Equal(t, []string{`egress endpoint "elsewhere"`}, otherMatcher.declared)
+	}, httpMatcher.declared)
+	assert.Equal(t, []string(nil), fakeMatcher.declared)
 }
 
 func TestNewEngineRejectsInvalidSetup(t *testing.T) {
 	for name, test := range map[string]struct {
-		script     string
-		matcher    *recordingMatcher
+		matchers   map[model.Protocol]protocol.Matcher
 		quarantine protocol.Quarantiner
 		expected   string
 	}{
 		"UnregisteredProtocol": {
-			script:     fakeScript + `egress.match("test.v1.Query", "other", "elsewhere");`,
-			matcher:    &recordingMatcher{},
+			//nolint:exhaustive // the engine is tested with fake protocols, not real ones
+			matchers:   map[model.Protocol]protocol.Matcher{fake: &recordingMatcher{}},
 			quarantine: &recordingQuarantiner{},
-			expected:   `egress endpoint "elsewhere" names unregistered protocol "other"`,
+			expected:   `egress endpoint "GET fake.example/query" names unregistered protocol "http"`,
 		},
 		"MatcherRejectsPattern": {
-			script:     fakeScript,
-			matcher:    &recordingMatcher{err: Some(errors.New("bad pattern"))},
+			matchers:   map[model.Protocol]protocol.Matcher{model.ProtocolHTTP: &recordingMatcher{err: Some(errors.New("bad pattern"))}},
 			quarantine: &recordingQuarantiner{},
-			expected:   `declare egress endpoint "query": bad pattern`,
+			expected:   `declare egress endpoint "GET fake.example/query": bad pattern`,
 		},
 		"NoQuarantiner": {
-			script:   fakeScript,
-			matcher:  &recordingMatcher{},
+			matchers: map[model.Protocol]protocol.Matcher{model.ProtocolHTTP: &recordingMatcher{}},
 			expected: "quarantiner is required",
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, err := protocol.NewEngine(t.Context(), newConfig(t, test.script, time.Second),
-				//nolint:exhaustive // the engine is tested with fake protocols, not real ones
-				map[model.Protocol]protocol.Matcher{fake: test.matcher, model.ProtocolHTTP: test.matcher}, test.quarantine)
+			_, err := protocol.NewEngine(t.Context(), newConfig(t, fakeScript, time.Second), test.matchers, test.quarantine)
 			assert.EqualError(t, err, test.expected)
 		})
 	}

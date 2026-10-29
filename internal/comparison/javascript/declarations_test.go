@@ -48,7 +48,7 @@ declare module "test" {
 				ingress.http((request) => request.path === "/root").status((status) => status >= 500).match<Text>(({ status }) => ({ status }));
 				ingress.http("/").status(500, 503).match<Root>((response) => ({ ...response, body: response.body && { ...response.body } }));
 				ingress.http("/").ignore();
-				egress.match<Root>("http", "GET example/root");
+				egress.http("GET example/root").match<Root>();
 				field<Root, "count">((value: number) => value + 1);
 				field<Root, "address.postalCode">((value: string | undefined) => value?.trim());
 				field<Root, "addresses[].postalCode">((value: string) => value.trim());
@@ -61,7 +61,9 @@ declare module "test" {
 			valid: true,
 		},
 		"InferredTypes":         {body: `field<Root, "addresses[].postalCode">((value) => value.trim()); field<Root, "address">((value) => value && { ...value });`, valid: true},
-		"UnknownProtocol":       {body: `egress.match<Root>("sql", "query");`},
+		"EgressFunction":        {body: `egress.http(() => true);`},
+		"EgressStatus":          {body: `egress.http("GET example/root").status(500);`},
+		"EgressNormaliser":      {body: `egress.http("GET example/root").match<Root>((request) => request);`},
 		"NotObject":             {body: `ingress.http("GET /root").match<string>();`},
 		"TextBodyNotString":     {body: `ingress.http("/").match<Text>(() => ({ body: 1 }));`},
 		"StatusNotNumber":       {body: `ingress.http("/").status("500");`},

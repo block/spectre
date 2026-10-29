@@ -65,10 +65,10 @@ declare module "spectre" {
   }
 
   /** Selects responses; rules apply in declaration order, and the first that selects a response decides. */
-  export interface HTTPRule {
+  export interface IngressHTTPRule {
     /** Narrows the rule to responses with one of these statuses, or whose status the function accepts. */
-    status(...codes: number[]): HTTPRule;
-    status(select: (status: number) => boolean): HTTPRule;
+    status(...codes: number[]): IngressHTTPRule;
+    status(select: (status: number) => boolean): IngressHTTPRule;
     /** Decodes the selected responses' bodies as T, then normalises each response. */
     match<T extends object>(normalise?: (response: Response<T>) => Response<T>): void;
     /** Skips comparison of the selected responses; they are never quarantined. */
@@ -78,12 +78,17 @@ declare module "spectre" {
   /** The proxied service's inbound endpoints. */
   export const ingress: {
     /** Starts a rule for requests matching "[<METHOD> ]/<path>", or that the function accepts. */
-    http(select: string | ((request: HTTPRequest) => boolean)): HTTPRule;
+    http(select: string | ((request: HTTPRequest) => boolean)): IngressHTTPRule;
   };
+  /** Selects a dependency's requests by pattern. */
+  export interface EgressHTTPRule {
+    /** Decodes the selected requests' bodies as T. */
+    match<T extends object>(): void;
+  }
   /** The service's outbound calls to its dependencies. */
   export const egress: {
-    /** Types requests to a dependency matching "<METHOD> <host>/<path>". */
-    match<T extends object>(protocol: "http", pattern: string): void;
+    /** Starts a rule for requests to a dependency matching "<METHOD> <host>/<path>". */
+    http(pattern: string): EgressHTTPRule;
   };
   /** Normalises field P of every T; returning undefined removes it. */
   export function field<T extends object, P extends FieldPath<T>>(normalise: Normaliser<FieldValue<T, P>>): void;

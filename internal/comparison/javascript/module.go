@@ -153,7 +153,7 @@ func newCallbackRegistry(runtime *sobek.Runtime) *callbackRegistry {
 	ingress := runtime.NewObject()
 	registry.defineMethod(ingress, "ingress."+string(model.ProtocolHTTP), string(model.ProtocolHTTP), registry.httpRule)
 	egress := runtime.NewObject()
-	registry.defineMethod(egress, "egress."+matchMethod, matchMethod, registry.endpointRegistration(model.Egress))
+	registry.defineMethod(egress, "egress."+string(model.ProtocolHTTP), string(model.ProtocolHTTP), registry.egressRule)
 	registry.functions = map[string]sobek.Value{
 		string(model.Ingress): ingress,
 		string(model.Egress):  egress,
@@ -180,27 +180,35 @@ func (r *callbackRegistry) defineMethod(object *sobek.Object, qualified, method 
 	}
 }
 
-// endpointRegistration receives the type name compile inserts before the script's arguments.
-func (r *callbackRegistry) endpointRegistration(direction model.Direction) func(sobek.FunctionCall) sobek.Value {
-	qualified := string(direction) + "." + matchMethod
-	return func(call sobek.FunctionCall) sobek.Value {
-		if len(call.Arguments) != 3 {
-			panic(r.runtime.NewTypeError("spectre.%s requires a type name, a protocol, and a pattern", qualified))
-		}
-		typeName := schema.TypeRef(r.stringArgument(call, 0, qualified, "type name"))
-		protocol := model.Protocol(r.stringArgument(call, 1, qualified, "protocol"))
-		pattern := r.stringArgument(call, 2, qualified, "pattern")
-		if protocol == model.ProtocolHTTP && !hasForm(pattern, true) {
-			panic(r.runtime.NewTypeError("spectre.%s pattern %q must have the form \"<METHOD> <host>/<path>\"", qualified, pattern))
-		}
-		if slices.ContainsFunc(r.endpoints, func(endpoint Endpoint) bool {
-			return endpoint.Direction() == direction && endpoint.Protocol() == protocol && endpoint.Pattern() == pattern
-		}) {
-			panic(r.runtime.NewTypeError("duplicate endpoint %q", pattern))
-		}
-		r.endpoints = append(r.endpoints, newEndpoint(direction, protocol, pattern, typeName))
-		return sobek.Undefined()
+// egressRule starts an egress rule from a dependency's request pattern.
+func (r *callbackRegistry) egressRule(call sobek.FunctionCall) sobek.Value {
+	const qualified = "egress.http"
+	if len(call.Arguments) != 1 {
+		panic(r.runtime.NewTypeError("spectre.%s requires a pattern", qualified))
 	}
+	pattern := r.stringArgument(call, 0, qualified, "pattern")
+	if !hasForm(pattern, true) {
+		panic(r.runtime.NewTypeError("spectre.%s pattern %q must have the form \"<METHOD> <host>/<path>\"", qualified, pattern))
+	}
+	object := r.runtime.NewObject()
+	r.defineMethod(object, "EgressHTTPRule."+matchMethod, matchMethod, func(call sobek.FunctionCall) sobek.Value {
+		r.matchEndpoint(pattern, call)
+		return sobek.Undefined()
+	})
+	return object
+}
+
+// matchEndpoint receives the type name compile inserts.
+func (r *callbackRegistry) matchEndpoint(pattern string, call sobek.FunctionCall) {
+	const qualified = "EgressHTTPRule.match"
+	if len(call.Arguments) != 1 {
+		panic(r.runtime.NewTypeError("spectre.%s requires a type name", qualified))
+	}
+	typeName := schema.TypeRef(r.stringArgument(call, 0, qualified, "type name"))
+	if slices.ContainsFunc(r.endpoints, func(endpoint Endpoint) bool { return endpoint.Pattern() == pattern }) {
+		panic(r.runtime.NewTypeError("duplicate endpoint %q", pattern))
+	}
+	r.endpoints = append(r.endpoints, newEndpoint(model.Egress, model.ProtocolHTTP, pattern, typeName))
 }
 
 // ruleBuilder is a rule whose selectors are chosen but whose action is not yet.
@@ -235,16 +243,16 @@ func (r *callbackRegistry) httpRule(call sobek.FunctionCall) sobek.Value {
 // builder or registers a rule, so a builder can be shared between rules.
 func (r *callbackRegistry) builderObject(builder ruleBuilder) sobek.Value {
 	object := r.runtime.NewObject()
-	r.defineMethod(object, "HTTPRule."+statusMethod, statusMethod, func(call sobek.FunctionCall) sobek.Value {
+	r.defineMethod(object, "IngressHTTPRule."+statusMethod, statusMethod, func(call sobek.FunctionCall) sobek.Value {
 		return r.builderObject(r.withStatus(builder, call))
 	})
-	r.defineMethod(object, "HTTPRule."+matchMethod, matchMethod, func(call sobek.FunctionCall) sobek.Value {
+	r.defineMethod(object, "IngressHTTPRule."+matchMethod, matchMethod, func(call sobek.FunctionCall) sobek.Value {
 		r.matchRule(builder, call)
 		return sobek.Undefined()
 	})
-	r.defineMethod(object, "HTTPRule."+ignoreMethod, ignoreMethod, func(call sobek.FunctionCall) sobek.Value {
+	r.defineMethod(object, "IngressHTTPRule."+ignoreMethod, ignoreMethod, func(call sobek.FunctionCall) sobek.Value {
 		if len(call.Arguments) != 0 {
-			panic(r.runtime.NewTypeError("spectre.HTTPRule.ignore takes no arguments"))
+			panic(r.runtime.NewTypeError("spectre.IngressHTTPRule.ignore takes no arguments"))
 		}
 		r.addRule(builder, ActionIgnore{})
 		return sobek.Undefined()
@@ -254,7 +262,7 @@ func (r *callbackRegistry) builderObject(builder ruleBuilder) sobek.Value {
 
 // withStatus narrows a builder to status codes, or to a status function.
 func (r *callbackRegistry) withStatus(builder ruleBuilder, call sobek.FunctionCall) ruleBuilder {
-	const qualified = "HTTPRule.status"
+	const qualified = "IngressHTTPRule.status"
 	if _, unset := builder.status.(StatusAny); !unset {
 		panic(r.runtime.NewTypeError("spectre.%s is already set for this rule", qualified))
 	}
@@ -286,7 +294,7 @@ func (r *callbackRegistry) withStatus(builder ruleBuilder, call sobek.FunctionCa
 
 // matchRule receives the type name compile inserts before an optional normaliser.
 func (r *callbackRegistry) matchRule(builder ruleBuilder, call sobek.FunctionCall) {
-	const qualified = "HTTPRule.match"
+	const qualified = "IngressHTTPRule.match"
 	if len(call.Arguments) < 1 || len(call.Arguments) > 2 {
 		panic(r.runtime.NewTypeError("spectre.%s requires a type name and an optional normaliser", qualified))
 	}

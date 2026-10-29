@@ -19,7 +19,7 @@ Keep it out of `spectre/schema/`, which cannot redeclare the module.
   rule by status with `.status(500)` or `.status((status) => status >= 500)`. To
   compare only the status of errors whose bodies differ, declare
   `ingress.http("/").status(500).match<Text>(({ status }) => ({ status }))` first.
-- Type each dependency call with `egress.match<Request>("http", "<METHOD> <host>/<path>")`,
+- Type each dependency call with `egress.http("<METHOD> <host>/<path>").match<Request>()`,
   so egress can pair the candidate's call with the reference's. Keep one script
   per dependency.
 - Normalise fields that differ legitimately, such as timestamps or ordering,

@@ -33,8 +33,8 @@ const weatherScripts = `
 	spectre.ingress.http("GET /_status").ignore();
 	// Ingress rules never type dependency requests.
 	spectre.ingress.http("POST /test.v1.Service/Rename").match<v1.Response>();
-	spectre.egress.match<weather.HTTPQuery>("http", "GET weather.example/v1/locations/{location}/forecast");
-	spectre.egress.match<weather.HTTPQuery>("http", "POST weather.example/v1/search");
+	spectre.egress.http("GET weather.example/v1/locations/{location}/forecast").match<weather.HTTPQuery>();
+	spectre.egress.http("POST weather.example/v1/search").match<weather.HTTPQuery>();
 `
 
 func TestClassifiesResponses(t *testing.T) {
@@ -249,7 +249,7 @@ func TestRejectsUnbindableEndpoints(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := buildDecoder(t, descriptorSet(), testDeclarations(t),
-				map[string]string{"weather.ts": module(`spectre.egress.match<weather.HTTPQuery>("http", "` + test.pattern + `");`)})
+				map[string]string{"weather.ts": module(`spectre.egress.http("` + test.pattern + `").match<weather.HTTPQuery>();`)})
 			assert.Error(t, err)
 			assert.Contains(t, err.Error(), `bind endpoint "`+test.pattern+`"`)
 			assert.Contains(t, err.Error(), test.message)
@@ -344,8 +344,8 @@ func newRawDecoder(t *testing.T) *message.Decoder {
 			spectre.ingress.http("GET /raw").match<raw.Response>();
 			spectre.ingress.http("HEAD /raw").match<raw.Response>();
 			spectre.ingress.http("GET /optional").match<raw.Optional>();
-			spectre.egress.match<raw.Item>("http", "GET api.example/items/{id}");
-			spectre.egress.match<raw.Ratio>("http", "GET api.example/ratio");
+			spectre.egress.http("GET api.example/items/{id}").match<raw.Item>();
+			spectre.egress.http("GET api.example/ratio").match<raw.Ratio>();
 		`})
 	assert.NoError(t, err)
 	return decoder

@@ -33,7 +33,7 @@ func TestProgramOwnsDeclarations(t *testing.T) {
 		"weather.ts": script(`
 			spectre.ingress.http("GET /v1/forecast").match<v1.Response>();
 			spectre.ingress.http("GET /v2/forecast").match<v1.Response>();
-			spectre.egress.match<v1.Response>("http", "GET weather.example/v1/forecast");
+			spectre.egress.http("GET weather.example/v1/forecast").match<v1.Response>();
 			spectre.field<v1.Response, "value">(() => "fixed");
 		`),
 		"users/user.ts": script(`spectre.message<v1.User>((user) => user);`),
@@ -163,7 +163,7 @@ func TestRejectsUncheckedRegistrations(t *testing.T) {
 		},
 		"MissingTypeArgument": {
 			files:   fstest.MapFS{"test.ts": script(`spectre.ingress.http("GET /v1/forecast").match();`)},
-			message: "scripts/test.ts:1:72: spectre.HTTPRule.match needs 1 explicit type argument(s)",
+			message: "scripts/test.ts:1:72: spectre.IngressHTTPRule.match needs 1 explicit type argument(s)",
 		},
 		"IgnoreTypeArgument": {
 			files:   fstest.MapFS{"test.ts": script(`spectre.ingress.http("GET /_status").ignore<v1.Response>();`)},
@@ -174,7 +174,7 @@ func TestRejectsUncheckedRegistrations(t *testing.T) {
 			message: "only ingress rules may compare bodies as Text",
 		},
 		"TextEgress": {
-			files:   fstest.MapFS{"test.ts": script(`spectre.egress.match<spectre.Text>("http", "GET weather.example/v1/forecast");`)},
+			files:   fstest.MapFS{"test.ts": script(`spectre.egress.http("GET weather.example/v1/forecast").match<spectre.Text>();`)},
 			message: "only ingress rules may compare bodies as Text",
 		},
 		"NormaliserReturnsWrongBody": {
@@ -251,31 +251,23 @@ func TestRejectsInvalidEndpointDeclarations(t *testing.T) {
 		body    string
 		message string
 	}{
-		"NoArguments": {body: `egress.match();`, message: "spectre.egress.match requires a type name, a protocol, and a pattern"},
-		"TwoArguments": {
-			body:    `egress.match("test.v1.Response", "http");`,
-			message: "requires a type name, a protocol, and a pattern",
-		},
-		"FourArguments": {
-			body:    `egress.match("test.v1.Response", "http", "GET weather.example/v1/forecast", 1);`,
-			message: "requires a type name, a protocol, and a pattern",
-		},
-		"EmptyType":         {body: `egress.match("", "http", "GET weather.example/v1/forecast");`, message: "type name must be a non-empty string"},
-		"NonStringType":     {body: `egress.match({}, "http", "GET weather.example/v1/forecast");`, message: "type name must be a non-empty string"},
-		"EmptyProtocol":     {body: `egress.match("test.v1.Response", "", "GET weather.example/v1/forecast");`, message: "protocol must be a non-empty string"},
-		"NonStringProtocol": {body: `egress.match("test.v1.Response", 1, "GET weather.example/v1/forecast");`, message: "protocol must be a non-empty string"},
-		"EmptyPattern":      {body: `egress.match("test.v1.Response", "http", "");`, message: "pattern must be a non-empty string"},
-		"NonStringPattern":  {body: `egress.match("test.v1.Response", "http", 1);`, message: "pattern must be a non-empty string"},
+		"NoPattern":        {body: `egress.http();`, message: "spectre.egress.http requires a pattern"},
+		"EmptyPattern":     {body: `egress.http("");`, message: "spectre.egress.http pattern must be a non-empty string"},
+		"NonStringPattern": {body: `egress.http(1);`, message: "spectre.egress.http pattern must be a non-empty string"},
+		"Function":         {body: `egress.http(() => true);`, message: "spectre.egress.http pattern must be a non-empty string"},
+		"MatchNoType":      {body: `egress.http("GET weather.example/v1/forecast").match();`, message: "spectre.EgressHTTPRule.match requires a type name"},
+		"MatchTwoArgs":     {body: `egress.http("GET weather.example/v1/forecast").match("test.v1.Response", () => ({}));`, message: "spectre.EgressHTTPRule.match requires a type name"},
+		"MatchEmptyType":   {body: `egress.http("GET weather.example/v1/forecast").match("");`, message: "type name must be a non-empty string"},
 		"Duplicate": {
-			body:    `spectre.egress.match<v1.Response>("http", "GET weather.example/v1/forecast"); spectre.egress.match<v1.User>("http", "GET weather.example/v1/forecast");`,
+			body:    `spectre.egress.http("GET weather.example/v1/forecast").match<v1.Response>(); spectre.egress.http("GET weather.example/v1/forecast").match<v1.User>();`,
 			message: `duplicate endpoint "GET weather.example/v1/forecast"`,
 		},
 		"EgressWithoutHost": {
-			body:    `spectre.egress.match<v1.Response>("http", "GET /v1/forecast");`,
-			message: `spectre.egress.match pattern "GET /v1/forecast" must have the form "<METHOD> <host>/<path>"`,
+			body:    `spectre.egress.http("GET /v1/forecast").match<v1.Response>();`,
+			message: `spectre.egress.http pattern "GET /v1/forecast" must have the form "<METHOD> <host>/<path>"`,
 		},
 		"EgressWithoutMethod": {
-			body:    `spectre.egress.match<v1.Response>("http", "weather.example/v1/forecast");`,
+			body:    `spectre.egress.http("weather.example/v1/forecast").match<v1.Response>();`,
 			message: `must have the form "<METHOD> <host>/<path>"`,
 		},
 	} {
@@ -300,18 +292,18 @@ func TestRejectsInvalidRules(t *testing.T) {
 			message: `spectre.ingress.http pattern "GET weather.example/v1/forecast" must have the form "[<METHOD> ]/<path>"`,
 		},
 		"NoPath":           {body: `ingress.http("GET");`, message: `must have the form "[<METHOD> ]/<path>"`},
-		"MatchNoType":      {body: `ingress.http("/").match();`, message: "spectre.HTTPRule.match requires a type name and an optional normaliser"},
-		"MatchEmptyType":   {body: `ingress.http("/").match("");`, message: "spectre.HTTPRule.match type name must be a non-empty string"},
-		"MatchNotFunction": {body: `ingress.http("/").match("test.v1.Response", 1);`, message: "spectre.HTTPRule.match normaliser must be a function"},
+		"MatchNoType":      {body: `ingress.http("/").match();`, message: "spectre.IngressHTTPRule.match requires a type name and an optional normaliser"},
+		"MatchEmptyType":   {body: `ingress.http("/").match("");`, message: "spectre.IngressHTTPRule.match type name must be a non-empty string"},
+		"MatchNotFunction": {body: `ingress.http("/").match("test.v1.Response", 1);`, message: "spectre.IngressHTTPRule.match normaliser must be a function"},
 		"MatchThreeArgs":   {body: `ingress.http("/").match("test.v1.Response", () => ({}), 1);`, message: "requires a type name and an optional normaliser"},
-		"IgnoreArgument":   {body: `ingress.http("/").ignore(1);`, message: "spectre.HTTPRule.ignore takes no arguments"},
-		"StatusNone":       {body: `ingress.http("/").status();`, message: "spectre.HTTPRule.status requires status codes or a function"},
-		"StatusBelowRange": {body: `ingress.http("/").status(99);`, message: "spectre.HTTPRule.status code 99 must be an integer from 100 to 599"},
+		"IgnoreArgument":   {body: `ingress.http("/").ignore(1);`, message: "spectre.IngressHTTPRule.ignore takes no arguments"},
+		"StatusNone":       {body: `ingress.http("/").status();`, message: "spectre.IngressHTTPRule.status requires status codes or a function"},
+		"StatusBelowRange": {body: `ingress.http("/").status(99);`, message: "spectre.IngressHTTPRule.status code 99 must be an integer from 100 to 599"},
 		"StatusAboveRange": {body: `ingress.http("/").status(600);`, message: "must be an integer from 100 to 599"},
 		"StatusFraction":   {body: `ingress.http("/").status(200.5);`, message: "must be an integer from 100 to 599"},
 		"StatusString":     {body: `ingress.http("/").status("200");`, message: "must be an integer from 100 to 599"},
-		"StatusRepeated":   {body: `ingress.http("/").status(500, 500);`, message: "spectre.HTTPRule.status code 500 is repeated"},
-		"StatusTwice":      {body: `ingress.http("/").status(500).status(503);`, message: "spectre.HTTPRule.status is already set for this rule"},
+		"StatusRepeated":   {body: `ingress.http("/").status(500, 500);`, message: "spectre.IngressHTTPRule.status code 500 is repeated"},
+		"StatusTwice":      {body: `ingress.http("/").status(500).status(503);`, message: "spectre.IngressHTTPRule.status is already set for this rule"},
 		"StatusMixed":      {body: `ingress.http("/").status(() => true, 500);`, message: "takes either status codes or one function"},
 		"Duplicate":        {body: `ingress.http("GET /_status").ignore(); ingress.http("GET /_status").match("test.v1.Response");`, message: `duplicate rule http("GET /_status")`},
 		"DuplicateStatus":  {body: `ingress.http("/").status(500).ignore(); ingress.http("/").status(500).ignore();`, message: `duplicate rule http("/").status(500)`},
@@ -660,12 +652,6 @@ func TestRejectsScriptSymlinks(t *testing.T) {
 			assert.Contains(t, err.Error(), "symbolic link")
 		})
 	}
-}
-
-func TestProtocolsAreNotValidatedUntilConfigure(t *testing.T) {
-	program, err := newProgram(t, untyped+`egress.match("test.v1.Response", "sql", "query");`)
-	assert.NoError(t, err)
-	assert.Equal(t, []endpoint{{"sql", "query", "test.v1.Response"}}, endpoints(program, model.Egress))
 }
 
 func TestRejectsDuplicateFieldsAcrossScripts(t *testing.T) {
