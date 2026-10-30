@@ -31,7 +31,7 @@ type Decoder struct {
 
 // RuleSelector picks the first of an inbound request's rules that selects a response.
 type RuleSelector interface {
-	SelectRule(ctx context.Context, rules []javascript.Rule, request javascript.Request, status int) (Option[javascript.Rule], error)
+	SelectRule(ctx context.Context, rules []javascript.Rule, request javascript.Request, response javascript.Response) (Option[javascript.Rule], error)
 }
 
 // New checks the descriptors against the schema, and every declared request
@@ -127,8 +127,8 @@ func (d *Decoder) Responses(method, path, rawQuery string, header http.Header) R
 }
 
 // selectRule returns the first of rules that selects a response.
-func (d *Decoder) selectRule(ctx context.Context, rules []javascript.Rule, request javascript.Request, status int) (Option[javascript.Rule], error) {
-	return errors.WithStack2(d.selector.SelectRule(ctx, rules, request, status))
+func (d *Decoder) selectRule(ctx context.Context, rules []javascript.Rule, request javascript.Request, response javascript.Response) (Option[javascript.Rule], error) {
+	return errors.WithStack2(d.selector.SelectRule(ctx, rules, request, response))
 }
 
 func (d *Decoder) decompress(header http.Header, body []byte) ([]byte, error) {

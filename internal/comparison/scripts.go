@@ -80,7 +80,7 @@ func (s *Scripts) Rules() []javascript.Rule {
 
 // SelectRule returns the first rule that selects a response. rules must be in
 // declaration order, and the request must match each rule's pattern, if it has one.
-func (s *Scripts) SelectRule(ctx context.Context, rules []javascript.Rule, request javascript.Request, status int) (Option[javascript.Rule], error) {
+func (s *Scripts) SelectRule(ctx context.Context, rules []javascript.Rule, request javascript.Request, response javascript.Response) (Option[javascript.Rule], error) {
 	ctx, cancel := context.WithTimeout(ctx, s.timeout)
 	defer cancel()
 	evaluator := None[*javascript.Evaluator]()
@@ -102,7 +102,7 @@ func (s *Scripts) SelectRule(ctx context.Context, rules []javascript.Rule, reque
 		return created, nil
 	}
 	for _, rule := range rules {
-		selected, err := selects(rule, request, status, script)
+		selected, err := selects(rule, request, response, script)
 		if err != nil {
 			return None[javascript.Rule](), err
 		}
@@ -113,7 +113,7 @@ func (s *Scripts) SelectRule(ctx context.Context, rules []javascript.Rule, reque
 	return None[javascript.Rule](), nil
 }
 
-func selects(rule javascript.Rule, request javascript.Request, status int, script func() (*javascript.Evaluator, error)) (bool, error) {
+func selects(rule javascript.Rule, request javascript.Request, response javascript.Response, script func() (*javascript.Evaluator, error)) (bool, error) {
 	if _, scripted := rule.Request().(javascript.RequestScript); scripted {
 		evaluator, err := script()
 		if err != nil {
@@ -123,6 +123,18 @@ func selects(rule javascript.Rule, request javascript.Request, status int, scrip
 			return false, errors.WithStack(err)
 		}
 	}
+	if selected, err := selectsStatus(rule, response.Status, script); err != nil || !selected {
+		return false, err
+	}
+	for _, header := range rule.Headers() {
+		if selected, err := selectsHeader(rule, header, response, script); err != nil || !selected {
+			return false, err
+		}
+	}
+	return true, nil
+}
+
+func selectsStatus(rule javascript.Rule, status int, script func() (*javascript.Evaluator, error)) (bool, error) {
 	switch selector := rule.Status().(type) {
 	case javascript.StatusAny:
 		return true, nil
@@ -136,6 +148,21 @@ func selects(rule javascript.Rule, request javascript.Request, status int, scrip
 		return errors.WithStack2(evaluator.SelectsStatus(rule, status))
 	}
 	return false, errors.Errorf("rule %s has an unknown status selector", rule)
+}
+
+func selectsHeader(rule javascript.Rule, header javascript.HeaderSelector, response javascript.Response, script func() (*javascript.Evaluator, error)) (bool, error) {
+	switch selector := header.(type) {
+	case javascript.HeaderValue:
+		value, present := response.HeaderValue(selector.Name).Get()
+		return present && value == selector.Value, nil
+	case javascript.HeaderScript:
+		evaluator, err := script()
+		if err != nil {
+			return false, err
+		}
+		return errors.WithStack2(evaluator.SelectsHeader(rule, selector.Name, response.HeaderValue(selector.Name)))
+	}
+	return false, errors.Errorf("rule %s has an unknown header selector", rule)
 }
 
 // NormaliseResponse applies a rule's normaliser to one response. A None status

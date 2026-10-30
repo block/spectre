@@ -2,6 +2,7 @@ package javascript
 
 import (
 	"fmt"
+	"net/http"
 	"slices"
 	"strconv"
 	"strings"
@@ -19,11 +20,13 @@ type Rule struct {
 	protocol model.Protocol
 	request  RequestSelector
 	status   StatusSelector
-	action   Action
+	// headers are sorted by name, and a response must satisfy every one.
+	headers []HeaderSelector
+	action  Action
 }
 
-func newRule(index int, protocol model.Protocol, request RequestSelector, status StatusSelector, action Action) Rule {
-	return Rule{index: index, protocol: protocol, request: request, status: status, action: action}
+func newRule(index int, protocol model.Protocol, request RequestSelector, status StatusSelector, headers []HeaderSelector, action Action) Rule {
+	return Rule{index: index, protocol: protocol, request: request, status: status, headers: headers, action: action}
 }
 
 // Index returns the rule's position among the scripts' rules.
@@ -44,6 +47,18 @@ func (r Rule) Request() RequestSelector {
 // Status returns how the rule selects responses by status.
 func (r Rule) Status() StatusSelector {
 	return r.status
+}
+
+// Headers returns how the rule selects responses by their headers, sorted by name.
+func (r Rule) Headers() []HeaderSelector {
+	return slices.Clone(r.headers)
+}
+
+// SelectsEveryResponse reports whether the rule selects every response to the
+// requests it selects.
+func (r Rule) SelectsEveryResponse() bool {
+	_, every := r.status.(StatusAny)
+	return every && len(r.headers) == 0
 }
 
 // Action returns what happens to the responses the rule selects.
@@ -71,6 +86,14 @@ func (r Rule) String() string {
 	case StatusScript:
 		text.WriteString(".status(<function>)")
 	}
+	for _, header := range r.headers {
+		switch header := header.(type) {
+		case HeaderValue:
+			fmt.Fprintf(&text, ".header(%q, %q)", header.Name, header.Value)
+		case HeaderScript:
+			fmt.Fprintf(&text, ".header(%q, <function>)", header.Name)
+		}
+	}
 	return text.String()
 }
 
@@ -84,15 +107,21 @@ func (r Rule) sameSelectors(other Rule) bool {
 	}
 	switch status := r.status.(type) {
 	case StatusAny:
-		_, same := other.status.(StatusAny)
-		return same
+		if _, same := other.status.(StatusAny); !same {
+			return false
+		}
 	case StatusCodes:
 		otherStatus, same := other.status.(StatusCodes)
-		return same && slices.Equal(status.Codes, otherStatus.Codes)
+		if !same || !slices.Equal(status.Codes, otherStatus.Codes) {
+			return false
+		}
 	case StatusScript:
 		return false
 	}
-	return false
+	return slices.EqualFunc(r.headers, other.headers, func(header, otherHeader HeaderSelector) bool {
+		value, fixed := header.(HeaderValue)
+		return fixed && value == otherHeader
+	})
 }
 
 // RequestSelector selects the requests a rule applies to.
@@ -127,6 +156,21 @@ func (StatusAny) statusSelector()    {}
 func (StatusCodes) statusSelector()  {}
 func (StatusScript) statusSelector() {}
 
+// HeaderSelector selects the responses a rule applies to by one header.
+//
+//sumtype:decl
+type HeaderSelector interface{ headerName() string }
+
+// HeaderValue selects responses whose header, with its values joined by ", ",
+// equals Value. It never selects a response without the header.
+type HeaderValue struct{ Name, Value string }
+
+// HeaderScript selects the responses whose header a script function accepts.
+type HeaderScript struct{ Name string }
+
+func (h HeaderValue) headerName() string  { return h.Name }
+func (h HeaderScript) headerName() string { return h.Name }
+
 // Action is what happens to the responses a rule selects.
 //
 //sumtype:decl
@@ -144,6 +188,21 @@ type ActionMatch struct {
 
 func (ActionIgnore) action() {}
 func (ActionMatch) action()  {}
+
+// Response is an HTTP response as a rule's selectors see it.
+type Response struct {
+	Status int
+	Header http.Header
+}
+
+// HeaderValue returns a header's values joined by ", ", or None without any.
+func (r Response) HeaderValue(name string) Option[string] {
+	values := r.Header.Values(name)
+	if len(values) == 0 {
+		return None[string]()
+	}
+	return Some(strings.Join(values, ", "))
+}
 
 // Request is an inbound HTTP request as a rule's request function sees it.
 type Request struct {

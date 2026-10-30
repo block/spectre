@@ -82,7 +82,7 @@ func (m *Matcher) Responses(requestMethod, requestPath string) (rules []javascri
 			continue
 		}
 		rules = append(rules, declared.rule)
-		if _, every := declared.rule.Status().(javascript.StatusAny); !patterned || !every {
+		if !patterned || !declared.rule.SelectsEveryResponse() {
 			continue
 		}
 		// This rule selects every remaining response, so later rules never apply.

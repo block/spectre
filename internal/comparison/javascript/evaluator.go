@@ -127,6 +127,20 @@ func (e *Evaluator) SelectsStatus(rule Rule, status int) (bool, error) {
 	return e.selects(rule, callback, e.runtime.ToValue(status))
 }
 
+// SelectsHeader reports whether a rule's function for a header accepts its value,
+// which is undefined when the response lacks the header.
+func (e *Evaluator) SelectsHeader(rule Rule, name string, value Option[string]) (bool, error) {
+	callback, ok := e.registry.rule(rule.Index()).headers[name]
+	if !ok {
+		return false, errors.Errorf("JavaScript function for header %q of rule %s is unavailable", name, rule)
+	}
+	argument := sobek.Undefined()
+	if present, found := value.Get(); found {
+		argument = e.runtime.ToValue(present)
+	}
+	return e.selects(rule, callback, argument)
+}
+
 func (e *Evaluator) selects(rule Rule, callback sobek.Callable, argument sobek.Value) (bool, error) {
 	result, err := callback(sobek.Undefined(), argument)
 	if err != nil {

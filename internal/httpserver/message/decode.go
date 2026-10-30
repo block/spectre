@@ -95,7 +95,7 @@ func (p ResponsePlan) Decode(ctx context.Context, response Response) protocol.Co
 	if len(p.rules) == 0 {
 		return p.unruled.decode(response)
 	}
-	selected, err := p.decoder.selectRule(ctx, p.rules, p.request, response.StatusCode)
+	selected, err := p.decoder.selectRule(ctx, p.rules, p.request, javascript.Response{Status: response.StatusCode, Header: response.Header})
 	status := Some(strconv.Itoa(response.StatusCode))
 	if err != nil {
 		return protocol.Content{Status: status, Failure: Some(errors.Wrap(err, "select rule"))}

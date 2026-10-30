@@ -48,6 +48,7 @@ declare module "test" {
 				ingress.http((request) => request.path === "/root").status((status) => status >= 500).match<Text>(({ status }) => ({ status }));
 				ingress.http("/").status(500, 503).match<Root>((response) => ({ ...response, body: response.body && { ...response.body } }));
 				ingress.http("/").ignore();
+				ingress.http("/").status(503).header("Retry-After", (value) => value !== undefined).header("X-Served-By", "rails").ignore();
 				egress.http("GET example/root").match<Root>();
 				field<Root, "count">((value: number) => value + 1);
 				field<Root, "address.postalCode">((value: string | undefined) => value?.trim());
@@ -68,6 +69,8 @@ declare module "test" {
 		"TextBodyNotString":     {body: `ingress.http("/").match<Text>(() => ({ body: 1 }));`},
 		"StatusNotNumber":       {body: `ingress.http("/").status("500");`},
 		"RequestNotFunction":    {body: `ingress.http(1);`},
+		"HeaderNotString":       {body: `ingress.http("/").header("Accept", 1);`},
+		"HeaderFunctionValue":   {body: `ingress.http("/").header("Accept", (value: string) => value === "a");`},
 		"UnknownPath":           {body: `field<Root, "missing">((value) => value);`},
 		"OtherTypePath":         {body: `field<Root, "enabled">((value) => value);`},
 		"LiteralDotKey":         {body: `field<Root, "literal.key">((value) => value);`},

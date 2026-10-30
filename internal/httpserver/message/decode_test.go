@@ -299,6 +299,7 @@ func TestRulesSelectEachResponse(t *testing.T) {
 		spectre.ingress.http("GET /_status").ignore();
 		spectre.ingress.http("/").status(500).match<spectre.Text>(({ status }) => ({ status }));
 		spectre.ingress.http((request) => request.path.startsWith("/v2/")).status((status) => status === 503).ignore();
+		spectre.ingress.http("GET /v1/forecast").header("X-Skip", "yes").ignore();
 		spectre.ingress.http("GET /v1/forecast").match<v1.Response>();
 		spectre.ingress.http("GET /v2/forecast").match<v1.Response>();
 	`)
@@ -319,6 +320,15 @@ func TestRulesSelectEachResponse(t *testing.T) {
 		},
 		"RouteRule": {
 			method: http.MethodGet, path: "/v1/forecast", response: httpResponse(http.StatusOK, "application/json", body),
+			expected: decoded{status: Some("200"), message: forecast},
+			rule:     `http("GET /v1/forecast")`,
+		},
+		"HeaderIgnores": {
+			method: http.MethodGet, path: "/v1/forecast", response: withHeader(httpResponse(http.StatusOK, "application/json", body), "X-Skip", "yes"),
+			expected: decoded{status: Some("200"), ignored: Some(`rule http("GET /v1/forecast").header("X-Skip", "yes") ignores the response`)},
+		},
+		"HeaderDiffers": {
+			method: http.MethodGet, path: "/v1/forecast", response: withHeader(httpResponse(http.StatusOK, "application/json", body), "X-Skip", "no"),
 			expected: decoded{status: Some("200"), message: forecast},
 			rule:     `http("GET /v1/forecast")`,
 		},

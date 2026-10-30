@@ -69,6 +69,12 @@ declare module "spectre" {
     /** Narrows the rule to responses with one of these statuses, or whose status the function accepts. */
     status(...codes: number[]): IngressHTTPRule;
     status(select: (status: number) => boolean): IngressHTTPRule;
+    /**
+     * Narrows the rule to responses whose header, with its values joined by ", ", equals value, or that the
+     * function accepts. The function receives undefined for a missing header. Names ignore case.
+     */
+    header(name: string, value: string): IngressHTTPRule;
+    header(name: string, select: (value: string | undefined) => boolean): IngressHTTPRule;
     /** Decodes the selected responses' bodies as T, then normalises each response. */
     match<T extends object>(normalise?: (response: Response<T>) => Response<T>): void;
     /** Skips comparison of the selected responses; they are never quarantined. */
