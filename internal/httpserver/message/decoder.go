@@ -31,7 +31,7 @@ type Decoder struct {
 
 // RuleSelector picks the first of an inbound request's rules that selects a response.
 type RuleSelector interface {
-	SelectRule(ctx context.Context, rules []javascript.Rule, request javascript.Request, status int) (Option[javascript.Rule], error)
+	SelectRule(ctx context.Context, rules []javascript.Rule, request javascript.Request, response javascript.Response) (Option[javascript.Rule], error)
 }
 
 // New checks the descriptors against the schema, and every declared request
@@ -111,11 +111,11 @@ func (d *Decoder) Request(request Request) (protocol.Message, error) {
 
 // Responses decides how ingress compares the responses to one request.
 func (d *Decoder) Responses(method, path, rawQuery string, header http.Header) ResponsePlan {
-	request := javascript.Request{Method: method, Path: path}
+	request := javascript.Request{Method: method, Path: path, Header: header.Clone()}
 	if excludedRequestPath(path) {
 		return ignoredResponsePlan(d, request, "gRPC namespace is excluded from response comparison")
 	}
-	rules, ignored := d.routes.Responses(method, path)
+	rules, ignored := d.routes.Responses(method, path, header)
 	if reason, ok := ignored.Get(); ok {
 		return ignoredResponsePlan(d, request, reason)
 	}
@@ -127,8 +127,8 @@ func (d *Decoder) Responses(method, path, rawQuery string, header http.Header) R
 }
 
 // selectRule returns the first of rules that selects a response.
-func (d *Decoder) selectRule(ctx context.Context, rules []javascript.Rule, request javascript.Request, status int) (Option[javascript.Rule], error) {
-	return errors.WithStack2(d.selector.SelectRule(ctx, rules, request, status))
+func (d *Decoder) selectRule(ctx context.Context, rules []javascript.Rule, request javascript.Request, response javascript.Response) (Option[javascript.Rule], error) {
+	return errors.WithStack2(d.selector.SelectRule(ctx, rules, request, response))
 }
 
 func (d *Decoder) decompress(header http.Header, body []byte) ([]byte, error) {

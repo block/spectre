@@ -1,6 +1,8 @@
 package route
 
 import (
+	"net/http"
+
 	"github.com/alecthomas/errors"
 	. "github.com/alecthomas/types/optional"
 
@@ -74,15 +76,15 @@ func (m *Matcher) Request(requestMethod, requestHost, requestPath string) (reque
 
 // Responses returns, in order, the rules that may select an inbound request's
 // responses, or why every response is ignored. requestPath must be escaped.
-func (m *Matcher) Responses(requestMethod, requestPath string) (rules []javascript.Rule, ignored Option[string]) {
+func (m *Matcher) Responses(requestMethod, requestPath string, header http.Header) (rules []javascript.Rule, ignored Option[string]) {
 	for _, declared := range m.rules {
 		pattern, patterned := declared.pattern.Get()
 		// Ingress rules never name a host.
-		if patterned && !pattern.Match(requestMethod, "", requestPath) {
+		if patterned && !pattern.Match(requestMethod, "", requestPath) || !declared.rule.SelectsRequestHeaders(header) {
 			continue
 		}
 		rules = append(rules, declared.rule)
-		if _, every := declared.rule.Status().(javascript.StatusAny); !patterned || !every {
+		if !patterned || !declared.rule.SelectsEveryResponse() {
 			continue
 		}
 		// This rule selects every remaining response, so later rules never apply.

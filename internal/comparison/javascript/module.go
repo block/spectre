@@ -3,12 +3,14 @@ package javascript
 import (
 	"cmp"
 	"maps"
+	"net/http"
 	"slices"
 	"strings"
 
 	"github.com/alecthomas/errors"
 	. "github.com/alecthomas/types/optional"
 	"github.com/grafana/sobek"
+	"golang.org/x/net/http/httpguts"
 
 	"github.com/block/spectre/internal/model"
 	"github.com/block/spectre/internal/schema"
@@ -139,9 +141,12 @@ type callbackRegistry struct {
 
 // ruleCallbacks are the script functions of one rule, indexed like the rules.
 type ruleCallbacks struct {
-	request   Option[sobek.Callable]
-	status    Option[sobek.Callable]
-	normalise Option[sobek.Callable]
+	request Option[sobek.Callable]
+	status  Option[sobek.Callable]
+	// requestHeaders and responseHeaders hold header functions by canonical name.
+	requestHeaders  map[string]sobek.Callable
+	responseHeaders map[string]sobek.Callable
+	normalise       Option[sobek.Callable]
 }
 
 func newCallbackRegistry(runtime *sobek.Runtime) *callbackRegistry {
@@ -163,12 +168,15 @@ func newCallbackRegistry(runtime *sobek.Runtime) *callbackRegistry {
 	return registry
 }
 
-// matchMethod, ignoreMethod, and statusMethod name the script API's methods
+// matchMethod, ignoreMethod, statusMethod, and the header methods name the script API's methods
 // whose type arguments, or lack of them, compile treats specially.
 const (
 	matchMethod  = "match"
 	ignoreMethod = "ignore"
 	statusMethod = "status"
+	// requestHeaderMethod and responseHeaderMethod select by a header's value.
+	requestHeaderMethod  = "requestHeader"
+	responseHeaderMethod = "responseHeader"
 	// textTypeName is the type name compile inserts for the spectre Text type.
 	textTypeName = "spectre.Text"
 )
@@ -213,10 +221,12 @@ func (r *callbackRegistry) matchEndpoint(pattern string, call sobek.FunctionCall
 
 // ruleBuilder is a rule whose selectors are chosen but whose action is not yet.
 type ruleBuilder struct {
-	protocol  model.Protocol
-	request   RequestSelector
-	status    StatusSelector
-	callbacks ruleCallbacks
+	protocol        model.Protocol
+	request         RequestSelector
+	status          StatusSelector
+	requestHeaders  []HeaderSelector
+	responseHeaders []HeaderSelector
+	callbacks       ruleCallbacks
 }
 
 // httpRule starts an ingress rule from a pattern or a request function.
@@ -246,6 +256,11 @@ func (r *callbackRegistry) builderObject(builder ruleBuilder) sobek.Value {
 	r.defineMethod(object, "IngressHTTPRule."+statusMethod, statusMethod, func(call sobek.FunctionCall) sobek.Value {
 		return r.builderObject(r.withStatus(builder, call))
 	})
+	for _, method := range []string{requestHeaderMethod, responseHeaderMethod} {
+		r.defineMethod(object, "IngressHTTPRule."+method, method, func(call sobek.FunctionCall) sobek.Value {
+			return r.builderObject(r.withHeader(builder, call, method))
+		})
+	}
 	r.defineMethod(object, "IngressHTTPRule."+matchMethod, matchMethod, func(call sobek.FunctionCall) sobek.Value {
 		r.matchRule(builder, call)
 		return sobek.Undefined()
@@ -292,6 +307,45 @@ func (r *callbackRegistry) withStatus(builder ruleBuilder, call sobek.FunctionCa
 	return builder
 }
 
+// withHeader narrows a builder by a request or response header's value, or by a
+// function of it. method names the builder method that was called.
+func (r *callbackRegistry) withHeader(builder ruleBuilder, call sobek.FunctionCall, method string) ruleBuilder {
+	qualified := "IngressHTTPRule." + method
+	selectors, callbacks := &builder.responseHeaders, &builder.callbacks.responseHeaders
+	if method == requestHeaderMethod {
+		selectors, callbacks = &builder.requestHeaders, &builder.callbacks.requestHeaders
+	}
+	if len(call.Arguments) != 2 {
+		panic(r.runtime.NewTypeError("spectre.%s requires a header name and a value or a function", qualified))
+	}
+	name := r.stringArgument(call, 0, qualified, "header name")
+	if !httpguts.ValidHeaderFieldName(name) {
+		panic(r.runtime.NewTypeError("spectre.%s header name %q is not valid", qualified, name))
+	}
+	name = http.CanonicalHeaderKey(name)
+	if slices.ContainsFunc(*selectors, func(header HeaderSelector) bool { return header.headerName() == name }) {
+		panic(r.runtime.NewTypeError("spectre.%s header %q is already set for this rule", qualified, name))
+	}
+	headers := slices.Clone(*selectors)
+	if callback, ok := sobek.AssertFunction(call.Argument(1)); ok {
+		headers = append(headers, HeaderScript{Name: name})
+		functions := map[string]sobek.Callable{name: callback}
+		maps.Copy(functions, *callbacks)
+		*callbacks = functions
+	} else {
+		value, isString := call.Argument(1).Export().(string)
+		if !isString {
+			panic(r.runtime.NewTypeError("spectre.%s value must be a string or a function", qualified))
+		}
+		headers = append(headers, HeaderValue{Name: name, Value: value})
+	}
+	slices.SortFunc(headers, func(left, right HeaderSelector) int {
+		return cmp.Compare(left.headerName(), right.headerName())
+	})
+	*selectors = headers
+	return builder
+}
+
 // matchRule receives the type name compile inserts before an optional normaliser.
 func (r *callbackRegistry) matchRule(builder ruleBuilder, call sobek.FunctionCall) {
 	const qualified = "IngressHTTPRule.match"
@@ -315,9 +369,9 @@ func (r *callbackRegistry) matchRule(builder ruleBuilder, call sobek.FunctionCal
 }
 
 // addRule appends a rule. A rule whose selectors repeat an earlier rule's
-// pattern and codes could never apply, so it is rejected.
+// pattern, codes, and header values could never apply, so it is rejected.
 func (r *callbackRegistry) addRule(builder ruleBuilder, action Action) {
-	rule := newRule(len(r.rules), builder.protocol, builder.request, builder.status, action)
+	rule := newRule(len(r.rules), builder.protocol, builder.request, builder.status, builder.requestHeaders, builder.responseHeaders, action)
 	if slices.ContainsFunc(r.rules, rule.sameSelectors) {
 		panic(r.runtime.NewTypeError("duplicate rule %s", rule))
 	}

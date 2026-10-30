@@ -77,8 +77,8 @@ func describeDeclaration(declaration Declaration) string {
 }
 
 // SelectRule returns the first of rules that selects a response.
-func (e *Engine) SelectRule(ctx context.Context, rules []javascript.Rule, request javascript.Request, status int) (Option[javascript.Rule], error) {
-	return errors.WithStack2(e.scripts.SelectRule(ctx, rules, request, status))
+func (e *Engine) SelectRule(ctx context.Context, rules []javascript.Rule, request javascript.Request, response javascript.Response) (Option[javascript.Rule], error) {
+	return errors.WithStack2(e.scripts.SelectRule(ctx, rules, request, response))
 }
 
 // Schema returns the types that servers decode messages as.

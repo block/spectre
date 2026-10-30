@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"path/filepath"
 	"testing"
@@ -163,23 +164,40 @@ func TestSelectsTheFirstRuleThatSelectsAResponse(t *testing.T) {
 	scripts := newScripts(t, `
 		spectre.ingress.http("/").status(500).match<spectre.Text>();
 		spectre.ingress.http((request) => request.path.startsWith("/v2/")).status((status) => status >= 400).ignore();
+		spectre.ingress.http("/").status(503).responseHeader("Retry-After", (value) => value !== undefined).responseHeader("x-served-by", "rails").ignore();
+		spectre.ingress.http("/").responseHeader("Content-Type", (type) => type?.startsWith("text/html") ?? false).match<spectre.Text>();
+		spectre.ingress.http("/v3/").requestHeader("X-Synthetic", "true").requestHeader("Accept", (value) => value === undefined).ignore();
 		spectre.ingress.http("GET /v1/forecast").match<v1.Response>();
 	`)
 	rules := scripts.Rules()
+	v3 := func(header http.Header) javascript.Request {
+		return javascript.Request{Method: "GET", Path: "/v3/forecast", Header: header}
+	}
+	v2, v1 := javascript.Request{Method: "GET", Path: "/v2/forecast"}, javascript.Request{Method: "GET", Path: "/v1/forecast"}
+	html := http.Header{"Content-Type": {"text/html; charset=utf-8"}}
+	retry := http.Header{"Retry-After": {"5"}, "X-Served-By": {"rails"}}
 	for name, test := range map[string]struct {
 		rules    []javascript.Rule
 		request  javascript.Request
-		status   int
+		response javascript.Response
 		expected Option[javascript.Rule]
 	}{
-		"Status":          {rules: rules, request: javascript.Request{Method: "GET", Path: "/v2/forecast"}, status: 500, expected: Some(rules[0])},
-		"Functions":       {rules: rules, request: javascript.Request{Method: "GET", Path: "/v2/forecast"}, status: 404, expected: Some(rules[1])},
-		"RequestRejected": {rules: rules, request: javascript.Request{Method: "GET", Path: "/v1/forecast"}, status: 404, expected: Some(rules[2])},
-		"StatusRejected":  {rules: rules[:2], request: javascript.Request{Method: "GET", Path: "/v2/forecast"}, status: 200, expected: None[javascript.Rule]()},
-		"NoRules":         {request: javascript.Request{Method: "GET", Path: "/"}, status: 200, expected: None[javascript.Rule]()},
+		"Status":          {rules: rules, request: v2, response: javascript.Response{Status: 500}, expected: Some(rules[0])},
+		"Functions":       {rules: rules, request: v2, response: javascript.Response{Status: 404}, expected: Some(rules[1])},
+		"Headers":         {rules: rules, request: v1, response: javascript.Response{Status: 503, Header: retry}, expected: Some(rules[2])},
+		"HeaderAbsent":    {rules: rules, request: v1, response: javascript.Response{Status: 503, Header: http.Header{"X-Served-By": {"rails"}}}, expected: Some(rules[5])},
+		"HeaderDiffers":   {rules: rules, request: v1, response: javascript.Response{Status: 503, Header: http.Header{"Retry-After": {"5"}, "X-Served-By": {"go"}}}, expected: Some(rules[5])},
+		"HeaderJoined":    {rules: rules, request: v1, response: javascript.Response{Status: 503, Header: http.Header{"Retry-After": {"5"}, "X-Served-By": {"rails", "go"}}}, expected: Some(rules[5])},
+		"HeaderFunction":  {rules: rules, request: v1, response: javascript.Response{Status: 200, Header: html}, expected: Some(rules[3])},
+		"RequestHeaders":  {rules: rules[4:], request: v3(http.Header{"X-Synthetic": {"true"}}), response: javascript.Response{Status: 200}, expected: Some(rules[4])},
+		"RequestValue":    {rules: rules[4:5], request: v3(http.Header{"X-Synthetic": {"false"}}), response: javascript.Response{Status: 200}, expected: None[javascript.Rule]()},
+		"RequestFunction": {rules: rules[4:5], request: v3(http.Header{"X-Synthetic": {"true"}, "Accept": {"*/*"}}), response: javascript.Response{Status: 200}, expected: None[javascript.Rule]()},
+		"RequestRejected": {rules: rules, request: v1, response: javascript.Response{Status: 404}, expected: Some(rules[5])},
+		"StatusRejected":  {rules: rules[:2], request: v2, response: javascript.Response{Status: 200}, expected: None[javascript.Rule]()},
+		"NoRules":         {request: javascript.Request{Method: "GET", Path: "/"}, response: javascript.Response{Status: 200}, expected: None[javascript.Rule]()},
 	} {
 		t.Run(name, func(t *testing.T) {
-			selected, err := scripts.SelectRule(t.Context(), test.rules, test.request, test.status)
+			selected, err := scripts.SelectRule(t.Context(), test.rules, test.request, test.response)
 			assert.NoError(t, err)
 			assert.Equal(t, test.expected, selected)
 		})

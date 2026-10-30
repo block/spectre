@@ -56,7 +56,12 @@ declare module "spectre" {
     readonly method: string;
     /** The escaped path, without the query. */
     readonly path: string;
+    /** Header values by lower-case name, with repeated values joined by ", ". */
+    readonly headers: Readonly<Record<string, string>>;
   }
+
+  /** Selects by a header's value, with repeated values joined by ", ", or by a function of it. */
+  type HeaderSelect = string | ((value: string | undefined) => boolean);
 
   /** The comparable parts of a response. Members left out are not compared. */
   export interface Response<T> {
@@ -69,6 +74,13 @@ declare module "spectre" {
     /** Narrows the rule to responses with one of these statuses, or whose status the function accepts. */
     status(...codes: number[]): IngressHTTPRule;
     status(select: (status: number) => boolean): IngressHTTPRule;
+    /**
+     * Narrows the rule to requests whose header equals the value, or that the function accepts; both sides
+     * receive the same request. The function receives undefined for a missing header. Names ignore case.
+     */
+    requestHeader(name: string, select: HeaderSelect): IngressHTTPRule;
+    /** Narrows the rule to responses whose header matches, as requestHeader does. Each side selects by its own. */
+    responseHeader(name: string, select: HeaderSelect): IngressHTTPRule;
     /** Decodes the selected responses' bodies as T, then normalises each response. */
     match<T extends object>(normalise?: (response: Response<T>) => Response<T>): void;
     /** Skips comparison of the selected responses; they are never quarantined. */

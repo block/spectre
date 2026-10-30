@@ -3,6 +3,7 @@ package javascript
 import (
 	"context"
 	"encoding/json"
+	"strings"
 
 	"github.com/alecthomas/errors"
 	. "github.com/alecthomas/types/optional"
@@ -108,8 +109,15 @@ func (e *Evaluator) SelectsRequest(rule Rule, request Request) (bool, error) {
 	if !ok {
 		return false, errors.Errorf("JavaScript request function of rule %s is unavailable", rule)
 	}
+	headers := e.runtime.NewObject()
+	for name := range request.Header {
+		value, _ := request.HeaderValue(name).Get()
+		if err := headers.Set(strings.ToLower(name), value); err != nil {
+			return false, errors.Wrap(err, "build request headers argument")
+		}
+	}
 	argument := e.runtime.NewObject()
-	for name, value := range map[string]string{"method": request.Method, "path": request.Path} {
+	for name, value := range map[string]any{"method": request.Method, "path": request.Path, "headers": headers} {
 		if err := argument.Set(name, value); err != nil {
 			return false, errors.Wrap(err, "build request argument")
 		}
@@ -125,6 +133,30 @@ func (e *Evaluator) SelectsStatus(rule Rule, status int) (bool, error) {
 		return false, errors.Errorf("JavaScript status function of rule %s is unavailable", rule)
 	}
 	return e.selects(rule, callback, e.runtime.ToValue(status))
+}
+
+// SelectsRequestHeader reports whether a rule's function for a request header
+// accepts its value, which is undefined when the request lacks the header.
+func (e *Evaluator) SelectsRequestHeader(rule Rule, name string, value Option[string]) (bool, error) {
+	return e.selectsHeader(rule, e.registry.rule(rule.Index()).requestHeaders, "request", name, value)
+}
+
+// SelectsResponseHeader reports whether a rule's function for a response header
+// accepts its value, which is undefined when the response lacks the header.
+func (e *Evaluator) SelectsResponseHeader(rule Rule, name string, value Option[string]) (bool, error) {
+	return e.selectsHeader(rule, e.registry.rule(rule.Index()).responseHeaders, "response", name, value)
+}
+
+func (e *Evaluator) selectsHeader(rule Rule, callbacks map[string]sobek.Callable, message, name string, value Option[string]) (bool, error) {
+	callback, ok := callbacks[name]
+	if !ok {
+		return false, errors.Errorf("JavaScript function for %s header %q of rule %s is unavailable", message, name, rule)
+	}
+	argument := sobek.Undefined()
+	if present, found := value.Get(); found {
+		argument = e.runtime.ToValue(present)
+	}
+	return e.selects(rule, callback, argument)
 }
 
 func (e *Evaluator) selects(rule Rule, callback sobek.Callable, argument sobek.Value) (bool, error) {
