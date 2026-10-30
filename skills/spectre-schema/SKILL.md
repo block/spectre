@@ -16,11 +16,12 @@ Keep it out of `spectre/schema/`, which cannot redeclare the module.
   Ignored routes never quarantine the candidate. Ask the user whether to ignore
   the health check, such as `GET /_status`.
 - Rules apply in order, and the first that selects a response decides. Narrow a
-  rule by status with `.status(500)` or `.status((status) => status >= 500)`, and
-  by response header with `.header("X-Served-By", "rails")` or
-  `.header("Content-Type", (type) => type?.startsWith("text/html") ?? false)`.
-  Each side selects its own rule, so prefer status over headers that differ
-  between the reference and the candidate. To
+  rule by request header with `.requestHeader("X-Synthetic", "true")`, by status
+  with `.status(500)` or `.status((status) => status >= 500)`, and by response
+  header with `.responseHeader("Content-Type", (type) => type?.startsWith("text/html") ?? false)`.
+  Both sides share the request but select by their own responses, so prefer
+  request headers and status over response headers that differ between the
+  reference and the candidate. To
   compare only the status of errors whose bodies differ, declare
   `ingress.http("/").status(500).match<Text>(({ status }) => ({ status }))` first.
 - Type each dependency call with `egress.http("<METHOD> <host>/<path>").match<Request>()`,

@@ -143,9 +143,10 @@ type callbackRegistry struct {
 type ruleCallbacks struct {
 	request Option[sobek.Callable]
 	status  Option[sobek.Callable]
-	// headers holds header functions by canonical header name.
-	headers   map[string]sobek.Callable
-	normalise Option[sobek.Callable]
+	// requestHeaders and responseHeaders hold header functions by canonical name.
+	requestHeaders  map[string]sobek.Callable
+	responseHeaders map[string]sobek.Callable
+	normalise       Option[sobek.Callable]
 }
 
 func newCallbackRegistry(runtime *sobek.Runtime) *callbackRegistry {
@@ -167,13 +168,15 @@ func newCallbackRegistry(runtime *sobek.Runtime) *callbackRegistry {
 	return registry
 }
 
-// matchMethod, ignoreMethod, statusMethod, and headerMethod name the script API's methods
+// matchMethod, ignoreMethod, statusMethod, and the header methods name the script API's methods
 // whose type arguments, or lack of them, compile treats specially.
 const (
 	matchMethod  = "match"
 	ignoreMethod = "ignore"
 	statusMethod = "status"
-	headerMethod = "header"
+	// requestHeaderMethod and responseHeaderMethod select by a header's value.
+	requestHeaderMethod  = "requestHeader"
+	responseHeaderMethod = "responseHeader"
 	// textTypeName is the type name compile inserts for the spectre Text type.
 	textTypeName = "spectre.Text"
 )
@@ -218,11 +221,12 @@ func (r *callbackRegistry) matchEndpoint(pattern string, call sobek.FunctionCall
 
 // ruleBuilder is a rule whose selectors are chosen but whose action is not yet.
 type ruleBuilder struct {
-	protocol  model.Protocol
-	request   RequestSelector
-	status    StatusSelector
-	headers   []HeaderSelector
-	callbacks ruleCallbacks
+	protocol        model.Protocol
+	request         RequestSelector
+	status          StatusSelector
+	requestHeaders  []HeaderSelector
+	responseHeaders []HeaderSelector
+	callbacks       ruleCallbacks
 }
 
 // httpRule starts an ingress rule from a pattern or a request function.
@@ -252,9 +256,11 @@ func (r *callbackRegistry) builderObject(builder ruleBuilder) sobek.Value {
 	r.defineMethod(object, "IngressHTTPRule."+statusMethod, statusMethod, func(call sobek.FunctionCall) sobek.Value {
 		return r.builderObject(r.withStatus(builder, call))
 	})
-	r.defineMethod(object, "IngressHTTPRule."+headerMethod, headerMethod, func(call sobek.FunctionCall) sobek.Value {
-		return r.builderObject(r.withHeader(builder, call))
-	})
+	for _, method := range []string{requestHeaderMethod, responseHeaderMethod} {
+		r.defineMethod(object, "IngressHTTPRule."+method, method, func(call sobek.FunctionCall) sobek.Value {
+			return r.builderObject(r.withHeader(builder, call, method))
+		})
+	}
 	r.defineMethod(object, "IngressHTTPRule."+matchMethod, matchMethod, func(call sobek.FunctionCall) sobek.Value {
 		r.matchRule(builder, call)
 		return sobek.Undefined()
@@ -301,10 +307,14 @@ func (r *callbackRegistry) withStatus(builder ruleBuilder, call sobek.FunctionCa
 	return builder
 }
 
-// withHeader narrows a builder to responses with a header value, or whose
-// header a function accepts.
-func (r *callbackRegistry) withHeader(builder ruleBuilder, call sobek.FunctionCall) ruleBuilder {
-	const qualified = "IngressHTTPRule.header"
+// withHeader narrows a builder by a request or response header's value, or by a
+// function of it. method names the builder method that was called.
+func (r *callbackRegistry) withHeader(builder ruleBuilder, call sobek.FunctionCall, method string) ruleBuilder {
+	qualified := "IngressHTTPRule." + method
+	selectors, callbacks := &builder.responseHeaders, &builder.callbacks.responseHeaders
+	if method == requestHeaderMethod {
+		selectors, callbacks = &builder.requestHeaders, &builder.callbacks.requestHeaders
+	}
 	if len(call.Arguments) != 2 {
 		panic(r.runtime.NewTypeError("spectre.%s requires a header name and a value or a function", qualified))
 	}
@@ -313,25 +323,26 @@ func (r *callbackRegistry) withHeader(builder ruleBuilder, call sobek.FunctionCa
 		panic(r.runtime.NewTypeError("spectre.%s header name %q is not valid", qualified, name))
 	}
 	name = http.CanonicalHeaderKey(name)
-	if slices.ContainsFunc(builder.headers, func(header HeaderSelector) bool { return header.headerName() == name }) {
+	if slices.ContainsFunc(*selectors, func(header HeaderSelector) bool { return header.headerName() == name }) {
 		panic(r.runtime.NewTypeError("spectre.%s header %q is already set for this rule", qualified, name))
 	}
-	builder.headers = slices.Clone(builder.headers)
+	headers := slices.Clone(*selectors)
 	if callback, ok := sobek.AssertFunction(call.Argument(1)); ok {
-		builder.headers = append(builder.headers, HeaderScript{Name: name})
-		headers := map[string]sobek.Callable{name: callback}
-		maps.Copy(headers, builder.callbacks.headers)
-		builder.callbacks.headers = headers
+		headers = append(headers, HeaderScript{Name: name})
+		functions := map[string]sobek.Callable{name: callback}
+		maps.Copy(functions, *callbacks)
+		*callbacks = functions
 	} else {
 		value, isString := call.Argument(1).Export().(string)
 		if !isString {
 			panic(r.runtime.NewTypeError("spectre.%s value must be a string or a function", qualified))
 		}
-		builder.headers = append(builder.headers, HeaderValue{Name: name, Value: value})
+		headers = append(headers, HeaderValue{Name: name, Value: value})
 	}
-	slices.SortFunc(builder.headers, func(left, right HeaderSelector) int {
+	slices.SortFunc(headers, func(left, right HeaderSelector) int {
 		return cmp.Compare(left.headerName(), right.headerName())
 	})
+	*selectors = headers
 	return builder
 }
 
@@ -360,7 +371,7 @@ func (r *callbackRegistry) matchRule(builder ruleBuilder, call sobek.FunctionCal
 // addRule appends a rule. A rule whose selectors repeat an earlier rule's
 // pattern, codes, and header values could never apply, so it is rejected.
 func (r *callbackRegistry) addRule(builder ruleBuilder, action Action) {
-	rule := newRule(len(r.rules), builder.protocol, builder.request, builder.status, builder.headers, action)
+	rule := newRule(len(r.rules), builder.protocol, builder.request, builder.status, builder.requestHeaders, builder.responseHeaders, action)
 	if slices.ContainsFunc(r.rules, rule.sameSelectors) {
 		panic(r.runtime.NewTypeError("duplicate rule %s", rule))
 	}

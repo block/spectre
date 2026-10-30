@@ -299,7 +299,7 @@ func TestRulesSelectEachResponse(t *testing.T) {
 		spectre.ingress.http("GET /_status").ignore();
 		spectre.ingress.http("/").status(500).match<spectre.Text>(({ status }) => ({ status }));
 		spectre.ingress.http((request) => request.path.startsWith("/v2/")).status((status) => status === 503).ignore();
-		spectre.ingress.http("GET /v1/forecast").header("X-Skip", "yes").ignore();
+		spectre.ingress.http("GET /v1/forecast").responseHeader("X-Skip", "yes").ignore();
 		spectre.ingress.http("GET /v1/forecast").match<v1.Response>();
 		spectre.ingress.http("GET /v2/forecast").match<v1.Response>();
 	`)
@@ -325,7 +325,7 @@ func TestRulesSelectEachResponse(t *testing.T) {
 		},
 		"HeaderIgnores": {
 			method: http.MethodGet, path: "/v1/forecast", response: withHeader(httpResponse(http.StatusOK, "application/json", body), "X-Skip", "yes"),
-			expected: decoded{status: Some("200"), ignored: Some(`rule http("GET /v1/forecast").header("X-Skip", "yes") ignores the response`)},
+			expected: decoded{status: Some("200"), ignored: Some(`rule http("GET /v1/forecast").responseHeader("X-Skip", "yes") ignores the response`)},
 		},
 		"HeaderDiffers": {
 			method: http.MethodGet, path: "/v1/forecast", response: withHeader(httpResponse(http.StatusOK, "application/json", body), "X-Skip", "no"),
@@ -385,6 +385,30 @@ func TestRulesSelectEachResponse(t *testing.T) {
 			assert.Equal(t, test.rule, rule)
 		})
 	}
+}
+
+func TestRequestHeaderRulesIgnoreRequestsUpFront(t *testing.T) {
+	decoder := newDecoder(t, `
+		spectre.ingress.http("GET /v1/forecast").requestHeader("X-Synthetic", "true").ignore();
+		spectre.ingress.http("GET /v2/forecast").requestHeader("X-Synthetic", (value) => value === "true").ignore();
+		spectre.ingress.http("/").match<spectre.Text>();
+	`)
+	for name, test := range map[string]struct {
+		path      string
+		synthetic string
+		expected  Option[string]
+	}{
+		"Value":          {path: "/v1/forecast", synthetic: "true", expected: Some(`rule http("GET /v1/forecast").requestHeader("X-Synthetic", "true") ignores the request`)},
+		"OtherValue":     {path: "/v1/forecast", synthetic: "false", expected: None[string]()},
+		"FunctionsLater": {path: "/v2/forecast", synthetic: "true", expected: None[string]()},
+	} {
+		t.Run(name, func(t *testing.T) {
+			header := http.Header{"X-Synthetic": {test.synthetic}}
+			assert.Equal(t, test.expected, decoder.Responses(http.MethodGet, test.path, "", header).Ignored())
+		})
+	}
+	content := decoder.Responses(http.MethodGet, "/v2/forecast", "", http.Header{"X-Synthetic": {"true"}}).Decode(t.Context(), httpResponse(http.StatusOK, "text/plain", "ok"))
+	assert.Equal(t, decoded{status: Some("200"), ignored: Some(`rule http("GET /v2/forecast").requestHeader("X-Synthetic", <function>) ignores the response`)}, describe(content))
 }
 
 func TestDecodesHTTPJSONWithoutDescriptors(t *testing.T) {

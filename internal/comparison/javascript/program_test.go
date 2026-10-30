@@ -1,6 +1,7 @@
 package javascript_test
 
 import (
+	"net/http"
 	"os"
 	"path/filepath"
 	"sync"
@@ -59,7 +60,7 @@ func TestRegistersRulesInOrder(t *testing.T) {
 			const forecast = spectre.ingress.http("GET /v1/forecast");
 			forecast.status(404).match<v1.User>();
 			forecast.match<v1.Response>();
-			spectre.ingress.http("/").header("x-served-by", "rails").status(502).header("Retry-After", (value) => value !== undefined).ignore();
+			spectre.ingress.http("/").responseHeader("x-served-by", "rails").requestHeader("x-synthetic", "true").status(502).responseHeader("Retry-After", (value) => value !== undefined).ignore();
 		`),
 	})
 	assert.NoError(t, err)
@@ -70,7 +71,7 @@ func TestRegistersRulesInOrder(t *testing.T) {
 		{`http(<function>).status(<function>)`, javascript.ActionIgnore{}},
 		{`http("GET /v1/forecast").status(404)`, javascript.ActionMatch{Type: Some[schema.TypeRef]("test.v1.User")}},
 		{`http("GET /v1/forecast")`, javascript.ActionMatch{Type: Some[schema.TypeRef]("test.v1.Response")}},
-		{`http("/").status(502).header("Retry-After", <function>).header("X-Served-By", "rails")`, javascript.ActionIgnore{}},
+		{`http("/").requestHeader("X-Synthetic", "true").status(502).responseHeader("Retry-After", <function>).responseHeader("X-Served-By", "rails")`, javascript.ActionIgnore{}},
 	}, rules(program))
 	evaluator, err := program.NewEvaluator(t.Context())
 	assert.NoError(t, err)
@@ -84,7 +85,8 @@ func TestEvaluatesRuleFunctions(t *testing.T) {
 			.match<v1.Response>(({ status, body }) => ({ status: status === 503 ? 500 : status, body }));
 		spectre.ingress.http("/").status(() => "yes" as unknown as boolean).ignore();
 		spectre.ingress.http(() => { throw new Error("no"); }).ignore();
-		spectre.ingress.http("/").header("Content-Type", (type) => type === undefined || type.startsWith("text/")).ignore();
+		spectre.ingress.http("/").responseHeader("Content-Type", (type) => type === undefined || type.startsWith("text/")).ignore();
+		spectre.ingress.http((request) => request.headers["x-synthetic"] === "a, b").requestHeader("Accept", (value) => value === "text/html").ignore();
 	`)
 	assert.NoError(t, err)
 	declared := program.Rules()
@@ -125,12 +127,23 @@ func TestEvaluatesRuleFunctions(t *testing.T) {
 	assert.EqualError(t, err, `JavaScript status function of rule http(<function>) is unavailable`)
 
 	for value, expected := range map[Option[string]]bool{Some("text/html"): true, Some("application/json"): false, None[string](): true} {
-		selected, err = evaluator.SelectsHeader(declared[3], "Content-Type", value)
+		selected, err = evaluator.SelectsResponseHeader(declared[3], "Content-Type", value)
 		assert.NoError(t, err)
 		assert.Equal(t, expected, selected)
 	}
-	_, err = evaluator.SelectsHeader(declared[3], "Accept", None[string]())
-	assert.EqualError(t, err, `JavaScript function for header "Accept" of rule http("/").header("Content-Type", <function>) is unavailable`)
+	selected, err = evaluator.SelectsRequest(declared[4], javascript.Request{Method: "GET", Path: "/", Header: http.Header{"X-Synthetic": {"a", "b"}}})
+	assert.NoError(t, err)
+	assert.True(t, selected)
+	selected, err = evaluator.SelectsRequest(declared[4], javascript.Request{Method: "GET", Path: "/"})
+	assert.NoError(t, err)
+	assert.False(t, selected)
+	selected, err = evaluator.SelectsRequestHeader(declared[4], "Accept", Some("text/html"))
+	assert.NoError(t, err)
+	assert.True(t, selected)
+	_, err = evaluator.SelectsResponseHeader(declared[4], "Accept", Some("text/html"))
+	assert.EqualError(t, err, `JavaScript function for response header "Accept" of rule http(<function>).requestHeader("Accept", <function>) is unavailable`)
+	_, err = evaluator.SelectsResponseHeader(declared[3], "Accept", None[string]())
+	assert.EqualError(t, err, `JavaScript function for response header "Accept" of rule http("/").responseHeader("Content-Type", <function>) is unavailable`)
 }
 
 func TestLoadsEmptyScriptsDirectory(t *testing.T) {
@@ -318,14 +331,23 @@ func TestRejectsInvalidRules(t *testing.T) {
 		"StatusMixed":      {body: `ingress.http("/").status(() => true, 500);`, message: "takes either status codes or one function"},
 		"Duplicate":        {body: `ingress.http("GET /_status").ignore(); ingress.http("GET /_status").match("test.v1.Response");`, message: `duplicate rule http("GET /_status")`},
 		"DuplicateStatus":  {body: `ingress.http("/").status(500).ignore(); ingress.http("/").status(500).ignore();`, message: `duplicate rule http("/").status(500)`},
-		"HeaderNoValue":    {body: `ingress.http("/").header("Accept");`, message: "spectre.IngressHTTPRule.header requires a header name and a value or a function"},
-		"HeaderEmptyName":  {body: `ingress.http("/").header("", "x");`, message: "spectre.IngressHTTPRule.header header name must be a non-empty string"},
-		"HeaderBadName":    {body: `ingress.http("/").header("Content Type", "x");`, message: `spectre.IngressHTTPRule.header header name "Content Type" is not valid`},
-		"HeaderNotString":  {body: `ingress.http("/").header("Accept", 1);`, message: "spectre.IngressHTTPRule.header value must be a string or a function"},
-		"HeaderTwice":      {body: `ingress.http("/").header("Accept", "a").header("accept", () => true);`, message: `spectre.IngressHTTPRule.header header "Accept" is already set for this rule`},
+		"HeaderNoValue":    {body: `ingress.http("/").responseHeader("Accept");`, message: "spectre.IngressHTTPRule.responseHeader requires a header name and a value or a function"},
+		"HeaderEmptyName":  {body: `ingress.http("/").responseHeader("", "x");`, message: "spectre.IngressHTTPRule.responseHeader header name must be a non-empty string"},
+		"HeaderBadName":    {body: `ingress.http("/").responseHeader("Content Type", "x");`, message: `spectre.IngressHTTPRule.responseHeader header name "Content Type" is not valid`},
+		"HeaderNotString":  {body: `ingress.http("/").responseHeader("Accept", 1);`, message: "spectre.IngressHTTPRule.responseHeader value must be a string or a function"},
+		"RequestHeaderTwice": {
+			body:    `ingress.http("/").requestHeader("Accept", "a").requestHeader("ACCEPT", "b");`,
+			message: `spectre.IngressHTTPRule.requestHeader header "Accept" is already set for this rule`,
+		},
+		"RequestHeaderBadName": {body: `ingress.http("/").requestHeader("a:b", "x");`, message: `spectre.IngressHTTPRule.requestHeader header name "a:b" is not valid`},
+		"DuplicateRequestHeaders": {
+			body:    `ingress.http("/").requestHeader("A", "1").ignore(); ingress.http("/").requestHeader("a", "1").ignore();`,
+			message: `duplicate rule http("/").requestHeader("A", "1")`,
+		},
+		"HeaderTwice": {body: `ingress.http("/").responseHeader("Accept", "a").responseHeader("accept", () => true);`, message: `spectre.IngressHTTPRule.responseHeader header "Accept" is already set for this rule`},
 		"DuplicateHeaders": {
-			body:    `ingress.http("/").header("A", "1").header("B", "2").ignore(); ingress.http("/").header("b", "2").header("a", "1").ignore();`,
-			message: `duplicate rule http("/").header("A", "1").header("B", "2")`,
+			body:    `ingress.http("/").responseHeader("A", "1").responseHeader("B", "2").ignore(); ingress.http("/").responseHeader("b", "2").responseHeader("a", "1").ignore();`,
+			message: `duplicate rule http("/").responseHeader("A", "1").responseHeader("B", "2")`,
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -344,11 +366,13 @@ func TestAcceptsRulesThatDifferOnlyByFunction(t *testing.T) {
 		ingress.http("/").status(() => true).ignore();
 		ingress.http(() => true).ignore();
 		ingress.http(() => true).ignore();
-		ingress.http("/").header("Accept", "a").ignore();
-		ingress.http("/").header("Accept", "b").ignore();
-		ingress.http("/").header("Accept", "a").header("Vary", "c").ignore();
-		ingress.http("/").header("Accept", () => true).ignore();
-		ingress.http("/").header("Accept", () => true).ignore();
+		ingress.http("/").responseHeader("Accept", "a").ignore();
+		ingress.http("/").responseHeader("Accept", "b").ignore();
+		ingress.http("/").responseHeader("Accept", "a").responseHeader("Vary", "c").ignore();
+		ingress.http("/").responseHeader("Accept", () => true).ignore();
+		ingress.http("/").responseHeader("Accept", () => true).ignore();
+		ingress.http("/").requestHeader("Accept", "a").ignore();
+		ingress.http("/").requestHeader("Accept", "a").responseHeader("Accept", "a").ignore();
 	`)
 	assert.NoError(t, err)
 }

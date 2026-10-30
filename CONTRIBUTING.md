@@ -224,15 +224,19 @@ object type occurs. Missing optional values arrive as `undefined`; returning
 `undefined` removes them.
 
 `ingress.http(select)` starts a rule for requests matching a ServeMux pattern, such
-as `GET /v2/forecast` or `/` for every request, or that a function accepts.
-`.status(...)` narrows it to responses with the given codes, or whose status a
-function accepts. `.header(name, ...)` narrows it to responses whose header, with
-its values joined by `, `, equals a string, or that a function accepts; the
-function receives `undefined` for a missing header. A rule may name several
-headers, and a response must satisfy all of them. Rules apply in declaration
-order, and the first that selects a response decides how it is compared. Each side
-selects a rule by its own status and headers, and responses no rule selects are
-decoded by their content type.
+as `GET /v2/forecast` or `/` for every request, or that a function accepts. The
+function receives the method, path, and headers by lower-case name.
+`.requestHeader(name, ...)` narrows it to requests whose header, with its values
+joined by `, `, equals a string, or that a function accepts; the function receives
+`undefined` for a missing header. `.status(...)` narrows it to responses with the
+given codes, or whose status a function accepts, and `.responseHeader(name, ...)`
+to responses by a header as `.requestHeader` does. A rule may name several
+headers, and must match all of them. Rules apply in declaration order, and the
+first that selects a response decides how it is compared. Both sides share the
+request, but each selects a rule by its own status and headers, and responses no
+rule selects are decoded by their content type. A rule with only a pattern and
+request header values that ignores a request skips it before either response
+arrives.
 
 `.match<T>(normalise?)` decodes the body as `T` and compares the responses after the
 normaliser, which returns a new `{ status, body }`; members it leaves out are not

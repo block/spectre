@@ -111,11 +111,11 @@ func (d *Decoder) Request(request Request) (protocol.Message, error) {
 
 // Responses decides how ingress compares the responses to one request.
 func (d *Decoder) Responses(method, path, rawQuery string, header http.Header) ResponsePlan {
-	request := javascript.Request{Method: method, Path: path}
+	request := javascript.Request{Method: method, Path: path, Header: header.Clone()}
 	if excludedRequestPath(path) {
 		return ignoredResponsePlan(d, request, "gRPC namespace is excluded from response comparison")
 	}
-	rules, ignored := d.routes.Responses(method, path)
+	rules, ignored := d.routes.Responses(method, path, header)
 	if reason, ok := ignored.Get(); ok {
 		return ignoredResponsePlan(d, request, reason)
 	}

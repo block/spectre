@@ -298,7 +298,7 @@ func (i *Ingress) mirrors(request *http.Request) bool {
 	if listed {
 		return owner.migrated
 	}
-	if _, ignored := i.routes.Responses(request.Method, path); ignored.Ok() || strings.HasPrefix(path, "/grpc.reflection.") {
+	if _, ignored := i.routes.Responses(request.Method, path, request.Header); ignored.Ok() || strings.HasPrefix(path, "/grpc.reflection.") {
 		return false
 	}
 	i.candidates.Quarantine(request.Context(), i.reason(model.QuarantineUnlisted, request,

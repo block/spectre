@@ -123,15 +123,19 @@ func selects(rule javascript.Rule, request javascript.Request, response javascri
 			return false, errors.WithStack(err)
 		}
 	}
+	requestHeader := func(evaluator *javascript.Evaluator, name string, value Option[string]) (bool, error) {
+		return errors.WithStack2(evaluator.SelectsRequestHeader(rule, name, value))
+	}
+	if selected, err := selectsHeaders(rule, rule.RequestHeaders(), request.HeaderValue, requestHeader, script); err != nil || !selected {
+		return false, err
+	}
 	if selected, err := selectsStatus(rule, response.Status, script); err != nil || !selected {
 		return false, err
 	}
-	for _, header := range rule.Headers() {
-		if selected, err := selectsHeader(rule, header, response, script); err != nil || !selected {
-			return false, err
-		}
+	responseHeader := func(evaluator *javascript.Evaluator, name string, value Option[string]) (bool, error) {
+		return errors.WithStack2(evaluator.SelectsResponseHeader(rule, name, value))
 	}
-	return true, nil
+	return selectsHeaders(rule, rule.ResponseHeaders(), response.HeaderValue, responseHeader, script)
 }
 
 func selectsStatus(rule javascript.Rule, status int, script func() (*javascript.Evaluator, error)) (bool, error) {
@@ -150,19 +154,34 @@ func selectsStatus(rule javascript.Rule, status int, script func() (*javascript.
 	return false, errors.Errorf("rule %s has an unknown status selector", rule)
 }
 
-func selectsHeader(rule javascript.Rule, header javascript.HeaderSelector, response javascript.Response, script func() (*javascript.Evaluator, error)) (bool, error) {
-	switch selector := header.(type) {
-	case javascript.HeaderValue:
-		value, present := response.HeaderValue(selector.Name).Get()
-		return present && value == selector.Value, nil
-	case javascript.HeaderScript:
-		evaluator, err := script()
-		if err != nil {
-			return false, err
+// selectsHeaders reports whether a message satisfies every header selector.
+// lookup reads the message's joined header values, and evaluate runs a function.
+func selectsHeaders(
+	rule javascript.Rule,
+	headers []javascript.HeaderSelector,
+	lookup func(name string) Option[string],
+	evaluate func(evaluator *javascript.Evaluator, name string, value Option[string]) (bool, error),
+	script func() (*javascript.Evaluator, error),
+) (bool, error) {
+	for _, header := range headers {
+		switch selector := header.(type) {
+		case javascript.HeaderValue:
+			if !selector.Selects(lookup(selector.Name)) {
+				return false, nil
+			}
+		case javascript.HeaderScript:
+			evaluator, err := script()
+			if err != nil {
+				return false, err
+			}
+			if selected, err := evaluate(evaluator, selector.Name, lookup(selector.Name)); err != nil || !selected {
+				return false, err
+			}
+		default:
+			return false, errors.Errorf("rule %s has an unknown header selector", rule)
 		}
-		return errors.WithStack2(evaluator.SelectsHeader(rule, selector.Name, response.HeaderValue(selector.Name)))
 	}
-	return false, errors.Errorf("rule %s has an unknown header selector", rule)
+	return true, nil
 }
 
 // NormaliseResponse applies a rule's normaliser to one response. A None status
