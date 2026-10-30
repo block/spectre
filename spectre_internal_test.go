@@ -74,6 +74,38 @@ func TestWithTemplateRepoSetsDefault(t *testing.T) {
 	assert.Equal(t, "[staging][production]", string(content))
 }
 
+func TestWithServerURLSetsDefault(t *testing.T) {
+	tests := []struct {
+		name     string
+		args     []string
+		expected string
+	}{
+		{name: "Default", args: []string{"divergences"}, expected: "http://default.example"},
+		{name: "Flag", args: []string{"divergences", "--server-url=http://flag.example"}, expected: "http://flag.example"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			command := &cli.CommandLine{}
+			parser, err := newParser(command, WithServerURL("http://default.example"))
+			assert.NoError(t, err)
+
+			_, err = parser.Parse(test.args)
+			assert.NoError(t, err)
+
+			assert.Equal(t, test.expected, command.Divergences.List.Client.URL)
+		})
+	}
+}
+
+func TestServerURLRequiredWithoutDefault(t *testing.T) {
+	parser, err := newParser(&cli.CommandLine{})
+	assert.NoError(t, err)
+
+	_, err = parser.Parse([]string{"divergences"})
+
+	assert.EqualError(t, err, "divergences list: no SPECTRE server URL; pass --server-url, or build spectre with spectre.WithServerURL")
+}
+
 // pushCommand's default needs both a variable from WithKongOptions and the
 // built-in version variable.
 type pushCommand struct {
