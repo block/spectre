@@ -24,7 +24,16 @@ const (
 
 // Config locates the SPECTRE server.
 type Config struct {
-	URL string `name:"server-url" required:"" placeholder:"URL" help:"Base URL of the SPECTRE server."`
+	URL string `name:"server-url" default:"${server_url}" placeholder:"URL" help:"Base URL of the SPECTRE server."`
+}
+
+// Validate checks that a server URL is set. Kong cannot require the flag,
+// because its default, even when empty, counts as set.
+func (c Config) Validate() error {
+	if c.URL == "" {
+		return errors.New("no SPECTRE server URL; pass --server-url, or build spectre with spectre.WithServerURL")
+	}
+	return nil
 }
 
 // Client calls the SPECTRE server.

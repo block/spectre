@@ -86,7 +86,8 @@ func NewConfig() Config {
 			Revision:    placeholder,
 		},
 	}
-	if err := kong.ApplyDefaults(&config); err != nil {
+	// The server URL's default interpolates a variable that only spectre.Main sets.
+	if err := kong.ApplyDefaults(&config, kong.Vars{"server_url": ""}); err != nil {
 		panic(errors.Wrap(err, "apply supervisor defaults"))
 	}
 	config.Candidate = ""

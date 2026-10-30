@@ -50,6 +50,14 @@ func WithTemplateRepo(source string) Option {
 	}
 }
 
+// WithServerURL sets the default base URL of the SPECTRE server that commands
+// such as spectre divergences and spectre supervise call.
+func WithServerURL(url string) Option {
+	return func(registered *extensions) {
+		registered.kongOptions = append(registered.kongOptions, kong.Vars{"server_url": url})
+	}
+}
+
 // WithKongOptions passes options to the parser after the built-in ones, so
 // kong.Vars adds to the built-in variables, such as version.
 func WithKongOptions(options ...kong.Option) Option {
@@ -98,7 +106,7 @@ func newParser(command *cli.CommandLine, options ...Option) (*kong.Kong, error) 
 		return nil, errors.Wrap(err, "collect supported IO")
 	}
 	kongOptions := append([]kong.Option{
-		kong.Vars{"version": internal.Version, "template_repo": ""},
+		kong.Vars{"version": internal.Version, "template_repo": "", "server_url": ""},
 		kong.Configuration(kongtoml.Loader),
 		kong.DefaultEnvars("SPECTRE"),
 		kong.Bind(catalog),
