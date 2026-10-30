@@ -1,0 +1,95 @@
+#!/bin/sh
+
+# Publishes, promotes, and deletes a release's container images in every
+# registry. Publishing pushes only the exact version; promoting moves the
+# mutable aliases once the whole release exists, so deleting a failed release
+# never leaves an alias pointing at it.
+
+set -eu
+
+usage='usage: container-images publish|promote|delete VERSION'
+action=${1:?$usage}
+version=${2:?$usage}
+release=${version#v}
+
+publish() {
+  bit publish-container \
+    "version=$version" \
+    "registry=$1" \
+    "image-tag=$release"
+}
+
+promote() {
+  image="$1/spectre"
+  case "$release" in
+    *-*) return ;;
+  esac
+
+  major=${release%%.*}
+  minor_patch=${release#*.}
+  minor=${minor_patch%%.*}
+  for tag in "$major.$minor" "$major" latest; do
+    docker buildx imagetools create \
+      --tag "$image:$tag" \
+      "$image:$release"
+  done
+}
+
+delete() {
+  registry=$1
+  image="$registry/spectre:$release"
+  if ! index=$(docker buildx imagetools inspect --raw "$image" 2>/dev/null); then
+    printf '%s does not exist; nothing to delete\n' "$image"
+    return
+  fi
+
+  # The index comes first so no tag references a manifest when it is deleted.
+  # Each release embeds its version, so no other release shares these manifests.
+  digests="$(docker buildx imagetools inspect --format '{{json .Manifest}}' "$image" | jq -r .digest)
+$(printf '%s' "$index" | jq -r '.manifests[].digest')"
+  case "$registry" in
+    ghcr.io/*) delete_ghcr "${registry#ghcr.io/}" "$digests" ;;
+    docker.io/*) delete_docker_hub "${registry#docker.io/}" "$digests" ;;
+    *)
+      printf 'cannot delete images from %s\n' "$registry" >&2
+      exit 1
+      ;;
+  esac
+}
+
+# GHCR stores each manifest as a package version and deletes them by version ID.
+delete_ghcr() {
+  versions_url="/orgs/$1/packages/container/spectre/versions"
+  versions=$(gh api --paginate "$versions_url?per_page=100" --jq '.[] | "\(.id) \(.name)"')
+  for digest in $2; do
+    id=$(printf '%s\n' "$versions" | awk -v digest="$digest" '$2 == digest { print $1 }')
+    if [ -n "$id" ]; then
+      gh api --method DELETE "$versions_url/$id" >/dev/null
+    fi
+  done
+}
+
+delete_docker_hub() {
+  repository="$1/spectre"
+  token=$(curl -fsS \
+    -u "${DOCKER_HUB_USERNAME:?}:${DOCKER_HUB_TOKEN:?}" \
+    "https://auth.docker.io/token?service=registry.docker.io&scope=repository:$repository:pull,push,delete" |
+    jq -r .token)
+  for digest in $2; do
+    curl -fsS -X DELETE \
+      -H "Authorization: Bearer $token" \
+      "https://registry-1.docker.io/v2/$repository/manifests/$digest"
+  done
+}
+
+case "$action" in
+  publish | promote | delete) ;;
+  *)
+    printf '%s\n' "$usage" >&2
+    exit 2
+    ;;
+esac
+
+for registry in ghcr.io/block docker.io/blockossreleases; do
+  "$action" "$registry"
+done
