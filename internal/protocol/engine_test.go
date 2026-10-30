@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -17,11 +18,14 @@ import (
 	"github.com/alecthomas/errors"
 	. "github.com/alecthomas/types/optional"
 
+	"github.com/block/spectre/internal/comparison/javascript"
 	"github.com/block/spectre/internal/logger"
 	"github.com/block/spectre/internal/model"
 	"github.com/block/spectre/internal/protocol"
 )
 
+// fake and other are protocols no script declares, so the engine pipelines are
+// tested apart from HTTP.
 const (
 	fake  = model.Protocol("fake")
 	other = model.Protocol("other")
@@ -34,69 +38,61 @@ declare module "test.v1" {
 }
 `
 
-// untyped declares endpoints for protocols the TypeScript API does not list.
-const untyped = `
+const fakeScript = `
 import * as spectre from "spectre";
 import type * as v1 from "test.v1";
-const { ingress, egress } = spectre as unknown as Record<string, { match: (...args: unknown[]) => void; ignore: (...args: unknown[]) => void }>;
-`
-
-const fakeScript = untyped + `
-ingress.match("test.v1.Response", "fake", "compared");
-ingress.ignore("fake", "ignored");
-egress.match("test.v1.Query", "fake", "query");
+spectre.ingress.http("GET /compared").match<v1.Response>();
+spectre.ingress.http("GET /ignored").ignore();
+spectre.ingress.http("GET /normalised").match<v1.Response>(({ status, body }) => ({ status: status === 201 ? 200 : status, body }));
+spectre.ingress.http("GET /bodyonly").match<v1.Response>(({ body }) => ({ body }));
+spectre.egress.http("GET fake.example/query").match<v1.Query>();
 spectre.field<v1.Response, "trace">(() => undefined);
 spectre.field<v1.Query, "trace">(() => undefined);
 `
 
 func TestNewEngineDeclaresEndpointsToTheirMatchers(t *testing.T) {
-	fakeMatcher, otherMatcher := &recordingMatcher{}, &recordingMatcher{}
-	config := newConfig(t, fakeScript+`ingress.match("test.v1.Response", "other", "elsewhere");`, time.Second)
+	fakeMatcher, httpMatcher := &recordingMatcher{}, &recordingMatcher{}
+	config := newConfig(t, fakeScript, time.Second)
 
 	//nolint:exhaustive // the engine is tested with fake protocols, not real ones
-	_, err := protocol.NewEngine(t.Context(), config, map[model.Protocol]protocol.Matcher{fake: fakeMatcher, other: otherMatcher},
-		&recordingQuarantiner{})
+	_, err := protocol.NewEngine(t.Context(), config,
+		map[model.Protocol]protocol.Matcher{fake: fakeMatcher, model.ProtocolHTTP: httpMatcher}, &recordingQuarantiner{})
 
 	assert.NoError(t, err)
-	assert.Equal(t, []declared{
-		{Pattern: "compared", Declaration: protocol.DeclarationResponse{Type: "test.v1.Response"}},
-		{Pattern: "ignored", Declaration: protocol.DeclarationIgnore{Reason: `endpoint "ignored" is ignored`}},
-		{Pattern: "query", Declaration: protocol.DeclarationRequest{Type: "test.v1.Query"}},
-	}, fakeMatcher.declared)
-	assert.Equal(t, []declared{
-		{Pattern: "elsewhere", Declaration: protocol.DeclarationResponse{Type: "test.v1.Response"}},
-	}, otherMatcher.declared)
+	assert.Equal(t, []string{
+		`egress endpoint "GET fake.example/query"`,
+		`ingress rule http("GET /compared")`,
+		`ingress rule http("GET /ignored")`,
+		`ingress rule http("GET /normalised")`,
+		`ingress rule http("GET /bodyonly")`,
+	}, httpMatcher.declared)
+	assert.Equal(t, []string(nil), fakeMatcher.declared)
 }
 
 func TestNewEngineRejectsInvalidSetup(t *testing.T) {
 	for name, test := range map[string]struct {
-		script     string
-		matcher    *recordingMatcher
+		matchers   map[model.Protocol]protocol.Matcher
 		quarantine protocol.Quarantiner
 		expected   string
 	}{
 		"UnregisteredProtocol": {
-			script:     fakeScript + `ingress.match("test.v1.Response", "other", "elsewhere");`,
-			matcher:    &recordingMatcher{},
+			//nolint:exhaustive // the engine is tested with fake protocols, not real ones
+			matchers:   map[model.Protocol]protocol.Matcher{fake: &recordingMatcher{}},
 			quarantine: &recordingQuarantiner{},
-			expected:   `endpoint "elsewhere" names unregistered protocol "other"`,
+			expected:   `egress endpoint "GET fake.example/query" names unregistered protocol "http"`,
 		},
 		"MatcherRejectsPattern": {
-			script:     fakeScript,
-			matcher:    &recordingMatcher{err: Some(errors.New("bad pattern"))},
+			matchers:   map[model.Protocol]protocol.Matcher{model.ProtocolHTTP: &recordingMatcher{err: Some(errors.New("bad pattern"))}},
 			quarantine: &recordingQuarantiner{},
-			expected:   `declare ingress endpoint "compared": bad pattern`,
+			expected:   `declare egress endpoint "GET fake.example/query": bad pattern`,
 		},
 		"NoQuarantiner": {
-			script:   fakeScript,
-			matcher:  &recordingMatcher{},
+			matchers: map[model.Protocol]protocol.Matcher{model.ProtocolHTTP: &recordingMatcher{}},
 			expected: "quarantiner is required",
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, err := protocol.NewEngine(t.Context(), newConfig(t, test.script, time.Second),
-				//nolint:exhaustive // the engine is tested with fake protocols, not real ones
-				map[model.Protocol]protocol.Matcher{fake: test.matcher}, test.quarantine)
+			_, err := protocol.NewEngine(t.Context(), newConfig(t, fakeScript, time.Second), test.matchers, test.quarantine)
 			assert.EqualError(t, err, test.expected)
 		})
 	}
@@ -109,18 +105,21 @@ type harness struct {
 	engine     *protocol.Engine
 	quarantine *recordingQuarantiner
 	logs       *lockedBuffer
+	// rules are the fake script's ingress rules in declaration order.
+	rules []javascript.Rule
 }
 
 func newHarness(t *testing.T, window time.Duration) *harness {
 	t.Helper()
 	logs := &lockedBuffer{}
 	quarantine := &recordingQuarantiner{}
+	rules := &recordingMatcher{}
 	ctx := logger.WithLogger(t.Context(), slog.New(slog.NewJSONHandler(logs, &slog.HandlerOptions{Level: slog.LevelInfo})))
 	engine, err := protocol.NewEngine(ctx, newConfig(t, fakeScript, window),
 		//nolint:exhaustive // the engine is tested with fake protocols, not real ones
-		map[model.Protocol]protocol.Matcher{fake: &recordingMatcher{}}, quarantine)
+		map[model.Protocol]protocol.Matcher{fake: &recordingMatcher{}, model.ProtocolHTTP: rules}, quarantine)
 	assert.NoError(t, err)
-	return &harness{ctx: ctx, engine: engine, quarantine: quarantine, logs: logs}
+	return &harness{ctx: ctx, engine: engine, quarantine: quarantine, logs: logs, rules: rules.rules}
 }
 
 // records returns every log record with msg, without its timestamp.
@@ -151,18 +150,20 @@ func newConfig(t *testing.T, script string, window time.Duration) protocol.Confi
 	return config
 }
 
-type declared struct {
-	Pattern     string
-	Declaration protocol.Declaration
-}
-
 type recordingMatcher struct {
-	declared []declared
+	declared []string
+	rules    []javascript.Rule
 	err      Option[error]
 }
 
-func (m *recordingMatcher) Declare(pattern string, declaration protocol.Declaration) error {
-	m.declared = append(m.declared, declared{Pattern: pattern, Declaration: declaration})
+func (m *recordingMatcher) Declare(declaration protocol.Declaration) error {
+	switch declared := declaration.(type) {
+	case protocol.DeclarationRequest:
+		m.declared = append(m.declared, fmt.Sprintf("egress endpoint %q", declared.Pattern))
+	case protocol.DeclarationRule:
+		m.declared = append(m.declared, "ingress rule "+declared.Rule.String())
+		m.rules = append(m.rules, declared.Rule)
+	}
 	if err, failed := m.err.Get(); failed {
 		return err
 	}

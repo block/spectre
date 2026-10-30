@@ -19,10 +19,10 @@ import (
 var errAborted = errors.New("response was aborted")
 
 // decodeFunc returns the comparable content of a recorded response.
-type decodeFunc func(recorded *recording) protocol.Content
+type decodeFunc func(ctx context.Context, recorded *recording) protocol.Content
 
 // noDecode decodes responses that are only replayed or ignored, never compared.
-func noDecode(*recording) protocol.Content {
+func noDecode(context.Context, *recording) protocol.Content {
 	return protocol.Content{Failure: Some(errors.New("response is not compared"))}
 }
 
@@ -117,7 +117,7 @@ func (p *point) report(ctx context.Context, exchange protocol.Exchange, recorded
 	p.acceptor.ProcessResponse(ctx, exchange, protocol.Response{
 		Raw:     recorded,
 		Latency: recorded.latency(),
-		Decode:  func() protocol.Content { return decode(recorded) },
+		Decode:  func(ctx context.Context) protocol.Content { return decode(ctx, recorded) },
 	})
 }
 

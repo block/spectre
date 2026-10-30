@@ -225,7 +225,7 @@ func TestPairsRequestsByDeclaredEndpointPattern(t *testing.T) {
 		_, _ = io.WriteString(writer, "forecast for "+path.Base(request.URL.Path))
 	})
 	harness := newHarness(t, upstream)
-	harness.declareEndpoints(t, `spectre.egress.match<GetForecastRequest>("http", "`+pattern+`");`)
+	harness.declareEndpoints(t, `spectre.egress.http("`+pattern+`").match<GetForecastRequest>();`)
 	harness.Start(t)
 
 	for _, location := range []string{"london", "paris"} {
@@ -334,7 +334,7 @@ func TestEgressRejectsUndecodableEndpoints(t *testing.T) {
 		message      string
 	}{
 		"UnknownWildcardField": {
-			declarations: `spectre.egress.match<GetForecastRequest>("http", "GET weather.example/v1/{place}");`,
+			declarations: `spectre.egress.http("GET weather.example/v1/{place}").match<GetForecastRequest>();`,
 			message:      `bind endpoint "GET weather.example/v1/{place}" wildcard "place"`,
 		},
 		"DescriptorsDisagreeWithSchema": {
@@ -533,7 +533,7 @@ func newEgressEngineConfig(t *testing.T) protocol.Config {
 	assert.NoError(t, os.WriteFile(filepath.Join(scripts, "egress.ts"), []byte(`
 import * as spectre from "spectre";
 import type { GetForecastRequest } from "spectre.sample.v1";
-spectre.egress.match<GetForecastRequest>("http", "POST weather.example/spectre.sample.v1.WeatherService/GetForecast");
+spectre.egress.http("POST weather.example/spectre.sample.v1.WeatherService/GetForecast").match<GetForecastRequest>();
 `), 0o600))
 	config := protocol.NewConfig()
 	config.Comparison.ScriptsDir = scripts

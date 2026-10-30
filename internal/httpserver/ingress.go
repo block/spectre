@@ -298,7 +298,7 @@ func (i *Ingress) mirrors(request *http.Request) bool {
 	if listed {
 		return owner.migrated
 	}
-	if _, ignored, matched := i.routes.Response(request.Method, path); (matched && ignored.Ok()) || strings.HasPrefix(path, "/grpc.reflection.") {
+	if _, ignored := i.routes.Responses(request.Method, path); ignored.Ok() || strings.HasPrefix(path, "/grpc.reflection.") {
 		return false
 	}
 	i.candidates.Quarantine(request.Context(), i.reason(model.QuarantineUnlisted, request,
@@ -328,12 +328,12 @@ func (i *Ingress) classify(request *http.Request) (ignored Option[string], decod
 		return Some("comparison schema is not ready"), noDecode
 	}
 	plan := decoder.Responses(request.Method, request.URL.EscapedPath(), request.URL.RawQuery, request.Header)
-	return plan.Ignored(), func(recorded *recording) protocol.Content {
+	return plan.Ignored(), func(ctx context.Context, recorded *recording) protocol.Content {
 		response, err := recorded.response()
 		if err != nil {
 			return protocol.Content{Failure: Some(err)}
 		}
-		return plan.Decode(response)
+		return plan.Decode(ctx, response)
 	}
 }
 
@@ -395,7 +395,7 @@ func (i *Ingress) configureSchema(ctx context.Context) {
 			return
 		}
 	}
-	decoder, err := message.New(i.engine.Schema(), set, i.routes, i.config.ComparisonMaxBodyBytes)
+	decoder, err := message.New(i.engine.Schema(), set, i.routes, i.engine, i.config.ComparisonMaxBodyBytes)
 	if err != nil {
 		logger.FromContext(ctx).ErrorContext(ctx, "Response comparison setup failed", "error", err)
 		return

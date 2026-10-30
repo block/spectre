@@ -2,6 +2,7 @@ package protocol
 
 import (
 	"context"
+	"strconv"
 	"sync"
 	"time"
 
@@ -9,6 +10,7 @@ import (
 	. "github.com/alecthomas/types/optional"
 
 	"github.com/block/spectre/internal/comparison"
+	"github.com/block/spectre/internal/comparison/javascript"
 	"github.com/block/spectre/internal/future"
 	"github.com/block/spectre/internal/logger"
 	"github.com/block/spectre/internal/model"
@@ -171,8 +173,8 @@ func (p *ingressPair) awaitReference(ctx context.Context) (ingressOutcome, error
 	return outcome, nil
 }
 
-// compareResponses classifies a finished pair without exposing response values. Known
-// statuses are compared first, so a status change is divergent even if a body fails to decode.
+// compareResponses classifies a finished pair without exposing response values. A
+// response that fails to decode has no normaliser, so its raw status is compared first.
 func compareResponses(ctx context.Context, scripts *comparison.Scripts, outcome ingressOutcome, candidate Response) comparisonResult {
 	if failure, failed := outcome.failure.Get(); failed {
 		return newComparisonResult(outcomeUnable, "reference: "+failure.Error())
@@ -181,10 +183,14 @@ func compareResponses(ctx context.Context, scripts *comparison.Scripts, outcome 
 	if !ok {
 		return newComparisonResult(outcomeUnable, "reference response is missing")
 	}
-	referenceContent, candidateContent := reference.Decode(), candidate.Decode()
+	referenceContent, candidateContent := reference.Decode(ctx), candidate.Decode(ctx)
+	if reason, ignored := referenceContent.Ignored.Get(); ignored && candidateContent.Ignored.Ok() {
+		return newComparisonResult(outcomeSkipped, reason)
+	}
 	referenceStatus, referenceKnown := referenceContent.Status.Get()
 	candidateStatus, candidateKnown := candidateContent.Status.Get()
-	if referenceKnown && candidateKnown && referenceStatus != candidateStatus {
+	decoded := !referenceContent.Failure.Ok() && !candidateContent.Failure.Ok()
+	if referenceKnown && candidateKnown && referenceStatus != candidateStatus && (!decoded || referenceContent.Ignored.Ok() || candidateContent.Ignored.Ok()) {
 		return newDifferenceResult("$status")
 	}
 	if failure, failed := referenceContent.Failure.Get(); failed {
@@ -193,10 +199,55 @@ func compareResponses(ctx context.Context, scripts *comparison.Scripts, outcome 
 	if failure, failed := candidateContent.Failure.Get(); failed {
 		return newComparisonResult(outcomeUnable, "candidate: "+failure.Error())
 	}
+	if referenceContent.Ignored.Ok() || candidateContent.Ignored.Ok() {
+		return newComparisonResult(outcomeUnable, "only one response is ignored")
+	}
 	if !referenceKnown || !candidateKnown {
 		return newComparisonResult(outcomeUnable, "response status is unknown")
 	}
+	referenceContent, err := normaliseResponse(ctx, scripts, referenceContent)
+	if err != nil {
+		return newComparisonResult(outcomeUnable, "reference: "+err.Error())
+	}
+	candidateContent, err = normaliseResponse(ctx, scripts, candidateContent)
+	if err != nil {
+		return newComparisonResult(outcomeUnable, "candidate: "+err.Error())
+	}
+	if referenceContent.Status != candidateContent.Status {
+		return newDifferenceResult("$status")
+	}
 	return compareMessages(ctx, scripts, referenceContent.Message, candidateContent.Message)
+}
+
+// normaliseResponse applies the normaliser of the rule that selected a response.
+// A None Status is then not compared.
+func normaliseResponse(ctx context.Context, scripts *comparison.Scripts, content Content) (Content, error) {
+	rule, ok := content.Rule.Get()
+	if !ok {
+		return content, nil
+	}
+	status, err := strconv.Atoi(content.Status.Default(""))
+	if err != nil {
+		return Content{}, errors.Errorf("rule %s needs an HTTP status", rule)
+	}
+	body := None[any]()
+	if message, present := content.Message.Get(); present {
+		body = Some(message.Value)
+	}
+	normalisedStatus, normalisedBody, err := scripts.NormaliseResponse(ctx, rule, status, body)
+	if err != nil {
+		return Content{}, errors.Wrapf(err, "normalise response with rule %s", rule)
+	}
+	content.Status = None[string]()
+	if code, present := normalisedStatus.Get(); present {
+		content.Status = Some(strconv.Itoa(code))
+	}
+	content.Message = None[Message]()
+	if value, present := normalisedBody.Get(); present {
+		match, _ := rule.Action().(javascript.ActionMatch)
+		content.Message = Some(Message{Type: match.Type, Value: value})
+	}
+	return content, nil
 }
 
 func compareMessages(ctx context.Context, scripts *comparison.Scripts, reference, candidate Option[Message]) comparisonResult {

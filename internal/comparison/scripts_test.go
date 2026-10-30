@@ -15,6 +15,7 @@ import (
 	. "github.com/alecthomas/types/optional"
 
 	"github.com/block/spectre/internal/comparison"
+	"github.com/block/spectre/internal/comparison/javascript"
 	"github.com/block/spectre/internal/logger"
 	"github.com/block/spectre/internal/schema"
 )
@@ -93,19 +94,15 @@ func TestRejectsInvalidScripts(t *testing.T) {
 			message: "compile comparison scripts",
 		},
 		"IngressHost": {
-			scripts: map[string]string{"weather.ts": module(`spectre.ingress.match<v1.Response>("http", "GET weather.example/v1/forecast");`)},
-			message: `must have the form "<METHOD> /<path>"`,
+			scripts: map[string]string{"weather.ts": module(`spectre.ingress.http("GET weather.example/v1/forecast").match<v1.Response>();`)},
+			message: `must have the form "[<METHOD> ]/<path>"`,
 		},
-		"IngressNoMethod": {
-			scripts: map[string]string{"weather.ts": module(`spectre.ingress.match<v1.Response>("http", "/v1/forecast");`)},
-			message: `must have the form "<METHOD> /<path>"`,
-		},
-		"DuplicateEndpointAcrossScripts": {
+		"DuplicateRuleAcrossScripts": {
 			scripts: map[string]string{
-				"a.ts": module(`spectre.ingress.match<v1.Response>("http", "GET /v1/forecast");`),
-				"b.ts": module(`spectre.ingress.match<v1.Response>("http", "GET /v1/forecast");`),
+				"a.ts": module(`spectre.ingress.http("GET /v1/forecast").match<v1.Response>();`),
+				"b.ts": module(`spectre.ingress.http("GET /v1/forecast").match<v1.Response>();`),
 			},
-			message: `duplicate endpoint "GET /v1/forecast"`,
+			message: `duplicate rule http("GET /v1/forecast")`,
 		},
 		"DuplicateTargetAcrossScripts": {
 			scripts: map[string]string{
@@ -132,18 +129,16 @@ func TestRejectsInvalidScripts(t *testing.T) {
 func TestRejectsEndpointsAbsentFromSchema(t *testing.T) {
 	for name, test := range map[string]struct {
 		typeName string
-		declare  string
 		pattern  string
 	}{
-		"Ingress":   {typeName: "test.v1.Missing", declare: "spectre.ingress.match", pattern: "GET /v1/forecast"},
-		"Operation": {typeName: "test.v1.Service.Get", declare: "spectre.ingress.match", pattern: "GET /v1/forecast"},
-		"NotAName":  {typeName: "not a name", declare: "spectre.ingress.match", pattern: "GET /v1/forecast"},
-		"Egress":    {typeName: "test.v1.Missing", declare: "spectre.egress.match", pattern: "GET weather.example/v1/forecast"},
+		"Missing":   {typeName: "test.v1.Missing", pattern: "GET weather.example/v1/forecast"},
+		"Operation": {typeName: "test.v1.Service.Get", pattern: "GET weather.example/v1/forecast"},
+		"NotAName":  {typeName: "not a name", pattern: "GET weather.example/v1/forecast"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			// The cast skips type checking, so the type reaches the schema check.
 			config := newConfig(t, map[string]string{
-				"weather.ts": module(`(` + test.declare + ` as any)("` + test.typeName + `", "http", "` + test.pattern + `");`),
+				"weather.ts": module(`(spectre.egress.http("` + test.pattern + `").match as any)("` + test.typeName + `");`),
 			})
 			_, err := comparison.New(t.Context(), config)
 			assert.Error(t, err)
@@ -153,17 +148,100 @@ func TestRejectsEndpointsAbsentFromSchema(t *testing.T) {
 	}
 }
 
+func TestRejectsRulesAbsentFromSchema(t *testing.T) {
+	// The cast skips type checking, so the type reaches the schema check.
+	config := newConfig(t, map[string]string{
+		"weather.ts": module(`(spectre.ingress.http("GET /v1/forecast").match as any)("test.v1.Missing");`),
+	})
+	_, err := comparison.New(t.Context(), config)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), `resolve rule http("GET /v1/forecast")`)
+	assert.Contains(t, err.Error(), `type "test.v1.Missing" is not declared`)
+}
+
+func TestSelectsTheFirstRuleThatSelectsAResponse(t *testing.T) {
+	scripts := newScripts(t, `
+		spectre.ingress.http("/").status(500).match<spectre.Text>();
+		spectre.ingress.http((request) => request.path.startsWith("/v2/")).status((status) => status >= 400).ignore();
+		spectre.ingress.http("GET /v1/forecast").match<v1.Response>();
+	`)
+	rules := scripts.Rules()
+	for name, test := range map[string]struct {
+		rules    []javascript.Rule
+		request  javascript.Request
+		status   int
+		expected Option[javascript.Rule]
+	}{
+		"Status":          {rules: rules, request: javascript.Request{Method: "GET", Path: "/v2/forecast"}, status: 500, expected: Some(rules[0])},
+		"Functions":       {rules: rules, request: javascript.Request{Method: "GET", Path: "/v2/forecast"}, status: 404, expected: Some(rules[1])},
+		"RequestRejected": {rules: rules, request: javascript.Request{Method: "GET", Path: "/v1/forecast"}, status: 404, expected: Some(rules[2])},
+		"StatusRejected":  {rules: rules[:2], request: javascript.Request{Method: "GET", Path: "/v2/forecast"}, status: 200, expected: None[javascript.Rule]()},
+		"NoRules":         {request: javascript.Request{Method: "GET", Path: "/"}, status: 200, expected: None[javascript.Rule]()},
+	} {
+		t.Run(name, func(t *testing.T) {
+			selected, err := scripts.SelectRule(t.Context(), test.rules, test.request, test.status)
+			assert.NoError(t, err)
+			assert.Equal(t, test.expected, selected)
+		})
+	}
+}
+
+func TestNormalisesResponsesWithRules(t *testing.T) {
+	scripts := newScripts(t, `
+		spectre.ingress.http("/typed").match<v1.Response>(({ status, body }) => ({ status: status === 201 ? 200 : status, body: body && { ...body, ignored: undefined } }));
+		spectre.ingress.http("/text").match<spectre.Text>(({ body }) => ({ body: body?.trim() }));
+		spectre.ingress.http("/plain").match<v1.Response>();
+		const unchecked = <T,>(normalise: unknown) => normalise as (response: spectre.Response<T>) => spectre.Response<T>;
+		spectre.ingress.http("/array").match<v1.Response>(unchecked(() => []));
+		spectre.ingress.http("/member").match<v1.Response>(unchecked(() => ({ headers: {} })));
+		spectre.ingress.http("/status").match<v1.Response>(unchecked(() => ({ status: 200.5 })));
+		spectre.ingress.http("/body").match<v1.Response>(unchecked(() => ({ body: { stable: 1 } })));
+		spectre.ingress.http("/textbody").match<spectre.Text>(unchecked<spectre.Text>(() => ({ body: 1 })));
+	`)
+	rules := scripts.Rules()
+	body := decode(t, `{"stable":"same","ignored":"first","roles":[],"users":[],"count":"0","labels":{}}`)
+	for name, test := range map[string]struct {
+		rule    javascript.Rule
+		body    Option[any]
+		status  Option[int]
+		result  Option[any]
+		message string
+	}{
+		"Typed":      {rule: rules[0], body: Some(body), status: Some(200), result: Some(decode(t, `{"stable":"same","roles":[],"users":[],"count":"0","labels":{}}`))},
+		"Text":       {rule: rules[1], body: Some[any](" page "), status: None[int](), result: Some[any]("page")},
+		"NoBody":     {rule: rules[1], body: None[any](), status: None[int](), result: None[any]()},
+		"Unchanged":  {rule: rules[2], body: Some(body), status: Some(201), result: Some(body)},
+		"NotObject":  {rule: rules[3], body: Some(body), message: "response normaliser must return an object"},
+		"Member":     {rule: rules[4], body: Some(body), message: `normalised response has an unknown member "headers"`},
+		"Status":     {rule: rules[5], body: Some(body), message: "normalised status must be an integer from 100 to 599"},
+		"WrongBody":  {rule: rules[6], body: Some(body), message: "validate normalised body"},
+		"TextNumber": {rule: rules[7], body: Some[any]("page"), message: "normalised Text body must be a string"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			status, result, err := scripts.NormaliseResponse(t.Context(), test.rule, 201, test.body)
+			if test.message != "" {
+				assert.Error(t, err)
+				assert.Contains(t, err.Error(), test.message)
+				return
+			}
+			assert.NoError(t, err)
+			assert.Equal(t, test.status, status)
+			assert.Equal(t, test.result, result)
+		})
+	}
+}
+
 func TestLoadsEveryScriptAsOneSet(t *testing.T) {
 	scripts := newScriptsFromFiles(t, map[string]string{
 		"users/user.ts": module(`
 			import {lower} from "../helpers/strings";
 			spectre.message<v1.User>((user) => user === undefined ? undefined : {name: lower(user.name)});
-			spectre.egress.match<v1.Query>("http", "GET weather.example/v1/forecast");
+			spectre.egress.http("GET weather.example/v1/forecast").match<v1.Query>();
 		`),
 		"weather.ts": module(`
 			import {lower} from "./helpers/strings";
-			spectre.ingress.match<v1.Response>("http", "GET /v1/forecast");
-			spectre.ingress.ignore("http", "GET /_status");
+			spectre.ingress.http("GET /v1/forecast").match<v1.Response>();
+			spectre.ingress.http("GET /_status").ignore();
 			spectre.field<v1.Response, "stable">((stable) => stable === undefined ? undefined : lower(stable));
 		`),
 		"helpers/strings.ts": `export const lower = (value: string) => value.toLowerCase();`,
@@ -171,14 +249,21 @@ func TestLoadsEveryScriptAsOneSet(t *testing.T) {
 	})
 	endpoints := []string{}
 	for _, endpoint := range scripts.Endpoints() {
-		endpoints = append(endpoints, fmt.Sprintf("%s %s %q %q %t",
-			endpoint.Direction(), endpoint.Protocol(), endpoint.Pattern(), endpoint.Type(), endpoint.Ignore()))
+		endpoints = append(endpoints, fmt.Sprintf("%s %s %q %q", endpoint.Direction(), endpoint.Protocol(), endpoint.Pattern(), endpoint.Type()))
 	}
-	assert.Equal(t, []string{
-		`ingress http "GET /v1/forecast" "test.v1.Response" false`,
-		`ingress http "GET /_status" "" true`,
-		`egress http "GET weather.example/v1/forecast" "test.v1.Query" false`,
-	}, endpoints)
+	assert.Equal(t, []string{`egress http "GET weather.example/v1/forecast" "test.v1.Query"`}, endpoints)
+	type rule struct {
+		declared string
+		action   javascript.Action
+	}
+	rules := []rule{}
+	for _, declared := range scripts.Rules() {
+		rules = append(rules, rule{declared.String(), declared.Action()})
+	}
+	assert.Equal(t, []rule{
+		{`http("GET /v1/forecast")`, javascript.ActionMatch{Type: Some[schema.TypeRef]("test.v1.Response")}},
+		{`http("GET /_status")`, javascript.ActionIgnore{}},
+	}, rules)
 
 	differences, err := scripts.Compare(t.Context(), Some[schema.TypeRef]("test.v1.Response"),
 		decode(t, `{"stable":"SAME","owner":{"name":"ALICE"}}`),

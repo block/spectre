@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/alecthomas/errors"
+	. "github.com/alecthomas/types/optional"
 	"go.jetify.com/typeid"
 
 	"github.com/block/spectre/internal/comparison"
@@ -16,6 +17,7 @@ import (
 // Engine owns the in-flight state that every Acceptor shares.
 type Engine struct {
 	schema  *schema.Schema
+	scripts *comparison.Scripts
 	ingress *ingressPairs
 	egress  *egressQueue
 }
@@ -39,30 +41,44 @@ func NewEngine(
 		return nil, errors.WithStack(err)
 	}
 	for _, endpoint := range scripts.Endpoints() {
-		matcher, registered := matchers[endpoint.Protocol()]
-		if !registered {
-			return nil, errors.Errorf("endpoint %q names unregistered protocol %q", endpoint.Pattern(), endpoint.Protocol())
+		if err := declare(matchers, endpoint.Protocol(), DeclarationRequest{Pattern: endpoint.Pattern(), Type: endpoint.Type()}); err != nil {
+			return nil, err
 		}
-		if err := matcher.Declare(endpoint.Pattern(), endpointDeclaration(endpoint)); err != nil {
-			return nil, errors.Wrapf(err, "declare %s endpoint %q", endpoint.Direction(), endpoint.Pattern())
+	}
+	for _, rule := range scripts.Rules() {
+		if err := declare(matchers, rule.Protocol(), DeclarationRule{Rule: rule}); err != nil {
+			return nil, err
 		}
 	}
 	return &Engine{
 		schema:  scripts.Schema(),
+		scripts: scripts,
 		ingress: newIngressPairs(scripts, quarantine),
 		egress:  newEgressQueue(scripts, config.MatchWindow, quarantine),
 	}, nil
 }
 
-func endpointDeclaration(endpoint javascript.Endpoint) Declaration {
-	switch {
-	case endpoint.Direction() == model.Egress:
-		return DeclarationRequest{Type: endpoint.Type()}
-	case endpoint.Ignore():
-		return DeclarationIgnore{Reason: fmt.Sprintf("endpoint %q is ignored", endpoint.Pattern())}
-	default:
-		return DeclarationResponse{Type: endpoint.Type()}
+func declare(matchers map[model.Protocol]Matcher, protocol model.Protocol, declaration Declaration) error {
+	matcher, registered := matchers[protocol]
+	if !registered {
+		return errors.Errorf("%s names unregistered protocol %q", describeDeclaration(declaration), protocol)
 	}
+	return errors.Wrapf(matcher.Declare(declaration), "declare %s", describeDeclaration(declaration))
+}
+
+func describeDeclaration(declaration Declaration) string {
+	switch declared := declaration.(type) {
+	case DeclarationRequest:
+		return fmt.Sprintf("egress endpoint %q", declared.Pattern)
+	case DeclarationRule:
+		return "ingress rule " + declared.Rule.String()
+	}
+	return fmt.Sprintf("declaration %T", declaration)
+}
+
+// SelectRule returns the first of rules that selects a response.
+func (e *Engine) SelectRule(ctx context.Context, rules []javascript.Rule, request javascript.Request, status int) (Option[javascript.Rule], error) {
+	return errors.WithStack2(e.scripts.SelectRule(ctx, rules, request, status))
 }
 
 // Schema returns the types that servers decode messages as.

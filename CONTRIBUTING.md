@@ -99,7 +99,7 @@ A `HOST` may be a glob, such as `--destination="*.example=http://127.0.0.1:50053
 where `*` also matches dots. A host takes the first destination, in pattern order,
 that matches it.
 
-Scripts declare dependency endpoints with `egress.match<Type>("http", pattern)`.
+Scripts declare dependency endpoints with `egress.http(pattern).match<Type>()`.
 Types come from `--schema-dir`; descriptors are only needed for protobuf traffic. A candidate call waits up to `--match-window` for an
 equivalent reference call and receives its recorded response. A candidate call
 without a match gets a `502` and stops all later candidate calls until the process
@@ -210,7 +210,7 @@ schema with the TypeScript 7 checker, and any error stops it.
 import { field, ingress } from "spectre";
 import type { GetForecastV2Response } from "weather";
 
-ingress.match<GetForecastV2Response>("http", "GET /v2/forecast");
+ingress.http("GET /v2/forecast").match<GetForecastV2Response>();
 field<GetForecastV2Response, "alerts">((alerts) =>
   alerts?.sort((a, b) => (a.id ?? "").localeCompare(b.id ?? "")),
 );
@@ -223,14 +223,25 @@ with `[]`, such as `users[].name`. `message<T>(callback)` applies wherever that
 object type occurs. Missing optional values arrive as `undefined`; returning
 `undefined` removes them.
 
-`ingress.ignore("http", pattern)` skips comparison for matching requests, so they
-are never quarantined. Use it for health and status endpoints, whose non-JSON error
-during an unready upstream would otherwise fail decoding and quarantine the candidate:
+`ingress.http(select)` starts a rule for requests matching a ServeMux pattern, such
+as `GET /v2/forecast` or `/` for every request, or that a function accepts.
+`.status(...)` narrows it to responses with the given codes, or whose status a
+function accepts. Rules apply in declaration order, and the first that selects a
+response decides how it is compared. Each side selects a rule by its own status,
+and responses no rule selects are decoded by their content type.
+
+`.match<T>(normalise?)` decodes the body as `T` and compares the responses after the
+normaliser, which returns a new `{ status, body }`; members it leaves out are not
+compared. `T` may be `Text` to compare the body as exact text. `.ignore()` skips
+comparison, so the responses never quarantine the candidate:
 
 ```ts
-import { ingress } from "spectre";
+import { ingress, type Text } from "spectre";
 
-ingress.ignore("http", "GET /_status");
+ingress.http("GET /_status").ignore();
+// Compare only the status of server errors, whose bodies differ between stacks.
+ingress.http("/").status((status) => status >= 500).match<Text>(({ status }) => ({ status }));
+ingress.http("GET /v2/forecast").match<GetForecastV2Response>();
 ```
 
 `--state-file` passes the migration state described in

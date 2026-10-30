@@ -3,16 +3,19 @@ package message
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"encoding/json"
 	"io"
 	"mime"
 	"net/http"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/alecthomas/errors"
 	. "github.com/alecthomas/types/optional"
 
+	"github.com/block/spectre/internal/comparison/javascript"
 	"github.com/block/spectre/internal/protocol"
 	"github.com/block/spectre/internal/schema"
 )
@@ -59,43 +62,108 @@ type Response struct {
 	Body []byte
 }
 
-// ResponsePlan decodes the responses to one ingress request. A plan that failed
-// to resolve reports the same error for every response, but still compares HTTP status.
+// ResponsePlan decodes the responses to one ingress request. Its rules select
+// each response's decoding when it arrives; a response none selects uses unruled.
 type ResponsePlan struct {
-	decoder       *Decoder
-	root          *schema.Type
-	selected      wire
-	requestMethod string
-	failure       Option[error]
-	ignored       Option[string]
+	decoder *Decoder
+	request javascript.Request
+	rules   []javascript.Rule
+	// requested is the request's wire, if its content type names one.
+	requested wire
+	unruled   decoding
 }
 
-func newResponsePlan(decoder *Decoder, root *schema.Type, selected wire, requestMethod string) ResponsePlan {
-	return ResponsePlan{decoder: decoder, root: root, selected: selected, requestMethod: requestMethod}
+func newResponsePlan(decoder *Decoder, request javascript.Request, rules []javascript.Rule, requested wire, unruled decoding) ResponsePlan {
+	return ResponsePlan{decoder: decoder, request: request, rules: rules, requested: requested, unruled: unruled}
 }
 
-func failedPlan(err error) ResponsePlan {
-	return ResponsePlan{failure: Some(err)}
+func ignoredResponsePlan(decoder *Decoder, request javascript.Request, reason string) ResponsePlan {
+	return ResponsePlan{decoder: decoder, request: request, unruled: ignoredDecoding(reason)}
 }
 
-func ignoredPlan(reason string) ResponsePlan {
-	return ResponsePlan{failure: Some(errors.New("response is not compared")), ignored: Some(reason)}
-}
-
-// Ignored returns why the responses are never compared, if they are not.
+// Ignored returns why the responses are never compared, if that is known before any arrives.
 func (p ResponsePlan) Ignored() Option[string] {
-	return p.ignored
+	if len(p.rules) > 0 {
+		return None[string]()
+	}
+	return p.unruled.skipped()
 }
 
 // Decode returns a response's comparable content. A response with no message
 // compares by status alone.
-func (p ResponsePlan) Decode(response Response) protocol.Content {
-	if p.selected == wireGRPC {
-		return p.decodeGRPC(response)
+func (p ResponsePlan) Decode(ctx context.Context, response Response) protocol.Content {
+	if len(p.rules) == 0 {
+		return p.unruled.decode(response)
 	}
+	selected, err := p.decoder.selectRule(ctx, p.rules, p.request, response.StatusCode)
 	status := Some(strconv.Itoa(response.StatusCode))
+	if err != nil {
+		return protocol.Content{Status: status, Failure: Some(errors.Wrap(err, "select rule"))}
+	}
+	rule, ok := selected.Get()
+	if !ok {
+		return p.unruled.decode(response)
+	}
+	switch action := rule.Action().(type) {
+	case javascript.ActionIgnore:
+		return protocol.Content{Status: status, Ignored: Some("rule " + rule.String() + " ignores the response")}
+	case javascript.ActionMatch:
+		content := p.decoder.matched(action, p.requested, p.request.Method).decode(response)
+		content.Rule = Some(rule)
+		return content
+	}
+	return protocol.Content{Status: status, Failure: Some(errors.Errorf("rule %s has an unknown action", rule))}
+}
+
+// decoding decodes responses one way. One that failed to resolve reports the
+// same error for every response, but still compares HTTP status.
+type decoding struct {
+	decoder       *Decoder
+	root          *schema.Type
+	selected      wire
+	requestMethod string
+	// text decodes bodies as strings instead of as root.
+	text    bool
+	failure Option[error]
+	ignored Option[string]
+}
+
+func newDecoding(decoder *Decoder, root *schema.Type, selected wire, requestMethod string) decoding {
+	return decoding{decoder: decoder, root: root, selected: selected, requestMethod: requestMethod}
+}
+
+func textDecoding(decoder *Decoder, requestMethod string) decoding {
+	return decoding{decoder: decoder, requestMethod: requestMethod, text: true}
+}
+
+func failedDecoding(err error) decoding {
+	return decoding{failure: Some(err)}
+}
+
+func ignoredDecoding(reason string) decoding {
+	return decoding{ignored: Some(reason)}
+}
+
+// skipped returns why the decoding never compares responses, if it does not.
+func (p decoding) skipped() Option[string] {
+	return p.ignored
+}
+
+// decode returns a response's comparable content.
+func (p decoding) decode(response Response) protocol.Content {
+	status := Some(strconv.Itoa(response.StatusCode))
+	if reason, ignored := p.ignored.Get(); ignored {
+		return protocol.Content{Status: status, Ignored: Some(reason)}
+	}
 	if failure, failed := p.failure.Get(); failed {
 		return protocol.Content{Status: status, Failure: Some(failure)}
+	}
+	if p.text {
+		message, err := p.decodeText(response)
+		return newContent(status, message, err)
+	}
+	if p.selected == wireGRPC {
+		return p.decodeGRPC(response)
 	}
 	var message Option[protocol.Message]
 	var err error
@@ -114,6 +182,24 @@ func (p ResponsePlan) Decode(response Response) protocol.Content {
 	return newContent(status, message, err)
 }
 
+// decodeText compares the body as exact text, except for empty HEAD, 204, and
+// 304 responses, which have no message.
+func (p decoding) decodeText(response Response) (Option[protocol.Message], error) {
+	bodyless := p.requestMethod == http.MethodHead || response.StatusCode == http.StatusNoContent ||
+		response.StatusCode == http.StatusNotModified
+	if bodyless && len(response.Body) == 0 {
+		return None[protocol.Message](), nil
+	}
+	body, err := p.decoder.decompress(response.Header, response.Body)
+	if err != nil {
+		return None[protocol.Message](), err
+	}
+	if !utf8.Valid(body) {
+		return None[protocol.Message](), errors.New("Text body is not UTF-8")
+	}
+	return Some(protocol.Message{Type: None[schema.TypeRef](), Value: string(body)}), nil
+}
+
 func newContent(status Option[string], message Option[protocol.Message], err error) protocol.Content {
 	if err != nil {
 		return protocol.Content{Status: status, Failure: Some(err)}
@@ -121,13 +207,13 @@ func newContent(status Option[string], message Option[protocol.Message], err err
 	return protocol.Content{Status: status, Message: message}
 }
 
-func (p ResponsePlan) typed(payload any) Option[protocol.Message] {
+func (p decoding) typed(payload any) Option[protocol.Message] {
 	return Some(protocol.Message{Type: Some(p.root.Name), Value: payload})
 }
 
 // decodeConnect compares error envelopes untyped, because they are not instances
 // of the RPC output message.
-func (p ResponsePlan) decodeConnect(response Response) (Option[protocol.Message], error) {
+func (p decoding) decodeConnect(response Response) (Option[protocol.Message], error) {
 	if !hasJSONMediaType(response.Header) {
 		return None[protocol.Message](), errors.Errorf("Connect response is not JSON: %q", response.Header.Get("Content-Type"))
 	}
@@ -143,7 +229,7 @@ func (p ResponsePlan) decodeConnect(response Response) (Option[protocol.Message]
 
 // decodeHTTPJSON validates bodies as the declared type, except for empty HEAD,
 // 204, and 304 responses. Error bodies use the same type as successful ones.
-func (p ResponsePlan) decodeHTTPJSON(response Response) (Option[protocol.Message], error) {
+func (p decoding) decodeHTTPJSON(response Response) (Option[protocol.Message], error) {
 	bodyless := p.requestMethod == http.MethodHead || response.StatusCode == http.StatusNoContent ||
 		response.StatusCode == http.StatusNotModified
 	if bodyless && len(response.Body) == 0 {
@@ -154,7 +240,7 @@ func (p ResponsePlan) decodeHTTPJSON(response Response) (Option[protocol.Message
 
 // decodeGRPC compares the gRPC status, and the message only when it is OK. A
 // non-200 HTTP status is the comparable status, because no gRPC status applies.
-func (p ResponsePlan) decodeGRPC(response Response) protocol.Content {
+func (p decoding) decodeGRPC(response Response) protocol.Content {
 	if response.StatusCode != http.StatusOK {
 		status := Some(strconv.Itoa(response.StatusCode))
 		return newContent(status, None[protocol.Message](), errors.Errorf("gRPC response has HTTP status %d", response.StatusCode))
@@ -177,7 +263,7 @@ func (p ResponsePlan) decodeGRPC(response Response) protocol.Content {
 
 // decodeProtobuf decodes bare protobuf bodies. A non-OK status carries an error
 // body that is not the method output, so only the status is compared.
-func (p ResponsePlan) decodeProtobuf(response Response) (Option[protocol.Message], error) {
+func (p decoding) decodeProtobuf(response Response) (Option[protocol.Message], error) {
 	if response.StatusCode != http.StatusOK {
 		return None[protocol.Message](), nil
 	}
@@ -187,7 +273,7 @@ func (p ResponsePlan) decodeProtobuf(response Response) (Option[protocol.Message
 	return p.decodeTyped(response)
 }
 
-func (p ResponsePlan) decodeTyped(response Response) (Option[protocol.Message], error) {
+func (p decoding) decodeTyped(response Response) (Option[protocol.Message], error) {
 	payload, err := p.decoder.decodeResponse(p.root, p.selected, response)
 	if err != nil {
 		return None[protocol.Message](), errors.Wrapf(err, "decode response as %s", p.root.Name)

@@ -29,12 +29,12 @@ const maxBodyBytes = 1 << 20
 
 // weatherScripts declares the endpoints that most decoder tests resolve against.
 const weatherScripts = `
-	spectre.ingress.match<v1.Response>("http", "GET /v1/forecast");
-	spectre.ingress.ignore("http", "GET /_status");
-	// Ingress endpoints never type dependency requests.
-	spectre.ingress.match<v1.Response>("http", "POST /test.v1.Service/Rename");
-	spectre.egress.match<weather.HTTPQuery>("http", "GET weather.example/v1/locations/{location}/forecast");
-	spectre.egress.match<weather.HTTPQuery>("http", "POST weather.example/v1/search");
+	spectre.ingress.http("GET /v1/forecast").match<v1.Response>();
+	spectre.ingress.http("GET /_status").ignore();
+	// Ingress rules never type dependency requests.
+	spectre.ingress.http("POST /test.v1.Service/Rename").match<v1.Response>();
+	spectre.egress.http("GET weather.example/v1/locations/{location}/forecast").match<weather.HTTPQuery>();
+	spectre.egress.http("POST weather.example/v1/search").match<weather.HTTPQuery>();
 `
 
 func TestClassifiesResponses(t *testing.T) {
@@ -49,7 +49,7 @@ func TestClassifiesResponses(t *testing.T) {
 	}{
 		"RPCPath":              {method: http.MethodPost, path: "/test.v1.Service/Get", contentType: "application/json", ignored: compared},
 		"DeclaredHTTPEndpoint": {method: http.MethodGet, path: "/v1/forecast", ignored: compared},
-		"IgnoredEndpoint":      {method: http.MethodGet, path: "/_status", ignored: Some(`endpoint "GET /_status" is ignored`)},
+		"IgnoredEndpoint":      {method: http.MethodGet, path: "/_status", ignored: Some(`rule http("GET /_status") ignores the request`)},
 		"GRPCNamespace": {
 			method: http.MethodPost, path: "/grpc.reflection.v1.ServerReflection/ServerReflectionInfo", contentType: "application/grpc",
 			ignored: Some("gRPC namespace is excluded from response comparison"),
@@ -123,7 +123,7 @@ func TestUnresolvableResponsesFailToDecode(t *testing.T) {
 			plan := decoder.Responses(test.method, test.path, "", http.Header{"Content-Type": []string{"application/json"}})
 			assert.Equal(t, None[string](), plan.Ignored())
 
-			content := plan.Decode(connectResponse(`{}`))
+			content := plan.Decode(t.Context(), connectResponse(`{}`))
 
 			// The HTTP status still compares when the plan cannot decode the body.
 			failure := describe(content)
@@ -249,7 +249,7 @@ func TestRejectsUnbindableEndpoints(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := buildDecoder(t, descriptorSet(), testDeclarations(t),
-				map[string]string{"weather.ts": module(`spectre.egress.match<weather.HTTPQuery>("http", "` + test.pattern + `");`)})
+				map[string]string{"weather.ts": module(`spectre.egress.http("` + test.pattern + `").match<weather.HTTPQuery>();`)})
 			assert.Error(t, err)
 			assert.Contains(t, err.Error(), `bind endpoint "`+test.pattern+`"`)
 			assert.Contains(t, err.Error(), test.message)
@@ -305,7 +305,7 @@ func buildDecoder(t *testing.T, set *descriptorpb.FileDescriptorSet, declaration
 	matchers := map[model.Protocol]protocol.Matcher{model.ProtocolHTTP: routes}
 	engine, err := protocol.NewEngine(t.Context(), config, matchers, discardQuarantine{})
 	assert.NoError(t, err)
-	return message.New(engine.Schema(), set, routes, maxBodyBytes)
+	return message.New(engine.Schema(), set, routes, engine, maxBodyBytes)
 }
 
 func newDecoder(t *testing.T, script string) *message.Decoder {
@@ -341,11 +341,11 @@ func newRawDecoder(t *testing.T) *message.Decoder {
 		map[string]string{"raw.ts": `
 			import * as spectre from "spectre";
 			import type * as raw from "raw";
-			spectre.ingress.match<raw.Response>("http", "GET /raw");
-			spectre.ingress.match<raw.Response>("http", "HEAD /raw");
-			spectre.ingress.match<raw.Optional>("http", "GET /optional");
-			spectre.egress.match<raw.Item>("http", "GET api.example/items/{id}");
-			spectre.egress.match<raw.Ratio>("http", "GET api.example/ratio");
+			spectre.ingress.http("GET /raw").match<raw.Response>();
+			spectre.ingress.http("HEAD /raw").match<raw.Response>();
+			spectre.ingress.http("GET /optional").match<raw.Optional>();
+			spectre.egress.http("GET api.example/items/{id}").match<raw.Item>();
+			spectre.egress.http("GET api.example/ratio").match<raw.Ratio>();
 		`})
 	assert.NoError(t, err)
 	return decoder

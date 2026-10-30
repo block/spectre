@@ -12,6 +12,7 @@ import (
 	. "github.com/alecthomas/types/optional"
 	ts "github.com/microsoft/TypeScript/tsc/shim/typescript"
 
+	"github.com/block/spectre/internal/model"
 	"github.com/block/spectre/internal/schema"
 )
 
@@ -114,14 +115,14 @@ func typeArguments(checker *ts.Checker, loaded *schema.Schema, call *ts.Node) (O
 		return None[insertion](), nil // Only spectre functions take type arguments at runtime.
 	}
 	function := declaration.Name().Text()
-	if function == ignoreMethod {
-		return None[insertion](), nil // ignore takes no type arguments, so nothing is inserted.
+	if function == ignoreMethod || function == statusMethod || function == string(model.ProtocolHTTP) {
+		return None[insertion](), nil // Selectors and ignore take no type arguments.
 	}
 	expected := 1
 	if function == string(targetField) {
 		expected = 2
 	}
-	// display names the call the way a script writes it, e.g. "ingress.match".
+	// display names the call the way a script writes it, e.g. "IngressHTTPRule.match".
 	display := function
 	if owner := ts.MemberOwnerName(declaration); owner != "" {
 		display = owner + "." + function
@@ -131,11 +132,11 @@ func typeArguments(checker *ts.Checker, loaded *schema.Schema, call *ts.Node) (O
 		return None[insertion](), errors.Errorf("%s: spectre.%s needs %d explicit type argument(s)", ts.Location(call), display, expected)
 	}
 	resolved := checker.GetTypeFromTypeNode(types[0])
-	name, err := schema.TypeName(resolved)
+	name, err := bodyTypeName(resolved, display == "IngressHTTPRule."+matchMethod)
 	if err != nil {
 		return None[insertion](), errors.Errorf("%s: spectre.%s type argument %s: %v", ts.Location(types[0]), display, checker.TypeToString(resolved), err)
 	}
-	if _, err := loaded.Type(name); err != nil {
+	if _, err := loaded.Type(name); name != textTypeName && err != nil {
 		return None[insertion](), errors.Errorf("%s: spectre.%s type argument: %v", ts.Location(types[0]), display, err)
 	}
 	values := []string{string(name)}
@@ -156,4 +157,16 @@ func typeArguments(checker *ts.Checker, loaded *schema.Schema, call *ts.Node) (O
 		encoded = append(encoded, "")
 	}
 	return Some(insertion{offset: call.AsCallExpression().Arguments.Loc.Pos(), text: strings.Join(encoded, ", ")}), nil
+}
+
+// bodyTypeName names a schema type, or the spectre Text type where text is allowed.
+func bodyTypeName(resolved *ts.Type, text bool) (schema.TypeRef, error) {
+	symbol := resolved.Symbol()
+	if symbol == nil || len(symbol.Declarations) == 0 || ts.SourceFileOf(symbol.Declarations[0]).FileName() != moduleDeclarationFile {
+		return errors.WithStack2(schema.TypeName(resolved))
+	}
+	if !text || symbol.Name != "Text" {
+		return "", errors.New("only ingress rules may compare bodies as Text")
+	}
+	return textTypeName, nil
 }

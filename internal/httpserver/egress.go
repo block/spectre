@@ -82,7 +82,7 @@ func NewEgress(
 	if err != nil {
 		return nil, errors.Wrap(err, "configure request hashing")
 	}
-	decoder, err := message.New(engine.Schema(), static, routes, config.ComparisonMaxBodyBytes)
+	decoder, err := message.New(engine.Schema(), static, routes, engine, config.ComparisonMaxBodyBytes)
 	if err != nil {
 		return nil, errors.Wrap(err, "configure request decoding")
 	}

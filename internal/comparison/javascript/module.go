@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/alecthomas/errors"
+	. "github.com/alecthomas/types/optional"
 	"github.com/grafana/sobek"
 
 	"github.com/block/spectre/internal/model"
@@ -20,23 +21,16 @@ const (
 	targetMessage targetKind = "message"
 )
 
-// Endpoint maps a protocol-specific request pattern to a payload type, or marks it
-// ignored so matching requests are skipped instead of compared.
+// Endpoint maps a protocol-specific request pattern to a payload type.
 type Endpoint struct {
 	direction model.Direction
 	protocol  model.Protocol
 	pattern   string
 	typeName  schema.TypeRef
-	ignore    bool
 }
 
 func newEndpoint(direction model.Direction, protocol model.Protocol, pattern string, typeName schema.TypeRef) Endpoint {
 	return Endpoint{direction: direction, protocol: protocol, pattern: pattern, typeName: typeName}
-}
-
-// newIgnoredEndpoint marks a pattern as never compared; it carries no payload type.
-func newIgnoredEndpoint(direction model.Direction, protocol model.Protocol, pattern string) Endpoint {
-	return Endpoint{direction: direction, protocol: protocol, pattern: pattern, ignore: true}
 }
 
 // Direction returns the proxy that uses the endpoint.
@@ -57,11 +51,6 @@ func (e Endpoint) Pattern() string {
 // Type returns the fully qualified name of the endpoint's payload type.
 func (e Endpoint) Type() schema.TypeRef {
 	return e.typeName
-}
-
-// Ignore reports whether matching requests are skipped instead of compared.
-func (e Endpoint) Ignore() bool {
-	return e.ignore
 }
 
 // FieldTarget identifies a JSON field path relative to an explicitly named type.
@@ -94,6 +83,7 @@ func (t FieldTarget) String() string {
 // registrations are the declarations one evaluation of a program produced.
 type registrations struct {
 	endpoints []Endpoint
+	rules     []Rule
 	fields    []FieldTarget
 	messages  []schema.TypeRef
 }
@@ -141,8 +131,17 @@ type callbackRegistry struct {
 	runtime   *sobek.Runtime
 	functions map[string]sobek.Value
 	endpoints []Endpoint
+	rules     []Rule
+	callbacks []ruleCallbacks
 	fields    map[FieldTarget]sobek.Callable
 	messages  map[schema.TypeRef]sobek.Callable
+}
+
+// ruleCallbacks are the script functions of one rule, indexed like the rules.
+type ruleCallbacks struct {
+	request   Option[sobek.Callable]
+	status    Option[sobek.Callable]
+	normalise Option[sobek.Callable]
 }
 
 func newCallbackRegistry(runtime *sobek.Runtime) *callbackRegistry {
@@ -151,93 +150,188 @@ func newCallbackRegistry(runtime *sobek.Runtime) *callbackRegistry {
 		fields:   map[FieldTarget]sobek.Callable{},
 		messages: map[schema.TypeRef]sobek.Callable{},
 	}
+	ingress := runtime.NewObject()
+	registry.defineMethod(ingress, "ingress."+string(model.ProtocolHTTP), string(model.ProtocolHTTP), registry.httpRule)
+	egress := runtime.NewObject()
+	registry.defineMethod(egress, "egress."+string(model.ProtocolHTTP), string(model.ProtocolHTTP), registry.egressRule)
 	registry.functions = map[string]sobek.Value{
-		string(model.Ingress): registry.directionObject(model.Ingress),
-		string(model.Egress):  registry.directionObject(model.Egress),
+		string(model.Ingress): ingress,
+		string(model.Egress):  egress,
 		string(targetField):   runtime.ToValue(registry.registration(targetField)),
 		string(targetMessage): runtime.ToValue(registry.registration(targetMessage)),
 	}
 	return registry
 }
 
-// matchMethod and ignoreMethod name the methods on the direction namespace objects:
-// match registers a typed endpoint; ignore skips matching requests entirely.
+// matchMethod, ignoreMethod, and statusMethod name the script API's methods
+// whose type arguments, or lack of them, compile treats specially.
 const (
 	matchMethod  = "match"
 	ignoreMethod = "ignore"
+	statusMethod = "status"
+	// textTypeName is the type name compile inserts for the spectre Text type.
+	textTypeName = "spectre.Text"
 )
 
-// directionObject builds the ingress or egress namespace object. Its match method
-// registers an endpoint for that direction; ingress also gets an ignore method.
-func (r *callbackRegistry) directionObject(direction model.Direction) sobek.Value {
-	object := r.runtime.NewObject()
-	r.defineMethod(object, direction, matchMethod, r.endpointRegistration(direction))
-	if direction == model.Ingress {
-		r.defineMethod(object, direction, ignoreMethod, r.ignoreRegistration(direction))
+// defineMethod binds one object method, panicking if sobek rejects it.
+func (r *callbackRegistry) defineMethod(object *sobek.Object, qualified, method string, fn func(sobek.FunctionCall) sobek.Value) {
+	if err := object.Set(method, fn); err != nil {
+		panic(r.runtime.NewTypeError("define spectre.%s: %v", qualified, err))
 	}
+}
+
+// egressRule starts an egress rule from a dependency's request pattern.
+func (r *callbackRegistry) egressRule(call sobek.FunctionCall) sobek.Value {
+	const qualified = "egress.http"
+	if len(call.Arguments) != 1 {
+		panic(r.runtime.NewTypeError("spectre.%s requires a pattern", qualified))
+	}
+	pattern := r.stringArgument(call, 0, qualified, "pattern")
+	if !hasForm(pattern, true) {
+		panic(r.runtime.NewTypeError("spectre.%s pattern %q must have the form \"<METHOD> <host>/<path>\"", qualified, pattern))
+	}
+	object := r.runtime.NewObject()
+	r.defineMethod(object, "EgressHTTPRule."+matchMethod, matchMethod, func(call sobek.FunctionCall) sobek.Value {
+		r.matchEndpoint(pattern, call)
+		return sobek.Undefined()
+	})
 	return object
 }
 
-// defineMethod binds one namespace-object method, panicking if sobek rejects it.
-func (r *callbackRegistry) defineMethod(object *sobek.Object, direction model.Direction, method string, fn func(sobek.FunctionCall) sobek.Value) {
-	if err := object.Set(method, fn); err != nil {
-		panic(r.runtime.NewTypeError("define spectre.%s.%s: %v", direction, method, err))
+// matchEndpoint receives the type name compile inserts.
+func (r *callbackRegistry) matchEndpoint(pattern string, call sobek.FunctionCall) {
+	const qualified = "EgressHTTPRule.match"
+	if len(call.Arguments) != 1 {
+		panic(r.runtime.NewTypeError("spectre.%s requires a type name", qualified))
 	}
+	typeName := schema.TypeRef(r.stringArgument(call, 0, qualified, "type name"))
+	if slices.ContainsFunc(r.endpoints, func(endpoint Endpoint) bool { return endpoint.Pattern() == pattern }) {
+		panic(r.runtime.NewTypeError("duplicate endpoint %q", pattern))
+	}
+	r.endpoints = append(r.endpoints, newEndpoint(model.Egress, model.ProtocolHTTP, pattern, typeName))
 }
 
-// endpointRegistration receives the type name compile inserts before the script's arguments.
-func (r *callbackRegistry) endpointRegistration(direction model.Direction) func(sobek.FunctionCall) sobek.Value {
-	qualified := string(direction) + "." + matchMethod
-	return func(call sobek.FunctionCall) sobek.Value {
-		if len(call.Arguments) != 3 {
-			panic(r.runtime.NewTypeError("spectre.%s requires a type name, a protocol, and a pattern", qualified))
-		}
-		typeName := schema.TypeRef(r.stringArgument(call, 0, qualified, "type name"))
-		protocol := model.Protocol(r.stringArgument(call, 1, qualified, "protocol"))
-		pattern := r.stringArgument(call, 2, qualified, "pattern")
-		if protocol == model.ProtocolHTTP && direction == model.Ingress && !hasForm(pattern, false) {
-			panic(r.runtime.NewTypeError("spectre.%s pattern %q must have the form \"<METHOD> /<path>\"", qualified, pattern))
-		}
-		if protocol == model.ProtocolHTTP && direction == model.Egress && !hasForm(pattern, true) {
-			panic(r.runtime.NewTypeError("spectre.%s pattern %q must have the form \"<METHOD> <host>/<path>\"", qualified, pattern))
-		}
-		if slices.ContainsFunc(r.endpoints, func(endpoint Endpoint) bool {
-			return endpoint.Direction() == direction && endpoint.Protocol() == protocol && endpoint.Pattern() == pattern
-		}) {
-			panic(r.runtime.NewTypeError("duplicate endpoint %q", pattern))
-		}
-		r.endpoints = append(r.endpoints, newEndpoint(direction, protocol, pattern, typeName))
+// ruleBuilder is a rule whose selectors are chosen but whose action is not yet.
+type ruleBuilder struct {
+	protocol  model.Protocol
+	request   RequestSelector
+	status    StatusSelector
+	callbacks ruleCallbacks
+}
+
+// httpRule starts an ingress rule from a pattern or a request function.
+func (r *callbackRegistry) httpRule(call sobek.FunctionCall) sobek.Value {
+	const qualified = "ingress.http"
+	if len(call.Arguments) != 1 {
+		panic(r.runtime.NewTypeError("spectre.%s requires a pattern or a function", qualified))
+	}
+	builder := ruleBuilder{protocol: model.ProtocolHTTP, status: StatusAny{}}
+	if callback, ok := sobek.AssertFunction(call.Argument(0)); ok {
+		builder.request = RequestScript{}
+		builder.callbacks.request = Some(callback)
+		return r.builderObject(builder)
+	}
+	pattern := r.stringArgument(call, 0, qualified, "pattern")
+	if !hasForm(pattern, false) {
+		panic(r.runtime.NewTypeError("spectre.%s pattern %q must have the form \"[<METHOD> ]/<path>\"", qualified, pattern))
+	}
+	builder.request = RequestPattern{Pattern: pattern}
+	return r.builderObject(builder)
+}
+
+// builderObject exposes a builder to the script. Each method returns a new
+// builder or registers a rule, so a builder can be shared between rules.
+func (r *callbackRegistry) builderObject(builder ruleBuilder) sobek.Value {
+	object := r.runtime.NewObject()
+	r.defineMethod(object, "IngressHTTPRule."+statusMethod, statusMethod, func(call sobek.FunctionCall) sobek.Value {
+		return r.builderObject(r.withStatus(builder, call))
+	})
+	r.defineMethod(object, "IngressHTTPRule."+matchMethod, matchMethod, func(call sobek.FunctionCall) sobek.Value {
+		r.matchRule(builder, call)
 		return sobek.Undefined()
-	}
-}
-
-// ignoreRegistration marks an endpoint as never compared, so the comparator skips
-// matching requests instead of quarantining on them. It takes no payload type.
-func (r *callbackRegistry) ignoreRegistration(direction model.Direction) func(sobek.FunctionCall) sobek.Value {
-	qualified := string(direction) + "." + ignoreMethod
-	return func(call sobek.FunctionCall) sobek.Value {
-		if len(call.Arguments) != 2 {
-			panic(r.runtime.NewTypeError("spectre.%s requires a protocol and a pattern", qualified))
+	})
+	r.defineMethod(object, "IngressHTTPRule."+ignoreMethod, ignoreMethod, func(call sobek.FunctionCall) sobek.Value {
+		if len(call.Arguments) != 0 {
+			panic(r.runtime.NewTypeError("spectre.IngressHTTPRule.ignore takes no arguments"))
 		}
-		protocol := model.Protocol(r.stringArgument(call, 0, qualified, "protocol"))
-		pattern := r.stringArgument(call, 1, qualified, "pattern")
-		if protocol == model.ProtocolHTTP && direction == model.Ingress && !hasForm(pattern, false) {
-			panic(r.runtime.NewTypeError("spectre.%s pattern %q must have the form \"<METHOD> /<path>\"", qualified, pattern))
-		}
-		if slices.ContainsFunc(r.endpoints, func(endpoint Endpoint) bool {
-			return endpoint.Direction() == direction && endpoint.Protocol() == protocol && endpoint.Pattern() == pattern
-		}) {
-			panic(r.runtime.NewTypeError("duplicate endpoint %q", pattern))
-		}
-		r.endpoints = append(r.endpoints, newIgnoredEndpoint(direction, protocol, pattern))
+		r.addRule(builder, ActionIgnore{})
 		return sobek.Undefined()
-	}
+	})
+	return object
 }
 
-// hasForm reports whether a pattern names a method, and names a host exactly when
-// host is set. Ingress receives requests for its own service, so it never routes by host.
+// withStatus narrows a builder to status codes, or to a status function.
+func (r *callbackRegistry) withStatus(builder ruleBuilder, call sobek.FunctionCall) ruleBuilder {
+	const qualified = "IngressHTTPRule.status"
+	if _, unset := builder.status.(StatusAny); !unset {
+		panic(r.runtime.NewTypeError("spectre.%s is already set for this rule", qualified))
+	}
+	if len(call.Arguments) == 0 {
+		panic(r.runtime.NewTypeError("spectre.%s requires status codes or a function", qualified))
+	}
+	if callback, ok := sobek.AssertFunction(call.Argument(0)); ok {
+		if len(call.Arguments) != 1 {
+			panic(r.runtime.NewTypeError("spectre.%s takes either status codes or one function", qualified))
+		}
+		builder.status = StatusScript{}
+		builder.callbacks.status = Some(callback)
+		return builder
+	}
+	codes := make([]int, 0, len(call.Arguments))
+	for _, argument := range call.Arguments {
+		code, ok := argument.Export().(int64)
+		if !ok || code < 100 || code > 599 {
+			panic(r.runtime.NewTypeError("spectre.%s code %v must be an integer from 100 to 599", qualified, argument))
+		}
+		if slices.Contains(codes, int(code)) {
+			panic(r.runtime.NewTypeError("spectre.%s code %d is repeated", qualified, code))
+		}
+		codes = append(codes, int(code))
+	}
+	builder.status = StatusCodes{Codes: codes}
+	return builder
+}
+
+// matchRule receives the type name compile inserts before an optional normaliser.
+func (r *callbackRegistry) matchRule(builder ruleBuilder, call sobek.FunctionCall) {
+	const qualified = "IngressHTTPRule.match"
+	if len(call.Arguments) < 1 || len(call.Arguments) > 2 {
+		panic(r.runtime.NewTypeError("spectre.%s requires a type name and an optional normaliser", qualified))
+	}
+	typeName := Some(schema.TypeRef(r.stringArgument(call, 0, qualified, "type name")))
+	if name, _ := typeName.Get(); name == textTypeName {
+		typeName = None[schema.TypeRef]()
+	}
+	action := ActionMatch{Type: typeName}
+	if len(call.Arguments) == 2 && !sobek.IsUndefined(call.Argument(1)) {
+		callback, ok := sobek.AssertFunction(call.Argument(1))
+		if !ok {
+			panic(r.runtime.NewTypeError("spectre.%s normaliser must be a function", qualified))
+		}
+		action.Normalises = true
+		builder.callbacks.normalise = Some(callback)
+	}
+	r.addRule(builder, action)
+}
+
+// addRule appends a rule. A rule whose selectors repeat an earlier rule's
+// pattern and codes could never apply, so it is rejected.
+func (r *callbackRegistry) addRule(builder ruleBuilder, action Action) {
+	rule := newRule(len(r.rules), builder.protocol, builder.request, builder.status, action)
+	if slices.ContainsFunc(r.rules, rule.sameSelectors) {
+		panic(r.runtime.NewTypeError("duplicate rule %s", rule))
+	}
+	r.rules = append(r.rules, rule)
+	r.callbacks = append(r.callbacks, builder.callbacks)
+}
+
+// hasForm reports whether a pattern names a host exactly when host is set. Egress
+// patterns name a method; ingress receives requests for its own service, so it never routes by host.
 func hasForm(pattern string, host bool) bool {
 	fields := strings.Fields(pattern)
+	if !host && len(fields) == 1 {
+		return strings.HasPrefix(fields[0], "/")
+	}
 	return len(fields) == 2 && strings.HasPrefix(fields[1], "/") != host
 }
 
@@ -294,6 +388,14 @@ func (r *callbackRegistry) message(typeName schema.TypeRef) (sobek.Callable, boo
 	return callback, ok
 }
 
+// rule returns the callbacks of the rule at index, or none for an unknown rule.
+func (r *callbackRegistry) rule(index int) ruleCallbacks {
+	if index < 0 || index >= len(r.callbacks) {
+		return ruleCallbacks{}
+	}
+	return r.callbacks[index]
+}
+
 func (r *callbackRegistry) registrations() registrations {
 	fields := make([]FieldTarget, 0, len(r.fields))
 	for target := range r.fields {
@@ -306,7 +408,7 @@ func (r *callbackRegistry) registrations() registrations {
 		return cmp.Compare(left.Path(), right.Path())
 	})
 	messages := slices.Sorted(maps.Keys(r.messages))
-	return registrations{endpoints: slices.Clone(r.endpoints), fields: fields, messages: messages}
+	return registrations{endpoints: slices.Clone(r.endpoints), rules: slices.Clone(r.rules), fields: fields, messages: messages}
 }
 
 // loadSpectreModule requires synchronous evaluation so registration is complete at return.

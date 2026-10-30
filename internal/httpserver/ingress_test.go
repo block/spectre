@@ -403,6 +403,44 @@ func TestStatusDifferenceIsDivergentWhenCandidateBodyIsUndecodable(t *testing.T)
 	assert.NoError(t, handler.Shutdown(t.Context()))
 }
 
+// A rule can compare only the status of server errors whose bodies differ.
+func TestRulesCompareOnlyTheStatusOfServerErrors(t *testing.T) {
+	for name, test := range map[string]struct {
+		candidateStatus int
+		expected        comparisonRecord
+	}{
+		"SameStatus":      {candidateStatus: http.StatusInternalServerError, expected: comparisonRecord{Outcome: "equivalent"}},
+		"DifferentStatus": {candidateStatus: http.StatusBadGateway, expected: comparisonRecord{Outcome: "divergent", Differences: []string{"$status"}}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			transport := roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+				response := &http.Response{
+					StatusCode: http.StatusInternalServerError,
+					Header:     http.Header{"Content-Type": []string{"text/html; charset=utf-8"}},
+					Body:       io.NopCloser(strings.NewReader("<html>reference</html>")),
+					Request:    request,
+				}
+				if request.URL.Host == candidateAddress {
+					response.StatusCode = test.candidateStatus
+					response.Header = http.Header{"Content-Type": []string{"application/json"}}
+					response.Body = io.NopCloser(strings.NewReader(`{"error":"candidate"}`))
+				}
+				return response, nil
+			})
+			logs := &syncBuffer{}
+			ctx := withLogs(t, logs)
+			handler := newTestHandlerWithFakeBackends(t, transport)
+			serveIngress(ctx, t, handler)
+
+			handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequestWithContext(ctx, http.MethodGet, "http://proxy.example/failing/item", nil))
+
+			test.expected.Event, test.expected.Protocol, test.expected.Route = "correlation", "http", "GET /failing/item"
+			assert.Equal(t, []comparisonRecord{test.expected}, waitForRecords[comparisonRecord](t, logs, "Response comparison completed", 1))
+			assert.NoError(t, handler.Shutdown(t.Context()))
+		})
+	}
+}
+
 func TestClassifiesResponsesForComparison(t *testing.T) {
 	for name, test := range map[string]struct {
 		target   string
@@ -414,7 +452,7 @@ func TestClassifiesResponsesForComparison(t *testing.T) {
 		},
 		"IgnoredRoute": {
 			target:   "/ignored/item",
-			expected: comparisonRecord{Route: "GET /ignored/item", Outcome: "skipped", Reason: `endpoint "GET /ignored/{name}" is ignored`},
+			expected: comparisonRecord{Route: "GET /ignored/item", Outcome: "skipped", Reason: `rule http("GET /ignored/{name}") ignores the request`},
 		},
 		"ConnectGet": {
 			target:   "/test.Echo/Get?encoding=json&message=%7B%7D",
@@ -919,7 +957,7 @@ func TestAbortedCandidateResponseQuarantinesCandidate(t *testing.T) {
 		},
 		"Ignored": {
 			path:     "/ignored/aborted",
-			expected: comparisonRecord{Route: "GET /ignored/aborted", Outcome: "skipped", Reason: `endpoint "GET /ignored/{name}" is ignored`},
+			expected: comparisonRecord{Route: "GET /ignored/aborted", Outcome: "skipped", Reason: `rule http("GET /ignored/{name}") ignores the request`},
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -1292,13 +1330,15 @@ func TestIngressRejectsUnsafeConfiguration(t *testing.T) {
 // candidateAddress is the candidate backend of fixtures that use a fake transport.
 const candidateAddress = "127.0.0.1:50052"
 
-// ingressScript compares or ignores the /compared and /ignored fixture routes.
+// ingressScript compares or ignores the /compared and /ignored fixture routes, and
+// compares only the status of /failing server errors.
 const ingressScript = `
-import { ingress } from "spectre";
+import { ingress, type Text } from "spectre";
 import type { Payload } from "test";
-ingress.match<Payload>("http", "GET /compared/{name}");
-ingress.match<Payload>("http", "POST /compared/{name}");
-ingress.ignore("http", "GET /ignored/{name}");
+ingress.http("GET /failing/{name}").status((status) => status >= 500).match<Text>(({ status }) => ({ status }));
+ingress.http("GET /compared/{name}").match<Payload>();
+ingress.http("POST /compared/{name}").match<Payload>();
+ingress.http("GET /ignored/{name}").ignore();
 `
 
 // comparisonRecord is a "Response comparison completed" log record without its timing.

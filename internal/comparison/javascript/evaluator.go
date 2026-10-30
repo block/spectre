@@ -101,6 +101,55 @@ func (e *Evaluator) NormaliseMessage(target schema.TypeRef, value Option[any]) (
 	return e.normalise(callback, value)
 }
 
+// SelectsRequest reports whether a rule's request function accepts a request.
+func (e *Evaluator) SelectsRequest(rule Rule, request Request) (bool, error) {
+	callbacks := e.registry.rule(rule.Index())
+	callback, ok := callbacks.request.Get()
+	if !ok {
+		return false, errors.Errorf("JavaScript request function of rule %s is unavailable", rule)
+	}
+	argument := e.runtime.NewObject()
+	for name, value := range map[string]string{"method": request.Method, "path": request.Path} {
+		if err := argument.Set(name, value); err != nil {
+			return false, errors.Wrap(err, "build request argument")
+		}
+	}
+	return e.selects(rule, callback, argument)
+}
+
+// SelectsStatus reports whether a rule's status function accepts a status.
+func (e *Evaluator) SelectsStatus(rule Rule, status int) (bool, error) {
+	callbacks := e.registry.rule(rule.Index())
+	callback, ok := callbacks.status.Get()
+	if !ok {
+		return false, errors.Errorf("JavaScript status function of rule %s is unavailable", rule)
+	}
+	return e.selects(rule, callback, e.runtime.ToValue(status))
+}
+
+func (e *Evaluator) selects(rule Rule, callback sobek.Callable, argument sobek.Value) (bool, error) {
+	result, err := callback(sobek.Undefined(), argument)
+	if err != nil {
+		return false, errors.Errorf("JavaScript selector of rule %s threw an exception", rule)
+	}
+	selected, ok := result.Export().(bool)
+	if !ok {
+		return false, errors.Errorf("JavaScript selector of rule %s returned a value that is not a boolean", rule)
+	}
+	return selected, nil
+}
+
+// NormaliseResponse invokes a rule's response normaliser on a JSON response
+// object. None stands for an undefined result.
+func (e *Evaluator) NormaliseResponse(rule Rule, response any) (Option[any], error) {
+	callbacks := e.registry.rule(rule.Index())
+	callback, ok := callbacks.normalise.Get()
+	if !ok {
+		return None[any](), errors.Errorf("JavaScript normaliser of rule %s is unavailable", rule)
+	}
+	return e.normalise(callback, Some(response))
+}
+
 // normalise returns an undefined result as None so callers can remove the node.
 func (e *Evaluator) normalise(callback sobek.Callable, value Option[any]) (Option[any], error) {
 	argument, err := e.argument(value)
