@@ -63,9 +63,9 @@ test-tsk = exec.test {
   command = "test ! -d .tsk/testdata || tsk test"
   inputs = tsk-inputs + [".tsk/testdata/**/*"]
 }
-test-container-publisher = exec.test {
-  command = "sh scripts/publish-container-images.test.sh"
-  inputs = ["scripts/publish-container-images", "scripts/publish-container-images.test.sh"]
+test-container-images = exec.test {
+  command = "sh scripts/container-images.test.sh"
+  inputs = ["scripts/container-images", "scripts/container-images.test.sh"]
 }
 explicit test-container(version = "dev") = exec.test {
   command = "container.test.sh #{local-image(version = version).ref} #{version}"
@@ -160,7 +160,7 @@ target demo = [demo-image]
 target publish-container(registry : string, image-tag : string, version : string) = [publish-release-image(registry = registry, image-tag = image-tag, version = version)]
 
 # Run all tests
-target test = [test-go, test-launcher, test-response-comparison-integration, test-release-version, test-container-publisher, test-tsk]
+target test = [test-go, test-launcher, test-response-comparison-integration, test-release-version, test-container-images, test-tsk]
 
 # Lint everything
 target lint = [lint-tsk, lint-proto, lint-actions, lint-action-pins, lint-dockerfile, lint-release, lint-scripts, fmt-check-go]
