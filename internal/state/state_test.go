@@ -72,7 +72,7 @@ func TestParseProblems(t *testing.T) {
 	}{
 		"Syntax": {
 			toml:     "[nodes.a]\nstatus =\n",
-			expected: []state.Problem{{Line: 3, Message: "expecting a value"}},
+			expected: []state.Problem{{Line: 2, Message: "unexpected character U+000A at start of value"}},
 		},
 		"UnknownTopLevelKey": {
 			toml:     "owner = \"me\"\n",
@@ -133,8 +133,8 @@ func TestParseProblems(t *testing.T) {
 			toml: "[nodes.a.ingress.rpc]\ncolour = 1\ngroup = { name = \"x\" }\n",
 			expected: []state.Problem{
 				{Line: 1, Message: "nodes.a.ingress.rpc: methods is required"},
-				{Line: 1, Message: "nodes.a.ingress.rpc.group: must be a value, not a table"},
 				{Line: 2, Message: "nodes.a.ingress.rpc.colour: unknown setting"},
+				{Line: 3, Message: "nodes.a.ingress.rpc.group: must be a value, not a table"},
 			},
 		},
 		"KeyedSettingNotATable": {
@@ -144,14 +144,14 @@ func TestParseProblems(t *testing.T) {
 		"Entries": {
 			toml: "[nodes.a.ingress.rpc.methods]\n\"rpc.Get\" = 1\nPut = { retries = 2 }\n",
 			expected: []state.Problem{
-				{Line: 1, Message: "nodes.a.ingress.rpc.methods.Put.retries: unknown setting"},
 				{Line: 2, Message: `nodes.a.ingress.rpc.methods."rpc.Get": must be a table; write {} for an entry with no settings`},
+				{Line: 3, Message: "nodes.a.ingress.rpc.methods.Put.retries: unknown setting"},
 			},
 		},
 		"UniqueKeys": {
 			toml: "[nodes.a.ingress.rpc.methods]\nGet = {}\n\n[nodes.b.ingress.rpc.methods]\nGet = {}\n",
 			expected: []state.Problem{
-				{Line: 4, Message: `nodes.b.ingress.rpc.methods.Get: also listed by node "a"`},
+				{Line: 5, Message: `nodes.b.ingress.rpc.methods.Get: also listed by node "a"`},
 			},
 		},
 	} {

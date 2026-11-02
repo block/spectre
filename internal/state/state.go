@@ -10,7 +10,8 @@ import (
 	"strings"
 
 	"github.com/alecthomas/errors"
-	"github.com/pelletier/go-toml"
+	"github.com/pelletier/go-toml/v2"
+	"github.com/pelletier/go-toml/v2/unstable"
 
 	"github.com/block/spectre/internal/model"
 )
@@ -70,17 +71,15 @@ func (e *InvalidError) Error() string {
 	return fmt.Sprintf("%s (and %d more problems)", e.Problems[0], len(e.Problems)-1)
 }
 
-var syntaxErrorPattern = regexp.MustCompile(`^\((\d+), \d+\): (.*)$`)
-
-// syntaxProblem moves the position that TOML syntax errors start with into the
-// problem's line.
+// syntaxProblem moves the position of a TOML syntax error into the problem's
+// line.
 func syntaxProblem(err error) Problem {
-	match := syntaxErrorPattern.FindStringSubmatch(err.Error())
-	if match == nil {
+	decodeErr, ok := errors.AsType[*toml.DecodeError](err)
+	if !ok {
 		return Problem{Message: err.Error()}
 	}
-	line, _ := strconv.Atoi(match[1]) //nolint:errcheck // The pattern matched only digits.
-	return Problem{Line: line, Message: match[2]}
+	line, _ := decodeErr.Position()
+	return Problem{Line: line, Message: strings.TrimPrefix(decodeErr.Error(), "toml: ")}
 }
 
 // Keys of the state file that the parser recognises.
@@ -110,11 +109,57 @@ func Load(path string, catalog *Catalog) (State, error) {
 // Parse reads a migration state and checks it against the IO kinds the catalog
 // supports. An invalid state returns an *InvalidError.
 func Parse(data []byte, catalog *Catalog) (State, error) {
-	tree, err := toml.LoadBytes(data)
-	if err != nil {
+	var root map[string]any
+	if err := toml.Unmarshal(data, &root); err != nil {
 		return State{}, &InvalidError{Problems: []Problem{syntaxProblem(err)}}
 	}
-	return newParser(tree, catalog).parse()
+	return newParser(root, keyLines(data), catalog).parse()
+}
+
+// keyLines maps the key path of each table and key in a TOML document to the
+// line that first defines it. The document must already have decoded.
+func keyLines(data []byte) map[string]int {
+	lines := map[string]int{}
+	parser := unstable.Parser{}
+	parser.Reset(data)
+	var table []string
+	for parser.NextExpression() {
+		expression := parser.Expression()
+		// Without KeepComments, the parser yields only key-values and headers.
+		if expression.Kind == unstable.KeyValue {
+			recordKeyValue(&parser, lines, table, expression)
+		} else {
+			table = recordKey(&parser, lines, nil, expression.Key())
+		}
+	}
+	return lines
+}
+
+// recordKeyValue records the lines of a key and of the keys of its value, if
+// that is an inline table.
+func recordKeyValue(parser *unstable.Parser, lines map[string]int, table []string, keyValue *unstable.Node) {
+	path := recordKey(parser, lines, table, keyValue.Key())
+	value := keyValue.Value()
+	if value.Kind != unstable.InlineTable {
+		return
+	}
+	for children := value.Children(); children.Next(); {
+		recordKeyValue(parser, lines, path, children.Node())
+	}
+}
+
+// recordKey records the line of each part of a dotted key below prefix that
+// has none yet, and returns the key's full path.
+func recordKey(parser *unstable.Parser, lines map[string]int, prefix []string, key unstable.Iterator) []string {
+	path := slices.Clone(prefix)
+	for key.Next() {
+		part := key.Node()
+		path = append(path, string(part.Data))
+		if _, ok := lines[keyPath(path...)]; !ok {
+			lines[keyPath(path...)] = parser.Shape(part.Raw).Start.Line
+		}
+	}
+	return path
 }
 
 // Unreached returns a warning for each node that no ingress node is or depends
@@ -159,13 +204,14 @@ func (n Node) hasIngress() bool {
 
 // parser collects every problem in a state file instead of stopping at the first.
 type parser struct {
-	root     *toml.Tree
+	root     map[string]any
+	lines    map[string]int
 	catalog  *Catalog
 	problems []Problem
 }
 
-func newParser(root *toml.Tree, catalog *Catalog) *parser {
-	return &parser{root: root, catalog: catalog}
+func newParser(root map[string]any, lines map[string]int, catalog *Catalog) *parser {
+	return &parser{root: root, lines: lines, catalog: catalog}
 }
 
 func (p *parser) parse() (State, error) {
@@ -183,15 +229,9 @@ func (p *parser) reportf(path []string, format string, args ...any) {
 	p.problems = append(p.problems, Problem{Line: p.line(path), Message: keyPath(path...) + ": " + fmt.Sprintf(format, args...)})
 }
 
-// line returns where path is defined. A key in an inline table reports the line
-// of the [table] header above it, since TOML positions stop there.
+// line returns where path is defined, or 0 when unknown.
 func (p *parser) line(path []string) int {
-	for end := len(path); end > 0; end-- {
-		if position := p.root.GetPositionPath(path[:end]); !position.Invalid() {
-			return position.Line
-		}
-	}
-	return 0
+	return p.lines[keyPath(path...)]
 }
 
 func (p *parser) state() State {
@@ -200,11 +240,11 @@ func (p *parser) state() State {
 			p.reportf([]string{key}, "unknown key; the state holds only nodes")
 		}
 	}
-	value := p.root.Get(nodesKey)
-	if value == nil {
+	value, ok := p.root[nodesKey]
+	if !ok {
 		return State{}
 	}
-	nodes, ok := value.(*toml.Tree)
+	nodes, ok := value.(map[string]any)
 	if !ok {
 		p.reportf([]string{nodesKey}, "must be a table of nodes keyed by ID")
 		return State{}
@@ -215,7 +255,7 @@ func (p *parser) state() State {
 		if !nodeIDPattern.MatchString(id) {
 			p.reportf(path, "node IDs must be kebab-case")
 		}
-		table, isTable := nodes.GetPath([]string{id}).(*toml.Tree)
+		table, isTable := nodes[id].(map[string]any)
 		if !isTable {
 			p.reportf(path, "must be a table")
 			state.Nodes = append(state.Nodes, Node{ID: id, Status: Pending, Line: p.line(path)})
@@ -226,11 +266,11 @@ func (p *parser) state() State {
 	return state
 }
 
-func (p *parser) node(path []string, table *toml.Tree) Node {
+func (p *parser) node(path []string, table map[string]any) Node {
 	node := Node{ID: path[len(path)-1], Status: Pending, IO: map[model.IOKind]map[string]any{}, Line: p.line(path)}
 	for _, key := range sortedKeys(table) {
 		keyPath := append(slices.Clone(path), key)
-		value := table.GetPath([]string{key})
+		value := table[key]
 		switch key {
 		case dependsOnKey:
 			node.DependsOn = p.dependsOn(keyPath, value)
@@ -269,7 +309,7 @@ func (p *parser) dependsOn(path []string, value any) []string {
 }
 
 func (p *parser) kinds(path []string, direction model.Direction, value any, io map[model.IOKind]map[string]any) {
-	protocols, ok := value.(*toml.Tree)
+	protocols, ok := value.(map[string]any)
 	if !ok {
 		p.reportf(path, "must be a table keyed by protocol")
 		return
@@ -282,21 +322,21 @@ func (p *parser) kinds(path []string, direction model.Direction, value any, io m
 			p.reportf(kindPath, "%s is not a supported IO kind; run spectre state types for the supported ones", kind)
 			continue
 		}
-		settings, isTable := protocols.GetPath([]string{protocol}).(*toml.Tree)
+		settings, isTable := protocols[protocol].(map[string]any)
 		if !isTable {
 			p.reportf(kindPath, "must be a table of %s settings", kind)
 			continue
 		}
 		p.settings(kindPath, settings, support.Settings)
-		io[kind] = settings.ToMap()
+		io[kind] = settings
 	}
 }
 
 // settings checks a table against the settings it may hold, and each entry of a
 // keyed setting against the settings an entry may hold.
-func (p *parser) settings(path []string, table *toml.Tree, settings []Setting) {
+func (p *parser) settings(path []string, table map[string]any, settings []Setting) {
 	for _, setting := range settings {
-		if setting.Required && !table.HasPath([]string{setting.Name}) {
+		if _, ok := table[setting.Name]; setting.Required && !ok {
 			p.reportf(path, "%s is required", setting.Name)
 		}
 	}
@@ -308,21 +348,21 @@ func (p *parser) settings(path []string, table *toml.Tree, settings []Setting) {
 			continue
 		}
 		setting := settings[index]
-		value := table.GetPath([]string{key})
+		value := table[key]
 		if setting.Key == "" {
-			if _, ok := value.(*toml.Tree); ok {
+			if _, ok := value.(map[string]any); ok {
 				p.reportf(settingPath, "must be a value, not a table")
 			}
 			continue
 		}
-		entries, ok := value.(*toml.Tree)
+		entries, ok := value.(map[string]any)
 		if !ok {
 			p.reportf(settingPath, "must be a table keyed by %s", setting.Key)
 			continue
 		}
 		for _, entryKey := range sortedKeys(entries) {
 			entryPath := append(slices.Clone(settingPath), entryKey)
-			entry, isTable := entries.GetPath([]string{entryKey}).(*toml.Tree)
+			entry, isTable := entries[entryKey].(map[string]any)
 			if !isTable {
 				p.reportf(entryPath, "must be a table; write {} for an entry with no settings")
 				continue
@@ -418,8 +458,8 @@ func (p *parser) checkUnique(state State) {
 	}
 }
 
-func sortedKeys(tree *toml.Tree) []string {
-	return slices.Sorted(slices.Values(tree.Keys()))
+func sortedKeys(table map[string]any) []string {
+	return slices.Sorted(maps.Keys(table))
 }
 
 var bareKeyPattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
