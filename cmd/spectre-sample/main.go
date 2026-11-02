@@ -7,7 +7,9 @@ import (
 	"os/signal"
 	"syscall"
 
-	"connectrpc.com/grpcreflect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
+	"connectrpc.com/grpcreflect/v2"
 	"github.com/alecthomas/errors"
 	"github.com/alecthomas/kong"
 	. "github.com/alecthomas/types/optional"
@@ -62,16 +64,13 @@ func main() {
 	listener, err := netaddr.ParseListen(cli.Listen).Listen(ctx)
 	kctx.FatalIfErrorf(errors.Wrap(err, "listen for Connect requests"))
 	mux := http.NewServeMux()
-	path, handler := samplepbconnect.NewUserServiceHandler(service)
-	mux.Handle(path, handler)
+	server := connect.NewServer()
+	samplepbconnect.RegisterUserServiceHandler(server, service)
+	grpcreflect.Register(server)
+	connecthttp.Mount(mux, server)
 	mux.HandleFunc("GET /api/v1/forecast", weather.GetForecast)
 	mux.HandleFunc("GET /v2/forecast", weather.GetForecastV2)
 	mux.HandleFunc("GET /_status", weather.GetStatus)
-	reflector := grpcreflect.NewStaticReflector(samplepbconnect.UserServiceName)
-	path, handler = grpcreflect.NewHandlerV1(reflector)
-	mux.Handle(path, handler)
-	path, handler = grpcreflect.NewHandlerV1Alpha(reflector)
-	mux.Handle(path, handler)
 	sampleServer := sample.NewServer(mux)
 	log.InfoContext(ctx, "Sample Connect server listening", "address", listener.Addr().String())
 	kctx.FatalIfErrorf(errors.Wrap(sampleServer.Serve(ctx, listener), "serve sample Connect"))

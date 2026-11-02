@@ -1,9 +1,5 @@
 package connect
 
-import "net/http"
+type Client struct{}
 
-type HTTPClient interface {
-	Do(request *http.Request) (*http.Response, error)
-}
-
-type ClientOption interface{ apply() }
+func NewClient(baseURL string) *Client { return &Client{} }

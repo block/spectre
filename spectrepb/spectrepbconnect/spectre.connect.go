@@ -5,173 +5,177 @@
 package spectrepbconnect
 
 import (
-	connect "connectrpc.com/connect"
+	connect "connectrpc.com/connect/v2"
 	context "context"
-	errors "errors"
 	spectrepb "github.com/block/spectre/spectrepb"
-	http "net/http"
-	strings "strings"
+	sync "sync"
 )
-
-// This is a compile-time assertion to ensure that this generated file and the connect package are
-// compatible. If you get a compiler error that this constant is not defined, this code was
-// generated with a version of connect newer than the one compiled into your binary. You can fix the
-// problem by either regenerating this code with an older version of connect or updating the connect
-// version compiled into your binary.
-const _ = connect.IsAtLeastVersion1_13_0
 
 const (
 	// SpectreServiceName is the fully-qualified name of the SpectreService service.
 	SpectreServiceName = "spectre.v1.SpectreService"
 )
 
-// These constants are the fully-qualified names of the RPCs defined in this package. They're
-// exposed at runtime as Spec.Procedure and as the final two segments of the HTTP route.
+// These constants are the procedure names of the RPCs defined in this package. They're exposed at
+// runtime as Spec.Procedure and as the final two segments of the HTTP route.
 //
 // Note that these are different from the fully-qualified method names used by
 // google.golang.org/protobuf/reflect/protoreflect. To convert from these constants to
 // reflection-formatted method names, remove the leading slash and convert the remaining slash to a
 // period.
 const (
-	// SpectreServiceQuarantineProcedure is the fully-qualified name of the SpectreService's Quarantine
-	// RPC.
+	// SpectreServiceQuarantineProcedure is the procedure name of the SpectreService's Quarantine RPC.
 	SpectreServiceQuarantineProcedure = "/spectre.v1.SpectreService/Quarantine"
-	// SpectreServiceListDivergencesProcedure is the fully-qualified name of the SpectreService's
+	// SpectreServiceListDivergencesProcedure is the procedure name of the SpectreService's
 	// ListDivergences RPC.
 	SpectreServiceListDivergencesProcedure = "/spectre.v1.SpectreService/ListDivergences"
-	// SpectreServiceClearDivergencesProcedure is the fully-qualified name of the SpectreService's
+	// SpectreServiceClearDivergencesProcedure is the procedure name of the SpectreService's
 	// ClearDivergences RPC.
 	SpectreServiceClearDivergencesProcedure = "/spectre.v1.SpectreService/ClearDivergences"
+)
+
+var (
+	spectreServiceQuarantineSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     spectrepb.File_spectre_v1_spectre_proto.Services().ByName("SpectreService").Methods().ByName("Quarantine"),
+			Procedure:  SpectreServiceQuarantineProcedure,
+		}
+	})
+	spectreServiceListDivergencesSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     spectrepb.File_spectre_v1_spectre_proto.Services().ByName("SpectreService").Methods().ByName("ListDivergences"),
+			Procedure:  SpectreServiceListDivergencesProcedure,
+		}
+	})
+	spectreServiceClearDivergencesSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     spectrepb.File_spectre_v1_spectre_proto.Services().ByName("SpectreService").Methods().ByName("ClearDivergences"),
+			Procedure:  SpectreServiceClearDivergencesProcedure,
+		}
+	})
 )
 
 // SpectreServiceClient is a client for the spectre.v1.SpectreService service.
 type SpectreServiceClient interface {
 	// Quarantine records that a mirror quarantined its candidate. A mirror sends
 	// each quarantine once, retrying until it succeeds, so repeats are ignored.
-	Quarantine(context.Context, *connect.Request[spectrepb.QuarantineRequest]) (*connect.Response[spectrepb.QuarantineResponse], error)
+	Quarantine(context.Context, *spectrepb.QuarantineRequest) (*spectrepb.QuarantineResponse, error)
 	// ListDivergences returns the latest quarantine of each mirror direction.
-	ListDivergences(context.Context, *connect.Request[spectrepb.ListDivergencesRequest]) (*connect.Response[spectrepb.ListDivergencesResponse], error)
+	ListDivergences(context.Context, *spectrepb.ListDivergencesRequest) (*spectrepb.ListDivergencesResponse, error)
 	// ClearDivergences removes the divergences of one service environment, once
 	// someone has dealt with them.
-	ClearDivergences(context.Context, *connect.Request[spectrepb.ClearDivergencesRequest]) (*connect.Response[spectrepb.ClearDivergencesResponse], error)
+	ClearDivergences(context.Context, *spectrepb.ClearDivergencesRequest) (*spectrepb.ClearDivergencesResponse, error)
 }
 
-// NewSpectreServiceClient constructs a client for the spectre.v1.SpectreService service. By
-// default, it uses the Connect protocol with the binary Protobuf Codec, asks for gzipped responses,
-// and sends uncompressed requests. To use the gRPC or gRPC-Web protocols, supply the
-// connect.WithGRPC() or connect.WithGRPCWeb() options.
-//
-// The URL supplied here should be the base URL for the Connect or gRPC server (for example,
-// http://api.acme.com or https://acme.com/grpc).
-func NewSpectreServiceClient(httpClient connect.HTTPClient, baseURL string, opts ...connect.ClientOption) SpectreServiceClient {
-	baseURL = strings.TrimRight(baseURL, "/")
-	spectreServiceMethods := spectrepb.File_spectre_v1_spectre_proto.Services().ByName("SpectreService").Methods()
-	return &spectreServiceClient{
-		quarantine: connect.NewClient[spectrepb.QuarantineRequest, spectrepb.QuarantineResponse](
-			httpClient,
-			baseURL+SpectreServiceQuarantineProcedure,
-			connect.WithSchema(spectreServiceMethods.ByName("Quarantine")),
-			connect.WithClientOptions(opts...),
-		),
-		listDivergences: connect.NewClient[spectrepb.ListDivergencesRequest, spectrepb.ListDivergencesResponse](
-			httpClient,
-			baseURL+SpectreServiceListDivergencesProcedure,
-			connect.WithSchema(spectreServiceMethods.ByName("ListDivergences")),
-			connect.WithClientOptions(opts...),
-		),
-		clearDivergences: connect.NewClient[spectrepb.ClearDivergencesRequest, spectrepb.ClearDivergencesResponse](
-			httpClient,
-			baseURL+SpectreServiceClearDivergencesProcedure,
-			connect.WithSchema(spectreServiceMethods.ByName("ClearDivergences")),
-			connect.WithClientOptions(opts...),
-		),
-	}
-}
-
-// spectreServiceClient implements SpectreServiceClient.
-type spectreServiceClient struct {
-	quarantine       *connect.Client[spectrepb.QuarantineRequest, spectrepb.QuarantineResponse]
-	listDivergences  *connect.Client[spectrepb.ListDivergencesRequest, spectrepb.ListDivergencesResponse]
-	clearDivergences *connect.Client[spectrepb.ClearDivergencesRequest, spectrepb.ClearDivergencesResponse]
-}
-
-// Quarantine calls spectre.v1.SpectreService.Quarantine.
-func (c *spectreServiceClient) Quarantine(ctx context.Context, req *connect.Request[spectrepb.QuarantineRequest]) (*connect.Response[spectrepb.QuarantineResponse], error) {
-	return c.quarantine.CallUnary(ctx, req)
-}
-
-// ListDivergences calls spectre.v1.SpectreService.ListDivergences.
-func (c *spectreServiceClient) ListDivergences(ctx context.Context, req *connect.Request[spectrepb.ListDivergencesRequest]) (*connect.Response[spectrepb.ListDivergencesResponse], error) {
-	return c.listDivergences.CallUnary(ctx, req)
-}
-
-// ClearDivergences calls spectre.v1.SpectreService.ClearDivergences.
-func (c *spectreServiceClient) ClearDivergences(ctx context.Context, req *connect.Request[spectrepb.ClearDivergencesRequest]) (*connect.Response[spectrepb.ClearDivergencesResponse], error) {
-	return c.clearDivergences.CallUnary(ctx, req)
+// NewSpectreServiceClient constructs a client for the spectre.v1.SpectreService service. Multiple
+// service clients may share a single connect.Client.
+func NewSpectreServiceClient(client *connect.Client) SpectreServiceClient {
+	return &spectreServiceClient{client: client}
 }
 
 // SpectreServiceHandler is an implementation of the spectre.v1.SpectreService service.
 type SpectreServiceHandler interface {
 	// Quarantine records that a mirror quarantined its candidate. A mirror sends
 	// each quarantine once, retrying until it succeeds, so repeats are ignored.
-	Quarantine(context.Context, *connect.Request[spectrepb.QuarantineRequest]) (*connect.Response[spectrepb.QuarantineResponse], error)
+	Quarantine(context.Context, *spectrepb.QuarantineRequest) (*spectrepb.QuarantineResponse, error)
 	// ListDivergences returns the latest quarantine of each mirror direction.
-	ListDivergences(context.Context, *connect.Request[spectrepb.ListDivergencesRequest]) (*connect.Response[spectrepb.ListDivergencesResponse], error)
+	ListDivergences(context.Context, *spectrepb.ListDivergencesRequest) (*spectrepb.ListDivergencesResponse, error)
 	// ClearDivergences removes the divergences of one service environment, once
 	// someone has dealt with them.
-	ClearDivergences(context.Context, *connect.Request[spectrepb.ClearDivergencesRequest]) (*connect.Response[spectrepb.ClearDivergencesResponse], error)
+	ClearDivergences(context.Context, *spectrepb.ClearDivergencesRequest) (*spectrepb.ClearDivergencesResponse, error)
 }
 
-// NewSpectreServiceHandler builds an HTTP handler from the service implementation. It returns the
-// path on which to mount the handler and the handler itself.
-//
-// By default, handlers support the Connect, gRPC, and gRPC-Web protocols with the binary Protobuf
-// and JSON codecs. They also support gzip compression.
-func NewSpectreServiceHandler(svc SpectreServiceHandler, opts ...connect.HandlerOption) (string, http.Handler) {
-	spectreServiceMethods := spectrepb.File_spectre_v1_spectre_proto.Services().ByName("SpectreService").Methods()
-	spectreServiceQuarantineHandler := connect.NewUnaryHandler(
-		SpectreServiceQuarantineProcedure,
-		svc.Quarantine,
-		connect.WithSchema(spectreServiceMethods.ByName("Quarantine")),
-		connect.WithHandlerOptions(opts...),
+// RegisterSpectreServiceHandler registers svc as the spectre.v1.SpectreService implementation on
+// server.
+func RegisterSpectreServiceHandler(server *connect.Server, svc SpectreServiceHandler) {
+	adapter := spectreServiceHandler{svc: svc}
+	server.Register(
+		connect.Method{Spec: spectreServiceQuarantineSpec(), Handler: adapter.quarantine},
+		connect.Method{Spec: spectreServiceListDivergencesSpec(), Handler: adapter.listDivergences},
+		connect.Method{Spec: spectreServiceClearDivergencesSpec(), Handler: adapter.clearDivergences},
 	)
-	spectreServiceListDivergencesHandler := connect.NewUnaryHandler(
-		SpectreServiceListDivergencesProcedure,
-		svc.ListDivergences,
-		connect.WithSchema(spectreServiceMethods.ByName("ListDivergences")),
-		connect.WithHandlerOptions(opts...),
-	)
-	spectreServiceClearDivergencesHandler := connect.NewUnaryHandler(
-		SpectreServiceClearDivergencesProcedure,
-		svc.ClearDivergences,
-		connect.WithSchema(spectreServiceMethods.ByName("ClearDivergences")),
-		connect.WithHandlerOptions(opts...),
-	)
-	return "/spectre.v1.SpectreService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case SpectreServiceQuarantineProcedure:
-			spectreServiceQuarantineHandler.ServeHTTP(w, r)
-		case SpectreServiceListDivergencesProcedure:
-			spectreServiceListDivergencesHandler.ServeHTTP(w, r)
-		case SpectreServiceClearDivergencesProcedure:
-			spectreServiceClearDivergencesHandler.ServeHTTP(w, r)
-		default:
-			http.NotFound(w, r)
-		}
-	})
 }
 
 // UnimplementedSpectreServiceHandler returns CodeUnimplemented from all methods.
 type UnimplementedSpectreServiceHandler struct{}
 
-func (UnimplementedSpectreServiceHandler) Quarantine(context.Context, *connect.Request[spectrepb.QuarantineRequest]) (*connect.Response[spectrepb.QuarantineResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("spectre.v1.SpectreService.Quarantine is not implemented"))
+func (UnimplementedSpectreServiceHandler) Quarantine(context.Context, *spectrepb.QuarantineRequest) (*spectrepb.QuarantineResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "spectre.v1.SpectreService.Quarantine is not implemented")
 }
 
-func (UnimplementedSpectreServiceHandler) ListDivergences(context.Context, *connect.Request[spectrepb.ListDivergencesRequest]) (*connect.Response[spectrepb.ListDivergencesResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("spectre.v1.SpectreService.ListDivergences is not implemented"))
+func (UnimplementedSpectreServiceHandler) ListDivergences(context.Context, *spectrepb.ListDivergencesRequest) (*spectrepb.ListDivergencesResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "spectre.v1.SpectreService.ListDivergences is not implemented")
 }
 
-func (UnimplementedSpectreServiceHandler) ClearDivergences(context.Context, *connect.Request[spectrepb.ClearDivergencesRequest]) (*connect.Response[spectrepb.ClearDivergencesResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("spectre.v1.SpectreService.ClearDivergences is not implemented"))
+func (UnimplementedSpectreServiceHandler) ClearDivergences(context.Context, *spectrepb.ClearDivergencesRequest) (*spectrepb.ClearDivergencesResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "spectre.v1.SpectreService.ClearDivergences is not implemented")
+}
+
+type spectreServiceClient struct {
+	client *connect.Client
+}
+
+func (c *spectreServiceClient) Quarantine(ctx context.Context, req *spectrepb.QuarantineRequest) (*spectrepb.QuarantineResponse, error) {
+	var res spectrepb.QuarantineResponse
+	if err := c.client.CallUnary(ctx, spectreServiceQuarantineSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *spectreServiceClient) ListDivergences(ctx context.Context, req *spectrepb.ListDivergencesRequest) (*spectrepb.ListDivergencesResponse, error) {
+	var res spectrepb.ListDivergencesResponse
+	if err := c.client.CallUnary(ctx, spectreServiceListDivergencesSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *spectreServiceClient) ClearDivergences(ctx context.Context, req *spectrepb.ClearDivergencesRequest) (*spectrepb.ClearDivergencesResponse, error) {
+	var res spectrepb.ClearDivergencesResponse
+	if err := c.client.CallUnary(ctx, spectreServiceClearDivergencesSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+type spectreServiceHandler struct{ svc SpectreServiceHandler }
+
+func (h spectreServiceHandler) quarantine(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req spectrepb.QuarantineRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.Quarantine(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h spectreServiceHandler) listDivergences(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req spectrepb.ListDivergencesRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.ListDivergences(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h spectreServiceHandler) clearDivergences(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req spectrepb.ClearDivergencesRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.ClearDivergences(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
 }

@@ -5,7 +5,7 @@ package apiconnect
 import (
 	"context"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 )
 
 type UserServiceClient interface {
@@ -13,7 +13,7 @@ type UserServiceClient interface {
 	ClearUsers(ctx context.Context) error
 }
 
-func NewUserServiceClient(httpClient connect.HTTPClient, baseURL string, opts ...connect.ClientOption) UserServiceClient {
+func NewUserServiceClient(client *connect.Client) UserServiceClient {
 	return &userServiceClient{}
 }
 

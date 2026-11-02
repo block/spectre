@@ -7,7 +7,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"connectrpc.com/grpcreflect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
+	"connectrpc.com/grpcreflect/v2"
 	"github.com/alecthomas/assert/v2"
 	"google.golang.org/protobuf/reflect/protodesc"
 	"google.golang.org/protobuf/reflect/protoreflect"
@@ -41,14 +43,11 @@ func TestReflectionLoaderLoadsOverUnixSocket(t *testing.T) {
 // serveReflection runs a sample UserService with reflection on listener.
 func serveReflection(t *testing.T, listener net.Listener) {
 	t.Helper()
+	rpcServer := connect.NewServer()
+	samplepbconnect.RegisterUserServiceHandler(rpcServer, samplepbconnect.UnimplementedUserServiceHandler{})
+	grpcreflect.Register(rpcServer)
 	mux := http.NewServeMux()
-	path, handler := samplepbconnect.NewUserServiceHandler(samplepbconnect.UnimplementedUserServiceHandler{})
-	mux.Handle(path, handler)
-	reflector := grpcreflect.NewStaticReflector(samplepbconnect.UserServiceName)
-	path, handler = grpcreflect.NewHandlerV1(reflector)
-	mux.Handle(path, handler)
-	path, handler = grpcreflect.NewHandlerV1Alpha(reflector)
-	mux.Handle(path, handler)
+	connecthttp.Mount(mux, rpcServer)
 	protocols := new(http.Protocols)
 	protocols.SetHTTP1(true)
 	protocols.SetHTTP2(true)

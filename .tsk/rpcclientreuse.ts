@@ -16,7 +16,7 @@ builds a new client every time it runs. Construct the client once, wrap it in a
 struct with methods, and pass that in. A client that is returned, stored, passed
 on, or captured by a function literal is allowed, because something else keeps
 it. A constructor is a New<Service>Client in a package whose path ends in
-connect, taking a connect.HTTPClient and returning its <Service>Client
+connect, taking a *connect.Client and returning its <Service>Client
 interface. Tests, main functions and Run methods are exempt, because they run
 once per test, process or command.`,
   requires: [inspect],
@@ -64,11 +64,12 @@ function isConstructor(fn: types.Func): boolean {
     return false;
   }
   const first = types.unalias(params.at(0)?.type() ?? null);
+  const client = first?.$type === "Pointer" ? types.unalias(first.elem()) : null;
   return (
     result.underlying()?.$type === "Interface" &&
-    first?.$type === "Named" &&
-    first.obj()?.name() === "HTTPClient" &&
-    first.obj()?.pkg()?.path() === "connectrpc.com/connect"
+    client?.$type === "Named" &&
+    client.obj()?.name() === "Client" &&
+    client.obj()?.pkg()?.path() === "connectrpc.com/connect/v2"
   );
 }
 

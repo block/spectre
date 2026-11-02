@@ -12,7 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	"github.com/alecthomas/assert/v2"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
@@ -29,15 +30,15 @@ func TestUserRPCs(t *testing.T) {
 	service, expected := newTestService(t)
 	client := newTestClient(t, service)
 	startedAt := time.Now()
-	response, err := client.ListUsers(t.Context(), connect.NewRequest(&samplepb.ListUsersRequest{}))
+	response, err := client.ListUsers(t.Context(), &samplepb.ListUsersRequest{})
 	completedAt := time.Now()
 	assert.NoError(t, err)
-	assertListUsersResponse(t, expected, response.Msg)
-	assert.False(t, response.Msg.GetGeneratedAt().AsTime().Before(startedAt))
-	assert.False(t, response.Msg.GetGeneratedAt().AsTime().After(completedAt))
-	user, err := client.GetUser(t.Context(), connect.NewRequest(&samplepb.GetUserRequest{Id: "user-2"}))
+	assertListUsersResponse(t, expected, response)
+	assert.False(t, response.GetGeneratedAt().AsTime().Before(startedAt))
+	assert.False(t, response.GetGeneratedAt().AsTime().After(completedAt))
+	user, err := client.GetUser(t.Context(), &samplepb.GetUserRequest{Id: "user-2"})
 	assert.NoError(t, err)
-	assert.True(t, proto.Equal(&samplepb.GetUserResponse{User: expected.GetUsers()[1]}, user.Msg))
+	assert.True(t, proto.Equal(&samplepb.GetUserResponse{User: expected.GetUsers()[1]}, user))
 
 	for _, test := range []struct {
 		name string
@@ -48,7 +49,7 @@ func TestUserRPCs(t *testing.T) {
 		{name: "UnknownID", id: "missing", code: connect.CodeNotFound},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			_, err := client.GetUser(t.Context(), connect.NewRequest(&samplepb.GetUserRequest{Id: test.id}))
+			_, err := client.GetUser(t.Context(), &samplepb.GetUserRequest{Id: test.id})
 			assert.Equal(t, test.code, connect.CodeOf(err))
 		})
 	}
@@ -57,8 +58,7 @@ func TestUserRPCs(t *testing.T) {
 func TestServerHealthAndGRPC(t *testing.T) {
 	service, expected := newTestService(t)
 	mux := http.NewServeMux()
-	path, handler := samplepbconnect.NewUserServiceHandler(service)
-	mux.Handle(path, handler)
+	mountUserService(mux, service)
 	var logs bytes.Buffer
 	server := sample.NewServer(mux)
 	assertHealthStatus(t, server, "/livez", http.StatusNoContent)
@@ -83,14 +83,14 @@ func TestServerHealthAndGRPC(t *testing.T) {
 	protocols.SetUnencryptedHTTP2(true)
 	transport := &http.Transport{Protocols: protocols}
 	t.Cleanup(transport.CloseIdleConnections)
-	client := samplepbconnect.NewUserServiceClient(
+	client := samplepbconnect.NewUserServiceClient(connect.NewClient(connecthttp.NewTransport(
 		&http.Client{Transport: transport},
 		"http://"+listener.Addr().String(),
-		connect.WithGRPC(),
-	)
-	response, err := client.ListUsers(t.Context(), connect.NewRequest(&samplepb.ListUsersRequest{}))
+		connecthttp.WithGRPC(),
+	)))
+	response, err := client.ListUsers(t.Context(), &samplepb.ListUsersRequest{})
 	assert.NoError(t, err)
-	assertListUsersResponse(t, expected, response.Msg)
+	assertListUsersResponse(t, expected, response)
 
 	cancel()
 	select {
@@ -121,31 +121,31 @@ func TestListFilters(t *testing.T) {
 		{name: "ExplicitUnspecifiedRole", request: &samplepb.ListUsersRequest{Role: samplepb.Role_ROLE_UNSPECIFIED.Enum()}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			response, err := client.ListUsers(t.Context(), connect.NewRequest(test.request))
+			response, err := client.ListUsers(t.Context(), test.request)
 			assert.NoError(t, err)
 			expected := &samplepb.ListUsersResponse{
 				Users:      test.users,
 				TotalCount: int64(len(test.users)),
 			}
-			assertListUsersResponse(t, expected, response.Msg)
+			assertListUsersResponse(t, expected, response)
 		})
 	}
 }
 
 func TestResponseIsolation(t *testing.T) {
 	service, expected := newTestService(t)
-	response, err := service.ListUsers(t.Context(), connect.NewRequest(&samplepb.ListUsersRequest{}))
+	response, err := service.ListUsers(t.Context(), &samplepb.ListUsersRequest{})
 	assert.NoError(t, err)
-	response.Msg.GetUsers()[0].GetLabels()["team"] = "changed"
-	response.Msg.GetUsers()[0].GetProfile().GetAddresses()[0].City = "changed"
-	response.Msg.GetGeneratedAt().Seconds = 0
-	user, err := service.GetUser(t.Context(), connect.NewRequest(&samplepb.GetUserRequest{Id: "user-1"}))
+	response.GetUsers()[0].GetLabels()["team"] = "changed"
+	response.GetUsers()[0].GetProfile().GetAddresses()[0].City = "changed"
+	response.GetGeneratedAt().Seconds = 0
+	user, err := service.GetUser(t.Context(), &samplepb.GetUserRequest{Id: "user-1"})
 	assert.NoError(t, err)
-	user.Msg.GetUser().GetAvatar()[0] = 255
-	user.Msg.GetUser().Name = "changed"
-	unchanged, err := service.ListUsers(t.Context(), connect.NewRequest(&samplepb.ListUsersRequest{}))
+	user.GetUser().GetAvatar()[0] = 255
+	user.GetUser().Name = "changed"
+	unchanged, err := service.ListUsers(t.Context(), &samplepb.ListUsersRequest{})
 	assert.NoError(t, err)
-	assertListUsersResponse(t, expected, unchanged.Msg)
+	assertListUsersResponse(t, expected, unchanged)
 }
 
 func TestRejectInvalidFixture(t *testing.T) {
@@ -185,9 +185,9 @@ func TestCancelledRequests(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			ctx, cancel := test.ctx()
 			defer cancel()
-			_, err := service.GetUser(ctx, connect.NewRequest(&samplepb.GetUserRequest{Id: "user-1"}))
+			_, err := service.GetUser(ctx, &samplepb.GetUserRequest{Id: "user-1"})
 			assert.Equal(t, test.code, connect.CodeOf(err))
-			_, err = service.ListUsers(ctx, connect.NewRequest(&samplepb.ListUsersRequest{}))
+			_, err = service.ListUsers(ctx, &samplepb.ListUsersRequest{})
 			assert.Equal(t, test.code, connect.CodeOf(err))
 		})
 	}
@@ -205,17 +205,17 @@ func TestSampleDescriptorAndEncodings(t *testing.T) {
 	assert.NoError(t, err)
 	service, fixture := newTestService(t)
 	client := newTestClient(t, service)
-	response, err := client.ListUsers(t.Context(), connect.NewRequest(&samplepb.ListUsersRequest{}))
+	response, err := client.ListUsers(t.Context(), &samplepb.ListUsersRequest{})
 	assert.NoError(t, err)
-	assert.Equal(t, uint64(9007199254740993), response.Msg.GetUsers()[0].GetRevision())
-	assert.Equal(t, uint64(18446744073709551615), response.Msg.GetUsers()[1].GetRevision())
-	assert.True(t, response.Msg.GetUsers()[0].Nickname != nil)
-	assert.True(t, response.Msg.GetUsers()[1].Nickname == nil)
-	assert.True(t, response.Msg.GetUsers()[0].GetProfile().MarketingConsent != nil)
-	assert.True(t, response.Msg.GetUsers()[1].GetProfile().MarketingConsent == nil)
-	assert.Equal(t, []byte{0, 1, 2, 3, 255}, response.Msg.GetUsers()[0].GetAvatar())
+	assert.Equal(t, uint64(9007199254740993), response.GetUsers()[0].GetRevision())
+	assert.Equal(t, uint64(18446744073709551615), response.GetUsers()[1].GetRevision())
+	assert.True(t, response.GetUsers()[0].Nickname != nil)
+	assert.True(t, response.GetUsers()[1].Nickname == nil)
+	assert.True(t, response.GetUsers()[0].GetProfile().MarketingConsent != nil)
+	assert.True(t, response.GetUsers()[1].GetProfile().MarketingConsent == nil)
+	assert.Equal(t, []byte{0, 1, 2, 3, 255}, response.GetUsers()[0].GetAvatar())
 
-	encoded := proto.Clone(response.Msg).(*samplepb.ListUsersResponse)
+	encoded := proto.Clone(response).(*samplepb.ListUsersResponse)
 	encoded.GeneratedAt = fixture.GetGeneratedAt()
 	wire, err := proto.Marshal(encoded)
 	assert.NoError(t, err)
@@ -256,8 +256,15 @@ func assertHealthStatus(t *testing.T, handler http.Handler, path string, expecte
 
 func newTestClient(t *testing.T, service *sample.Service) samplepbconnect.UserServiceClient {
 	t.Helper()
-	_, handler := samplepbconnect.NewUserServiceHandler(service)
-	server := httptest.NewServer(handler)
+	mux := http.NewServeMux()
+	mountUserService(mux, service)
+	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
-	return samplepbconnect.NewUserServiceClient(server.Client(), server.URL)
+	return samplepbconnect.NewUserServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL)))
+}
+
+func mountUserService(mux *http.ServeMux, service *sample.Service) {
+	server := connect.NewServer()
+	samplepbconnect.RegisterUserServiceHandler(server, service)
+	connecthttp.Mount(mux, server)
 }
