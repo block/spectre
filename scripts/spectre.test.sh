@@ -5,54 +5,42 @@ set -eu
 source_root=$(CDPATH='' cd -- "$(dirname "$0")/.." && pwd)
 test_root=$(mktemp -d)
 trap 'rm -rf "$test_root"' EXIT
-mkdir -p "$test_root/bin" "$test_root/cmd/spectre-sample" "$test_root/scripts" "$test_root/sync"
+test_root=$(CDPATH='' cd -- "$test_root" && pwd -P)
+mkdir -p "$test_root/bin" "$test_root/dist" "$test_root/scripts"
 cp "$source_root/scripts/spectre" "$test_root/scripts/spectre"
-ln -s spectre "$test_root/scripts/spectre-sample"
 
-export SPECTRE_LAUNCHER_TEST_LOG="$test_root/builds"
-export SPECTRE_LAUNCHER_TEST_SYNC="$test_root/sync"
-cat > "$test_root/bin/go" <<'EOF'
+export SPECTRE_LAUNCHER_TEST_LOG="$test_root/log"
+cat > "$test_root/bin/bit" <<'EOF'
 #!/bin/sh
-set -eu
-
-output=
-while [ "$#" -gt 0 ]; do
-  if [ "$1" = "-o" ]; then
-    output=$2
-    shift 2
-    continue
-  fi
-  shift
-done
-printf '%s\n' "$output" >> "$SPECTRE_LAUNCHER_TEST_LOG"
-: > "$SPECTRE_LAUNCHER_TEST_SYNC/$$"
-while [ "$(find "$SPECTRE_LAUNCHER_TEST_SYNC" -type f | wc -l)" -lt 2 ]; do
-  sleep 0.01
-done
-printf '#!/bin/sh\nexit 0\n' > "$output"
-chmod +x "$output"
+printf 'bit %s %s\n' "$(pwd -P)" "$*" >> "$SPECTRE_LAUNCHER_TEST_LOG"
 EOF
-chmod +x "$test_root/bin/go"
+chmod +x "$test_root/bin/bit"
 
-"$test_root/scripts/spectre-sample" &
-first=$!
-"$test_root/scripts/spectre-sample" &
-second=$!
-wait "$first"
-wait "$second"
+check() {
+  name=$1
+  target=$2
+  if [ "$name" != spectre ]; then
+    ln -s spectre "$test_root/scripts/$name"
+  fi
+  cat > "$test_root/dist/$name" <<'EOF'
+#!/bin/sh
+printf '%s %s\n' "$(basename "$0")" "$*" >> "$SPECTRE_LAUNCHER_TEST_LOG"
+EOF
+  chmod +x "$test_root/dist/$name"
+  : > "$SPECTRE_LAUNCHER_TEST_LOG"
 
-shared="$test_root/dist/devel/spectre-sample"
-if grep -Fqx "$shared" "$SPECTRE_LAUNCHER_TEST_LOG"; then
-  printf 'concurrent builds used the shared output path\n' >&2
-  exit 1
-fi
-if [ "$(sort -u "$SPECTRE_LAUNCHER_TEST_LOG" | wc -l)" -ne 2 ]; then
-  printf 'concurrent builds did not use unique output paths\n' >&2
-  exit 1
-fi
-if [ ! -x "$shared" ]; then
-  printf 'launcher did not publish an executable\n' >&2
-  exit 1
-fi
+  (cd / && "$test_root/scripts/$name" --flag 'two words')
 
-printf 'Launcher concurrency regression test passed\n'
+  expected=$(printf 'bit %s -q %s\n%s --flag two words' "$test_root" "$target" "$name")
+  actual=$(cat "$SPECTRE_LAUNCHER_TEST_LOG")
+  if [ "$actual" != "$expected" ]; then
+    printf '%s: expected:\n%s\ngot:\n%s\n' "$name" "$expected" "$actual" >&2
+    exit 1
+  fi
+}
+
+check spectre spectre-bin
+check spectre-sample sample-bin
+check spectre-sample-forecasts sample-forecasts-bin
+
+printf 'Launcher test passed\n'
