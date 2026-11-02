@@ -2,7 +2,7 @@
 set -euo pipefail
 
 if [[ "$#" -ne 1 ]]; then
-  echo "usage: scripts/release-notes VERSION" >&2
+  echo "usage: release-notes VERSION" >&2
   exit 2
 fi
 

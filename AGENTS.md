@@ -66,7 +66,7 @@
 - Run tests, linting, and formatting through `bit` targets instead of invoking the underlying commands manually.
   Run the `tsk` linters with `bit lint-tsk` and their tests with `bit test-tsk`.
 - All tools used in build files or documentation must be installed in the repository's Hermit environment.
-- Invoke commands from `scripts` by name. Never prefix them with the repository-relative scripts path because Hermit adds that directory to `PATH`.
+- Invoke commands from `scripts` and `bin` by name. Never prefix them with a repository-relative path because Hermit adds both directories to `PATH`.
 
 # Documentation
 
