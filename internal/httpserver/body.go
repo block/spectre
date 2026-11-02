@@ -178,17 +178,18 @@ func (b *streamBody) closeReader() {
 
 func (b *streamBody) closeWriter(err error) {
 	b.mu.Lock()
+	defer b.mu.Unlock()
 	if b.writerClosed {
-		b.mu.Unlock()
 		return
+	}
+	// Abort before the reader can see the error, or the candidate reports its own
+	// failure and is quarantined. Cancelling a context never calls back into the body.
+	if !errors.Is(err, io.EOF) {
+		b.abort()
 	}
 	b.writerClosed = true
 	b.writerError = err
 	b.ready.Broadcast()
-	b.mu.Unlock()
-	if !errors.Is(err, io.EOF) {
-		b.abort()
-	}
 }
 
 func (b *streamBody) clearBuffer() {
