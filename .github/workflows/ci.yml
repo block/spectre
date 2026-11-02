@@ -4,6 +4,8 @@ on:
   push:
     branches:
       - main
+      # Renovate opens a PR only after branch checks finish.
+      - renovate/**
   pull_request:
 
 permissions:
