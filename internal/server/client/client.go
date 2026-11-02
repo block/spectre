@@ -6,7 +6,8 @@ import (
 	"net/http"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	"github.com/alecthomas/errors"
 
 	"github.com/block/spectre/internal/logger"
@@ -43,7 +44,7 @@ type Client struct {
 
 // New returns a client of the SPECTRE server that config locates.
 func New(config Config) *Client {
-	return &Client{rpc: spectrepbconnect.NewSpectreServiceClient(&http.Client{}, config.URL)}
+	return &Client{rpc: spectrepbconnect.NewSpectreServiceClient(connect.NewClient(connecthttp.NewTransport(&http.Client{}, config.URL)))}
 }
 
 // Quarantine records a mirror's quarantine. A mirror reports each one only once,
@@ -67,18 +68,18 @@ func (c *Client) Quarantine(ctx context.Context, divergence model.Divergence) er
 func (c *Client) quarantineOnce(ctx context.Context, request *pb.QuarantineRequest) error {
 	ctx, cancel := context.WithTimeout(ctx, attemptTimeout)
 	defer cancel()
-	_, err := c.rpc.Quarantine(ctx, connect.NewRequest(request))
+	_, err := c.rpc.Quarantine(ctx, request)
 	return errors.Wrap(err, "report quarantine")
 }
 
 // ListDivergences returns the divergences that filter selects, ordered by source.
 func (c *Client) ListDivergences(ctx context.Context, filter model.DivergenceFilter) ([]model.Divergence, error) {
-	response, err := c.rpc.ListDivergences(ctx, connect.NewRequest(wire.FilterMessage(filter)))
+	response, err := c.rpc.ListDivergences(ctx, wire.FilterMessage(filter))
 	if err != nil {
 		return nil, errors.Wrap(err, "list divergences")
 	}
-	divergences := make([]model.Divergence, 0, len(response.Msg.GetDivergences()))
-	for _, message := range response.Msg.GetDivergences() {
+	divergences := make([]model.Divergence, 0, len(response.GetDivergences()))
+	for _, message := range response.GetDivergences() {
 		divergence, err := wire.DivergenceFromMessage(message)
 		if err != nil {
 			return nil, errors.Wrap(err, "list divergences")
@@ -91,6 +92,6 @@ func (c *Client) ListDivergences(ctx context.Context, filter model.DivergenceFil
 // ClearDivergences removes the divergences of one service environment.
 func (c *Client) ClearDivergences(ctx context.Context, service, environment string) error {
 	request := &pb.ClearDivergencesRequest{Service: service, Environment: environment}
-	_, err := c.rpc.ClearDivergences(ctx, connect.NewRequest(request))
+	_, err := c.rpc.ClearDivergences(ctx, request)
 	return errors.Wrap(err, "clear divergences")
 }

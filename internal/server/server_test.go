@@ -5,7 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	"github.com/alecthomas/assert/v2"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -20,7 +21,7 @@ import (
 func TestDivergencesKeepLatestQuarantine(t *testing.T) {
 	httpServer := httptest.NewServer(server.NewService(storage.NewMemory()).Handler())
 	t.Cleanup(httpServer.Close)
-	rpc := spectrepbconnect.NewSpectreServiceClient(httpServer.Client(), httpServer.URL)
+	rpc := spectrepbconnect.NewSpectreServiceClient(connect.NewClient(connecthttp.NewTransport(httpServer.Client(), httpServer.URL)))
 	first := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
 	divergent := func(since time.Time, route string) *pb.Divergence {
 		return &pb.Divergence{
@@ -49,7 +50,7 @@ func TestDivergencesKeepLatestQuarantine(t *testing.T) {
 		},
 	}
 	report := func(divergence *pb.Divergence) {
-		_, err := rpc.Quarantine(t.Context(), connect.NewRequest(&pb.QuarantineRequest{Divergence: divergence}))
+		_, err := rpc.Quarantine(t.Context(), &pb.QuarantineRequest{Divergence: divergence})
 		assert.NoError(t, err)
 	}
 	report(unmatched)
@@ -62,19 +63,19 @@ func TestDivergencesKeepLatestQuarantine(t *testing.T) {
 	report(divergent(first.Add(-time.Minute), "GET /v1/users/{id}/avatar"))
 
 	expected := &pb.ListDivergencesResponse{Divergences: []*pb.Divergence{latest, unmatched}}
-	all, err := rpc.ListDivergences(t.Context(), connect.NewRequest(&pb.ListDivergencesRequest{}))
+	all, err := rpc.ListDivergences(t.Context(), &pb.ListDivergencesRequest{})
 	assert.NoError(t, err)
-	assert.True(t, proto.Equal(expected, all.Msg), "%v", all.Msg)
+	assert.True(t, proto.Equal(expected, all), "%v", all)
 
-	staging, err := rpc.ListDivergences(t.Context(), connect.NewRequest(&pb.ListDivergencesRequest{Environment: proto.String("staging")}))
+	staging, err := rpc.ListDivergences(t.Context(), &pb.ListDivergencesRequest{Environment: proto.String("staging")})
 	assert.NoError(t, err)
-	assert.True(t, proto.Equal(&pb.ListDivergencesResponse{Divergences: []*pb.Divergence{unmatched}}, staging.Msg), "%v", staging.Msg)
+	assert.True(t, proto.Equal(&pb.ListDivergencesResponse{Divergences: []*pb.Divergence{unmatched}}, staging), "%v", staging)
 }
 
 func TestClearDivergencesOfServiceEnvironment(t *testing.T) {
 	httpServer := httptest.NewServer(server.NewService(storage.NewMemory()).Handler())
 	t.Cleanup(httpServer.Close)
-	rpc := spectrepbconnect.NewSpectreServiceClient(httpServer.Client(), httpServer.URL)
+	rpc := spectrepbconnect.NewSpectreServiceClient(connect.NewClient(connecthttp.NewTransport(httpServer.Client(), httpServer.URL)))
 	divergence := func(environment string, direction pb.Direction) *pb.Divergence {
 		return &pb.Divergence{
 			Service:     "users",
@@ -90,24 +91,24 @@ func TestClearDivergencesOfServiceEnvironment(t *testing.T) {
 		divergence("production", pb.Direction_DIRECTION_EGRESS),
 		staging,
 	} {
-		_, err := rpc.Quarantine(t.Context(), connect.NewRequest(&pb.QuarantineRequest{Divergence: reported}))
+		_, err := rpc.Quarantine(t.Context(), &pb.QuarantineRequest{Divergence: reported})
 		assert.NoError(t, err)
 	}
 
 	assert.NoError(t, client.New(client.Config{URL: httpServer.URL}).ClearDivergences(t.Context(), "users", "production"))
 
-	remaining, err := rpc.ListDivergences(t.Context(), connect.NewRequest(&pb.ListDivergencesRequest{}))
+	remaining, err := rpc.ListDivergences(t.Context(), &pb.ListDivergencesRequest{})
 	assert.NoError(t, err)
-	assert.True(t, proto.Equal(&pb.ListDivergencesResponse{Divergences: []*pb.Divergence{staging}}, remaining.Msg), "%v", remaining.Msg)
+	assert.True(t, proto.Equal(&pb.ListDivergencesResponse{Divergences: []*pb.Divergence{staging}}, remaining), "%v", remaining)
 
-	_, err = rpc.ClearDivergences(t.Context(), connect.NewRequest(&pb.ClearDivergencesRequest{Service: "users"}))
+	_, err = rpc.ClearDivergences(t.Context(), &pb.ClearDivergencesRequest{Service: "users"})
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 }
 
 func TestQuarantineRejectsInvalidDivergence(t *testing.T) {
 	httpServer := httptest.NewServer(server.NewService(storage.NewMemory()).Handler())
 	t.Cleanup(httpServer.Close)
-	rpc := spectrepbconnect.NewSpectreServiceClient(httpServer.Client(), httpServer.URL)
+	rpc := spectrepbconnect.NewSpectreServiceClient(connect.NewClient(connecthttp.NewTransport(httpServer.Client(), httpServer.URL)))
 	valid := func() *pb.Divergence {
 		return &pb.Divergence{
 			Service:     "users",
@@ -139,7 +140,7 @@ func TestQuarantineRejectsInvalidDivergence(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			_, err := rpc.Quarantine(t.Context(), connect.NewRequest(&pb.QuarantineRequest{Divergence: test.divergence}))
+			_, err := rpc.Quarantine(t.Context(), &pb.QuarantineRequest{Divergence: test.divergence})
 			assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 		})
 	}

@@ -6,8 +6,8 @@ go 1.27.1
 retract [v1.0.0, v1.8.1]
 
 require (
-	connectrpc.com/connect v1.21.1
-	connectrpc.com/grpcreflect v1.3.1
+	connectrpc.com/connect/v2 v2.0.2
+	connectrpc.com/grpcreflect/v2 v2.0.0
 	github.com/alecthomas/assert/v2 v2.11.0
 	github.com/alecthomas/errors v0.9.1
 	github.com/alecthomas/kong v1.17.0
@@ -20,7 +20,6 @@ require (
 	github.com/lmittmann/tint v1.2.1
 	github.com/microsoft/TypeScript/tsc/shim/typescript v0.0.0
 	github.com/pelletier/go-toml v1.9.5
-	github.com/pelletier/go-toml/v2 v2.4.3
 	github.com/redis/go-redis/v9 v9.23.0
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
 	go.jetify.com/typeid v1.3.0

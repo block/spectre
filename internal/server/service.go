@@ -6,7 +6,8 @@ import (
 	"net/http"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	"github.com/alecthomas/errors"
 
 	"github.com/block/spectre/internal/httpserver/middleware/health"
@@ -32,45 +33,47 @@ func NewService(store storage.Store) *Service {
 // Handler serves the API.
 func (s *Service) Handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.Handle(spectrepbconnect.NewSpectreServiceHandler(s))
+	server := connect.NewServer()
+	spectrepbconnect.RegisterSpectreServiceHandler(server, s)
+	connecthttp.Mount(mux, server)
 	return mux
 }
 
 // Quarantine records that a mirror quarantined its candidate.
-func (s *Service) Quarantine(ctx context.Context, request *connect.Request[pb.QuarantineRequest]) (*connect.Response[pb.QuarantineResponse], error) {
-	divergence, err := wire.DivergenceFromMessage(request.Msg.GetDivergence())
+func (s *Service) Quarantine(ctx context.Context, request *pb.QuarantineRequest) (*pb.QuarantineResponse, error) {
+	divergence, err := wire.DivergenceFromMessage(request.GetDivergence())
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		return nil, connect.NewError(connect.CodeInvalidArgument, err.Error()).WithCause(err)
 	}
 	if err := s.store.Record(ctx, divergence); err != nil {
-		return nil, connect.NewError(connect.CodeUnavailable, err)
+		return nil, connect.NewError(connect.CodeUnavailable, err.Error()).WithCause(err)
 	}
-	return connect.NewResponse(&pb.QuarantineResponse{}), nil
+	return &pb.QuarantineResponse{}, nil
 }
 
 // ListDivergences returns the latest quarantine of each mirror direction.
-func (s *Service) ListDivergences(ctx context.Context, request *connect.Request[pb.ListDivergencesRequest]) (*connect.Response[pb.ListDivergencesResponse], error) {
+func (s *Service) ListDivergences(ctx context.Context, request *pb.ListDivergencesRequest) (*pb.ListDivergencesResponse, error) {
 	divergences, err := s.store.List(ctx)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeUnavailable, err)
+		return nil, connect.NewError(connect.CodeUnavailable, err.Error()).WithCause(err)
 	}
 	response := &pb.ListDivergencesResponse{}
-	for _, divergence := range filterDivergences(divergences, wire.FilterFromMessage(request.Msg)) {
+	for _, divergence := range filterDivergences(divergences, wire.FilterFromMessage(request)) {
 		response.Divergences = append(response.Divergences, wire.DivergenceMessage(divergence))
 	}
-	return connect.NewResponse(response), nil
+	return response, nil
 }
 
 // ClearDivergences removes the divergences of one service environment.
-func (s *Service) ClearDivergences(ctx context.Context, request *connect.Request[pb.ClearDivergencesRequest]) (*connect.Response[pb.ClearDivergencesResponse], error) {
-	service, environment := request.Msg.GetService(), request.Msg.GetEnvironment()
+func (s *Service) ClearDivergences(ctx context.Context, request *pb.ClearDivergencesRequest) (*pb.ClearDivergencesResponse, error) {
+	service, environment := request.GetService(), request.GetEnvironment()
 	if service == "" || environment == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("clearing divergences needs a service and environment"))
+		return nil, connect.NewError(connect.CodeInvalidArgument, "clearing divergences needs a service and environment")
 	}
 	if err := s.store.Clear(ctx, service, environment); err != nil {
-		return nil, connect.NewError(connect.CodeUnavailable, err)
+		return nil, connect.NewError(connect.CodeUnavailable, err.Error()).WithCause(err)
 	}
-	return connect.NewResponse(&pb.ClearDivergencesResponse{}), nil
+	return &pb.ClearDivergencesResponse{}, nil
 }
 
 // Serve runs a SPECTRE server until ctx is cancelled. Mesh mTLS secures

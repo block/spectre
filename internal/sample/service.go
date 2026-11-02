@@ -5,7 +5,7 @@ import (
 	"context"
 	"slices"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 	"github.com/alecthomas/errors"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
@@ -40,33 +40,33 @@ func New(data []byte) (*Service, error) {
 }
 
 // GetUser returns one sample user, or InvalidArgument or NotFound for an invalid ID.
-func (s *Service) GetUser(ctx context.Context, request *connect.Request[samplepb.GetUserRequest]) (*connect.Response[samplepb.GetUserResponse], error) {
+func (s *Service) GetUser(ctx context.Context, request *samplepb.GetUserRequest) (*samplepb.GetUserResponse, error) {
 	if err := ctx.Err(); err != nil {
 		code := connect.CodeCanceled
 		if errors.Is(err, context.DeadlineExceeded) {
 			code = connect.CodeDeadlineExceeded
 		}
-		return nil, connect.NewError(code, errors.Wrap(err, "get user"))
+		return nil, connect.NewError(code, errors.Wrap(err, "get user").Error())
 	}
-	if request.Msg.GetId() == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("id is required"))
+	if request.GetId() == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, "id is required")
 	}
 	for _, user := range s.snapshot.GetUsers() {
-		if user.GetId() == request.Msg.GetId() {
-			return connect.NewResponse(&samplepb.GetUserResponse{User: proto.Clone(user).(*samplepb.User)}), nil
+		if user.GetId() == request.GetId() {
+			return &samplepb.GetUserResponse{User: proto.Clone(user).(*samplepb.User)}, nil
 		}
 	}
-	return nil, connect.NewError(connect.CodeNotFound, errors.New("user not found"))
+	return nil, connect.NewError(connect.CodeNotFound, "user not found")
 }
 
 // ListUsers filters by IDs and optional role, preserving fixture order.
-func (s *Service) ListUsers(ctx context.Context, request *connect.Request[samplepb.ListUsersRequest]) (*connect.Response[samplepb.ListUsersResponse], error) {
+func (s *Service) ListUsers(ctx context.Context, request *samplepb.ListUsersRequest) (*samplepb.ListUsersResponse, error) {
 	if err := ctx.Err(); err != nil {
 		code := connect.CodeCanceled
 		if errors.Is(err, context.DeadlineExceeded) {
 			code = connect.CodeDeadlineExceeded
 		}
-		return nil, connect.NewError(code, errors.Wrap(err, "list users"))
+		return nil, connect.NewError(code, errors.Wrap(err, "list users").Error())
 	}
 	response := proto.Clone(s.snapshot).(*samplepb.ListUsersResponse)
 	// A per-call timestamp ensures integration tests exercise ignored-field comparison.
@@ -74,14 +74,14 @@ func (s *Service) ListUsers(ctx context.Context, request *connect.Request[sample
 	users := response.GetUsers()
 	response.Users = nil
 	for _, user := range users {
-		if len(request.Msg.GetIds()) > 0 && !slices.Contains(request.Msg.GetIds(), user.GetId()) {
+		if len(request.GetIds()) > 0 && !slices.Contains(request.GetIds(), user.GetId()) {
 			continue
 		}
-		if request.Msg.Role != nil && !slices.Contains(user.GetRoles(), request.Msg.GetRole()) {
+		if request.Role != nil && !slices.Contains(user.GetRoles(), request.GetRole()) {
 			continue
 		}
 		response.Users = append(response.GetUsers(), user)
 	}
 	response.TotalCount = int64(len(response.GetUsers()))
-	return connect.NewResponse(response), nil
+	return response, nil
 }

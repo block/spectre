@@ -7,8 +7,9 @@ import (
 	"slices"
 	"strings"
 
-	"connectrpc.com/connect"
-	"connectrpc.com/grpcreflect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
+	"connectrpc.com/grpcreflect/v2"
 	"github.com/alecthomas/errors"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
@@ -36,7 +37,7 @@ func (loader *ReflectionLoader) Load(ctx context.Context, endpoint string) (*des
 	defer closeClient()
 
 	stream := client.NewStream(ctx)
-	defer func() { _, _ = stream.Close() }()
+	defer func() { _ = stream.Close() }()
 	services, err := stream.ListServices()
 	if err != nil {
 		return nil, errors.Wrap(err, "list reflected services")
@@ -120,5 +121,5 @@ func reflectionClient(endpoint string) (*grpcreflect.Client, func(), error) {
 
 func newReflectionClient(transport *http.Transport, baseURL string) *grpcreflect.Client {
 	httpClient := &http.Client{Transport: transport}
-	return grpcreflect.NewClient(httpClient, baseURL, connect.WithGRPC())
+	return grpcreflect.NewClient(connect.NewClient(connecthttp.NewTransport(httpClient, baseURL, connecthttp.WithGRPC())))
 }
