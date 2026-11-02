@@ -11,6 +11,15 @@ on:
 permissions:
   contents: read
 
+env:
+  # Go's build and module caches and tsk's lint results, at their Linux defaults.
+  BUILD_CACHE_PATHS: |
+    ~/.cache/go-build
+    ~/.cache/tsk
+    ~/go/pkg/mod
+
+# Only main saves the build cache, so every branch restores main's latest
+# entry and branches never evict it with entries nothing else reads.
 jobs:
   test:
     name: Test
@@ -18,8 +27,18 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # ratchet:actions/checkout@v7
       - uses: cashapp/activate-hermit@cea9af7913204a965fd488637a8d1811bba2e616 # ratchet:cashapp/activate-hermit@v1
+      - uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # ratchet:actions/cache/restore@v5
+        with:
+          path: ${{ env.BUILD_CACHE_PATHS }}
+          key: build-test-${{ github.sha }}
+          restore-keys: build-test-
       - name: Run tests
         run: bit test
+      - if: github.ref == 'refs/heads/main'
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # ratchet:actions/cache/save@v5
+        with:
+          path: ${{ env.BUILD_CACHE_PATHS }}
+          key: build-test-${{ github.sha }}
 
   lint:
     name: Lint
@@ -27,8 +46,18 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # ratchet:actions/checkout@v7
       - uses: cashapp/activate-hermit@cea9af7913204a965fd488637a8d1811bba2e616 # ratchet:cashapp/activate-hermit@v1
+      - uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # ratchet:actions/cache/restore@v5
+        with:
+          path: ${{ env.BUILD_CACHE_PATHS }}
+          key: build-lint-${{ github.sha }}
+          restore-keys: build-lint-
       - name: Run lint checks
         run: bit lint
+      - if: github.ref == 'refs/heads/main'
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # ratchet:actions/cache/save@v5
+        with:
+          path: ${{ env.BUILD_CACHE_PATHS }}
+          key: build-lint-${{ github.sha }}
 
   container:
     name: Container

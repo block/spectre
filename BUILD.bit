@@ -130,7 +130,7 @@ lint-tsk[go-module] = exec.test {
 explicit sample-bin = go.exe {
   package = "./cmd/spectre-sample"
   output = "dist/spectre-sample"
-  depends_on = [sample-proto, typescript-compiler]
+  depends_on = [sample-proto]
 }
 explicit sample-forecasts-bin = go.exe {
   package = "./cmd/spectre-sample-forecasts"
