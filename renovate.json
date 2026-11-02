@@ -1,7 +1,15 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": ["config:recommended", "helpers:pinGitHubActionDigests"],
+  "postUpdateOptions": ["gomodTidyAll"],
   "packageRules": [
+    {
+      "description": "The shim module's indirect dependencies are compiled into spectre, so update them; gomodTidyAll then moves the root module to the same versions, which bit lint-go-modules requires",
+      "matchManagers": ["gomod"],
+      "matchFileNames": ["internal/typescript/go.mod"],
+      "matchDepTypes": ["indirect"],
+      "enabled": true
+    },
     {
       "description": "Local shim module provided by a replace directive in go.mod",
       "matchPackageNames": ["github.com/microsoft/TypeScript/tsc/shim/typescript"],

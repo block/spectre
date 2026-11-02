@@ -77,6 +77,13 @@ fmt-action-pins = exec {
   command = "ratchet pin .github/workflows/*.yml"
   inputs = [".github/workflows/*.yml", "bin/ratchet"]
 }
+# Files that decide which dependency versions the TypeScript shim module compiles.
+let go-module-sync-inputs = ["go.mod", "go.sum", "internal/typescript/go.mod", "internal/typescript/go.sum", "scripts/go-module-sync", "bin/go", "bin/jq"]
+# The pre-commit hook runs this, so it stays out of fmt.
+sync-go-modules = exec {
+  command = "go-module-sync internal/typescript"
+  inputs = go-module-sync-inputs
+}
 fmt-toml = exec {
   command = "taplo format"
   inputs = ["**/*.toml"]
@@ -108,6 +115,10 @@ lint-release = exec.test {
 lint-scripts = exec {
   command = "shellcheck scripts/*"
   inputs = ["scripts/*", "bin/shellcheck"]
+}
+lint-go-modules = exec.test {
+  command = "go-module-sync --check internal/typescript"
+  inputs = go-module-sync-inputs
 }
 lint-tsk[go-module] = exec.test {
   command = "tsk lint ./..."
@@ -163,7 +174,7 @@ target publish-container(registry : string, image-tag : string, version : string
 target test = [test-go, test-launcher, test-response-comparison-integration, test-release-version, test-container-images, test-tsk]
 
 # Lint everything
-target lint = [lint-tsk, lint-proto, lint-actions, lint-action-pins, lint-dockerfile, lint-release, lint-scripts, fmt-check-go]
+target lint = [lint-go-modules, lint-tsk, lint-proto, lint-actions, lint-action-pins, lint-dockerfile, lint-release, lint-scripts, fmt-check-go]
 
 # Format everything
 target fmt = [fmt-go, fmt-action-pins, fmt-toml, fmt-tsk]
