@@ -10,7 +10,7 @@ require (
 	connectrpc.com/grpcreflect v1.3.0
 	github.com/alecthomas/assert/v2 v2.11.0
 	github.com/alecthomas/errors v0.9.1
-	github.com/alecthomas/kong v1.16.1
+	github.com/alecthomas/kong v1.17.0
 	github.com/alecthomas/kong-toml v0.4.1
 	github.com/alecthomas/types v0.20.1
 	github.com/alicebob/miniredis/v2 v2.40.0
