@@ -4,6 +4,11 @@ pre-commit:
       priority: 1
       run: bit fmt
       stage_fixed: true
+    # stage_fixed adds only files that were already staged, but a change to the
+    # root module updates the shim module, so stage the shim's files directly.
+    sync-go-modules:
+      glob: "{go.mod,go.sum,internal/typescript/go.mod,internal/typescript/go.sum}"
+      run: bit sync-go-modules && git add internal/typescript/go.mod internal/typescript/go.sum
 
 commit-msg:
   commands:
