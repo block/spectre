@@ -55,7 +55,7 @@ test-response-comparison-integration = exec.test {
   depends_on = [spectre-bin, sample-bin, sample-forecasts-bin, sample-schema]
 }
 test-release-version = exec.test {
-  command = "scripts/release-version.test.sh"
+  command = "release-version.test.sh"
   inputs = [".svu.yml", "scripts/release-version.test.sh", "bin/svu"]
 }
 # tsk test fails when no linter has test data.
@@ -64,7 +64,7 @@ test-tsk = exec.test {
   inputs = tsk-inputs + [".tsk/testdata/**/*"]
 }
 test-container-images = exec.test {
-  command = "sh scripts/container-images.test.sh"
+  command = "container-images.test.sh"
   inputs = ["scripts/container-images", "scripts/container-images.test.sh"]
 }
 explicit test-container(version = "dev") = exec.test {
