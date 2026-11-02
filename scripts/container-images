@@ -43,7 +43,7 @@ delete() {
     return
   fi
 
-  # The index comes first so no tag references a manifest when it is deleted.
+  # The index comes first so no other manifest references a manifest when it is deleted.
   # Each release embeds its version, so no other release shares these manifests.
   digests="$(docker buildx imagetools inspect --format '{{json .Manifest}}' "$image" | jq -r .digest)
 $(printf '%s' "$index" | jq -r '.manifests[].digest')"
@@ -71,6 +71,15 @@ delete_ghcr() {
 
 delete_docker_hub() {
   repository="$1/spectre"
+  # The registry refuses to delete a tagged manifest, and only the Hub API deletes tags.
+  hub_token=$(jq -cn --arg identifier "${DOCKER_HUB_USERNAME:?}" --arg secret "${DOCKER_HUB_TOKEN:?}" \
+    '{$identifier, $secret}' |
+    curl -fsS -H 'Content-Type: application/json' --data @- https://hub.docker.com/v2/auth/token |
+    jq -r .access_token)
+  curl -fsS -X DELETE \
+    -H "Authorization: Bearer $hub_token" \
+    "https://hub.docker.com/v2/repositories/$repository/tags/$release/"
+
   token=$(curl -fsS \
     -u "${DOCKER_HUB_USERNAME:?}:${DOCKER_HUB_TOKEN:?}" \
     "https://auth.docker.io/token?service=registry.docker.io&scope=repository:$repository:pull,push,delete" |

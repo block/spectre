@@ -30,6 +30,10 @@ case "$(basename "$0") $*" in
   "docker buildx imagetools inspect --format "*) printf '{"digest":"sha256:index"}\n' ;;
   "gh api --paginate "*) printf '1 sha256:index\n2 sha256:amd64\n3 sha256:arm64\n4 sha256:other\n' ;;
   "curl -fsS -u "*) printf '{"token":"test-key-do-not-use"}\n' ;;
+  *" https://hub.docker.com/v2/auth/token")
+    cat >> "$PUBLISH_TEST_LOG"
+    printf '{"access_token":"test-hub-key-do-not-use"}\n'
+    ;;
 esac
 EOF
   chmod +x "$test_root/bin/$stub"
@@ -45,6 +49,16 @@ assert_count() {
   actual=$(grep -Fc "$pattern" "$log" || true)
   if [ "$actual" -ne "$expected" ]; then
     printf 'expected %s occurrences of %s, got %s\n' "$expected" "$pattern" "$actual" >&2
+    cat "$log" >&2
+    exit 1
+  fi
+}
+
+assert_before() {
+  first=$(grep -Fn "$1" "$log" | head -n 1 | cut -d: -f1)
+  second=$(grep -Fn "$2" "$log" | head -n 1 | cut -d: -f1)
+  if [ -z "$first" ] || [ -z "$second" ] || [ "$first" -ge "$second" ]; then
+    printf 'expected %s before %s\n' "$1" "$2" >&2
     cat "$log" >&2
     exit 1
   fi
@@ -79,6 +93,9 @@ assert_count 3 'gh <api> <--method> <DELETE>'
 assert_count 1 '<DELETE> </orgs/block/packages/container/spectre/versions/1>'
 assert_count 1 '<DELETE> </orgs/block/packages/container/spectre/versions/2>'
 assert_count 1 '<DELETE> </orgs/block/packages/container/spectre/versions/3>'
+assert_count 1 '{"identifier":"user","secret":"secret"}'
+assert_count 1 '<DELETE> <-H> <Authorization: Bearer test-hub-key-do-not-use> <https://hub.docker.com/v2/repositories/blockossreleases/spectre/tags/1.2.3/>' # sadscan:disable np.http.2
+assert_before '/tags/1.2.3/>' '/manifests/sha256:index>'
 assert_count 1 '<-u> <user:secret>'
 assert_count 3 'curl <-fsS> <-X> <DELETE> <-H> <Authorization: Bearer test-key-do-not-use>' # sadscan:disable np.http.2
 assert_count 1 '<https://registry-1.docker.io/v2/blockossreleases/spectre/manifests/sha256:index>'
