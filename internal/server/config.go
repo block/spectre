@@ -3,7 +3,6 @@
 package server
 
 import (
-	"github.com/block/spectre/internal/server/client"
 	"github.com/block/spectre/internal/server/storage"
 )
 
@@ -15,7 +14,6 @@ type ServeConfig struct {
 
 // ClearConfig names the service environment whose divergences to clear.
 type ClearConfig struct {
-	Client      client.Config `embed:""`
-	Service     string        `required:"" help:"Service whose divergences to clear."`
-	Environment string        `required:"" help:"Environment whose divergences to clear."`
+	Service     string `required:"" help:"Service whose divergences to clear."`
+	Environment string `required:"" help:"Environment whose divergences to clear."`
 }

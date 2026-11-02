@@ -92,7 +92,7 @@ func TestWithServerURLSetsDefault(t *testing.T) {
 			_, err = parser.Parse(test.args)
 			assert.NoError(t, err)
 
-			assert.Equal(t, test.expected, command.Divergences.List.Client.URL)
+			assert.Equal(t, test.expected, command.Divergences.Client.URL)
 		})
 	}
 }
@@ -103,7 +103,7 @@ func TestServerURLRequiredWithoutDefault(t *testing.T) {
 
 	_, err = parser.Parse([]string{"divergences"})
 
-	assert.EqualError(t, err, "divergences list: no SPECTRE server URL; pass --server-url, or build spectre with spectre.WithServerURL")
+	assert.EqualError(t, err, "divergences: no SPECTRE server URL; pass --server-url, or build spectre with spectre.WithServerURL")
 }
 
 // pushCommand's default needs both a variable from WithKongOptions and the

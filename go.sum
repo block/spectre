@@ -10,8 +10,8 @@ github.com/alecthomas/assert/v2 v2.11.0 h1:2Q9r3ki8+JYXvGsDyBXwH3LcJ+WK5D0gc5E8v
 github.com/alecthomas/assert/v2 v2.11.0/go.mod h1:Bze95FyfUr7x34QZrjL+XP+0qgp/zg8yS+TtBj1WA3k=
 github.com/alecthomas/errors v0.9.1 h1:JNXtU30rtMNARCkW41OTZ4yL6Lyocq20xIJgIw2raqI=
 github.com/alecthomas/errors v0.9.1/go.mod h1:l8mjMEHMGUdIWPMNtvDyRYPVS1fQFXHFXc/iVCCLGkI=
-github.com/alecthomas/kong v1.16.1 h1:ixhCt93XkJ98kGposQ54+bl0IK6XwqB40AsMynU7Z8E=
-github.com/alecthomas/kong v1.16.1/go.mod h1:wrlbXem1CWqUV5Vbmss5ISYhsVPkBb1Yo7YKJghju2I=
+github.com/alecthomas/kong v1.17.0 h1:f52BVWChYMDkMkCoqkEWRuFOk/K4B5LO7xIijeLJRdk=
+github.com/alecthomas/kong v1.17.0/go.mod h1:wrlbXem1CWqUV5Vbmss5ISYhsVPkBb1Yo7YKJghju2I=
 github.com/alecthomas/kong-toml v0.4.1 h1:wlRMMGGHZ222d8r91/2am4KnCqa7LJ6izyjHyH2oUSM=
 github.com/alecthomas/kong-toml v0.4.1/go.mod h1:4Zm33N5h+XgRKCvq0LM8LkvZqw0k+aveWGfP58/rx5Y=
 github.com/alecthomas/repr v0.5.2 h1:SU73FTI9D1P5UNtvseffFSGmdNci/O6RsqzeXJtP0Qs=
