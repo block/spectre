@@ -2,7 +2,6 @@ package typescript
 
 import (
 	"context"
-	"maps"
 	"slices"
 	"strings"
 	"testing/fstest"
@@ -30,14 +29,18 @@ type Program struct {
 // absolute and slash-separated, and every file is a root. Any diagnostic is an error.
 func NewProgram(ctx context.Context, files map[string]string) (*Program, error) {
 	tree := fstest.MapFS{}
+	roots := make([]tspath.RootedFilePath, 0, len(files))
 	for name, text := range files {
 		if !strings.HasPrefix(name, "/") {
 			return nil, errors.Errorf("program file %s is not absolute", name)
 		}
 		tree[strings.TrimPrefix(name, "/")] = &fstest.MapFile{Data: []byte(text)}
+		roots = append(roots, tspath.RootedFilePathFromAbsolute(name))
 	}
-	fileSystem := bundled.WrapFS(iovfs.From(tree, true))
-	host := compiler.NewCompilerHost("/", fileSystem, bundled.LibPath(), nil, nil, nil)
+	slices.Sort(roots)
+	root := tspath.RootedDirectoryPathFromAbsolute("/")
+	fileSystem := bundled.WrapFS(iovfs.From(tree, tspath.CaseSensitive))
+	host := compiler.NewCompilerHost(fileSystem, bundled.LibPath(), nil, nil, nil)
 	program := compiler.NewProgram(compiler.ProgramOptions{
 		Config: tsoptions.NewParsedCommandLine(
 			&core.CompilerOptions{
@@ -52,9 +55,10 @@ func NewProgram(ctx context.Context, files map[string]string) (*Program, error) 
 				AllowImportingTsExtensions: core.TSTrue,
 				SkipDefaultLibCheck:        core.TSTrue,
 			},
-			slices.Sorted(maps.Keys(files)),
+			roots,
 			nil,
-			tspath.ComparePathsOptions{UseCaseSensitiveFileNames: true, CurrentDirectory: "/"},
+			root,
+			tspath.CaseSensitive,
 		),
 		// One checker keeps diagnostics and type identities in a single checker.
 		SingleThreaded: core.TSTrue,
@@ -68,10 +72,10 @@ func NewProgram(ctx context.Context, files map[string]string) (*Program, error) 
 		var report strings.Builder
 		diagnosticwriter.WriteFormatDiagnostics(&report, diagnosticwriter.FromASTDiagnostics(compiler.SortAndDeduplicateDiagnostics(diagnostics)),
 			&diagnosticwriter.FormattingOptions{
-				Locale:                    locale.Default,
-				UseCaseSensitiveFileNames: true,
-				CurrentDirectory:          "/",
-				NewLine:                   "\n",
+				Locale:           locale.Default,
+				CaseSensitivity:  tspath.CaseSensitive,
+				CurrentDirectory: root,
+				NewLine:          "\n",
 			})
 		return nil, errors.New(strings.TrimSpace(report.String()))
 	}
@@ -96,7 +100,12 @@ func programDiagnostics(ctx context.Context, program *compiler.Program) (diagnos
 
 // SourceFile returns the named root file, or nil if it is not in the program.
 func (p *Program) SourceFile(name string) *SourceFile {
-	return p.program.GetSourceFile(name)
+	path, ok := tspath.TryRootedFilePathFromAbsolute(name)
+	if !ok {
+		//nolint:optionalnil // The shim mirrors the compiler, which returns nil for a missing file.
+		return nil
+	}
+	return p.program.GetSourceFile(path)
 }
 
 // Checker returns the program's type checker.
