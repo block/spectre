@@ -111,5 +111,5 @@ func Location(node *Node) string {
 		return "<unknown>"
 	}
 	line, column := scanner.GetECMALineAndUTF16CharacterOfPosition(file, scanner.GetTokenPosOfNode(node, file, false))
-	return fmt.Sprintf("%s:%d:%d", strings.TrimPrefix(file.FileName(), "/"), line+1, int(column)+1)
+	return fmt.Sprintf("%s:%d:%d", strings.TrimPrefix(file.FileName().AsString(), "/"), line+1, int(column)+1)
 }
