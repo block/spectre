@@ -45,7 +45,7 @@ require (
 	github.com/hexops/gotextdiff v1.0.3 // indirect
 	github.com/klauspost/compress v1.20.0 // indirect
 	github.com/klauspost/cpuid/v2 v2.4.0 // indirect
-	github.com/microsoft/TypeScript/tsc v0.0.0-20261001235638-09b1db061731 // indirect
+	github.com/microsoft/TypeScript/tsc v0.0.0-20261030221203-6161772c1370 // indirect
 	github.com/yuin/gopher-lua v1.1.1 // indirect
 	github.com/zeebo/xxh3 v1.1.0 // indirect
 	go.uber.org/atomic v1.12.0 // indirect

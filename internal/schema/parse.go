@@ -98,13 +98,13 @@ func FromProgram(program *ts.Program, sources map[string]string) (*Schema, error
 // the host refer to it. Types declared outside a schema module have no name.
 func TypeName(t *ts.Type) (TypeRef, error) {
 	symbol := t.Symbol()
-	if alias := t.Alias(); alias != nil && (symbol == nil || symbol.Flags&ts.SymbolFlagsTypeLiteral != 0) {
+	if alias := t.Alias(); alias != nil && (symbol == nil || symbol.Flags()&ts.SymbolFlagsTypeLiteral != 0) {
 		if len(alias.TypeArguments()) > 0 {
-			return "", errors.Errorf("generic type %q is not supported", alias.Symbol().Name)
+			return "", errors.Errorf("generic type %q is not supported", alias.Symbol().Name())
 		}
 		symbol = alias.Symbol()
 	}
-	if symbol == nil || symbol.Flags&(ts.SymbolFlagsInterface|ts.SymbolFlagsTypeAlias) == 0 {
+	if symbol == nil || symbol.Flags()&(ts.SymbolFlagsInterface|ts.SymbolFlagsTypeAlias) == 0 {
 		return "", errors.New("object types must be declared by name in a schema module")
 	}
 	return qualifiedName(symbol)
@@ -114,9 +114,9 @@ func TypeName(t *ts.Type) (TypeRef, error) {
 // declared in a schema file rather than augmented by a script.
 func qualifiedName(symbol *ts.Symbol) (TypeRef, error) {
 	names := []string{}
-	for current := symbol; current != nil; current = current.Parent {
-		if len(current.Declarations) > 0 {
-			declaration := current.Declarations[0]
+	for current := symbol; current != nil; current = current.Parent() {
+		if len(current.Declarations()) > 0 {
+			declaration := current.Declarations()[0]
 			if declaration.Kind == ts.KindModuleDeclaration && declaration.Name().Kind == ts.KindStringLiteral {
 				if !inSchemaFile(declaration) {
 					break
@@ -125,21 +125,21 @@ func qualifiedName(symbol *ts.Symbol) (TypeRef, error) {
 				return TypeRef(declaration.Name().Text() + "." + strings.Join(names, ".")), nil
 			}
 		}
-		names = append(names, current.Name)
+		names = append(names, current.Name())
 	}
-	return "", errors.Errorf("type %q is not exported from a schema module", symbol.Name)
+	return "", errors.Errorf("type %q is not exported from a schema module", symbol.Name())
 }
 
 func inSchemaFile(node *ts.Node) bool {
-	return strings.HasPrefix(ts.SourceFileOf(node).FileName(), programRoot)
+	return strings.HasPrefix(ts.SourceFileOf(node).FileName().AsString(), programRoot)
 }
 
 // checkDeclaredInSchema rejects script augmentations of schema modules, which
 // would change the payload types the host validates.
 func checkDeclaredInSchema(symbol *ts.Symbol) error {
-	for _, declaration := range symbol.Declarations {
+	for _, declaration := range symbol.Declarations() {
 		if !inSchemaFile(declaration) {
-			return errors.Errorf("%s: %s augments a schema module; only schema files may declare its members", ts.Location(declaration), symbol.Name)
+			return errors.Errorf("%s: %s augments a schema module; only schema files may declare its members", ts.Location(declaration), symbol.Name())
 		}
 	}
 	return nil
@@ -186,30 +186,30 @@ func (r *reader) read(modules map[string]bool) (*Schema, error) {
 // still validated and available to scripts.
 func (r *reader) members(container *ts.Symbol) error {
 	exports := r.checker.GetExportsOfModule(container)
-	slices.SortFunc(exports, func(left, right *ts.Symbol) int { return cmp.Compare(left.Name, right.Name) })
+	slices.SortFunc(exports, func(left, right *ts.Symbol) int { return cmp.Compare(left.Name(), right.Name()) })
 	for _, symbol := range exports {
 		if err := checkDeclaredInSchema(symbol); err != nil {
 			return err
 		}
-		declaration := symbol.Declarations[0]
-		if symbol.Flags&(ts.SymbolFlagsValue&^ts.SymbolFlagsModule|ts.SymbolFlagsAlias) != 0 {
+		declaration := symbol.Declarations()[0]
+		if symbol.Flags()&(ts.SymbolFlagsValue&^ts.SymbolFlagsModule|ts.SymbolFlagsAlias) != 0 {
 			return errors.Errorf("%s: schema modules may only declare interfaces, type aliases, and namespaces", ts.Location(declaration))
 		}
 		if len(r.checker.GetLocalTypeParametersOfClassOrInterfaceOrTypeAlias(symbol)) > 0 {
 			return errors.Errorf("%s: generic declarations are not supported", ts.Location(declaration))
 		}
-		if symbol.Flags&ts.SymbolFlagsInterface != 0 {
+		if symbol.Flags()&ts.SymbolFlagsInterface != 0 {
 			if err := r.interfaceDeclaration(symbol); err != nil {
 				return err
 			}
 		}
-		if symbol.Flags&ts.SymbolFlagsTypeAlias != 0 {
+		if symbol.Flags()&ts.SymbolFlagsTypeAlias != 0 {
 			// Aliases of non-object types are inlined where they are used, but must be valid anyway.
 			if _, err := r.value(r.checker.GetDeclaredTypeOfSymbol(symbol), declaration); err != nil {
 				return err
 			}
 		}
-		if symbol.Flags&ts.SymbolFlagsModule != 0 {
+		if symbol.Flags()&ts.SymbolFlagsModule != 0 {
 			if err := r.members(symbol); err != nil {
 				return err
 			}
@@ -224,12 +224,12 @@ func (r *reader) interfaceDeclaration(symbol *ts.Symbol) error {
 	declared := r.checker.GetDeclaredTypeOfSymbol(symbol)
 	properties := r.checker.GetPropertiesOfType(declared)
 	if len(properties) == 0 || !slices.ContainsFunc(properties, isMethod) {
-		_, err := r.value(declared, symbol.Declarations[0])
+		_, err := r.value(declared, symbol.Declarations()[0])
 		return err
 	}
 	service, err := qualifiedName(symbol)
 	if err != nil {
-		return errors.Errorf("%s: %v", ts.Location(symbol.Declarations[0]), err)
+		return errors.Errorf("%s: %v", ts.Location(symbol.Declarations()[0]), err)
 	}
 	for _, method := range properties {
 		if err := checkDeclaredInSchema(method); err != nil {
@@ -245,17 +245,17 @@ func (r *reader) interfaceDeclaration(symbol *ts.Symbol) error {
 }
 
 func isMethod(symbol *ts.Symbol) bool {
-	return symbol.Flags&ts.SymbolFlagsMethod != 0
+	return symbol.Flags()&ts.SymbolFlagsMethod != 0
 }
 
 func (r *reader) operation(service string, method *ts.Symbol) (Operation, error) {
-	declaration := method.Declarations[0]
-	form := errors.Errorf("%s: service methods must have the form %s(request: Request): Response", ts.Location(declaration), method.Name)
+	declaration := method.Declarations()[0]
+	form := errors.Errorf("%s: service methods must have the form %s(request: Request): Response", ts.Location(declaration), method.Name())
 	if !isMethod(method) {
 		return Operation{}, errors.Errorf("%s: service interfaces may only declare methods", ts.Location(declaration))
 	}
 	signatures := r.checker.GetSignaturesOfType(r.checker.GetTypeOfSymbol(method), ts.SignatureKindCall)
-	if method.Flags&ts.SymbolFlagsOptional != 0 || len(signatures) != 1 {
+	if method.Flags()&ts.SymbolFlagsOptional != 0 || len(signatures) != 1 {
 		return Operation{}, form
 	}
 	signature := signatures[0]
@@ -271,7 +271,7 @@ func (r *reader) operation(service string, method *ts.Symbol) (Operation, error)
 	if err != nil {
 		return Operation{}, err
 	}
-	return Operation{Name: service + "." + method.Name, Request: request, Response: response}, nil
+	return Operation{Name: service + "." + method.Name(), Request: request, Response: response}, nil
 }
 
 func (r *reader) objectReference(t *ts.Type, at *ts.Node) (TypeRef, error) {
@@ -380,8 +380,8 @@ func (r *reader) objectType(name TypeRef, t *ts.Type) (*Type, error) {
 	if alias := t.Alias(); alias != nil {
 		symbol = alias.Symbol()
 	}
-	declaration := symbol.Declarations[0]
-	if symbol.Flags&ts.SymbolFlagsClass != 0 {
+	declaration := symbol.Declarations()[0]
+	if symbol.Flags()&ts.SymbolFlagsClass != 0 {
 		return nil, errors.Errorf("%s: classes are not supported in schemas", ts.Location(declaration))
 	}
 	if len(r.checker.GetLocalTypeParametersOfClassOrInterfaceOrTypeAlias(symbol)) > 0 {
@@ -393,12 +393,12 @@ func (r *reader) objectType(name TypeRef, t *ts.Type) (*Type, error) {
 		if err := checkDeclaredInSchema(property); err != nil {
 			return nil, err
 		}
-		at := property.Declarations[0]
+		at := property.Declarations()[0]
 		if isMethod(property) {
 			return nil, errors.Errorf("%s: object types may only declare properties; %s mixes them with methods", ts.Location(at), name)
 		}
 		propertyType := r.checker.GetTypeOfSymbol(property)
-		optional := property.Flags&ts.SymbolFlagsOptional != 0
+		optional := property.Flags()&ts.SymbolFlagsOptional != 0
 		if optional {
 			propertyType = r.checker.RemoveMissingOrUndefinedType(propertyType)
 		}
@@ -406,7 +406,7 @@ func (r *reader) objectType(name TypeRef, t *ts.Type) (*Type, error) {
 		if err != nil {
 			return nil, err
 		}
-		declared.Fields = append(declared.Fields, Field{Name: property.Name, Optional: optional, Value: value})
+		declared.Fields = append(declared.Fields, Field{Name: property.Name(), Optional: optional, Value: value})
 	}
 	return declared, nil
 }

@@ -59,7 +59,6 @@ declare module "audit" {
 			{Name: "id", Value: schema.Value{Kind: schema.KindString}},
 		}},
 		{Name: "example.users.v1.User", Fields: []schema.Field{
-			{Name: "updatedBy", Optional: true, Value: schema.Value{Kind: schema.KindString}},
 			{Name: "id", Value: schema.Value{Kind: schema.KindString}},
 			{Name: "age", Optional: true, Value: schema.Value{Kind: schema.KindNumber}},
 			{Name: "ratio", Value: schema.Value{Kind: schema.KindNumber, Literals: []string{"Infinity", "NaN"}}},
@@ -70,6 +69,7 @@ declare module "audit" {
 			{Name: "scores", Value: schema.Value{Kind: schema.KindMap, Element: Some(&schema.Value{Kind: schema.KindNumber})}},
 			{Name: "profile", Optional: true, Value: schema.Value{Kind: schema.KindObject, Type: "example.users.v1.User.Profile"}},
 			{Name: "@type", Optional: true, Value: schema.Value{Kind: schema.KindString}},
+			{Name: "updatedBy", Optional: true, Value: schema.Value{Kind: schema.KindString}},
 		}},
 		{Name: "example.users.v1.User.Profile", Fields: []schema.Field{
 			{Name: "team", Value: schema.Value{Kind: schema.KindString}},
