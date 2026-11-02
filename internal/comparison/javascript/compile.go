@@ -162,10 +162,10 @@ func typeArguments(checker *ts.Checker, loaded *schema.Schema, call *ts.Node) (O
 // bodyTypeName names a schema type, or the spectre Text type where text is allowed.
 func bodyTypeName(resolved *ts.Type, text bool) (schema.TypeRef, error) {
 	symbol := resolved.Symbol()
-	if symbol == nil || len(symbol.Declarations) == 0 || ts.SourceFileOf(symbol.Declarations[0]).FileName() != moduleDeclarationFile {
+	if symbol == nil || len(symbol.Declarations()) == 0 || ts.SourceFileOf(symbol.Declarations()[0]).FileName() != moduleDeclarationFile {
 		return errors.WithStack2(schema.TypeName(resolved))
 	}
-	if !text || symbol.Name != "Text" {
+	if !text || symbol.Name() != "Text" {
 		return "", errors.New("only ingress rules may compare bodies as Text")
 	}
 	return textTypeName, nil
