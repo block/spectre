@@ -13,16 +13,21 @@ jobs:
   tag:
     name: Tag release
     runs-on: ubuntu-latest
+    outputs:
+      should_release: ${{ steps.release.outputs.should_release }}
+      version: ${{ steps.release.outputs.version }}
+      tag_created: ${{ steps.release.outputs.tag_created }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # ratchet:actions/checkout@v7
         with:
           fetch-depth: 0
       - uses: cashapp/activate-hermit@cea9af7913204a965fd488637a8d1811bba2e616 # ratchet:cashapp/activate-hermit@v1
-      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # ratchet:docker/setup-qemu-action@v4
-      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # ratchet:docker/setup-buildx-action@v4
       - name: Create release tag
         id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
+          tag_created=false
           version="$(git tag --points-at HEAD --list 'v*' | head -n 1)"
           if [[ -z "$version" ]]; then
             version="$(svu next)"
@@ -34,27 +39,109 @@ jobs:
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             git tag --annotate "$version" --message "Release $version"
             git push origin "refs/tags/$version"
+            tag_created=true
+          elif gh release view "$version" > /dev/null 2>&1; then
+            # Releasing again could fail and make cleanup delete a finished release.
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
 
-          echo "should_release=true" >> "$GITHUB_OUTPUT"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
+          {
+            echo "should_release=true"
+            echo "version=$version"
+            echo "tag_created=$tag_created"
+          } >> "$GITHUB_OUTPUT"
+
+  containers:
+    name: Publish container images
+    needs: tag
+    if: needs.tag.outputs.should_release == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # ratchet:actions/checkout@v7
+      - uses: cashapp/activate-hermit@cea9af7913204a965fd488637a8d1811bba2e616 # ratchet:cashapp/activate-hermit@v1
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # ratchet:docker/setup-qemu-action@v4
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # ratchet:docker/setup-buildx-action@v4
       - name: Log in to GitHub Container Registry
-        if: steps.release.outputs.should_release == 'true'
         env:
           GHCR_TOKEN: ${{ github.token }}
         run: echo "$GHCR_TOKEN" | docker login ghcr.io --username "${{ github.actor }}" --password-stdin
       - name: Log in to Docker Hub
-        if: steps.release.outputs.should_release == 'true'
         env:
           DOCKER_HUB_PUSH_TOKEN: ${{ secrets.DOCKER_HUB_PUSH_TOKEN }}
         run: echo "$DOCKER_HUB_PUSH_TOKEN" | docker login --username blockossreleases --password-stdin
       - name: Publish container images
-        if: steps.release.outputs.should_release == 'true'
         env:
-          VERSION: ${{ steps.release.outputs.version }}
-        run: publish-container-images "$VERSION"
+          VERSION: ${{ needs.tag.outputs.version }}
+        run: container-images publish "$VERSION"
+
+  binaries:
+    name: Publish binary release
+    needs: tag
+    if: needs.tag.outputs.should_release == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # ratchet:actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: cashapp/activate-hermit@cea9af7913204a965fd488637a8d1811bba2e616 # ratchet:cashapp/activate-hermit@v1
       - name: Publish binary release
-        if: steps.release.outputs.should_release == 'true'
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: goreleaser release --clean --fail-fast
+
+  # Moving the aliases waits for the whole release, so cleanup never strands them.
+  promote:
+    name: Promote container images
+    needs: [tag, containers, binaries]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # ratchet:actions/checkout@v7
+      - uses: cashapp/activate-hermit@cea9af7913204a965fd488637a8d1811bba2e616 # ratchet:cashapp/activate-hermit@v1
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # ratchet:docker/setup-buildx-action@v4
+      - name: Log in to GitHub Container Registry
+        env:
+          GHCR_TOKEN: ${{ github.token }}
+        run: echo "$GHCR_TOKEN" | docker login ghcr.io --username "${{ github.actor }}" --password-stdin
+      - name: Log in to Docker Hub
+        env:
+          DOCKER_HUB_PUSH_TOKEN: ${{ secrets.DOCKER_HUB_PUSH_TOKEN }}
+        run: echo "$DOCKER_HUB_PUSH_TOKEN" | docker login --username blockossreleases --password-stdin
+      - name: Move version aliases
+        env:
+          VERSION: ${{ needs.tag.outputs.version }}
+        run: container-images promote "$VERSION"
+
+  # A release is all or nothing: if either half fails, delete what the other published.
+  cleanup:
+    name: Delete incomplete release
+    needs: [tag, containers, binaries]
+    if: >-
+      always() && needs.tag.outputs.should_release == 'true' &&
+      (needs.containers.result != 'success' || needs.binaries.result != 'success')
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.tag.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # ratchet:actions/checkout@v7
+      - uses: cashapp/activate-hermit@cea9af7913204a965fd488637a8d1811bba2e616 # ratchet:cashapp/activate-hermit@v1
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # ratchet:docker/setup-buildx-action@v4
+      - name: Delete GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$VERSION" > /dev/null 2>&1; then
+            gh release delete "$VERSION" --yes
+          fi
+      - name: Delete container images
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DOCKER_HUB_USERNAME: blockossreleases
+          DOCKER_HUB_TOKEN: ${{ secrets.DOCKER_HUB_PUSH_TOKEN }}
+        run: container-images delete "$VERSION"
+      # Deleting the tag lets the next run release the same version again.
+      # A tag pushed by hand is kept so the release can be retried.
+      - name: Delete release tag
+        if: always() && needs.tag.outputs.tag_created == 'true'
+        run: git push --delete origin "refs/tags/$VERSION"
