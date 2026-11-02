@@ -111,14 +111,22 @@ func TestDivergencesCommands(t *testing.T) {
 	_, err = parser.Parse([]string{"divergences", "--server-url=http://server.example", "--service=users"})
 	assert.NoError(t, err)
 	assert.Equal(t, "users", command.Divergences.List.Service)
+	assert.Equal(t, client.Config{URL: "http://server.example"}, command.Divergences.Client)
 
-	command = &cli.CommandLine{}
-	parser, err = newParser(command)
-	assert.NoError(t, err)
-	_, err = parser.Parse([]string{"divergences", "clear", "--server-url=http://server.example", "--service=users", "--environment=production"})
-	assert.NoError(t, err)
-	expected := server.ClearConfig{Client: client.Config{URL: "http://server.example"}, Service: "users", Environment: "production"}
-	assert.Equal(t, expected, command.Divergences.Clear.Clear)
+	// The server URL belongs to the group, so it applies to clear wherever it
+	// appears, not to the default list command.
+	for _, args := range [][]string{
+		{"divergences", "clear", "--server-url=http://server.example", "--service=users", "--environment=production"},
+		{"divergences", "--server-url=http://server.example", "clear", "--service=users", "--environment=production"},
+	} {
+		command = &cli.CommandLine{}
+		parser, err = newParser(command)
+		assert.NoError(t, err)
+		_, err = parser.Parse(args)
+		assert.NoError(t, err)
+		assert.Equal(t, client.Config{URL: "http://server.example"}, command.Divergences.Client)
+		assert.Equal(t, server.ClearConfig{Service: "users", Environment: "production"}, command.Divergences.Clear.Clear)
+	}
 }
 
 func TestServeCommandEmbedsConfig(t *testing.T) {

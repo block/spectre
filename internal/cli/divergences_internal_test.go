@@ -48,8 +48,8 @@ func TestDivergencesListCommand(t *testing.T) {
 	}
 
 	var text strings.Builder
-	command := divergencesListCommand{Client: config}
-	assert.NoError(t, command.Run(t.Context(), Output{Writer: &text}))
+	command := divergencesListCommand{}
+	assert.NoError(t, command.Run(t.Context(), client.New(config), Output{Writer: &text}))
 	assert.Equal(t, `users abc123 production
   ingress http GET /v1/users: response differences: body.name (node users)
   quarantined 2026-10-01T12:01:00Z
@@ -61,7 +61,7 @@ users abc123 staging
 	var data strings.Builder
 	command.JSON = true
 	command.Node = "users"
-	assert.NoError(t, command.Run(t.Context(), Output{Writer: &data}))
+	assert.NoError(t, command.Run(t.Context(), client.New(config), Output{Writer: &data}))
 	// Protobuf JSON output varies its whitespace, so compare decoded values.
 	var expected, printed any
 	assert.NoError(t, json.Unmarshal([]byte(`{"divergences": [{
