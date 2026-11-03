@@ -12,8 +12,10 @@ permissions:
   contents: read
 
 env:
-  # Go's build and module caches and tsk's lint results, at their Linux defaults.
+  # Bit's build cache, Go's build and module caches, and tsk's lint results,
+  # at their Linux defaults.
   BUILD_CACHE_PATHS: |
+    ~/.cache/bit
     ~/.cache/go-build
     ~/.cache/tsk
     ~/go/pkg/mod
