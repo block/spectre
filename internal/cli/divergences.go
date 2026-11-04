@@ -3,78 +3,68 @@ package cli
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/alecthomas/errors"
 	. "github.com/alecthomas/types/optional"
 
 	"github.com/block/spectre/internal/model"
-	"github.com/block/spectre/internal/server"
 	"github.com/block/spectre/internal/server/client"
 	"github.com/block/spectre/internal/server/wire"
 )
 
-// divergencesCommand groups the commands for the divergences mirrors reported. It owns
-// the server URL so a flag before "clear" is not taken by the default list command.
-type divergencesCommand struct { //nolint:singleusestruct // A Kong command group; folding it would flatten its subcommands.
-	Client client.Config           `embed:""`
-	List   divergencesListCommand  `cmd:"" default:"withargs" help:"List the divergences that mirrors reported. This is the default."`
-	Clear  divergencesClearCommand `cmd:"" help:"Clear the divergences of a service environment once they are dealt with."`
+// divergencesCommand lists the mirrors reporting to the SPECTRE server and
+// their quarantines.
+type divergencesCommand struct {
+	Client          client.Config `embed:""`
+	JSON            bool          `help:"Print JSON instead of text."`
+	Service         string        `help:"Only list mirrors of this service."`
+	Environment     string        `help:"Only list mirrors in this environment."`
+	CandidateCommit string        `help:"Only list mirrors running this candidate commit."`
+	Node            string        `help:"Only list mirrors quarantined on routes of this migration state node."`
 }
 
-// ProvideClient gives the subcommands a client of the server the group's flags
-// locate. Kong calls it at run time, after every parse hook has set the URL.
-func (c *divergencesCommand) ProvideClient() *client.Client {
-	return client.New(c.Client)
-}
-
-// divergencesListCommand lists the divergences mirrors reported.
-type divergencesListCommand struct {
-	JSON        bool   `help:"Print JSON instead of text."`
-	Service     string `help:"Only list divergences of this service."`
-	Environment string `help:"Only list divergences in this environment."`
-	Revision    string `help:"Only list divergences of this candidate revision."`
-	Node        string `help:"Only list divergences on routes of this migration state node."`
-}
-
-func (c *divergencesListCommand) Run(ctx context.Context, server *client.Client, out Output) error {
+func (c *divergencesCommand) Run(ctx context.Context, out Output) error {
 	// No reported value is empty, so an empty flag leaves its filter unset.
-	filter := model.DivergenceFilter{
-		Service:     Zero(c.Service),
-		Environment: Zero(c.Environment),
-		Revision:    Zero(c.Revision),
-		Node:        Zero(c.Node),
+	filter := model.StateFilter{
+		Service:         Zero(c.Service),
+		Environment:     Zero(c.Environment),
+		CandidateCommit: Zero(c.CandidateCommit),
+		Node:            Zero(c.Node),
 	}
-	divergences, err := server.ListDivergences(ctx, filter)
+	states, err := client.New(c.Client).ListStates(ctx, filter)
 	if err != nil {
 		return errors.WithStack(err)
 	}
 	if c.JSON {
-		return writeJSON(out, divergences)
+		return writeJSON(out, states)
 	}
 	palette := out.Palette
-	if len(divergences) == 0 {
-		_, err := fmt.Fprintln(out.Writer, palette.Dim("No divergences."))
+	if len(states) == 0 {
+		_, err := fmt.Fprintln(out.Writer, palette.Dim("No mirrors are reporting."))
 		return errors.Wrap(err, "write divergences")
 	}
-	for _, divergence := range divergences {
-		since := "quarantined " + divergence.Quarantine.Since.UTC().Format(time.RFC3339)
-		_, err = fmt.Fprintf(out.Writer, "%s %s %s\n  %s\n  %s\n", palette.Bold(divergence.Service), divergence.Revision,
-			palette.Dim(divergence.Environment), palette.Red(describe(divergence.Direction, divergence.Quarantine.Reason)), palette.Dim(since))
-		if err != nil {
+	for _, state := range states {
+		about := fmt.Sprintf("spectre %s, up %s", state.SpectreVersion, state.Uptime.Round(time.Second))
+		var lines strings.Builder
+		fmt.Fprintf(&lines, "%s %s %s %s\n", palette.Bold(state.Service), state.CandidateCommit, palette.Dim(state.Environment), palette.Dim(about))
+		if len(state.Quarantines) == 0 {
+			fmt.Fprintf(&lines, "  %s\n", palette.Green("healthy"))
+		}
+		for _, direction := range []model.Direction{model.Ingress, model.Egress} {
+			quarantine, ok := state.Quarantines[direction]
+			if !ok {
+				continue
+			}
+			since := "quarantined " + quarantine.Since.UTC().Format(time.RFC3339)
+			fmt.Fprintf(&lines, "  %s\n  %s\n", palette.Red(describe(direction, quarantine.Reason)), palette.Dim(since))
+		}
+		if _, err := fmt.Fprint(out.Writer, lines.String()); err != nil {
 			return errors.Wrap(err, "write divergences")
 		}
 	}
 	return nil
-}
-
-// divergencesClearCommand clears the divergences of a service environment.
-type divergencesClearCommand struct {
-	Clear server.ClearConfig `embed:""`
-}
-
-func (c *divergencesClearCommand) Run(ctx context.Context, server *client.Client) error {
-	return errors.WithStack(server.ClearDivergences(ctx, c.Clear.Service, c.Clear.Environment))
 }
 
 // describe renders a quarantine as the mirror logged it, with the direction,
@@ -90,9 +80,9 @@ func describe(direction model.Direction, reason model.QuarantineReason) string {
 	return text
 }
 
-// writeJSON prints divergences as the SPECTRE service protocol's list response.
-func writeJSON(out Output, divergences []model.Divergence) error {
-	data, err := wire.DivergencesJSON(divergences)
+// writeJSON prints states as the SPECTRE service protocol's list response.
+func writeJSON(out Output, states []model.State) error {
+	data, err := wire.StatesJSON(states)
 	if err != nil {
 		return errors.WithStack(err)
 	}

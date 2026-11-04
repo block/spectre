@@ -22,16 +22,17 @@ import (
 
 // reportingFlags are the SPECTRE server flags every supervise command requires.
 func reportingFlags() []string {
-	return []string{"--server-url=http://server.example", "--service=users", "--environment=production", "--revision=abc123"}
+	return []string{"--server-url=http://server.example", "--service=users", "--environment=production", "--candidate-commit=abc123"}
 }
 
 // expectedReporting is the reporter config that reportingFlags parse to.
 func expectedReporting() reporter.Config {
 	return reporter.Config{
-		Client:      client.Config{URL: "http://server.example"},
-		Service:     "users",
-		Environment: "production",
-		Revision:    "abc123",
+		Client:            client.Config{URL: "http://server.example"},
+		Service:           "users",
+		Environment:       "production",
+		CandidateCommit:   "abc123",
+		HeartbeatInterval: 30 * time.Second,
 	}
 }
 
@@ -71,7 +72,7 @@ func TestSuperviseCommandReadsFlagsFromEnvironment(t *testing.T) {
 	t.Setenv("SPECTRE_SERVER_URL", "http://server.example")
 	t.Setenv("SPECTRE_SERVICE", "invoices")
 	t.Setenv("SPECTRE_ENVIRONMENT", "production-us-west-2")
-	t.Setenv("SPECTRE_REVISION", "3f9c2a1")
+	t.Setenv("SPECTRE_CANDIDATE_COMMIT", "3f9c2a1")
 	command := &cli.CommandLine{}
 	parser, err := newParser(command)
 	assert.NoError(t, err)
@@ -84,10 +85,11 @@ func TestSuperviseCommandReadsFlagsFromEnvironment(t *testing.T) {
 	})
 	assert.NoError(t, err)
 	expected := reporter.Config{
-		Client:      client.Config{URL: "http://server.example"},
-		Service:     "invoices",
-		Environment: "production-us-west-2",
-		Revision:    "3f9c2a1",
+		Client:            client.Config{URL: "http://server.example"},
+		Service:           "invoices",
+		Environment:       "production-us-west-2",
+		CandidateCommit:   "3f9c2a1",
+		HeartbeatInterval: 30 * time.Second,
 	}
 	assert.Equal(t, expected, command.Supervise.Supervisor.Server)
 }
@@ -104,29 +106,15 @@ func TestVersionFlagIgnoresEnvironment(t *testing.T) {
 	t.Fatal("no version flag")
 }
 
-func TestDivergencesCommands(t *testing.T) {
+func TestDivergencesCommand(t *testing.T) {
 	command := &cli.CommandLine{}
 	parser, err := newParser(command)
 	assert.NoError(t, err)
-	_, err = parser.Parse([]string{"divergences", "--server-url=http://server.example", "--service=users"})
+	_, err = parser.Parse([]string{"divergences", "--server-url=http://server.example", "--service=users", "--candidate-commit=abc123"})
 	assert.NoError(t, err)
-	assert.Equal(t, "users", command.Divergences.List.Service)
+	assert.Equal(t, "users", command.Divergences.Service)
+	assert.Equal(t, "abc123", command.Divergences.CandidateCommit)
 	assert.Equal(t, client.Config{URL: "http://server.example"}, command.Divergences.Client)
-
-	// The server URL belongs to the group, so it applies to clear wherever it
-	// appears, not to the default list command.
-	for _, args := range [][]string{
-		{"divergences", "clear", "--server-url=http://server.example", "--service=users", "--environment=production"},
-		{"divergences", "--server-url=http://server.example", "clear", "--service=users", "--environment=production"},
-	} {
-		command = &cli.CommandLine{}
-		parser, err = newParser(command)
-		assert.NoError(t, err)
-		_, err = parser.Parse(args)
-		assert.NoError(t, err)
-		assert.Equal(t, client.Config{URL: "http://server.example"}, command.Divergences.Client)
-		assert.Equal(t, server.ClearConfig{Service: "users", Environment: "production"}, command.Divergences.Clear.Clear)
-	}
 }
 
 func TestServeCommandEmbedsConfig(t *testing.T) {
@@ -136,8 +124,9 @@ func TestServeCommandEmbedsConfig(t *testing.T) {
 	_, err = parser.Parse([]string{"serve", "--listen=127.0.0.1:50071", "--storage=redis://localhost:6379/0"})
 	assert.NoError(t, err)
 	expected := server.ServeConfig{
-		Listen:  "127.0.0.1:50071",
-		Storage: storage.Config{Storage: &url.URL{Scheme: "redis", Host: "localhost:6379", Path: "/0"}},
+		Listen:   "127.0.0.1:50071",
+		Storage:  storage.Config{Storage: &url.URL{Scheme: "redis", Host: "localhost:6379", Path: "/0"}},
+		StateTTL: 90 * time.Second,
 	}
 	assert.Equal(t, expected, command.Serve.Serve)
 }
@@ -153,7 +142,7 @@ func TestSuperviseCommandRequiresFlags(t *testing.T) {
 		{name: "ServerURL", missing: "--server-url="},
 		{name: "Service", missing: "--service="},
 		{name: "Environment", missing: "--environment="},
-		{name: "Revision", missing: "--revision="},
+		{name: "CandidateCommit", missing: "--candidate-commit="},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

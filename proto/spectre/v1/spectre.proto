@@ -2,21 +2,20 @@ syntax = "proto3";
 
 package spectre.v1;
 
+import "google/protobuf/duration.proto";
 import "google/protobuf/timestamp.proto";
 
 option go_package = "github.com/block/spectre/spectrepb;spectrepb";
 
-// SpectreService collects the quarantines of running mirrors and answers
-// questions about them for people and agents.
+// SpectreService collects the state of running mirrors and answers questions
+// about them for people and agents.
 service SpectreService {
-  // Quarantine records that a mirror quarantined its candidate. A mirror sends
-  // each quarantine once, retrying until it succeeds, so repeats are ignored.
-  rpc Quarantine(QuarantineRequest) returns (QuarantineResponse);
-  // ListDivergences returns the latest quarantine of each mirror direction.
+  // Heartbeat replaces the state of a service environment's mirror. A mirror
+  // sends one periodically and whenever its candidate is quarantined.
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+  // ListDivergences returns the state of each mirror the server still
+  // considers current, with the quarantines it holds.
   rpc ListDivergences(ListDivergencesRequest) returns (ListDivergencesResponse);
-  // ClearDivergences removes the divergences of one service environment, once
-  // someone has dealt with them.
-  rpc ClearDivergences(ClearDivergencesRequest) returns (ClearDivergencesResponse);
 }
 
 // Direction names the proxy that carries traffic.
@@ -28,32 +27,24 @@ enum Direction {
   DIRECTION_EGRESS = 2;
 }
 
-message QuarantineRequest {
-  Divergence divergence = 1;
+message HeartbeatRequest {
+  State state = 1;
 }
 
-message QuarantineResponse {}
+message HeartbeatResponse {}
 
-// ListDivergencesRequest filters divergences. An unset filter matches every value.
+// ListDivergencesRequest filters mirror states. An unset filter matches every value.
 message ListDivergencesRequest {
   optional string service = 1;
   optional string environment = 2;
-  optional string revision = 3;
-  // Node matches only divergences on routes of that migration state node.
+  optional string candidate_commit = 3;
+  // Node matches only states holding a quarantine on a route of that migration state node.
   optional string node = 4;
 }
 
 message ListDivergencesResponse {
-  repeated Divergence divergences = 1;
+  repeated State states = 1;
 }
-
-// ClearDivergencesRequest names the service environment whose divergences to remove.
-message ClearDivergencesRequest {
-  string service = 1;
-  string environment = 2;
-}
-
-message ClearDivergencesResponse {}
 
 // Quarantine is why a proxy quarantined the candidate. It never carries
 // payload values.
@@ -83,6 +74,8 @@ message Quarantine {
   optional string node = 4;
   repeated string differences = 5;
   string detail = 6;
+  // Direction is the proxy that quarantined the candidate.
+  Direction direction = 7;
 }
 
 // Traffic identifies the request that caused a quarantine.
@@ -93,13 +86,17 @@ message Traffic {
   string route = 3;
 }
 
-// Divergence is a quarantine of the mirror of one service environment.
-message Divergence {
+// State is what the mirror of one service environment runs and holds.
+message State {
   string service = 1;
   string environment = 2;
-  // Revision is the commit of the candidate the mirror runs.
-  string revision = 3;
-  // Direction is the proxy that quarantined the candidate.
-  Direction direction = 4;
-  Quarantine quarantine = 5;
+  // CandidateCommit is the commit of the candidate the mirror runs.
+  string candidate_commit = 3;
+  // SpectreVersion is the version of SPECTRE the mirror runs.
+  string spectre_version = 4;
+  // Uptime is how long the mirror has run. Quarantine lasts until the mirror
+  // restarts, so a mirror holding no quarantine has been healthy this long.
+  google.protobuf.Duration uptime = 5;
+  // Quarantines holds at most one quarantine per direction.
+  repeated Quarantine quarantines = 6;
 }

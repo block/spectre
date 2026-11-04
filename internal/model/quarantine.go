@@ -47,7 +47,7 @@ func (r QuarantineReason) String() string {
 }
 
 // Quarantine is a quarantine in effect: why it began and when.
-type Quarantine struct { //nolint:singleusestruct // Proxies report quarantines on their own, outside any divergence.
+type Quarantine struct { //nolint:singleusestruct // Proxies report quarantines on their own, outside any state.
 	Reason QuarantineReason `json:"reason"` //nolint:narrowdeps // Other packages read the whole reason.
 	Since  time.Time        `json:"since"`
 }

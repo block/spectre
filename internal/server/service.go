@@ -23,11 +23,13 @@ import (
 // Service serves the SPECTRE service API.
 type Service struct {
 	store storage.Store
+	ttl   time.Duration
 }
 
-// NewService returns a SPECTRE server that keeps divergences in store.
-func NewService(store storage.Store) *Service {
-	return &Service{store: store}
+// NewService returns a SPECTRE server that keeps mirror states in store and
+// lists those received within ttl.
+func NewService(store storage.Store, ttl time.Duration) *Service {
+	return &Service{store: store, ttl: ttl}
 }
 
 // Handler serves the API.
@@ -39,41 +41,30 @@ func (s *Service) Handler() http.Handler {
 	return mux
 }
 
-// Quarantine records that a mirror quarantined its candidate.
-func (s *Service) Quarantine(ctx context.Context, request *pb.QuarantineRequest) (*pb.QuarantineResponse, error) {
-	divergence, err := wire.DivergenceFromMessage(request.GetDivergence())
+// Heartbeat records the latest state of a mirror.
+func (s *Service) Heartbeat(ctx context.Context, request *pb.HeartbeatRequest) (*pb.HeartbeatResponse, error) {
+	state, err := wire.StateFromMessage(request.GetState())
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err.Error()).WithCause(err)
 	}
-	if err := s.store.Record(ctx, divergence); err != nil {
+	if err := s.store.Put(ctx, state, time.Now()); err != nil {
 		return nil, connect.NewError(connect.CodeUnavailable, err.Error()).WithCause(err)
 	}
-	return &pb.QuarantineResponse{}, nil
+	return &pb.HeartbeatResponse{}, nil
 }
 
-// ListDivergences returns the latest quarantine of each mirror direction.
+// ListDivergences returns the states of the mirrors that sent a heartbeat
+// within the TTL.
 func (s *Service) ListDivergences(ctx context.Context, request *pb.ListDivergencesRequest) (*pb.ListDivergencesResponse, error) {
-	divergences, err := s.store.List(ctx)
+	states, err := s.store.List(ctx, time.Now().Add(-s.ttl))
 	if err != nil {
 		return nil, connect.NewError(connect.CodeUnavailable, err.Error()).WithCause(err)
 	}
 	response := &pb.ListDivergencesResponse{}
-	for _, divergence := range filterDivergences(divergences, wire.FilterFromMessage(request)) {
-		response.Divergences = append(response.Divergences, wire.DivergenceMessage(divergence))
+	for _, state := range filterStates(states, wire.FilterFromMessage(request)) {
+		response.States = append(response.States, wire.StateMessage(state))
 	}
 	return response, nil
-}
-
-// ClearDivergences removes the divergences of one service environment.
-func (s *Service) ClearDivergences(ctx context.Context, request *pb.ClearDivergencesRequest) (*pb.ClearDivergencesResponse, error) {
-	service, environment := request.GetService(), request.GetEnvironment()
-	if service == "" || environment == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, "clearing divergences needs a service and environment")
-	}
-	if err := s.store.Clear(ctx, service, environment); err != nil {
-		return nil, connect.NewError(connect.CodeUnavailable, err.Error()).WithCause(err)
-	}
-	return &pb.ClearDivergencesResponse{}, nil
 }
 
 // Serve runs a SPECTRE server until ctx is cancelled. Mesh mTLS secures
@@ -85,10 +76,10 @@ func Serve(ctx context.Context, config ServeConfig) error {
 	}
 	store, err := storage.Open(ctx, config.Storage)
 	if err != nil {
-		return errors.Wrap(err, "open divergence storage")
+		return errors.Wrap(err, "open state storage")
 	}
 	defer store.Close()
-	handler := health.New(logging.New(NewService(store).Handler(), logger.EventReceived))
+	handler := health.New(logging.New(NewService(store, config.StateTTL).Handler(), logger.EventReceived))
 	protocols := new(http.Protocols)
 	protocols.SetHTTP1(true)
 	protocols.SetHTTP2(true)

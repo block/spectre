@@ -62,7 +62,7 @@ Base your image on the same pattern as `demo/Dockerfile`:
    (`--scripts-dir`), TypeScript schema (`--schema-dir`), and protobuf
    descriptors (`--descriptors-dir`).
 3. Run the supervisor with your two commands, pointed at a SPECTRE server
-   (`spectre serve`) that it reports quarantines to.
+   (`spectre serve`) that it sends heartbeats to.
 
 The supervisor runs each service command through `/bin/sh -c` and exports two
 environment variables to it:
@@ -84,7 +84,7 @@ spectre supervise \
   --server-url=http://spectre-server:50070 \
   --service=my-service \
   --environment=production \
-  --revision=3f9c2a1 \
+  --candidate-commit=3f9c2a1 \
   --reference='my-service --listen=$SPECTRE_LISTEN --upstream=$SPECTRE_EGRESS' \
   --candidate='my-service-v2 --listen=$SPECTRE_LISTEN --upstream=$SPECTRE_EGRESS' \
   --destination=api.internal=https://api.internal \

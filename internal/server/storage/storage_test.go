@@ -30,9 +30,9 @@ func TestStores(t *testing.T) {
 		name string
 		test func(t *testing.T, store storage.Store)
 	}{
-		{name: "KeepsLatestQuarantine", test: testKeepsLatestQuarantine},
-		{name: "ClearsServiceEnvironment", test: testClearsServiceEnvironment},
-		{name: "RecordsConcurrently", test: testRecordsConcurrently},
+		{name: "ReplacesState", test: testReplacesState},
+		{name: "ForgetsStaleStates", test: testForgetsStaleStates},
+		{name: "PutsConcurrently", test: testPutsConcurrently},
 	}
 	for _, backend := range backends {
 		t.Run(backend.name, func(t *testing.T) {
@@ -87,9 +87,9 @@ func TestRedisRejectsUnknownFields(t *testing.T) {
 	store, err := storage.NewRedis(t.Context(), parseURL(t, "redis://"+server.Addr()))
 	assert.NoError(t, err)
 	t.Cleanup(func() { assert.NoError(t, store.Close()) })
-	server.HSet("spectre:divergences", `"users" "production" ingress`,
-		`{"service":"users","quarantine":{"reason":{"kind":"divergent","traffic":{"direction":"ingress","method":"GET"}}}}`)
-	_, err = store.List(t.Context())
+	server.HSet("spectre:states", `"users" "production"`,
+		`{"state":{"service":"users","quarantines":{"ingress":{"reason":{"kind":"divergent","traffic":{"direction":"ingress","method":"GET"}}}}}}`)
+	_, err = store.List(t.Context(), time.Time{})
 	assert.Contains(t, err.Error(), `unknown field "method"`)
 }
 
@@ -112,76 +112,69 @@ func parseURL(t *testing.T, raw string) *url.URL {
 	return parsed
 }
 
-func testKeepsLatestQuarantine(t *testing.T, store storage.Store) {
-	first := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
-	latest := divergence("production", model.Ingress, first.Add(time.Minute))
-	latest.Quarantine.Reason = model.QuarantineReason{
-		Kind:        model.QuarantineDivergent,
-		Traffic:     Some(model.Traffic{Direction: model.Ingress, Protocol: model.ProtocolHTTP, Route: "GET /v1/users"}),
-		Node:        Some("users"),
-		Differences: []string{"body.name"},
-	}
-	egress := divergence("production", model.Egress, first)
-	for _, reported := range []model.Divergence{
-		divergence("production", model.Ingress, first),
-		latest,
-		// A stale retry from before the mirror restarted.
-		divergence("production", model.Ingress, first.Add(-time.Minute)),
-		egress,
-	} {
-		assert.NoError(t, store.Record(t.Context(), reported))
-	}
-	assertStored(t, store, latest, egress)
+func testReplacesState(t *testing.T, store storage.Store) {
+	received := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	latest := state("production", 2*time.Minute)
+	//nolint:exhaustive // Only the ingress proxy quarantined.
+	latest.Quarantines = map[model.Direction]model.Quarantine{model.Ingress: {
+		Since: received,
+		Reason: model.QuarantineReason{
+			Kind:        model.QuarantineDivergent,
+			Traffic:     Some(model.Traffic{Direction: model.Ingress, Protocol: model.ProtocolHTTP, Route: "GET /v1/users"}),
+			Node:        Some("users"),
+			Differences: []string{"body.name"},
+		},
+	}}
+	staging := state("staging", time.Minute)
+	assert.NoError(t, store.Put(t.Context(), state("production", time.Minute), received))
+	assert.NoError(t, store.Put(t.Context(), latest, received.Add(time.Minute)))
+	assert.NoError(t, store.Put(t.Context(), staging, received))
+	assertStored(t, store, received, latest, staging)
 }
 
-func testClearsServiceEnvironment(t *testing.T, store storage.Store) {
-	since := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
-	staging := divergence("staging", model.Ingress, since)
-	for _, reported := range []model.Divergence{
-		divergence("production", model.Ingress, since),
-		divergence("production", model.Egress, since),
-		staging,
-	} {
-		assert.NoError(t, store.Record(t.Context(), reported))
-	}
-	assert.NoError(t, store.Clear(t.Context(), "users", "production"))
-	assertStored(t, store, staging)
+func testForgetsStaleStates(t *testing.T, store storage.Store) {
+	received := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	staging := state("staging", time.Minute)
+	assert.NoError(t, store.Put(t.Context(), state("production", time.Minute), received))
+	assert.NoError(t, store.Put(t.Context(), staging, received.Add(time.Minute)))
+	assertStored(t, store, received.Add(time.Second), staging)
+	// The stale state stays forgotten when an older cutoff would include it.
+	assertStored(t, store, received, staging)
 }
 
-// testRecordsConcurrently checks that concurrent writes to different sources
-// are all kept, which makes the Redis store retry its transactions.
-func testRecordsConcurrently(t *testing.T, store storage.Store) {
-	since := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
-	expected := []model.Divergence{}
+// testPutsConcurrently checks that concurrent writes for different service
+// environments are all kept.
+func testPutsConcurrently(t *testing.T, store storage.Store) {
+	received := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	expected := []model.State{}
 	for i := range 20 {
-		expected = append(expected, divergence("environment-"+strconv.Itoa(i), model.Ingress, since))
+		expected = append(expected, state("environment-"+strconv.Itoa(i), time.Minute))
 	}
 	var wg sync.WaitGroup
 	for _, reported := range expected {
-		wg.Go(func() { assert.NoError(t, store.Record(t.Context(), reported)) })
+		wg.Go(func() { assert.NoError(t, store.Put(t.Context(), reported, received)) })
 	}
 	wg.Wait()
-	assertStored(t, store, expected...)
+	assertStored(t, store, received, expected...)
 }
 
-func divergence(environment string, direction model.Direction, since time.Time) model.Divergence {
-	return model.Divergence{
-		Service:     "users",
-		Environment: environment,
-		Revision:    "abc123",
-		Direction:   direction,
-		Quarantine:  model.Quarantine{Since: since, Reason: model.QuarantineReason{Kind: model.QuarantineCapacity}},
+func state(environment string, uptime time.Duration) model.State {
+	return model.State{
+		Service:         "users",
+		Environment:     environment,
+		CandidateCommit: "abc123",
+		SpectreVersion:  "v1.2.3",
+		Uptime:          uptime,
 	}
 }
 
-// assertStored checks the store holds exactly the expected divergences, in any order.
-func assertStored(t *testing.T, store storage.Store, expected ...model.Divergence) {
+// assertStored checks the store lists exactly the expected states received at
+// or after since, in any order.
+func assertStored(t *testing.T, store storage.Store, since time.Time, expected ...model.State) {
 	t.Helper()
-	stored, err := store.List(t.Context())
+	stored, err := store.List(t.Context(), since)
 	assert.NoError(t, err)
-	bySource := func(a, b model.Divergence) int {
-		return cmp.Or(cmp.Compare(a.Environment, b.Environment), cmp.Compare(a.Direction, b.Direction))
-	}
-	slices.SortFunc(stored, bySource)
-	assert.Equal(t, slices.SortedFunc(slices.Values(expected), bySource), stored)
+	byEnvironment := func(a, b model.State) int { return cmp.Compare(a.Environment, b.Environment) }
+	slices.SortFunc(stored, byEnvironment)
+	assert.Equal(t, slices.SortedFunc(slices.Values(expected), byEnvironment), stored)
 }

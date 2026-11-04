@@ -24,22 +24,19 @@ const (
 // reflection-formatted method names, remove the leading slash and convert the remaining slash to a
 // period.
 const (
-	// SpectreServiceQuarantineProcedure is the procedure name of the SpectreService's Quarantine RPC.
-	SpectreServiceQuarantineProcedure = "/spectre.v1.SpectreService/Quarantine"
+	// SpectreServiceHeartbeatProcedure is the procedure name of the SpectreService's Heartbeat RPC.
+	SpectreServiceHeartbeatProcedure = "/spectre.v1.SpectreService/Heartbeat"
 	// SpectreServiceListDivergencesProcedure is the procedure name of the SpectreService's
 	// ListDivergences RPC.
 	SpectreServiceListDivergencesProcedure = "/spectre.v1.SpectreService/ListDivergences"
-	// SpectreServiceClearDivergencesProcedure is the procedure name of the SpectreService's
-	// ClearDivergences RPC.
-	SpectreServiceClearDivergencesProcedure = "/spectre.v1.SpectreService/ClearDivergences"
 )
 
 var (
-	spectreServiceQuarantineSpec = sync.OnceValue(func() connect.Spec {
+	spectreServiceHeartbeatSpec = sync.OnceValue(func() connect.Spec {
 		return connect.Spec{
 			StreamType: connect.StreamTypeUnary,
-			Schema:     spectrepb.File_spectre_v1_spectre_proto.Services().ByName("SpectreService").Methods().ByName("Quarantine"),
-			Procedure:  SpectreServiceQuarantineProcedure,
+			Schema:     spectrepb.File_spectre_v1_spectre_proto.Services().ByName("SpectreService").Methods().ByName("Heartbeat"),
+			Procedure:  SpectreServiceHeartbeatProcedure,
 		}
 	})
 	spectreServiceListDivergencesSpec = sync.OnceValue(func() connect.Spec {
@@ -49,25 +46,16 @@ var (
 			Procedure:  SpectreServiceListDivergencesProcedure,
 		}
 	})
-	spectreServiceClearDivergencesSpec = sync.OnceValue(func() connect.Spec {
-		return connect.Spec{
-			StreamType: connect.StreamTypeUnary,
-			Schema:     spectrepb.File_spectre_v1_spectre_proto.Services().ByName("SpectreService").Methods().ByName("ClearDivergences"),
-			Procedure:  SpectreServiceClearDivergencesProcedure,
-		}
-	})
 )
 
 // SpectreServiceClient is a client for the spectre.v1.SpectreService service.
 type SpectreServiceClient interface {
-	// Quarantine records that a mirror quarantined its candidate. A mirror sends
-	// each quarantine once, retrying until it succeeds, so repeats are ignored.
-	Quarantine(context.Context, *spectrepb.QuarantineRequest) (*spectrepb.QuarantineResponse, error)
-	// ListDivergences returns the latest quarantine of each mirror direction.
+	// Heartbeat replaces the state of a service environment's mirror. A mirror
+	// sends one periodically and whenever its candidate is quarantined.
+	Heartbeat(context.Context, *spectrepb.HeartbeatRequest) (*spectrepb.HeartbeatResponse, error)
+	// ListDivergences returns the state of each mirror the server still
+	// considers current, with the quarantines it holds.
 	ListDivergences(context.Context, *spectrepb.ListDivergencesRequest) (*spectrepb.ListDivergencesResponse, error)
-	// ClearDivergences removes the divergences of one service environment, once
-	// someone has dealt with them.
-	ClearDivergences(context.Context, *spectrepb.ClearDivergencesRequest) (*spectrepb.ClearDivergencesResponse, error)
 }
 
 // NewSpectreServiceClient constructs a client for the spectre.v1.SpectreService service. Multiple
@@ -78,14 +66,12 @@ func NewSpectreServiceClient(client *connect.Client) SpectreServiceClient {
 
 // SpectreServiceHandler is an implementation of the spectre.v1.SpectreService service.
 type SpectreServiceHandler interface {
-	// Quarantine records that a mirror quarantined its candidate. A mirror sends
-	// each quarantine once, retrying until it succeeds, so repeats are ignored.
-	Quarantine(context.Context, *spectrepb.QuarantineRequest) (*spectrepb.QuarantineResponse, error)
-	// ListDivergences returns the latest quarantine of each mirror direction.
+	// Heartbeat replaces the state of a service environment's mirror. A mirror
+	// sends one periodically and whenever its candidate is quarantined.
+	Heartbeat(context.Context, *spectrepb.HeartbeatRequest) (*spectrepb.HeartbeatResponse, error)
+	// ListDivergences returns the state of each mirror the server still
+	// considers current, with the quarantines it holds.
 	ListDivergences(context.Context, *spectrepb.ListDivergencesRequest) (*spectrepb.ListDivergencesResponse, error)
-	// ClearDivergences removes the divergences of one service environment, once
-	// someone has dealt with them.
-	ClearDivergences(context.Context, *spectrepb.ClearDivergencesRequest) (*spectrepb.ClearDivergencesResponse, error)
 }
 
 // RegisterSpectreServiceHandler registers svc as the spectre.v1.SpectreService implementation on
@@ -93,34 +79,29 @@ type SpectreServiceHandler interface {
 func RegisterSpectreServiceHandler(server *connect.Server, svc SpectreServiceHandler) {
 	adapter := spectreServiceHandler{svc: svc}
 	server.Register(
-		connect.Method{Spec: spectreServiceQuarantineSpec(), Handler: adapter.quarantine},
+		connect.Method{Spec: spectreServiceHeartbeatSpec(), Handler: adapter.heartbeat},
 		connect.Method{Spec: spectreServiceListDivergencesSpec(), Handler: adapter.listDivergences},
-		connect.Method{Spec: spectreServiceClearDivergencesSpec(), Handler: adapter.clearDivergences},
 	)
 }
 
 // UnimplementedSpectreServiceHandler returns CodeUnimplemented from all methods.
 type UnimplementedSpectreServiceHandler struct{}
 
-func (UnimplementedSpectreServiceHandler) Quarantine(context.Context, *spectrepb.QuarantineRequest) (*spectrepb.QuarantineResponse, error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, "spectre.v1.SpectreService.Quarantine is not implemented")
+func (UnimplementedSpectreServiceHandler) Heartbeat(context.Context, *spectrepb.HeartbeatRequest) (*spectrepb.HeartbeatResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "spectre.v1.SpectreService.Heartbeat is not implemented")
 }
 
 func (UnimplementedSpectreServiceHandler) ListDivergences(context.Context, *spectrepb.ListDivergencesRequest) (*spectrepb.ListDivergencesResponse, error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, "spectre.v1.SpectreService.ListDivergences is not implemented")
 }
 
-func (UnimplementedSpectreServiceHandler) ClearDivergences(context.Context, *spectrepb.ClearDivergencesRequest) (*spectrepb.ClearDivergencesResponse, error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, "spectre.v1.SpectreService.ClearDivergences is not implemented")
-}
-
 type spectreServiceClient struct {
 	client *connect.Client
 }
 
-func (c *spectreServiceClient) Quarantine(ctx context.Context, req *spectrepb.QuarantineRequest) (*spectrepb.QuarantineResponse, error) {
-	var res spectrepb.QuarantineResponse
-	if err := c.client.CallUnary(ctx, spectreServiceQuarantineSpec(), req, &res); err != nil {
+func (c *spectreServiceClient) Heartbeat(ctx context.Context, req *spectrepb.HeartbeatRequest) (*spectrepb.HeartbeatResponse, error) {
+	var res spectrepb.HeartbeatResponse
+	if err := c.client.CallUnary(ctx, spectreServiceHeartbeatSpec(), req, &res); err != nil {
 		return nil, err
 	}
 	return &res, nil
@@ -134,22 +115,14 @@ func (c *spectreServiceClient) ListDivergences(ctx context.Context, req *spectre
 	return &res, nil
 }
 
-func (c *spectreServiceClient) ClearDivergences(ctx context.Context, req *spectrepb.ClearDivergencesRequest) (*spectrepb.ClearDivergencesResponse, error) {
-	var res spectrepb.ClearDivergencesResponse
-	if err := c.client.CallUnary(ctx, spectreServiceClearDivergencesSpec(), req, &res); err != nil {
-		return nil, err
-	}
-	return &res, nil
-}
-
 type spectreServiceHandler struct{ svc SpectreServiceHandler }
 
-func (h spectreServiceHandler) quarantine(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
-	var req spectrepb.QuarantineRequest
+func (h spectreServiceHandler) heartbeat(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req spectrepb.HeartbeatRequest
 	if err := stream.Receive(&req); err != nil {
 		return err
 	}
-	res, err := h.svc.Quarantine(ctx, &req)
+	res, err := h.svc.Heartbeat(ctx, &req)
 	if err != nil {
 		return err
 	}
@@ -162,18 +135,6 @@ func (h spectreServiceHandler) listDivergences(ctx context.Context, _ connect.Sp
 		return err
 	}
 	res, err := h.svc.ListDivergences(ctx, &req)
-	if err != nil {
-		return err
-	}
-	return stream.Send(res)
-}
-
-func (h spectreServiceHandler) clearDivergences(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
-	var req spectrepb.ClearDivergencesRequest
-	if err := stream.Receive(&req); err != nil {
-		return err
-	}
-	res, err := h.svc.ClearDivergences(ctx, &req)
 	if err != nil {
 		return err
 	}

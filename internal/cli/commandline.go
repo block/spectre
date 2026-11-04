@@ -27,9 +27,9 @@ type CommandLine struct {
 	Version kong.VersionFlag `env:"-" help:"Print the version and exit."`
 
 	Supervise   superviseCommand   `cmd:"" help:"Supervise a candidate and a reference behind the embedded proxies, splitting resources between them."`
-	Serve       serveCommand       `cmd:"" help:"Run the SPECTRE server, which mirrors report their quarantines to."`
+	Serve       serveCommand       `cmd:"" help:"Run the SPECTRE server, which mirrors send their heartbeats to."`
 	Gen         genCommand         `cmd:"" help:"Generate TypeScript schema declarations and the script API."`
-	Divergences divergencesCommand `cmd:"" help:"List or clear the divergences that mirrors reported to the SPECTRE server."`
+	Divergences divergencesCommand `cmd:"" help:"List the mirrors reporting to the SPECTRE server, with their candidate commits and quarantines."`
 	State       stateCommand       `cmd:"" help:"Describe a service's migration state."`
 
 	Init initCommand `cmd:"" help:"Set a service checkout up for a SPECTRE migration from a template."`

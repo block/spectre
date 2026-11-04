@@ -6,85 +6,104 @@ import (
 	"github.com/alecthomas/errors"
 	. "github.com/alecthomas/types/optional"
 	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/block/spectre/internal/model"
 	pb "github.com/block/spectre/spectrepb"
 )
 
-// DivergenceMessage returns the message that reports divergence.
-func DivergenceMessage(divergence model.Divergence) *pb.Divergence {
-	return &pb.Divergence{
-		Service:     divergence.Service,
-		Environment: divergence.Environment,
-		Revision:    divergence.Revision,
-		Direction:   directionMessage(divergence.Direction),
-		Quarantine:  quarantineMessage(divergence.Quarantine),
+// StateMessage returns the message that reports state.
+func StateMessage(state model.State) *pb.State {
+	message := &pb.State{
+		Service:         state.Service,
+		Environment:     state.Environment,
+		CandidateCommit: state.CandidateCommit,
+		SpectreVersion:  state.SpectreVersion,
+		Uptime:          durationpb.New(state.Uptime),
 	}
+	// Ingress first, so a state always encodes the same way.
+	for _, direction := range []model.Direction{model.Ingress, model.Egress} {
+		if quarantine, ok := state.Quarantines[direction]; ok {
+			message.Quarantines = append(message.Quarantines, quarantineMessage(direction, quarantine))
+		}
+	}
+	return message
 }
 
-// DivergenceFromMessage restores a reported divergence, checking that it
-// identifies its source and quarantine so every store can rely on them.
-func DivergenceFromMessage(message *pb.Divergence) (model.Divergence, error) {
-	if message.GetService() == "" || message.GetEnvironment() == "" || message.GetRevision() == "" {
-		return model.Divergence{}, errors.New("divergence needs a service, environment, and revision")
+// StateFromMessage restores a reported state, checking that it identifies its
+// mirror and holds at most one quarantine per direction.
+func StateFromMessage(message *pb.State) (model.State, error) {
+	if message.GetService() == "" || message.GetEnvironment() == "" || message.GetCandidateCommit() == "" {
+		return model.State{}, errors.New("state needs a service, environment, and candidate commit")
 	}
-	direction, err := directionFromMessage(message.GetDirection())
-	if err != nil {
-		return model.Divergence{}, err
+	if message.GetUptime() == nil {
+		return model.State{}, errors.New("state needs an uptime")
 	}
-	quarantine := message.GetQuarantine()
-	if quarantine.GetSince() == nil {
-		return model.Divergence{}, errors.New("divergence needs a quarantine with its start time")
+	state := model.State{
+		Service:         message.GetService(),
+		Environment:     message.GetEnvironment(),
+		CandidateCommit: message.GetCandidateCommit(),
+		SpectreVersion:  message.GetSpectreVersion(),
+		Uptime:          message.GetUptime().AsDuration(),
 	}
-	reason, err := reasonFromMessage(quarantine)
-	if err != nil {
-		return model.Divergence{}, errors.Wrap(err, "quarantine")
+	quarantines := message.GetQuarantines()
+	if len(quarantines) > 0 {
+		state.Quarantines = make(map[model.Direction]model.Quarantine, len(quarantines))
 	}
-	return model.Divergence{
-		Service:     message.GetService(),
-		Environment: message.GetEnvironment(),
-		Revision:    message.GetRevision(),
-		Direction:   direction,
-		Quarantine:  model.Quarantine{Reason: reason, Since: quarantine.GetSince().AsTime()},
-	}, nil
+	for _, quarantine := range quarantines {
+		direction, err := directionFromMessage(quarantine.GetDirection())
+		if err != nil {
+			return model.State{}, errors.Wrap(err, "quarantine")
+		}
+		if _, ok := state.Quarantines[direction]; ok {
+			return model.State{}, errors.Errorf("state holds more than one %s quarantine", direction)
+		}
+		restored, err := quarantineFromMessage(quarantine)
+		if err != nil {
+			return model.State{}, errors.Wrap(err, "quarantine")
+		}
+		state.Quarantines[direction] = restored
+	}
+	return state, nil
 }
 
-// DivergencesJSON returns divergences as the protocol's JSON list response,
-// which is what the command line prints.
-func DivergencesJSON(divergences []model.Divergence) ([]byte, error) {
-	response := &pb.ListDivergencesResponse{Divergences: make([]*pb.Divergence, 0, len(divergences))}
-	for _, divergence := range divergences {
-		response.Divergences = append(response.Divergences, DivergenceMessage(divergence))
+// StatesJSON returns states as the protocol's JSON list response, which is
+// what the command line prints.
+func StatesJSON(states []model.State) ([]byte, error) {
+	response := &pb.ListDivergencesResponse{States: make([]*pb.State, 0, len(states))}
+	for _, state := range states {
+		response.States = append(response.States, StateMessage(state))
 	}
 	data, err := protojson.MarshalOptions{Multiline: true}.Marshal(response)
 	return data, errors.Wrap(err, "encode JSON")
 }
 
-// FilterMessage returns the request that lists the divergences filter selects.
-func FilterMessage(filter model.DivergenceFilter) *pb.ListDivergencesRequest {
+// FilterMessage returns the request that lists the states filter selects.
+func FilterMessage(filter model.StateFilter) *pb.ListDivergencesRequest {
 	return &pb.ListDivergencesRequest{
-		Service:     filter.Service.Ptr(),
-		Environment: filter.Environment.Ptr(),
-		Revision:    filter.Revision.Ptr(),
-		Node:        filter.Node.Ptr(),
+		Service:         filter.Service.Ptr(),
+		Environment:     filter.Environment.Ptr(),
+		CandidateCommit: filter.CandidateCommit.Ptr(),
+		Node:            filter.Node.Ptr(),
 	}
 }
 
 // FilterFromMessage restores the filter of a list request.
-func FilterFromMessage(request *pb.ListDivergencesRequest) model.DivergenceFilter {
+func FilterFromMessage(request *pb.ListDivergencesRequest) model.StateFilter {
 	// Getters hide whether an optional field is set, so presence is a nil check.
-	return model.DivergenceFilter{
-		Service:     From(request.GetService(), request.Service != nil),
-		Environment: From(request.GetEnvironment(), request.Environment != nil),
-		Revision:    From(request.GetRevision(), request.Revision != nil),
-		Node:        From(request.GetNode(), request.Node != nil),
+	return model.StateFilter{
+		Service:         From(request.GetService(), request.Service != nil),
+		Environment:     From(request.GetEnvironment(), request.Environment != nil),
+		CandidateCommit: From(request.GetCandidateCommit(), request.CandidateCommit != nil),
+		Node:            From(request.GetNode(), request.Node != nil),
 	}
 }
 
-func quarantineMessage(status model.Quarantine) *pb.Quarantine {
+func quarantineMessage(direction model.Direction, status model.Quarantine) *pb.Quarantine {
 	reason := status.Reason
 	message := &pb.Quarantine{
+		Direction:   directionMessage(direction),
 		Since:       timestamppb.New(status.Since),
 		Kind:        kindMessage(reason.Kind),
 		Differences: reason.Differences,
@@ -99,6 +118,18 @@ func quarantineMessage(status model.Quarantine) *pb.Quarantine {
 		}
 	}
 	return message
+}
+
+// quarantineFromMessage restores a reported quarantine, which must say when it began.
+func quarantineFromMessage(message *pb.Quarantine) (model.Quarantine, error) {
+	if message.GetSince() == nil {
+		return model.Quarantine{}, errors.New("quarantine needs its start time")
+	}
+	reason, err := reasonFromMessage(message)
+	if err != nil {
+		return model.Quarantine{}, err
+	}
+	return model.Quarantine{Reason: reason, Since: message.GetSince().AsTime()}, nil
 }
 
 // reasonFromMessage restores the reason a mirror reported. Protobuf getters
