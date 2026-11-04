@@ -64,8 +64,9 @@ and `docker.io/blockossreleases/spectre`.
 
 ## SPECTRE server
 
-`spectre serve` collects the states that mirrors stream to it: each mirror's
-candidate revision, SPECTRE version, uptime, and quarantines. The server also records each quarantine as a
+`spectre serve` collects the heartbeats that mirrors send. Each heartbeat
+carries the mirror's latest state: its candidate revision, SPECTRE version,
+uptime, and quarantines. The server also records each quarantine as a
 divergence that outlives the mirror run. It listens on `127.0.0.1:50070` by
 default and keeps everything in memory, so a restart loses it. To keep them in Redis instead, pass a Redis URL to `--storage`, such as
 `--storage=redis://localhost:6379/0`. For a Redis Cluster, use the
@@ -85,16 +86,14 @@ pass the socket as `--server-socket` and the server's mesh address as
 `--server-url`. Every call dials the socket, and the mesh routes it by the URL's
 host, such as `--server-url=http://spectre.mesh --server-socket=@egress.sock`.
 
-A mirror opens one stream to the server, which begins with its whole state. It
-then sends each quarantine as it begins, and a keepalive every
-`--keepalive-interval` (30s by default) when nothing has changed. When the
-stream fails, the mirror logs it and reconnects with backoff.
+A mirror sends a heartbeat when it starts, every `--heartbeat-interval` (30s by
+default), and as soon as it quarantines. A failed heartbeat is only logged.
 
 List the reporting mirrors and recorded divergences with
 `spectre status --server-url=URL`. Filter with `--service`,
 `--environment`, `--revision`, or `--node`, and print JSON with `--json`. A
-mirror stays listed until it sends nothing for the server's `--state-ttl`
-(90s by default), so keep that above the keepalive interval. A mirror stays
+mirror stays listed until it misses heartbeats for the server's `--state-ttl`
+(90s by default), so keep that above the heartbeat interval. A mirror stays
 quarantined until it restarts.
 
 The server keeps the latest divergence of each direction of a service

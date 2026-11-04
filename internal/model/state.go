@@ -3,7 +3,7 @@ package model
 import "time"
 
 // State is what the mirror of a service environment runs and holds, as its
-// latest update reported it.
+// latest heartbeat reported it.
 type State struct {
 	Service     string `json:"service"`
 	Environment string `json:"environment"`

@@ -19,21 +19,26 @@ import (
 	"github.com/block/spectre/internal/server/storage"
 )
 
-// updateProcedure is the protocol's path for streaming a mirror's state.
+// updateProcedure is the protocol's path for sending a heartbeat.
 const updateProcedure = "/spectre.v1.SpectreService/Update"
 
-func TestReporterReconnectsWithQuarantine(t *testing.T) {
+func TestReporterSendsHeartbeatOnQuarantine(t *testing.T) {
+	heartbeats := make(chan int, 8)
 	var attempts atomic.Int32
 	service := server.NewService(storage.NewMemory(), time.Hour).Handler()
 	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
-		// The first stream fails, which the reporter recovers from.
-		if request.URL.Path == updateProcedure && attempts.Add(1) == 1 {
-			// Reply without reading the stream, as a proxy in front of the server does.
-			_ = http.NewResponseController(w).SetReadDeadline(time.Now()) //nolint:errcheck // HTTP/1 test server
-			http.Error(w, "unavailable", http.StatusServiceUnavailable)
+		if request.URL.Path != updateProcedure {
+			service.ServeHTTP(w, request)
 			return
 		}
-		service.ServeHTTP(w, request)
+		attempt := int(attempts.Add(1))
+		// The first heartbeat fails, which the next one recovers from.
+		if attempt == 1 {
+			http.Error(w, "unavailable", http.StatusServiceUnavailable)
+		} else {
+			service.ServeHTTP(w, request)
+		}
+		heartbeats <- attempt
 	}))
 	t.Cleanup(httpServer.Close)
 	ingress := make(chan model.Quarantine, 1)
@@ -43,35 +48,22 @@ func TestReporterReconnectsWithQuarantine(t *testing.T) {
 		Service:           "users",
 		Environment:       "production",
 		Revision:          "abc123",
-		KeepaliveInterval: 10 * time.Millisecond,
+		HeartbeatInterval: time.Hour,
 	}
 	spectre := client.New(config.Client)
 	mirror := reporter.New(config, spectre, reporter.Source{Direction: model.Ingress, Quarantined: ingress}, reporter.Source{Direction: model.Egress, Quarantined: egress})
 	ctx, cancel := context.WithCancel(t.Context())
 	t.Cleanup(cancel)
 	go mirror.Run(ctx)
+	assert.Equal(t, 1, <-heartbeats)
+
 	quarantine := model.Quarantine{Since: time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC), Reason: model.QuarantineReason{
 		Kind:    model.QuarantineUnmatched,
 		Traffic: Some(model.Traffic{Direction: model.Egress, Protocol: model.ProtocolHTTP, Route: "POST api.example/v1/charges"}),
 		Detail:  "no matching reference call",
 	}}
 	egress <- quarantine
-
-	// Whichever stream the quarantine reaches, the next one begins with it.
-	deadline := time.After(10 * time.Second)
-	for {
-		_, divergences, err := spectre.ListDivergences(t.Context(), model.DivergenceFilter{})
-		assert.NoError(t, err)
-		if len(divergences) > 0 {
-			break
-		}
-		select {
-		case <-deadline:
-			t.Fatal("the reporter never reported the quarantine")
-		case <-time.After(10 * time.Millisecond):
-		}
-	}
-	assert.True(t, attempts.Load() > 1)
+	assert.Equal(t, 2, <-heartbeats)
 
 	states, divergences, err := spectre.ListDivergences(t.Context(), model.DivergenceFilter{})
 	assert.NoError(t, err)

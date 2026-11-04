@@ -37,7 +37,7 @@ const (
 var (
 	spectreServiceUpdateSpec = sync.OnceValue(func() connect.Spec {
 		return connect.Spec{
-			StreamType: connect.StreamTypeClient,
+			StreamType: connect.StreamTypeUnary,
 			Schema:     spectrepb.File_spectre_v1_spectre_proto.Services().ByName("SpectreService").Methods().ByName("Update"),
 			Procedure:  SpectreServiceUpdateProcedure,
 		}
@@ -60,9 +60,9 @@ var (
 
 // SpectreServiceClient is a client for the spectre.v1.SpectreService service.
 type SpectreServiceClient interface {
-	// Update streams a mirror's state for as long as the mirror runs. Each
-	// stream begins with the whole state, then changes it or keeps it alive.
-	Update(context.Context) (SpectreServiceUpdateClientStream, error)
+	// Update replaces the state of a service environment's mirror. A mirror
+	// sends one periodically and whenever its candidate is quarantined.
+	Update(context.Context, *spectrepb.UpdateRequest) (*spectrepb.UpdateResponse, error)
 	// ListDivergences returns the state of each mirror the server still
 	// considers current, and the latest divergence each mirror reported.
 	ListDivergences(context.Context, *spectrepb.ListDivergencesRequest) (*spectrepb.ListDivergencesResponse, error)
@@ -77,40 +77,11 @@ func NewSpectreServiceClient(client *connect.Client) SpectreServiceClient {
 	return &spectreServiceClient{client: client}
 }
 
-// SpectreServiceUpdateClientStream is the client stream for the SpectreService's Update RPC.
-type SpectreServiceUpdateClientStream struct {
-	stream connect.ClientStream
-}
-
-// SendHeaders opens the stream and flushes the request headers without a message. The first Send or
-// Receive does this implicitly.
-func (s SpectreServiceUpdateClientStream) SendHeaders() error {
-	return s.stream.SendHeaders()
-}
-
-// Send sends a request message to the server.
-func (s SpectreServiceUpdateClientStream) Send(req *spectrepb.UpdateRequest) error {
-	return s.stream.Send(req)
-}
-
-// CloseAndReceive closes the request side of the stream and returns the single response message. It
-// reads the stream to completion to release its resources.
-func (s SpectreServiceUpdateClientStream) CloseAndReceive() (*spectrepb.UpdateResponse, error) {
-	if err := s.stream.CloseSend(); err != nil {
-		return nil, err
-	}
-	var res spectrepb.UpdateResponse
-	if err := s.stream.Receive(&res); err != nil {
-		return nil, err
-	}
-	return &res, nil
-}
-
 // SpectreServiceHandler is an implementation of the spectre.v1.SpectreService service.
 type SpectreServiceHandler interface {
-	// Update streams a mirror's state for as long as the mirror runs. Each
-	// stream begins with the whole state, then changes it or keeps it alive.
-	Update(context.Context, SpectreServiceUpdateServerStream) (*spectrepb.UpdateResponse, error)
+	// Update replaces the state of a service environment's mirror. A mirror
+	// sends one periodically and whenever its candidate is quarantined.
+	Update(context.Context, *spectrepb.UpdateRequest) (*spectrepb.UpdateResponse, error)
 	// ListDivergences returns the state of each mirror the server still
 	// considers current, and the latest divergence each mirror reported.
 	ListDivergences(context.Context, *spectrepb.ListDivergencesRequest) (*spectrepb.ListDivergencesResponse, error)
@@ -130,24 +101,10 @@ func RegisterSpectreServiceHandler(server *connect.Server, svc SpectreServiceHan
 	)
 }
 
-// SpectreServiceUpdateServerStream is the server stream for the SpectreService's Update RPC.
-type SpectreServiceUpdateServerStream struct {
-	stream connect.ServerStream
-}
-
-// Receive returns the next request message from the client.
-func (s SpectreServiceUpdateServerStream) Receive() (*spectrepb.UpdateRequest, error) {
-	var req spectrepb.UpdateRequest
-	if err := s.stream.Receive(&req); err != nil {
-		return nil, err
-	}
-	return &req, nil
-}
-
 // UnimplementedSpectreServiceHandler returns CodeUnimplemented from all methods.
 type UnimplementedSpectreServiceHandler struct{}
 
-func (UnimplementedSpectreServiceHandler) Update(context.Context, SpectreServiceUpdateServerStream) (*spectrepb.UpdateResponse, error) {
+func (UnimplementedSpectreServiceHandler) Update(context.Context, *spectrepb.UpdateRequest) (*spectrepb.UpdateResponse, error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, "spectre.v1.SpectreService.Update is not implemented")
 }
 
@@ -163,12 +120,12 @@ type spectreServiceClient struct {
 	client *connect.Client
 }
 
-func (c *spectreServiceClient) Update(ctx context.Context) (SpectreServiceUpdateClientStream, error) {
-	stream, err := c.client.CallClientStream(ctx, spectreServiceUpdateSpec())
-	if err != nil {
-		return SpectreServiceUpdateClientStream{}, err
+func (c *spectreServiceClient) Update(ctx context.Context, req *spectrepb.UpdateRequest) (*spectrepb.UpdateResponse, error) {
+	var res spectrepb.UpdateResponse
+	if err := c.client.CallUnary(ctx, spectreServiceUpdateSpec(), req, &res); err != nil {
+		return nil, err
 	}
-	return SpectreServiceUpdateClientStream{stream: stream}, nil
+	return &res, nil
 }
 
 func (c *spectreServiceClient) ListDivergences(ctx context.Context, req *spectrepb.ListDivergencesRequest) (*spectrepb.ListDivergencesResponse, error) {
@@ -190,7 +147,11 @@ func (c *spectreServiceClient) ClearDivergences(ctx context.Context, req *spectr
 type spectreServiceHandler struct{ svc SpectreServiceHandler }
 
 func (h spectreServiceHandler) update(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
-	res, err := h.svc.Update(ctx, SpectreServiceUpdateServerStream{stream: stream})
+	var req spectrepb.UpdateRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.Update(ctx, &req)
 	if err != nil {
 		return err
 	}

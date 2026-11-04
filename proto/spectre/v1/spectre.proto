@@ -10,9 +10,9 @@ option go_package = "github.com/block/spectre/spectrepb;spectrepb";
 // SpectreService collects the state of running mirrors and answers questions
 // about them for people and agents.
 service SpectreService {
-  // Update streams a mirror's state for as long as the mirror runs. Each
-  // stream begins with the whole state, then changes it or keeps it alive.
-  rpc Update(stream UpdateRequest) returns (UpdateResponse);
+  // Update replaces the state of a service environment's mirror. A mirror
+  // sends one periodically and whenever its candidate is quarantined.
+  rpc Update(UpdateRequest) returns (UpdateResponse);
   // ListDivergences returns the state of each mirror the server still
   // considers current, and the latest divergence each mirror reported.
   rpc ListDivergences(ListDivergencesRequest) returns (ListDivergencesResponse);
@@ -31,18 +31,8 @@ enum Direction {
 }
 
 message UpdateRequest {
-  oneof update {
-    // State replaces the mirror's whole state. Every stream begins with it.
-    State state = 1;
-    // Quarantine adds the quarantine of its direction to the state.
-    Quarantine quarantine = 2;
-    // Keepalive shows the mirror still runs when nothing has changed.
-    Keepalive keepalive = 3;
-  }
+  State state = 1;
 }
-
-// Keepalive carries nothing; it only keeps a quiet stream alive.
-message Keepalive {}
 
 message UpdateResponse {}
 

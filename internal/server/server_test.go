@@ -1,7 +1,6 @@
 package server_test
 
 import (
-	"io"
 	"net/http/httptest"
 	"testing"
 	"time"
@@ -9,7 +8,6 @@ import (
 	"connectrpc.com/connect/v2"
 	"connectrpc.com/connect/v2/connecthttp"
 	"github.com/alecthomas/assert/v2"
-	"github.com/alecthomas/errors"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -38,54 +36,6 @@ func state(environment string, uptime time.Duration, quarantines ...*pb.Quaranti
 	}
 }
 
-// update streams requests to the server, then closes the stream and returns
-// the error the server ended it with.
-func update(t *testing.T, rpc spectrepbconnect.SpectreServiceClient, requests ...*pb.UpdateRequest) error {
-	t.Helper()
-	stream, err := rpc.Update(t.Context())
-	assert.NoError(t, err)
-	for _, request := range requests {
-		// A send fails with io.EOF once the server has ended the stream.
-		if err := stream.Send(request); err != nil && !errors.Is(err, io.EOF) {
-			return err
-		}
-	}
-	_, err = stream.CloseAndReceive()
-	return err
-}
-
-func whole(state *pb.State) *pb.UpdateRequest {
-	return &pb.UpdateRequest{Update: &pb.UpdateRequest_State{State: state}}
-}
-
-func quarantined(quarantine *pb.Quarantine) *pb.UpdateRequest {
-	return &pb.UpdateRequest{Update: &pb.UpdateRequest_Quarantine{Quarantine: quarantine}}
-}
-
-func keepalive() *pb.UpdateRequest {
-	return &pb.UpdateRequest{Update: &pb.UpdateRequest_Keepalive{Keepalive: &pb.Keepalive{}}}
-}
-
-// list returns what the server lists for request without uptimes, which it
-// returns separately because the server advances them.
-func list(t *testing.T, rpc spectrepbconnect.SpectreServiceClient, request *pb.ListDivergencesRequest) (listed *pb.ListDivergencesResponse, uptimes []time.Duration) {
-	t.Helper()
-	response, err := rpc.ListDivergences(t.Context(), request)
-	assert.NoError(t, err)
-	for _, listedState := range response.GetStates() {
-		uptimes = append(uptimes, listedState.GetUptime().AsDuration())
-		listedState.Uptime = nil
-	}
-	return response, uptimes
-}
-
-// withoutUptime returns a copy of state without its uptime, as list returns it.
-func withoutUptime(state *pb.State) *pb.State {
-	stripped := proto.CloneOf(state)
-	stripped.Uptime = nil
-	return stripped
-}
-
 func TestUpdateKeepsLatestState(t *testing.T) {
 	rpc := newRPC(t)
 	since := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
@@ -97,60 +47,67 @@ func TestUpdateKeepsLatestState(t *testing.T) {
 		Node:        proto.String("users"),
 		Differences: []string{"body.name"},
 	}
-	staging := state("staging", time.Minute)
-	assert.NoError(t, update(t, rpc, whole(state("production", time.Hour)), keepalive(), quarantined(quarantine), keepalive()))
-	assert.NoError(t, update(t, rpc, whole(staging)))
-
-	production := withoutUptime(state("production", time.Hour, quarantine))
+	latest := state("production", 2*time.Minute, quarantine)
 	divergence := &pb.Divergence{Service: "users", Environment: "production", Revision: "abc123", Quarantine: quarantine}
+	staging := state("staging", time.Minute)
+	for _, sent := range []*pb.State{state("production", time.Minute), staging, latest} {
+		_, err := rpc.Update(t.Context(), &pb.UpdateRequest{State: sent})
+		assert.NoError(t, err)
+	}
+
+	all := &pb.ListDivergencesResponse{States: []*pb.State{latest, staging}, Divergences: []*pb.Divergence{divergence}}
 	tests := []struct {
 		name     string
 		request  *pb.ListDivergencesRequest
 		expected *pb.ListDivergencesResponse
 	}{
-		{name: "All", request: &pb.ListDivergencesRequest{}, expected: &pb.ListDivergencesResponse{States: []*pb.State{production, withoutUptime(staging)}, Divergences: []*pb.Divergence{divergence}}},
-		{name: "Environment", request: &pb.ListDivergencesRequest{Environment: proto.String("staging")}, expected: &pb.ListDivergencesResponse{States: []*pb.State{withoutUptime(staging)}}},
-		{name: "Node", request: &pb.ListDivergencesRequest{Node: proto.String("users")}, expected: &pb.ListDivergencesResponse{States: []*pb.State{production}, Divergences: []*pb.Divergence{divergence}}},
+		{name: "All", request: &pb.ListDivergencesRequest{}, expected: all},
+		{name: "Environment", request: &pb.ListDivergencesRequest{Environment: proto.String("staging")}, expected: &pb.ListDivergencesResponse{States: []*pb.State{staging}}},
+		{name: "Node", request: &pb.ListDivergencesRequest{Node: proto.String("users")}, expected: &pb.ListDivergencesResponse{States: []*pb.State{latest}, Divergences: []*pb.Divergence{divergence}}},
 		{name: "Revision", request: &pb.ListDivergencesRequest{Revision: proto.String("def456")}, expected: &pb.ListDivergencesResponse{}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			listed, _ := list(t, rpc, test.request)
+			listed, err := rpc.ListDivergences(t.Context(), test.request)
+			assert.NoError(t, err)
 			assert.True(t, proto.Equal(test.expected, listed), "%v", listed)
 		})
 	}
-
-	// Later updates advance the uptime the mirror sent with its whole state.
-	_, uptimes := list(t, rpc, &pb.ListDivergencesRequest{})
-	assert.True(t, uptimes[0] > time.Hour && uptimes[0] < time.Hour+time.Minute, "%v", uptimes[0])
-	assert.Equal(t, time.Minute, uptimes[1])
 }
 
 func TestDivergencesOutliveRestartUntilCleared(t *testing.T) {
 	rpc := newRPC(t)
 	quarantine := &pb.Quarantine{Direction: pb.Direction_DIRECTION_EGRESS, Since: timestamppb.Now(), Kind: pb.Quarantine_KIND_UNMATCHED}
+	quarantined := state("production", time.Minute, quarantine)
 	redeployed := state("production", time.Second)
 	redeployed.Revision = "def456"
-	assert.NoError(t, update(t, rpc, whole(state("production", time.Minute)), quarantined(quarantine)))
-	assert.NoError(t, update(t, rpc, whole(redeployed)))
+	heartbeat := func(sent *pb.State) {
+		_, err := rpc.Update(t.Context(), &pb.UpdateRequest{State: sent})
+		assert.NoError(t, err)
+	}
+	list := func() *pb.ListDivergencesResponse {
+		listed, err := rpc.ListDivergences(t.Context(), &pb.ListDivergencesRequest{})
+		assert.NoError(t, err)
+		return listed
+	}
+	heartbeat(quarantined)
+	heartbeat(redeployed)
 	divergence := &pb.Divergence{Service: "users", Environment: "production", Revision: "abc123", Quarantine: quarantine}
-	expected := &pb.ListDivergencesResponse{States: []*pb.State{withoutUptime(redeployed)}, Divergences: []*pb.Divergence{divergence}}
-	listed, _ := list(t, rpc, &pb.ListDivergencesRequest{})
-	assert.True(t, proto.Equal(expected, listed), "%v", listed)
+	expected := &pb.ListDivergencesResponse{States: []*pb.State{redeployed}, Divergences: []*pb.Divergence{divergence}}
+	assert.True(t, proto.Equal(expected, list()), "%v", list())
 
 	_, err := rpc.ClearDivergences(t.Context(), &pb.ClearDivergencesRequest{Service: "users", Environment: "production"})
 	assert.NoError(t, err)
-	// A mirror still running reports the cleared quarantine again.
-	assert.NoError(t, update(t, rpc, whole(state("production", time.Minute, quarantine))))
-	assert.NoError(t, update(t, rpc, whole(redeployed)))
-	listed, _ = list(t, rpc, &pb.ListDivergencesRequest{})
-	assert.True(t, proto.Equal(&pb.ListDivergencesResponse{States: []*pb.State{withoutUptime(redeployed)}}, listed), "%v", listed)
+	// A heartbeat that was in flight still carries the cleared quarantine.
+	heartbeat(quarantined)
+	heartbeat(redeployed)
+	assert.True(t, proto.Equal(&pb.ListDivergencesResponse{States: []*pb.State{redeployed}}, list()), "%v", list())
 
 	_, err = rpc.ClearDivergences(t.Context(), &pb.ClearDivergencesRequest{Service: "users"})
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 }
 
-func TestUpdateRejectsInvalidStream(t *testing.T) {
+func TestUpdateRejectsInvalidState(t *testing.T) {
 	rpc := newRPC(t)
 	quarantine := func(direction pb.Direction) *pb.Quarantine {
 		return &pb.Quarantine{Direction: direction, Since: timestamppb.Now(), Kind: pb.Quarantine_KIND_UNMATCHED}
@@ -164,42 +121,21 @@ func TestUpdateRejectsInvalidStream(t *testing.T) {
 	withoutTrafficDirection := state("production", time.Minute, quarantine(pb.Direction_DIRECTION_INGRESS))
 	withoutTrafficDirection.Quarantines[0].Traffic = &pb.Traffic{Protocol: "http"}
 	tests := []struct {
-		name     string
-		requests []*pb.UpdateRequest
+		name  string
+		state *pb.State
 	}{
-		{name: "Empty", requests: []*pb.UpdateRequest{{}}},
-		{name: "WithoutState", requests: []*pb.UpdateRequest{whole(nil)}},
-		{name: "BeginsWithKeepalive", requests: []*pb.UpdateRequest{keepalive()}},
-		{name: "BeginsWithQuarantine", requests: []*pb.UpdateRequest{quarantined(quarantine(pb.Direction_DIRECTION_INGRESS))}},
-		{name: "WithoutRevision", requests: []*pb.UpdateRequest{whole(withoutCommit)}},
-		{name: "WithoutUptime", requests: []*pb.UpdateRequest{whole(withoutUptime)}},
-		{name: "UnspecifiedQuarantineDirection", requests: []*pb.UpdateRequest{whole(state("production", time.Minute, quarantine(pb.Direction_DIRECTION_UNSPECIFIED)))}},
-		{name: "RepeatedDirection", requests: []*pb.UpdateRequest{whole(state("production", time.Minute, quarantine(pb.Direction_DIRECTION_INGRESS), quarantine(pb.Direction_DIRECTION_INGRESS)))}},
-		{name: "UnspecifiedKind", requests: []*pb.UpdateRequest{whole(withoutKind)}},
-		{name: "UnspecifiedTrafficDirection", requests: []*pb.UpdateRequest{whole(withoutTrafficDirection)}},
-		{name: "InvalidQuarantine", requests: []*pb.UpdateRequest{whole(state("production", time.Minute)), quarantined(quarantine(pb.Direction_DIRECTION_UNSPECIFIED))}},
+		{name: "WithoutState"},
+		{name: "WithoutRevision", state: withoutCommit},
+		{name: "WithoutUptime", state: withoutUptime},
+		{name: "UnspecifiedQuarantineDirection", state: state("production", time.Minute, quarantine(pb.Direction_DIRECTION_UNSPECIFIED))},
+		{name: "RepeatedDirection", state: state("production", time.Minute, quarantine(pb.Direction_DIRECTION_INGRESS), quarantine(pb.Direction_DIRECTION_INGRESS))},
+		{name: "UnspecifiedKind", state: withoutKind},
+		{name: "UnspecifiedTrafficDirection", state: withoutTrafficDirection},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			err := update(t, rpc, test.requests...)
+			_, err := rpc.Update(t.Context(), &pb.UpdateRequest{State: test.state})
 			assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 		})
 	}
-}
-
-func TestUpdateEndsRejectedStreamWhileMirrorSends(t *testing.T) {
-	rpc := newRPC(t)
-	stream, err := rpc.Update(t.Context())
-	assert.NoError(t, err)
-	assert.NoError(t, stream.Send(whole(state("production", time.Minute))))
-	assert.NoError(t, stream.Send(quarantined(&pb.Quarantine{Since: timestamppb.Now(), Kind: pb.Quarantine_KIND_UNMATCHED})))
-	// A mirror only learns that the server ended its stream when a send fails.
-	deadline := time.Now().Add(10 * time.Second)
-	for err == nil && time.Now().Before(deadline) {
-		err = stream.Send(keepalive())
-		time.Sleep(time.Millisecond)
-	}
-	assert.IsError(t, err, io.EOF)
-	_, err = stream.CloseAndReceive()
-	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 }
