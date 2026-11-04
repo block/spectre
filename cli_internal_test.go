@@ -32,7 +32,8 @@ func expectedReporting() reporter.Config {
 		Service:           "users",
 		Environment:       "production",
 		Revision:          "abc123",
-		HeartbeatInterval: 30 * time.Second,
+		KeepaliveInterval: 30 * time.Second,
+		StreamMaxAge:      10 * time.Minute,
 	}
 }
 
@@ -89,7 +90,8 @@ func TestSuperviseCommandReadsFlagsFromEnvironment(t *testing.T) {
 		Service:           "invoices",
 		Environment:       "production-us-west-2",
 		Revision:          "3f9c2a1",
-		HeartbeatInterval: 30 * time.Second,
+		KeepaliveInterval: 30 * time.Second,
+		StreamMaxAge:      10 * time.Minute,
 	}
 	assert.Equal(t, expected, command.Supervise.Supervisor.Server)
 }

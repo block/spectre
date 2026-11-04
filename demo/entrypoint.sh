@@ -13,7 +13,7 @@ spectre-sample-forecasts \
   --listen="unix:$sockets/forecasts.sock" \
   --weather=/spectre/testdata/weather.json &
 
-# Mirrors send heartbeats to the SPECTRE server, so run one alongside.
+# Mirrors stream their states to the SPECTRE server, so run one alongside.
 spectre serve --listen=127.0.0.1:50070 &
 
 service="spectre-sample --listen=\$SPECTRE_LISTEN --forecasts=\$SPECTRE_EGRESS --data=/spectre/testdata/users.json --weather=/spectre/testdata/weather.json"

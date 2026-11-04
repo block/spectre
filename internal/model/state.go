@@ -1,9 +1,12 @@
 package model
 
-import "time"
+import (
+	"maps"
+	"time"
+)
 
 // State is what the mirror of a service environment runs and holds, as its
-// latest heartbeat reported it.
+// latest update reported it.
 type State struct {
 	Service     string `json:"service"`
 	Environment string `json:"environment"`
@@ -15,4 +18,15 @@ type State struct {
 	Uptime time.Duration `json:"uptime"`
 	// Quarantines holds the quarantine of each direction whose proxy has one.
 	Quarantines map[Direction]Quarantine `json:"quarantines,omitempty"`
+}
+
+func (State) update() {}
+
+// Quarantined returns the state with the quarantine of the proxy in direction.
+func (s State) Quarantined(direction Direction, quarantine Quarantine) State {
+	quarantines := make(map[Direction]Quarantine, len(s.Quarantines)+1)
+	maps.Copy(quarantines, s.Quarantines)
+	quarantines[direction] = quarantine
+	s.Quarantines = quarantines
+	return s
 }

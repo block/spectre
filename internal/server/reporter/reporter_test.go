@@ -19,54 +19,88 @@ import (
 	"github.com/block/spectre/internal/server/storage"
 )
 
-// updateProcedure is the protocol's path for sending a heartbeat.
+// updateProcedure is the protocol's path for streaming a mirror's state.
 const updateProcedure = "/spectre.v1.SpectreService/Update"
 
-func TestReporterSendsHeartbeatOnQuarantine(t *testing.T) {
-	heartbeats := make(chan int, 8)
-	var attempts atomic.Int32
-	service := server.NewService(storage.NewMemory(), time.Hour).Handler()
+// mirror is a reporter running against a SPECTRE server.
+type mirror struct {
+	spectre *client.Client
+	// streams counts the streams the reporter opened.
+	streams *atomic.Int32
+	egress  chan model.Quarantine
+}
+
+// run runs a reporter against a server that lists states received within ttl
+// and fails the first failures streams.
+func run(t *testing.T, ttl time.Duration, failures int32, keepalive, maxAge time.Duration) mirror {
+	t.Helper()
+	streams := &atomic.Int32{}
+	service := server.NewService(storage.NewMemory(), ttl).Handler()
 	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
-		if request.URL.Path != updateProcedure {
-			service.ServeHTTP(w, request)
+		if request.URL.Path == updateProcedure && streams.Add(1) <= failures {
+			// Reply without reading the stream, as a proxy in front of the server does.
+			_ = http.NewResponseController(w).SetReadDeadline(time.Now()) //nolint:errcheck // HTTP/1 test server
+			http.Error(w, "unavailable", http.StatusServiceUnavailable)
 			return
 		}
-		attempt := int(attempts.Add(1))
-		// The first heartbeat fails, which the next one recovers from.
-		if attempt == 1 {
-			http.Error(w, "unavailable", http.StatusServiceUnavailable)
-		} else {
-			service.ServeHTTP(w, request)
-		}
-		heartbeats <- attempt
+		service.ServeHTTP(w, request)
 	}))
 	t.Cleanup(httpServer.Close)
-	ingress := make(chan model.Quarantine, 1)
-	egress := make(chan model.Quarantine, 1)
 	config := reporter.Config{
 		Client:            client.Config{URL: httpServer.URL},
 		Service:           "users",
 		Environment:       "production",
 		Revision:          "abc123",
-		HeartbeatInterval: time.Hour,
+		KeepaliveInterval: keepalive,
+		StreamMaxAge:      maxAge,
 	}
 	spectre := client.New(config.Client)
-	mirror := reporter.New(config, spectre, reporter.Source{Direction: model.Ingress, Quarantined: ingress}, reporter.Source{Direction: model.Egress, Quarantined: egress})
+	egress := make(chan model.Quarantine, 1)
+	ingress := make(chan model.Quarantine, 1)
+	reporting := reporter.New(config, spectre, reporter.Source{Direction: model.Ingress, Quarantined: ingress}, reporter.Source{Direction: model.Egress, Quarantined: egress})
 	ctx, cancel := context.WithCancel(t.Context())
 	t.Cleanup(cancel)
-	go mirror.Run(ctx)
-	assert.Equal(t, 1, <-heartbeats)
+	go reporting.Run(ctx)
+	return mirror{spectre: spectre, streams: streams, egress: egress}
+}
 
+// eventually fails the test unless done returns true within timeout.
+func eventually(t *testing.T, timeout time.Duration, done func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for !done() {
+		if time.Now().After(deadline) {
+			t.Fatal("timed out")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// states lists the states the server holds.
+func (m mirror) states(t *testing.T) ([]model.State, []model.Divergence) {
+	t.Helper()
+	states, divergences, err := m.spectre.ListDivergences(t.Context(), model.DivergenceFilter{})
+	assert.NoError(t, err)
+	return states, divergences
+}
+
+func TestReporterReconnectsWithQuarantine(t *testing.T) {
+	m := run(t, time.Hour, 1, 10*time.Millisecond, time.Hour)
 	quarantine := model.Quarantine{Since: time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC), Reason: model.QuarantineReason{
 		Kind:    model.QuarantineUnmatched,
 		Traffic: Some(model.Traffic{Direction: model.Egress, Protocol: model.ProtocolHTTP, Route: "POST api.example/v1/charges"}),
 		Detail:  "no matching reference call",
 	}}
-	egress <- quarantine
-	assert.Equal(t, 2, <-heartbeats)
+	m.egress <- quarantine
 
-	states, divergences, err := spectre.ListDivergences(t.Context(), model.DivergenceFilter{})
-	assert.NoError(t, err)
+	// Whichever stream the quarantine reaches, the next one begins with it.
+	eventually(t, 10*time.Second, func() bool {
+		_, divergences := m.states(t)
+		return len(divergences) > 0
+	})
+	assert.True(t, m.streams.Load() > 1)
+
+	states, divergences := m.states(t)
 	expected := []model.State{{
 		Service:        "users",
 		Environment:    "production",
@@ -78,4 +112,25 @@ func TestReporterSendsHeartbeatOnQuarantine(t *testing.T) {
 	assert.Equal(t, expected, states, assert.Exclude[time.Duration]())
 	recorded := []model.Divergence{{Service: "users", Environment: "production", Revision: "abc123", Direction: model.Egress, Quarantine: quarantine}}
 	assert.Equal(t, recorded, divergences)
+}
+
+func TestReporterKeepsQuietStreamListed(t *testing.T) {
+	m := run(t, 100*time.Millisecond, 0, 20*time.Millisecond, time.Hour)
+	eventually(t, 10*time.Second, func() bool {
+		states, _ := m.states(t)
+		return len(states) == 1
+	})
+
+	// Keepalives outlast the server's TTL on one stream.
+	time.Sleep(500 * time.Millisecond)
+	states, _ := m.states(t)
+	assert.Equal(t, 1, len(states))
+	assert.Equal(t, int32(1), m.streams.Load())
+}
+
+func TestReporterReplacesAgedStreamAtOnce(t *testing.T) {
+	m := run(t, time.Hour, 0, time.Hour, 20*time.Millisecond)
+
+	// Failed streams would back off for at least 1.5s before a third.
+	eventually(t, time.Second, func() bool { return m.streams.Load() >= 3 })
 }

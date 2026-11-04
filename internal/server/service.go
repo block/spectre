@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"io"
 	"net"
 	"net/http"
 	"time"
@@ -9,7 +10,9 @@ import (
 	"connectrpc.com/connect/v2"
 	"connectrpc.com/connect/v2/connecthttp"
 	"github.com/alecthomas/errors"
+	. "github.com/alecthomas/types/optional"
 
+	"github.com/block/spectre/internal/httpserver/middleware/endearly"
 	"github.com/block/spectre/internal/httpserver/middleware/health"
 	"github.com/block/spectre/internal/httpserver/middleware/logging"
 	"github.com/block/spectre/internal/logger"
@@ -39,19 +42,48 @@ func (s *Service) Handler() http.Handler {
 	server := connect.NewServer()
 	spectrepbconnect.RegisterSpectreServiceHandler(server, s)
 	connecthttp.Mount(mux, server)
-	return mux
+	return endearly.New(mux)
 }
 
-// Update records the latest state of a mirror, and the divergence of each
-// of its quarantines.
-func (s *Service) Update(ctx context.Context, request *pb.UpdateRequest) (*pb.UpdateResponse, error) {
-	state, err := wire.StateFromMessage(request.GetState())
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err.Error()).WithCause(err)
+// Update keeps the state a mirror streams. Every message stores the whole
+// state, which keeps it listed, and records the divergence of each quarantine.
+func (s *Service) Update(ctx context.Context, updates spectrepbconnect.SpectreServiceUpdateServerStream) (*pb.UpdateResponse, error) {
+	var state Option[model.State]
+	var measured time.Time
+	for {
+		message, err := updates.Receive()
+		if errors.Is(err, io.EOF) {
+			return &pb.UpdateResponse{}, nil
+		}
+		if err != nil {
+			return nil, errors.WithStack(err)
+		}
+		current, err := nextState(state, message)
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, err.Error()).WithCause(err)
+		}
+		now := time.Now()
+		if message.GetState() != nil {
+			measured = now
+		}
+		state = Some(current)
+		// The mirror measured its uptime when it sent the whole state.
+		stored := current
+		stored.Uptime += now.Sub(measured)
+		if err := s.store.Put(ctx, stored, now); err != nil {
+			return nil, connect.NewError(connect.CodeUnavailable, err.Error()).WithCause(err)
+		}
+		if message.GetKeepalive() != nil {
+			continue
+		}
+		if err := s.recordQuarantines(ctx, current); err != nil {
+			return nil, connect.NewError(connect.CodeUnavailable, err.Error()).WithCause(err)
+		}
 	}
-	if err := s.store.Put(ctx, state, time.Now()); err != nil {
-		return nil, connect.NewError(connect.CodeUnavailable, err.Error()).WithCause(err)
-	}
+}
+
+// recordQuarantines records the divergence of each quarantine state holds.
+func (s *Service) recordQuarantines(ctx context.Context, state model.State) error {
 	for direction, quarantine := range state.Quarantines {
 		divergence := model.Divergence{
 			Service:     state.Service,
@@ -61,14 +93,14 @@ func (s *Service) Update(ctx context.Context, request *pb.UpdateRequest) (*pb.Up
 			Quarantine:  quarantine,
 		}
 		if err := s.store.Record(ctx, divergence); err != nil {
-			return nil, connect.NewError(connect.CodeUnavailable, err.Error()).WithCause(err)
+			return errors.WithStack(err)
 		}
 	}
-	return &pb.UpdateResponse{}, nil
+	return nil
 }
 
-// ListDivergences returns the states of the mirrors that sent a heartbeat
-// within the TTL, and every recorded divergence.
+// ListDivergences returns the states of the mirrors that sent an update within
+// the TTL, and every recorded divergence.
 func (s *Service) ListDivergences(ctx context.Context, request *pb.ListDivergencesRequest) (*pb.ListDivergencesResponse, error) {
 	states, err := s.store.States(ctx, time.Now().Add(-s.ttl))
 	if err != nil {
@@ -128,4 +160,30 @@ func Serve(ctx context.Context, config ServeConfig) error {
 		return errors.Wrap(err, "serve SPECTRE server requests")
 	}
 	return nil
+}
+
+// nextState applies a streamed update to the state a stream has built. A
+// stream must begin with the whole state, and a keepalive leaves it as it is.
+func nextState(state Option[model.State], message *pb.UpdateRequest) (model.State, error) {
+	current, started := state.Get()
+	if message.GetKeepalive() != nil {
+		if !started {
+			return model.State{}, errors.New("an update stream must begin with the mirror's state")
+		}
+		return current, nil
+	}
+	update, err := wire.UpdateFromMessage(message)
+	if err != nil {
+		return model.State{}, errors.WithStack(err)
+	}
+	switch update := update.(type) {
+	case model.State:
+		return update, nil
+	case model.QuarantineUpdate:
+		if !started {
+			return model.State{}, errors.New("an update stream must begin with the mirror's state")
+		}
+		return current.Quarantined(update.Direction, update.Quarantine), nil
+	}
+	return current, nil
 }
