@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/alecthomas/errors"
+	. "github.com/alecthomas/types/optional"
 
 	"github.com/block/spectre/internal/model"
 )
@@ -53,9 +54,17 @@ func (c Config) constructor() (Constructor, error) {
 type Store interface {
 	// Put replaces the state of a service environment's mirror.
 	Put(ctx context.Context, state model.State, received time.Time) error
-	// List returns the states received at or after since, in no particular
+	// States returns the states received at or after since, in no particular
 	// order, and forgets older ones.
-	List(ctx context.Context, since time.Time) ([]model.State, error)
+	States(ctx context.Context, since time.Time) ([]model.State, error)
+	// Record keeps a divergence unless its source has already reported a later
+	// quarantine, or its service environment was cleared after it began.
+	Record(ctx context.Context, divergence model.Divergence) error
+	// Clear removes the divergences of a service environment's mirror, and
+	// ignores its quarantines that began before at.
+	Clear(ctx context.Context, service, environment string, at time.Time) error
+	// Divergences returns every stored divergence, in no particular order.
+	Divergences(ctx context.Context) ([]model.Divergence, error)
 	Close() error
 }
 
@@ -78,4 +87,14 @@ func stateKey(service, environment string) string {
 type received struct {
 	State    model.State `json:"state"`
 	Received time.Time   `json:"received"`
+}
+
+// ignored reports whether incoming must not replace its source's stored
+// divergence: it began before the stored one, or before the last clear.
+func ignored(stored Option[model.Quarantine], cleared Option[time.Time], incoming model.Quarantine) bool {
+	if existing, ok := stored.Get(); ok && existing.Since.After(incoming.Since) {
+		return true
+	}
+	at, ok := cleared.Get()
+	return ok && !incoming.Since.After(at)
 }

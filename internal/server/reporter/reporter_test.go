@@ -65,7 +65,7 @@ func TestReporterSendsHeartbeatOnQuarantine(t *testing.T) {
 	egress <- quarantine
 	assert.Equal(t, 2, <-heartbeats)
 
-	states, err := spectre.ListStates(t.Context(), model.StateFilter{})
+	states, divergences, err := spectre.ListDivergences(t.Context(), model.DivergenceFilter{})
 	assert.NoError(t, err)
 	expected := []model.State{{
 		Service:         "users",
@@ -76,4 +76,6 @@ func TestReporterSendsHeartbeatOnQuarantine(t *testing.T) {
 		Quarantines: map[model.Direction]model.Quarantine{model.Egress: quarantine},
 	}}
 	assert.Equal(t, expected, states, assert.Exclude[time.Duration]())
+	recorded := []model.Divergence{{Service: "users", Environment: "production", CandidateCommit: "abc123", Direction: model.Egress, Quarantine: quarantine}}
+	assert.Equal(t, recorded, divergences)
 }

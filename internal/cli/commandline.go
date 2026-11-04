@@ -29,7 +29,7 @@ type CommandLine struct {
 	Supervise   superviseCommand   `cmd:"" help:"Supervise a candidate and a reference behind the embedded proxies, splitting resources between them."`
 	Serve       serveCommand       `cmd:"" help:"Run the SPECTRE server, which mirrors send their heartbeats to."`
 	Gen         genCommand         `cmd:"" help:"Generate TypeScript schema declarations and the script API."`
-	Divergences divergencesCommand `cmd:"" help:"List the mirrors reporting to the SPECTRE server, with their candidate commits and quarantines."`
+	Divergences divergencesCommand `cmd:"" help:"List the mirrors reporting to the SPECTRE server and the divergences they reported, or clear divergences."`
 	State       stateCommand       `cmd:"" help:"Describe a service's migration state."`
 
 	Init initCommand `cmd:"" help:"Set a service checkout up for a SPECTRE migration from a template."`

@@ -14,8 +14,11 @@ service SpectreService {
   // sends one periodically and whenever its candidate is quarantined.
   rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
   // ListDivergences returns the state of each mirror the server still
-  // considers current, with the quarantines it holds.
+  // considers current, and the latest divergence each mirror reported.
   rpc ListDivergences(ListDivergencesRequest) returns (ListDivergencesResponse);
+  // ClearDivergences removes the divergences of one service environment, and
+  // ignores quarantines that began before it.
+  rpc ClearDivergences(ClearDivergencesRequest) returns (ClearDivergencesResponse);
 }
 
 // Direction names the proxy that carries traffic.
@@ -33,17 +36,37 @@ message HeartbeatRequest {
 
 message HeartbeatResponse {}
 
-// ListDivergencesRequest filters mirror states. An unset filter matches every value.
+// ListDivergencesRequest filters mirror states and divergences. An unset filter
+// matches every value.
 message ListDivergencesRequest {
   optional string service = 1;
   optional string environment = 2;
   optional string candidate_commit = 3;
-  // Node matches only states holding a quarantine on a route of that migration state node.
+  // Node matches only quarantines on routes of that migration state node.
   optional string node = 4;
 }
 
 message ListDivergencesResponse {
   repeated State states = 1;
+  repeated Divergence divergences = 2;
+}
+
+// ClearDivergencesRequest names the service environment whose divergences to clear.
+message ClearDivergencesRequest {
+  string service = 1;
+  string environment = 2;
+}
+
+message ClearDivergencesResponse {}
+
+// Divergence is the latest quarantine of one direction of a service
+// environment's mirror. It outlives the mirror run that reported it.
+message Divergence {
+  string service = 1;
+  string environment = 2;
+  // CandidateCommit is the commit of the candidate the mirror ran.
+  string candidate_commit = 3;
+  Quarantine quarantine = 4;
 }
 
 // Quarantine is why a proxy quarantined the candidate. It never carries

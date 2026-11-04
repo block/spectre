@@ -68,19 +68,87 @@ func StateFromMessage(message *pb.State) (model.State, error) {
 	return state, nil
 }
 
-// StatesJSON returns states as the protocol's JSON list response, which is
-// what the command line prints.
-func StatesJSON(states []model.State) ([]byte, error) {
-	response := &pb.ListDivergencesResponse{States: make([]*pb.State, 0, len(states))}
+// DivergenceMessage returns the message that reports divergence.
+func DivergenceMessage(divergence model.Divergence) *pb.Divergence {
+	return &pb.Divergence{
+		Service:         divergence.Service,
+		Environment:     divergence.Environment,
+		CandidateCommit: divergence.CandidateCommit,
+		Quarantine:      quarantineMessage(divergence.Direction, divergence.Quarantine),
+	}
+}
+
+// DivergenceFromMessage restores a listed divergence, checking that it
+// identifies its mirror and direction.
+func DivergenceFromMessage(message *pb.Divergence) (model.Divergence, error) {
+	if message.GetService() == "" || message.GetEnvironment() == "" || message.GetCandidateCommit() == "" {
+		return model.Divergence{}, errors.New("divergence needs a service, environment, and candidate commit")
+	}
+	if message.GetQuarantine() == nil {
+		return model.Divergence{}, errors.New("divergence needs a quarantine")
+	}
+	direction, err := directionFromMessage(message.GetQuarantine().GetDirection())
+	if err != nil {
+		return model.Divergence{}, errors.Wrap(err, "quarantine")
+	}
+	quarantine, err := quarantineFromMessage(message.GetQuarantine())
+	if err != nil {
+		return model.Divergence{}, errors.Wrap(err, "quarantine")
+	}
+	return model.Divergence{
+		Service:         message.GetService(),
+		Environment:     message.GetEnvironment(),
+		CandidateCommit: message.GetCandidateCommit(),
+		Direction:       direction,
+		Quarantine:      quarantine,
+	}, nil
+}
+
+// ListResponse returns the protocol's list response for states and divergences.
+func ListResponse(states []model.State, divergences []model.Divergence) *pb.ListDivergencesResponse {
+	response := &pb.ListDivergencesResponse{
+		States:      make([]*pb.State, 0, len(states)),
+		Divergences: make([]*pb.Divergence, 0, len(divergences)),
+	}
 	for _, state := range states {
 		response.States = append(response.States, StateMessage(state))
 	}
-	data, err := protojson.MarshalOptions{Multiline: true}.Marshal(response)
+	for _, divergence := range divergences {
+		response.Divergences = append(response.Divergences, DivergenceMessage(divergence))
+	}
+	return response
+}
+
+// ListFromResponse restores the states and divergences of a list response.
+func ListFromResponse(response *pb.ListDivergencesResponse) ([]model.State, []model.Divergence, error) {
+	states := make([]model.State, 0, len(response.GetStates()))
+	for _, message := range response.GetStates() {
+		state, err := StateFromMessage(message)
+		if err != nil {
+			return nil, nil, err
+		}
+		states = append(states, state)
+	}
+	divergences := make([]model.Divergence, 0, len(response.GetDivergences()))
+	for _, message := range response.GetDivergences() {
+		divergence, err := DivergenceFromMessage(message)
+		if err != nil {
+			return nil, nil, err
+		}
+		divergences = append(divergences, divergence)
+	}
+	return states, divergences, nil
+}
+
+// ListJSON returns states and divergences as the protocol's JSON list
+// response, which is what the command line prints.
+func ListJSON(states []model.State, divergences []model.Divergence) ([]byte, error) {
+	data, err := protojson.MarshalOptions{Multiline: true}.Marshal(ListResponse(states, divergences))
 	return data, errors.Wrap(err, "encode JSON")
 }
 
-// FilterMessage returns the request that lists the states filter selects.
-func FilterMessage(filter model.StateFilter) *pb.ListDivergencesRequest {
+// FilterMessage returns the request that lists what filter selects.
+func FilterMessage(filter model.DivergenceFilter) *pb.ListDivergencesRequest {
 	return &pb.ListDivergencesRequest{
 		Service:         filter.Service.Ptr(),
 		Environment:     filter.Environment.Ptr(),
@@ -90,9 +158,9 @@ func FilterMessage(filter model.StateFilter) *pb.ListDivergencesRequest {
 }
 
 // FilterFromMessage restores the filter of a list request.
-func FilterFromMessage(request *pb.ListDivergencesRequest) model.StateFilter {
+func FilterFromMessage(request *pb.ListDivergencesRequest) model.DivergenceFilter {
 	// Getters hide whether an optional field is set, so presence is a nil check.
-	return model.StateFilter{
+	return model.DivergenceFilter{
 		Service:         From(request.GetService(), request.Service != nil),
 		Environment:     From(request.GetEnvironment(), request.Environment != nil),
 		CandidateCommit: From(request.GetCandidateCommit(), request.CandidateCommit != nil),

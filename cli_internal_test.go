@@ -106,15 +106,30 @@ func TestVersionFlagIgnoresEnvironment(t *testing.T) {
 	t.Fatal("no version flag")
 }
 
-func TestDivergencesCommand(t *testing.T) {
+func TestDivergencesCommands(t *testing.T) {
 	command := &cli.CommandLine{}
 	parser, err := newParser(command)
 	assert.NoError(t, err)
 	_, err = parser.Parse([]string{"divergences", "--server-url=http://server.example", "--service=users", "--revision=abc123"})
 	assert.NoError(t, err)
-	assert.Equal(t, "users", command.Divergences.Service)
-	assert.Equal(t, "abc123", command.Divergences.Revision)
+	assert.Equal(t, "users", command.Divergences.List.Service)
+	assert.Equal(t, "abc123", command.Divergences.List.Revision)
 	assert.Equal(t, client.Config{URL: "http://server.example"}, command.Divergences.Client)
+
+	// The server URL belongs to the group, so it applies to clear wherever it
+	// appears, not to the default list command.
+	for _, args := range [][]string{
+		{"divergences", "clear", "--server-url=http://server.example", "--service=users", "--environment=production"},
+		{"divergences", "--server-url=http://server.example", "clear", "--service=users", "--environment=production"},
+	} {
+		command = &cli.CommandLine{}
+		parser, err = newParser(command)
+		assert.NoError(t, err)
+		_, err = parser.Parse(args)
+		assert.NoError(t, err)
+		assert.Equal(t, client.Config{URL: "http://server.example"}, command.Divergences.Client)
+		assert.Equal(t, server.ClearConfig{Service: "users", Environment: "production"}, command.Divergences.Clear.Clear)
+	}
 }
 
 func TestServeCommandEmbedsConfig(t *testing.T) {

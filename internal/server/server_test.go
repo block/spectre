@@ -39,38 +39,72 @@ func state(environment string, uptime time.Duration, quarantines ...*pb.Quaranti
 func TestHeartbeatKeepsLatestState(t *testing.T) {
 	rpc := newRPC(t)
 	since := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
-	latest := state("production", 2*time.Minute, &pb.Quarantine{
+	quarantine := &pb.Quarantine{
 		Direction:   pb.Direction_DIRECTION_INGRESS,
 		Since:       timestamppb.New(since),
 		Kind:        pb.Quarantine_KIND_DIVERGENT,
 		Traffic:     &pb.Traffic{Direction: pb.Direction_DIRECTION_INGRESS, Protocol: "http", Route: "GET /v1/users"},
 		Node:        proto.String("users"),
 		Differences: []string{"body.name"},
-	})
+	}
+	latest := state("production", 2*time.Minute, quarantine)
+	divergence := &pb.Divergence{Service: "users", Environment: "production", CandidateCommit: "abc123", Quarantine: quarantine}
 	staging := state("staging", time.Minute)
 	for _, sent := range []*pb.State{state("production", time.Minute), staging, latest} {
 		_, err := rpc.Heartbeat(t.Context(), &pb.HeartbeatRequest{State: sent})
 		assert.NoError(t, err)
 	}
 
+	all := &pb.ListDivergencesResponse{States: []*pb.State{latest, staging}, Divergences: []*pb.Divergence{divergence}}
 	tests := []struct {
 		name     string
 		request  *pb.ListDivergencesRequest
-		expected []*pb.State
+		expected *pb.ListDivergencesResponse
 	}{
-		{name: "All", request: &pb.ListDivergencesRequest{}, expected: []*pb.State{latest, staging}},
-		{name: "Environment", request: &pb.ListDivergencesRequest{Environment: proto.String("staging")}, expected: []*pb.State{staging}},
-		{name: "Node", request: &pb.ListDivergencesRequest{Node: proto.String("users")}, expected: []*pb.State{latest}},
-		{name: "CandidateCommit", request: &pb.ListDivergencesRequest{CandidateCommit: proto.String("def456")}},
+		{name: "All", request: &pb.ListDivergencesRequest{}, expected: all},
+		{name: "Environment", request: &pb.ListDivergencesRequest{Environment: proto.String("staging")}, expected: &pb.ListDivergencesResponse{States: []*pb.State{staging}}},
+		{name: "Node", request: &pb.ListDivergencesRequest{Node: proto.String("users")}, expected: &pb.ListDivergencesResponse{States: []*pb.State{latest}, Divergences: []*pb.Divergence{divergence}}},
+		{name: "CandidateCommit", request: &pb.ListDivergencesRequest{CandidateCommit: proto.String("def456")}, expected: &pb.ListDivergencesResponse{}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			listed, err := rpc.ListDivergences(t.Context(), test.request)
 			assert.NoError(t, err)
-			expected := &pb.ListDivergencesResponse{States: test.expected}
-			assert.True(t, proto.Equal(expected, listed), "%v", listed)
+			assert.True(t, proto.Equal(test.expected, listed), "%v", listed)
 		})
 	}
+}
+
+func TestDivergencesOutliveRestartUntilCleared(t *testing.T) {
+	rpc := newRPC(t)
+	quarantine := &pb.Quarantine{Direction: pb.Direction_DIRECTION_EGRESS, Since: timestamppb.Now(), Kind: pb.Quarantine_KIND_UNMATCHED}
+	quarantined := state("production", time.Minute, quarantine)
+	redeployed := state("production", time.Second)
+	redeployed.CandidateCommit = "def456"
+	heartbeat := func(sent *pb.State) {
+		_, err := rpc.Heartbeat(t.Context(), &pb.HeartbeatRequest{State: sent})
+		assert.NoError(t, err)
+	}
+	list := func() *pb.ListDivergencesResponse {
+		listed, err := rpc.ListDivergences(t.Context(), &pb.ListDivergencesRequest{})
+		assert.NoError(t, err)
+		return listed
+	}
+	heartbeat(quarantined)
+	heartbeat(redeployed)
+	divergence := &pb.Divergence{Service: "users", Environment: "production", CandidateCommit: "abc123", Quarantine: quarantine}
+	expected := &pb.ListDivergencesResponse{States: []*pb.State{redeployed}, Divergences: []*pb.Divergence{divergence}}
+	assert.True(t, proto.Equal(expected, list()), "%v", list())
+
+	_, err := rpc.ClearDivergences(t.Context(), &pb.ClearDivergencesRequest{Service: "users", Environment: "production"})
+	assert.NoError(t, err)
+	// A heartbeat that was in flight still carries the cleared quarantine.
+	heartbeat(quarantined)
+	heartbeat(redeployed)
+	assert.True(t, proto.Equal(&pb.ListDivergencesResponse{States: []*pb.State{redeployed}}, list()), "%v", list())
+
+	_, err = rpc.ClearDivergences(t.Context(), &pb.ClearDivergencesRequest{Service: "users"})
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 }
 
 func TestHeartbeatRejectsInvalidState(t *testing.T) {

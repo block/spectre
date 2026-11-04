@@ -98,16 +98,76 @@ func TestStateFromMessageRejectsInvalid(t *testing.T) {
 func TestFilterRoundTrip(t *testing.T) {
 	tests := []struct {
 		name   string
-		filter model.StateFilter
+		filter model.DivergenceFilter
 	}{
 		{name: "Unset"},
-		{name: "Set", filter: model.StateFilter{Service: Some("users"), Environment: Some("production"), CandidateCommit: Some("abc123"), Node: Some("users")}},
+		{name: "Set", filter: model.DivergenceFilter{Service: Some("users"), Environment: Some("production"), CandidateCommit: Some("abc123"), Node: Some("users")}},
 		// An empty filter value is set, and matches only empty values.
-		{name: "Empty", filter: model.StateFilter{Node: Some("")}},
+		{name: "Empty", filter: model.DivergenceFilter{Node: Some("")}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			assert.Equal(t, test.filter, wire.FilterFromMessage(wire.FilterMessage(test.filter)))
+		})
+	}
+}
+
+func TestListRoundTrip(t *testing.T) {
+	states := []model.State{{
+		Service:         "users",
+		Environment:     "production",
+		CandidateCommit: "def456",
+		SpectreVersion:  "v0.47.0",
+		Uptime:          time.Minute,
+	}}
+	divergences := []model.Divergence{{
+		Service:         "users",
+		Environment:     "production",
+		CandidateCommit: "abc123",
+		Direction:       model.Egress,
+		Quarantine: model.Quarantine{Since: time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC), Reason: model.QuarantineReason{
+			Kind:    model.QuarantineUnmatched,
+			Traffic: Some(model.Traffic{Direction: model.Egress, Protocol: model.ProtocolHTTP, Route: "POST api.example/v1/charges"}),
+			Detail:  "no matching reference call",
+		}},
+	}}
+	restoredStates, restoredDivergences, err := wire.ListFromResponse(wire.ListResponse(states, divergences))
+	assert.NoError(t, err)
+	assert.Equal(t, states, restoredStates)
+	assert.Equal(t, divergences, restoredDivergences)
+}
+
+func TestDivergenceFromMessageRejectsInvalid(t *testing.T) {
+	valid := func() *pb.Divergence {
+		return &pb.Divergence{
+			Service:         "users",
+			Environment:     "production",
+			CandidateCommit: "abc123",
+			Quarantine:      &pb.Quarantine{Direction: pb.Direction_DIRECTION_INGRESS, Since: timestamppb.Now(), Kind: pb.Quarantine_KIND_UNMATCHED},
+		}
+	}
+	withoutCommit := valid()
+	withoutCommit.CandidateCommit = ""
+	withoutQuarantine := valid()
+	withoutQuarantine.Quarantine = nil
+	withoutDirection := valid()
+	withoutDirection.Quarantine.Direction = pb.Direction_DIRECTION_UNSPECIFIED
+	withoutSince := valid()
+	withoutSince.Quarantine.Since = nil
+	tests := []struct {
+		name       string
+		divergence *pb.Divergence
+		err        string
+	}{
+		{name: "WithoutCandidateCommit", divergence: withoutCommit, err: "divergence needs a service, environment, and candidate commit"},
+		{name: "WithoutQuarantine", divergence: withoutQuarantine, err: "divergence needs a quarantine"},
+		{name: "UnspecifiedDirection", divergence: withoutDirection, err: "quarantine: unknown direction DIRECTION_UNSPECIFIED"},
+		{name: "WithoutSince", divergence: withoutSince, err: "quarantine: quarantine needs its start time"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := wire.DivergenceFromMessage(test.divergence)
+			assert.EqualError(t, err, test.err)
 		})
 	}
 }

@@ -16,27 +16,33 @@ import (
 	"github.com/block/spectre/internal/server/storage"
 )
 
-func TestDivergencesCommand(t *testing.T) {
-	httpServer := httptest.NewServer(server.NewService(storage.NewMemory(), time.Hour).Handler())
+func TestDivergencesCommands(t *testing.T) {
+	store := storage.NewMemory()
+	httpServer := httptest.NewServer(server.NewService(store, time.Hour).Handler())
 	t.Cleanup(httpServer.Close)
-	config := client.Config{URL: httpServer.URL}
+	spectre := client.New(client.Config{URL: httpServer.URL})
 	first := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	unmatched := model.QuarantineReason{Kind: model.QuarantineUnmatched, Detail: "no matching reference call"}
+	// Divergences from mirror runs that have since stopped or restarted.
+	for _, earlier := range []model.Divergence{
+		{Service: "users", Environment: "canary", CandidateCommit: "abc123", Direction: model.Egress, Quarantine: model.Quarantine{Since: first, Reason: unmatched}},
+		{Service: "users", Environment: "production", CandidateCommit: "abc123", Direction: model.Egress, Quarantine: model.Quarantine{Since: first, Reason: unmatched}},
+	} {
+		assert.NoError(t, store.Record(t.Context(), earlier))
+	}
 	quarantined := model.State{
 		Service:         "users",
 		Environment:     "production",
-		CandidateCommit: "abc123",
+		CandidateCommit: "def456",
 		SpectreVersion:  "v1.2.3",
 		Uptime:          90 * time.Minute,
+		//nolint:exhaustive // Only the ingress proxy quarantined in this run.
 		Quarantines: map[model.Direction]model.Quarantine{
 			model.Ingress: {Since: first.Add(time.Minute), Reason: model.QuarantineReason{
 				Kind:        model.QuarantineDivergent,
 				Traffic:     Some(model.Traffic{Direction: model.Ingress, Protocol: model.ProtocolHTTP, Route: "GET /v1/users"}),
 				Node:        Some("users"),
 				Differences: []string{"body.name"},
-			}},
-			model.Egress: {Since: first, Reason: model.QuarantineReason{
-				Kind:   model.QuarantineUnmatched,
-				Detail: "no matching reference call",
 			}},
 		},
 	}
@@ -48,39 +54,71 @@ func TestDivergencesCommand(t *testing.T) {
 		Uptime:          12*time.Minute + 300*time.Millisecond,
 	}
 	for _, state := range []model.State{quarantined, healthy} {
-		assert.NoError(t, client.New(config).Heartbeat(t.Context(), state))
+		assert.NoError(t, spectre.Heartbeat(t.Context(), state))
 	}
 
 	var text strings.Builder
-	command := divergencesCommand{Client: config}
-	assert.NoError(t, command.Run(t.Context(), Output{Writer: &text}))
-	assert.Equal(t, `users abc123 production spectre v1.2.3, up 1h30m0s
+	list := divergencesListCommand{}
+	assert.NoError(t, list.Run(t.Context(), spectre, Output{Writer: &text}))
+	assert.Equal(t, `users canary not reporting
+  egress: no matching reference call
+  quarantined 2026-10-01T12:00:00Z on abc123
+users def456 production spectre v1.2.3, up 1h30m0s
   ingress http GET /v1/users: response differences: body.name (node users)
   quarantined 2026-10-01T12:01:00Z
   egress: no matching reference call
-  quarantined 2026-10-01T12:00:00Z
+  quarantined 2026-10-01T12:00:00Z on abc123, in an earlier run
 users def456 staging spectre v1.2.3, up 12m0s
   healthy
 `, text.String())
 
 	var data strings.Builder
-	command.JSON = true
-	command.Revision = "def456"
-	assert.NoError(t, command.Run(t.Context(), Output{Writer: &data}))
+	list.JSON = true
+	list.Environment = "production"
+	list.Revision = "def456"
+	assert.NoError(t, list.Run(t.Context(), spectre, Output{Writer: &data}))
 	// Protobuf JSON output varies its whitespace, so compare decoded values.
+	quarantine := `{
+		"direction": "DIRECTION_INGRESS",
+		"since": "2026-10-01T12:01:00Z",
+		"kind": "KIND_DIVERGENT",
+		"traffic": {"direction": "DIRECTION_INGRESS", "protocol": "http", "route": "GET /v1/users"},
+		"node": "users",
+		"differences": ["body.name"]
+	}`
 	var expected, printed any
-	assert.NoError(t, json.Unmarshal([]byte(`{"states": [{
-		"service": "users",
-		"environment": "staging",
-		"candidateCommit": "def456",
-		"spectreVersion": "v1.2.3",
-		"uptime": "720.300s"
-	}]}`), &expected))
+	assert.NoError(t, json.Unmarshal([]byte(`{
+		"states": [{
+			"service": "users",
+			"environment": "production",
+			"candidateCommit": "def456",
+			"spectreVersion": "v1.2.3",
+			"uptime": "5400s",
+			"quarantines": [`+quarantine+`]
+		}],
+		"divergences": [{
+			"service": "users",
+			"environment": "production",
+			"candidateCommit": "def456",
+			"quarantine": `+quarantine+`
+		}]
+	}`), &expected))
 	assert.NoError(t, json.Unmarshal([]byte(data.String()), &printed))
 	assert.Equal(t, expected, printed)
 
-	var empty strings.Builder
-	command = divergencesCommand{Client: config, Service: "invoices"}
-	assert.NoError(t, command.Run(t.Context(), Output{Writer: &empty}))
-	assert.Equal(t, "No mirrors are reporting.\n", empty.String())
+	clearCommand := divergencesClearCommand{Clear: server.ClearConfig{Service: "users", Environment: "production"}}
+	assert.NoError(t, clearCommand.Run(t.Context(), spectre))
+	text.Reset()
+	list = divergencesListCommand{Environment: "production"}
+	assert.NoError(t, list.Run(t.Context(), spectre, Output{Writer: &text}))
+	// The mirror still holds its quarantine, so it lists until the mirror restarts.
+	assert.Equal(t, `users def456 production spectre v1.2.3, up 1h30m0s
+  ingress http GET /v1/users: response differences: body.name (node users)
+  quarantined 2026-10-01T12:01:00Z
+`, text.String())
+
+	text.Reset()
+	list = divergencesListCommand{Service: "invoices"}
+	assert.NoError(t, list.Run(t.Context(), spectre, Output{Writer: &text}))
+	assert.Equal(t, "No mirrors or divergences.\n", text.String())
 }

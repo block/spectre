@@ -65,20 +65,20 @@ func (c *Client) Heartbeat(ctx context.Context, state model.State) error {
 	return errors.Wrap(err, "send heartbeat")
 }
 
-// ListStates returns the states of the reporting mirrors that filter selects,
-// ordered by service and environment.
-func (c *Client) ListStates(ctx context.Context, filter model.StateFilter) ([]model.State, error) {
+// ListDivergences returns the states of the reporting mirrors and the
+// recorded divergences that filter selects, ordered by source.
+func (c *Client) ListDivergences(ctx context.Context, filter model.DivergenceFilter) ([]model.State, []model.Divergence, error) {
 	response, err := c.rpc.ListDivergences(ctx, wire.FilterMessage(filter))
 	if err != nil {
-		return nil, errors.Wrap(err, "list states")
+		return nil, nil, errors.Wrap(err, "list divergences")
 	}
-	states := make([]model.State, 0, len(response.GetStates()))
-	for _, message := range response.GetStates() {
-		state, err := wire.StateFromMessage(message)
-		if err != nil {
-			return nil, errors.Wrap(err, "list states")
-		}
-		states = append(states, state)
-	}
-	return states, nil
+	states, divergences, err := wire.ListFromResponse(response)
+	return states, divergences, errors.Wrap(err, "list divergences")
+}
+
+// ClearDivergences removes the divergences of one service environment.
+func (c *Client) ClearDivergences(ctx context.Context, service, environment string) error {
+	request := &pb.ClearDivergencesRequest{Service: service, Environment: environment}
+	_, err := c.rpc.ClearDivergences(ctx, request)
+	return errors.Wrap(err, "clear divergences")
 }

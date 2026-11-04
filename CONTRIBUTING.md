@@ -66,8 +66,9 @@ and `docker.io/blockossreleases/spectre`.
 
 `spectre serve` collects the heartbeats that mirrors send. Each heartbeat
 carries the mirror's latest state: its candidate commit, SPECTRE version,
-uptime, and quarantines. The server listens on `127.0.0.1:50070` by default and
-keeps states in memory, so a restart loses them. To keep them in Redis instead, pass a Redis URL to `--storage`, such as
+uptime, and quarantines. The server also records each quarantine as a
+divergence that outlives the mirror run. It listens on `127.0.0.1:50070` by
+default and keeps everything in memory, so a restart loses it. To keep them in Redis instead, pass a Redis URL to `--storage`, such as
 `--storage=redis://localhost:6379/0`. For a Redis Cluster, use the
 `redis-cluster` scheme, or `rediss-cluster` for TLS, and list further seed
 nodes with `addr`, such as
@@ -88,11 +89,18 @@ host, such as `--server-url=http://spectre.mesh --server-socket=@egress.sock`.
 A mirror sends a heartbeat when it starts, every `--heartbeat-interval` (30s by
 default), and as soon as it quarantines. A failed heartbeat is only logged.
 
-List the reporting mirrors with `spectre divergences --server-url=URL`. Filter
-with `--service`, `--environment`, `--revision`, or `--node`, and print JSON
-with `--json`. A mirror stays listed until it misses heartbeats for the server's
-`--state-ttl` (90s by default), so keep that above the heartbeat interval. A
-mirror stays quarantined until it restarts.
+List the reporting mirrors and recorded divergences with
+`spectre divergences --server-url=URL`. Filter with `--service`,
+`--environment`, `--revision`, or `--node`, and print JSON with `--json`. A
+mirror stays listed until it misses heartbeats for the server's `--state-ttl`
+(90s by default), so keep that above the heartbeat interval. A mirror stays
+quarantined until it restarts.
+
+The server keeps the latest divergence of each direction of a service
+environment, through redeploys and stopped mirrors, until someone clears it with
+`spectre divergences clear --service=SERVICE --environment=ENVIRONMENT`. A
+clear also ignores the quarantines that mirrors still running report, so a
+cleared divergence only returns if the candidate quarantines again.
 
 ## Egress proxy
 

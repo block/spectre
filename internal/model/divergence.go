@@ -1,0 +1,60 @@
+package model
+
+import . "github.com/alecthomas/types/optional"
+
+// Divergence is the latest quarantine that the mirror of a service environment
+// reported for one of its directions. It outlives the mirror run.
+type Divergence struct {
+	Service     string `json:"service"`
+	Environment string `json:"environment"`
+	// CandidateCommit is the commit of the candidate the mirror ran. Its JSON
+	// name matches the --revision flag that sets it.
+	CandidateCommit string `json:"revision"`
+	// Direction is the proxy that quarantined the candidate.
+	Direction  Direction  `json:"direction"`
+	Quarantine Quarantine `json:"quarantine"`
+}
+
+// DivergenceFilter selects mirror states and divergences. An absent field
+// matches every value.
+type DivergenceFilter struct {
+	Service         Option[string]
+	Environment     Option[string]
+	CandidateCommit Option[string]
+	// Node matches only quarantines on routes of that migration state node.
+	Node Option[string]
+}
+
+// Matches reports whether divergence passes every field of the filter.
+func (f DivergenceFilter) Matches(divergence Divergence) bool {
+	return matches(f.Service, Some(divergence.Service)) &&
+		matches(f.Environment, Some(divergence.Environment)) &&
+		matches(f.CandidateCommit, Some(divergence.CandidateCommit)) &&
+		matches(f.Node, divergence.Quarantine.Reason.Node)
+}
+
+// MatchesState reports whether state passes every field of the filter. A node
+// filter needs one of its quarantines to match.
+func (f DivergenceFilter) MatchesState(state State) bool {
+	if !matches(f.Service, Some(state.Service)) ||
+		!matches(f.Environment, Some(state.Environment)) ||
+		!matches(f.CandidateCommit, Some(state.CandidateCommit)) {
+		return false
+	}
+	if _, ok := f.Node.Get(); !ok {
+		return true
+	}
+	for _, quarantine := range state.Quarantines {
+		if matches(f.Node, quarantine.Reason.Node) {
+			return true
+		}
+	}
+	return false
+}
+
+// matches reports whether value passes a filter. An absent filter matches
+// every value, including an absent one.
+func matches(filter, value Option[string]) bool {
+	expected, ok := filter.Get()
+	return !ok || value == Some(expected)
+}
