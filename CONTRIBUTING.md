@@ -78,6 +78,11 @@ Every mirror reports to a server, so `spectre supervise` requires its URL,
 `SPECTRE_SERVICE`, `SPECTRE_ENVIRONMENT`, and `SPECTRE_REVISION` variables.
 Every flag can be set from a `SPECTRE_` variable named after it.
 
+Where the server is only reachable through a service mesh's unix egress socket,
+pass the socket as `--server-socket` and the server's mesh address as
+`--server-url`. Every call dials the socket, and the mesh routes it by the URL's
+host, such as `--server-url=http://spectre.mesh --server-socket=@egress.sock`.
+
 List what the server holds with `spectre divergences --server-url=URL`. Filter
 with `--service`, `--environment`, `--revision`, or `--node`, and print JSON
 with `--json`. A divergence stays listed until someone clears it with

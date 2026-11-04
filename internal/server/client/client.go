@@ -3,6 +3,7 @@ package client
 
 import (
 	"context"
+	"net"
 	"net/http"
 	"time"
 
@@ -26,6 +27,9 @@ const (
 // Config locates the SPECTRE server.
 type Config struct {
 	URL string `name:"server-url" default:"${server_url}" placeholder:"URL" help:"Base URL of the SPECTRE server."`
+	// Socket routes every call through a unix socket, such as a service mesh's
+	// egress socket, which routes by the URL's host.
+	Socket string `name:"server-socket" placeholder:"PATH" help:"Unix socket to reach the SPECTRE server through, such as a service mesh's egress socket: an absolute path or an @ abstract name. The mesh routes by the --server-url host."`
 }
 
 // Validate checks that a server URL is set. Kong cannot require the flag,
@@ -44,7 +48,16 @@ type Client struct {
 
 // New returns a client of the SPECTRE server that config locates.
 func New(config Config) *Client {
-	return &Client{rpc: spectrepbconnect.NewSpectreServiceClient(connect.NewClient(connecthttp.NewTransport(&http.Client{}, config.URL)))}
+	httpClient := &http.Client{}
+	if config.Socket != "" {
+		transport := http.DefaultTransport.(*http.Transport).Clone() //nolint:forcetypeassert // The default transport is always an *http.Transport.
+		transport.Proxy = nil
+		transport.DialContext = func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, "unix", config.Socket)
+		}
+		httpClient.Transport = transport
+	}
+	return &Client{rpc: spectrepbconnect.NewSpectreServiceClient(connect.NewClient(connecthttp.NewTransport(httpClient, config.URL)))}
 }
 
 // Quarantine records a mirror's quarantine. A mirror reports each one only once,
