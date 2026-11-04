@@ -4,5 +4,6 @@ set -euo pipefail
 root="$(dirname "$(readlink -f "$0")")/.."
 name="$(basename "$0")"
 # Each binary's BUILD.bit target is its name without the spectre- prefix, plus -bin.
-bit -q "${name#spectre-}-bin"
+# The launcher also runs from shells where Hermit is inactive, so call its stub.
+"${root}/bin/bit" -q "${name#spectre-}-bin"
 exec "${root}/dist/${name}" "$@"
