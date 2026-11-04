@@ -17,7 +17,6 @@ import (
 	"github.com/block/spectre/internal/server/client"
 	"github.com/block/spectre/internal/server/reporter"
 	"github.com/block/spectre/internal/server/storage"
-	"github.com/block/spectre/internal/stream"
 	"github.com/block/spectre/internal/supervisor"
 )
 
@@ -29,11 +28,12 @@ func reportingFlags() []string {
 // expectedReporting is the reporter config that reportingFlags parse to.
 func expectedReporting() reporter.Config {
 	return reporter.Config{
-		Client:      client.Config{URL: "http://server.example"},
-		Service:     "users",
-		Environment: "production",
-		Revision:    "abc123",
-		Stream:      stream.Config{KeepaliveInterval: 30 * time.Second, MaxAge: 10 * time.Minute},
+		Client:            client.Config{URL: "http://server.example"},
+		Service:           "users",
+		Environment:       "production",
+		Revision:          "abc123",
+		KeepaliveInterval: 30 * time.Second,
+		StreamMaxAge:      10 * time.Minute,
 	}
 }
 
@@ -86,11 +86,12 @@ func TestSuperviseCommandReadsFlagsFromEnvironment(t *testing.T) {
 	})
 	assert.NoError(t, err)
 	expected := reporter.Config{
-		Client:      client.Config{URL: "http://server.example"},
-		Service:     "invoices",
-		Environment: "production-us-west-2",
-		Revision:    "3f9c2a1",
-		Stream:      stream.Config{KeepaliveInterval: 30 * time.Second, MaxAge: 10 * time.Minute},
+		Client:            client.Config{URL: "http://server.example"},
+		Service:           "invoices",
+		Environment:       "production-us-west-2",
+		Revision:          "3f9c2a1",
+		KeepaliveInterval: 30 * time.Second,
+		StreamMaxAge:      10 * time.Minute,
 	}
 	assert.Equal(t, expected, command.Supervise.Supervisor.Server)
 }

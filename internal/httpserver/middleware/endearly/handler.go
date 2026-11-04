@@ -1,4 +1,5 @@
-package stream
+// Package endearly lets a server end a client stream before the client does.
+package endearly
 
 import (
 	"io"
@@ -8,9 +9,9 @@ import (
 	"github.com/alecthomas/errors"
 )
 
-// EndEarly lets next end a client stream before the client does. Otherwise an
+// New lets next end a client stream before the client does. Otherwise an
 // HTTP/1 server reads the rest of the request before it replies.
-func EndEarly(next http.Handler) http.Handler {
+func New(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		request.Body = newUnendedBody(request.Body, http.NewResponseController(writer))
 		next.ServeHTTP(writer, request)

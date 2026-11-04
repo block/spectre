@@ -111,6 +111,9 @@ func (c Config) Validate() error {
 	if c.MatchWindow <= 0 {
 		return errors.New("match window must be positive")
 	}
+	if err := c.Server.Validate(); err != nil {
+		return errors.WithStack(err)
+	}
 	return errors.WithStack(c.Limits.Validate())
 }
 

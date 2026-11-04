@@ -12,6 +12,7 @@ import (
 	"github.com/alecthomas/errors"
 	. "github.com/alecthomas/types/optional"
 
+	"github.com/block/spectre/internal/httpserver/middleware/endearly"
 	"github.com/block/spectre/internal/httpserver/middleware/health"
 	"github.com/block/spectre/internal/httpserver/middleware/logging"
 	"github.com/block/spectre/internal/logger"
@@ -19,7 +20,6 @@ import (
 	"github.com/block/spectre/internal/netaddr"
 	"github.com/block/spectre/internal/server/storage"
 	"github.com/block/spectre/internal/server/wire"
-	"github.com/block/spectre/internal/stream"
 	pb "github.com/block/spectre/spectrepb"
 	"github.com/block/spectre/spectrepb/spectrepbconnect"
 )
@@ -42,7 +42,7 @@ func (s *Service) Handler() http.Handler {
 	server := connect.NewServer()
 	spectrepbconnect.RegisterSpectreServiceHandler(server, s)
 	connecthttp.Mount(mux, server)
-	return stream.EndEarly(mux)
+	return endearly.New(mux)
 }
 
 // Update keeps the state a mirror streams. Every message stores the whole
