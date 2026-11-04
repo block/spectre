@@ -24,7 +24,7 @@ func TestClientReachesServerThroughSocket(t *testing.T) {
 	listener, err := (&net.ListenConfig{}).Listen(t.Context(), "unix", socket)
 	assert.NoError(t, err)
 	hosts := make(chan string, 1)
-	service := server.NewService(storage.NewMemory()).Handler()
+	service := server.NewService(storage.NewMemory(), time.Minute).Handler()
 	httpServer := &http.Server{
 		ReadHeaderTimeout: time.Second,
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
@@ -37,8 +37,8 @@ func TestClientReachesServerThroughSocket(t *testing.T) {
 
 	// The host does not resolve, so only the socket can reach the server.
 	spectre := client.New(client.Config{URL: "http://spectre.mesh.invalid", Socket: socket})
-	divergences, err := spectre.ListDivergences(t.Context(), model.DivergenceFilter{})
+	states, divergences, err := spectre.ListDivergences(t.Context(), model.DivergenceFilter{})
 	assert.NoError(t, err)
-	assert.Equal(t, 0, len(divergences))
+	assert.Equal(t, 0, len(states)+len(divergences))
 	assert.Equal(t, "spectre.mesh.invalid", <-hosts)
 }

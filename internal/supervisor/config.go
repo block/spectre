@@ -46,7 +46,7 @@ type Config struct {
 	// SeccompEgress blocks the candidate from opening IP sockets with seccomp,
 	// so it can only reach dependencies through the egress proxy.
 	SeccompEgress bool `name:"seccomp-egress" negatable:"" default:"true" help:"Block the candidate from opening IPv4 and IPv6 sockets with a seccomp filter, leaving only the egress proxy's unix socket."`
-	// Server reports the mirror's quarantines to the SPECTRE server.
+	// Server reports the mirror's state to the SPECTRE server.
 	Server reporter.Config `embed:""`
 	// StartupTimeout bounds how long each process has to start listening.
 	StartupTimeout time.Duration `default:"30s" help:"Maximum time for each process to begin accepting connections."`
@@ -92,8 +92,10 @@ func NewConfig() Config {
 	}
 	config.Candidate = ""
 	config.Reference = ""
-	// Every reporter field is required, so none has a default to keep.
-	config.Server = reporter.Config{}
+	config.Server.Client = client.Config{}
+	config.Server.Service = ""
+	config.Server.Environment = ""
+	config.Server.Revision = ""
 	return config
 }
 

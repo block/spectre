@@ -211,8 +211,8 @@ func (s *Supervisor) startAll(ctx context.Context) error {
 	return nil
 }
 
-// startReporter reports both proxies' quarantines to the SPECTRE server.
-// Reporting never stops the mirror.
+// startReporter sends the mirror's heartbeats, with both proxies' quarantines,
+// to the SPECTRE server. Reporting never stops the mirror.
 func (s *Supervisor) startReporter(ctx context.Context) {
 	reporter := reporter.New(s.config.Server, client.New(s.config.Server.Client),
 		reporter.Source{Direction: model.Ingress, Quarantined: s.ingress.Candidates().Quarantined()},

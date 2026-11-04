@@ -9,6 +9,39 @@ import (
 	"github.com/block/spectre/internal/model"
 )
 
+func TestDivergenceFilterMatchesState(t *testing.T) {
+	state := model.State{
+		Service:     "users",
+		Environment: "production",
+		Revision:    "abc123",
+		Quarantines: map[model.Direction]model.Quarantine{
+			model.Ingress: {Reason: model.QuarantineReason{Kind: model.QuarantineDivergent, Node: Some("users")}},
+			model.Egress:  {Reason: model.QuarantineReason{Kind: model.QuarantineUnmatched}},
+		},
+	}
+	healthy := state
+	healthy.Quarantines = nil
+	tests := []struct {
+		name    string
+		filter  model.DivergenceFilter
+		state   model.State
+		matches bool
+	}{
+		{name: "Unset", state: state, matches: true},
+		{name: "UnsetMatchesHealthy", state: healthy, matches: true},
+		{name: "AllFields", filter: model.DivergenceFilter{Service: Some("users"), Environment: Some("production"), Revision: Some("abc123"), Node: Some("users")}, state: state, matches: true},
+		{name: "OtherEnvironment", filter: model.DivergenceFilter{Environment: Some("staging")}, state: state},
+		{name: "OtherRevision", filter: model.DivergenceFilter{Revision: Some("def456")}, state: state},
+		{name: "OtherNode", filter: model.DivergenceFilter{Node: Some("orders")}, state: state},
+		{name: "NodeRejectsHealthy", filter: model.DivergenceFilter{Node: Some("users")}, state: healthy},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			assert.Equal(t, test.matches, test.filter.MatchesState(test.state))
+		})
+	}
+}
+
 func TestDivergenceFilterMatches(t *testing.T) {
 	divergence := model.Divergence{
 		Service:     "users",
@@ -26,11 +59,11 @@ func TestDivergenceFilterMatches(t *testing.T) {
 		matches    bool
 	}{
 		{name: "Unset", divergence: divergence, matches: true},
-		{name: "UnsetMatchesAbsentNode", divergence: withoutNode, matches: true},
 		{name: "AllFields", filter: model.DivergenceFilter{Service: Some("users"), Environment: Some("production"), Revision: Some("abc123"), Node: Some("users")}, divergence: divergence, matches: true},
-		{name: "OtherEnvironment", filter: model.DivergenceFilter{Environment: Some("staging")}, divergence: divergence},
+		{name: "OtherService", filter: model.DivergenceFilter{Service: Some("orders")}, divergence: divergence},
 		{name: "OtherRevision", filter: model.DivergenceFilter{Revision: Some("def456")}, divergence: divergence},
-		{name: "NodeRejectsAbsentNode", filter: model.DivergenceFilter{Node: Some("users")}, divergence: withoutNode},
+		{name: "OtherNode", filter: model.DivergenceFilter{Node: Some("orders")}, divergence: divergence},
+		{name: "NodeRejectsMissingNode", filter: model.DivergenceFilter{Node: Some("users")}, divergence: withoutNode},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

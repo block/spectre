@@ -24,8 +24,8 @@ const (
 // reflection-formatted method names, remove the leading slash and convert the remaining slash to a
 // period.
 const (
-	// SpectreServiceQuarantineProcedure is the procedure name of the SpectreService's Quarantine RPC.
-	SpectreServiceQuarantineProcedure = "/spectre.v1.SpectreService/Quarantine"
+	// SpectreServiceUpdateProcedure is the procedure name of the SpectreService's Update RPC.
+	SpectreServiceUpdateProcedure = "/spectre.v1.SpectreService/Update"
 	// SpectreServiceListDivergencesProcedure is the procedure name of the SpectreService's
 	// ListDivergences RPC.
 	SpectreServiceListDivergencesProcedure = "/spectre.v1.SpectreService/ListDivergences"
@@ -35,11 +35,11 @@ const (
 )
 
 var (
-	spectreServiceQuarantineSpec = sync.OnceValue(func() connect.Spec {
+	spectreServiceUpdateSpec = sync.OnceValue(func() connect.Spec {
 		return connect.Spec{
 			StreamType: connect.StreamTypeUnary,
-			Schema:     spectrepb.File_spectre_v1_spectre_proto.Services().ByName("SpectreService").Methods().ByName("Quarantine"),
-			Procedure:  SpectreServiceQuarantineProcedure,
+			Schema:     spectrepb.File_spectre_v1_spectre_proto.Services().ByName("SpectreService").Methods().ByName("Update"),
+			Procedure:  SpectreServiceUpdateProcedure,
 		}
 	})
 	spectreServiceListDivergencesSpec = sync.OnceValue(func() connect.Spec {
@@ -60,13 +60,14 @@ var (
 
 // SpectreServiceClient is a client for the spectre.v1.SpectreService service.
 type SpectreServiceClient interface {
-	// Quarantine records that a mirror quarantined its candidate. A mirror sends
-	// each quarantine once, retrying until it succeeds, so repeats are ignored.
-	Quarantine(context.Context, *spectrepb.QuarantineRequest) (*spectrepb.QuarantineResponse, error)
-	// ListDivergences returns the latest quarantine of each mirror direction.
+	// Update replaces the state of a service environment's mirror. A mirror
+	// sends one periodically and whenever its candidate is quarantined.
+	Update(context.Context, *spectrepb.UpdateRequest) (*spectrepb.UpdateResponse, error)
+	// ListDivergences returns the state of each mirror the server still
+	// considers current, and the latest divergence each mirror reported.
 	ListDivergences(context.Context, *spectrepb.ListDivergencesRequest) (*spectrepb.ListDivergencesResponse, error)
-	// ClearDivergences removes the divergences of one service environment, once
-	// someone has dealt with them.
+	// ClearDivergences removes the divergences of one service environment, and
+	// ignores quarantines that began before it.
 	ClearDivergences(context.Context, *spectrepb.ClearDivergencesRequest) (*spectrepb.ClearDivergencesResponse, error)
 }
 
@@ -78,13 +79,14 @@ func NewSpectreServiceClient(client *connect.Client) SpectreServiceClient {
 
 // SpectreServiceHandler is an implementation of the spectre.v1.SpectreService service.
 type SpectreServiceHandler interface {
-	// Quarantine records that a mirror quarantined its candidate. A mirror sends
-	// each quarantine once, retrying until it succeeds, so repeats are ignored.
-	Quarantine(context.Context, *spectrepb.QuarantineRequest) (*spectrepb.QuarantineResponse, error)
-	// ListDivergences returns the latest quarantine of each mirror direction.
+	// Update replaces the state of a service environment's mirror. A mirror
+	// sends one periodically and whenever its candidate is quarantined.
+	Update(context.Context, *spectrepb.UpdateRequest) (*spectrepb.UpdateResponse, error)
+	// ListDivergences returns the state of each mirror the server still
+	// considers current, and the latest divergence each mirror reported.
 	ListDivergences(context.Context, *spectrepb.ListDivergencesRequest) (*spectrepb.ListDivergencesResponse, error)
-	// ClearDivergences removes the divergences of one service environment, once
-	// someone has dealt with them.
+	// ClearDivergences removes the divergences of one service environment, and
+	// ignores quarantines that began before it.
 	ClearDivergences(context.Context, *spectrepb.ClearDivergencesRequest) (*spectrepb.ClearDivergencesResponse, error)
 }
 
@@ -93,7 +95,7 @@ type SpectreServiceHandler interface {
 func RegisterSpectreServiceHandler(server *connect.Server, svc SpectreServiceHandler) {
 	adapter := spectreServiceHandler{svc: svc}
 	server.Register(
-		connect.Method{Spec: spectreServiceQuarantineSpec(), Handler: adapter.quarantine},
+		connect.Method{Spec: spectreServiceUpdateSpec(), Handler: adapter.update},
 		connect.Method{Spec: spectreServiceListDivergencesSpec(), Handler: adapter.listDivergences},
 		connect.Method{Spec: spectreServiceClearDivergencesSpec(), Handler: adapter.clearDivergences},
 	)
@@ -102,8 +104,8 @@ func RegisterSpectreServiceHandler(server *connect.Server, svc SpectreServiceHan
 // UnimplementedSpectreServiceHandler returns CodeUnimplemented from all methods.
 type UnimplementedSpectreServiceHandler struct{}
 
-func (UnimplementedSpectreServiceHandler) Quarantine(context.Context, *spectrepb.QuarantineRequest) (*spectrepb.QuarantineResponse, error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, "spectre.v1.SpectreService.Quarantine is not implemented")
+func (UnimplementedSpectreServiceHandler) Update(context.Context, *spectrepb.UpdateRequest) (*spectrepb.UpdateResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "spectre.v1.SpectreService.Update is not implemented")
 }
 
 func (UnimplementedSpectreServiceHandler) ListDivergences(context.Context, *spectrepb.ListDivergencesRequest) (*spectrepb.ListDivergencesResponse, error) {
@@ -118,9 +120,9 @@ type spectreServiceClient struct {
 	client *connect.Client
 }
 
-func (c *spectreServiceClient) Quarantine(ctx context.Context, req *spectrepb.QuarantineRequest) (*spectrepb.QuarantineResponse, error) {
-	var res spectrepb.QuarantineResponse
-	if err := c.client.CallUnary(ctx, spectreServiceQuarantineSpec(), req, &res); err != nil {
+func (c *spectreServiceClient) Update(ctx context.Context, req *spectrepb.UpdateRequest) (*spectrepb.UpdateResponse, error) {
+	var res spectrepb.UpdateResponse
+	if err := c.client.CallUnary(ctx, spectreServiceUpdateSpec(), req, &res); err != nil {
 		return nil, err
 	}
 	return &res, nil
@@ -144,12 +146,12 @@ func (c *spectreServiceClient) ClearDivergences(ctx context.Context, req *spectr
 
 type spectreServiceHandler struct{ svc SpectreServiceHandler }
 
-func (h spectreServiceHandler) quarantine(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
-	var req spectrepb.QuarantineRequest
+func (h spectreServiceHandler) update(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req spectrepb.UpdateRequest
 	if err := stream.Receive(&req); err != nil {
 		return err
 	}
-	res, err := h.svc.Quarantine(ctx, &req)
+	res, err := h.svc.Update(ctx, &req)
 	if err != nil {
 		return err
 	}

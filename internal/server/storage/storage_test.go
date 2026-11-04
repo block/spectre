@@ -2,6 +2,7 @@ package storage_test
 
 import (
 	"cmp"
+	"context"
 	"net/url"
 	"slices"
 	"strconv"
@@ -30,6 +31,9 @@ func TestStores(t *testing.T) {
 		name string
 		test func(t *testing.T, store storage.Store)
 	}{
+		{name: "ReplacesState", test: testReplacesState},
+		{name: "ForgetsStaleStates", test: testForgetsStaleStates},
+		{name: "PutsConcurrently", test: testPutsConcurrently},
 		{name: "KeepsLatestQuarantine", test: testKeepsLatestQuarantine},
 		{name: "ClearsServiceEnvironment", test: testClearsServiceEnvironment},
 		{name: "RecordsConcurrently", test: testRecordsConcurrently},
@@ -83,14 +87,70 @@ func TestOpenRequiresURL(t *testing.T) {
 }
 
 func TestRedisRejectsUnknownFields(t *testing.T) {
+	tests := []struct {
+		name  string
+		key   string
+		field string
+		value string
+		list  func(ctx context.Context, store storage.Store) error
+	}{
+		{
+			name:  "State",
+			key:   "spectre:states",
+			field: `"users" "production"`,
+			value: `{"state":{"service":"users","quarantines":{"ingress":{"reason":{"kind":"divergent","traffic":{"direction":"ingress","method":"GET"}}}}}}`,
+			list: func(ctx context.Context, store storage.Store) error {
+				_, err := store.States(ctx, time.Time{})
+				return err
+			},
+		},
+		{
+			name:  "Divergence",
+			key:   "spectre:divergences",
+			field: `"users" "production" ingress`,
+			value: `{"service":"users","quarantine":{"reason":{"kind":"divergent","traffic":{"direction":"ingress","method":"GET"}}}}`,
+			list: func(ctx context.Context, store storage.Store) error {
+				_, err := store.Divergences(ctx)
+				return err
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server := miniredis.RunT(t)
+			store, err := storage.NewRedis(t.Context(), parseURL(t, "redis://"+server.Addr()))
+			assert.NoError(t, err)
+			t.Cleanup(func() { assert.NoError(t, store.Close()) })
+			server.HSet(test.key, test.field, test.value)
+			err = test.list(t.Context(), store)
+			assert.Contains(t, err.Error(), `unknown field "method"`)
+		})
+	}
+}
+
+// TestRedisReadsRecordedDivergences checks that divergences already stored
+// in Redis stay readable.
+func TestRedisReadsRecordedDivergences(t *testing.T) {
 	server := miniredis.RunT(t)
 	store, err := storage.NewRedis(t.Context(), parseURL(t, "redis://"+server.Addr()))
 	assert.NoError(t, err)
 	t.Cleanup(func() { assert.NoError(t, store.Close()) })
-	server.HSet("spectre:divergences", `"users" "production" ingress`,
-		`{"service":"users","quarantine":{"reason":{"kind":"divergent","traffic":{"direction":"ingress","method":"GET"}}}}`)
-	_, err = store.List(t.Context())
-	assert.Contains(t, err.Error(), `unknown field "method"`)
+	server.HSet("spectre:divergences", `"users" "production" egress`,
+		`{"service":"users","environment":"production","revision":"abc123","direction":"egress",`+
+			`"quarantine":{"reason":{"kind":"unmatched","detail":"no matching reference call"},"since":"2026-10-01T12:00:00Z"}}`)
+	divergences, err := store.Divergences(t.Context())
+	assert.NoError(t, err)
+	expected := []model.Divergence{{
+		Service:     "users",
+		Environment: "production",
+		Revision:    "abc123",
+		Direction:   model.Egress,
+		Quarantine: model.Quarantine{
+			Since:  time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC),
+			Reason: model.QuarantineReason{Kind: model.QuarantineUnmatched, Detail: "no matching reference call"},
+		},
+	}}
+	assert.Equal(t, expected, divergences)
 }
 
 // openRedis opens a store on a fresh miniredis, which acts as a cluster of one
@@ -112,6 +172,73 @@ func parseURL(t *testing.T, raw string) *url.URL {
 	return parsed
 }
 
+func testReplacesState(t *testing.T, store storage.Store) {
+	received := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	latest := state("production", 2*time.Minute)
+	//nolint:exhaustive // Only the ingress proxy quarantined.
+	latest.Quarantines = map[model.Direction]model.Quarantine{model.Ingress: {
+		Since: received,
+		Reason: model.QuarantineReason{
+			Kind:        model.QuarantineDivergent,
+			Traffic:     Some(model.Traffic{Direction: model.Ingress, Protocol: model.ProtocolHTTP, Route: "GET /v1/users"}),
+			Node:        Some("users"),
+			Differences: []string{"body.name"},
+		},
+	}}
+	staging := state("staging", time.Minute)
+	assert.NoError(t, store.Put(t.Context(), state("production", time.Minute), received))
+	assert.NoError(t, store.Put(t.Context(), latest, received.Add(time.Minute)))
+	assert.NoError(t, store.Put(t.Context(), staging, received))
+	assertStored(t, store, received, latest, staging)
+}
+
+func testForgetsStaleStates(t *testing.T, store storage.Store) {
+	received := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	staging := state("staging", time.Minute)
+	assert.NoError(t, store.Put(t.Context(), state("production", time.Minute), received))
+	assert.NoError(t, store.Put(t.Context(), staging, received.Add(time.Minute)))
+	assertStored(t, store, received.Add(time.Second), staging)
+	// The stale state stays forgotten when an older cutoff would include it.
+	assertStored(t, store, received, staging)
+}
+
+// testPutsConcurrently checks that concurrent writes for different service
+// environments are all kept.
+func testPutsConcurrently(t *testing.T, store storage.Store) {
+	received := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	expected := []model.State{}
+	for i := range 20 {
+		expected = append(expected, state("environment-"+strconv.Itoa(i), time.Minute))
+	}
+	var wg sync.WaitGroup
+	for _, reported := range expected {
+		wg.Go(func() { assert.NoError(t, store.Put(t.Context(), reported, received)) })
+	}
+	wg.Wait()
+	assertStored(t, store, received, expected...)
+}
+
+func state(environment string, uptime time.Duration) model.State {
+	return model.State{
+		Service:        "users",
+		Environment:    environment,
+		Revision:       "abc123",
+		SpectreVersion: "v1.2.3",
+		Uptime:         uptime,
+	}
+}
+
+// assertStored checks the store lists exactly the expected states received at
+// or after since, in any order.
+func assertStored(t *testing.T, store storage.Store, since time.Time, expected ...model.State) {
+	t.Helper()
+	stored, err := store.States(t.Context(), since)
+	assert.NoError(t, err)
+	byEnvironment := func(a, b model.State) int { return cmp.Compare(a.Environment, b.Environment) }
+	slices.SortFunc(stored, byEnvironment)
+	assert.Equal(t, slices.SortedFunc(slices.Values(expected), byEnvironment), stored)
+}
+
 func testKeepsLatestQuarantine(t *testing.T, store storage.Store) {
 	first := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
 	latest := divergence("production", model.Ingress, first.Add(time.Minute))
@@ -125,13 +252,15 @@ func testKeepsLatestQuarantine(t *testing.T, store storage.Store) {
 	for _, reported := range []model.Divergence{
 		divergence("production", model.Ingress, first),
 		latest,
-		// A stale retry from before the mirror restarted.
+		// A heartbeat from before the mirror restarted and quarantined again.
 		divergence("production", model.Ingress, first.Add(-time.Minute)),
+		egress,
+		// Every heartbeat repeats the quarantine.
 		egress,
 	} {
 		assert.NoError(t, store.Record(t.Context(), reported))
 	}
-	assertStored(t, store, latest, egress)
+	assertRecorded(t, store, latest, egress)
 }
 
 func testClearsServiceEnvironment(t *testing.T, store storage.Store) {
@@ -144,8 +273,15 @@ func testClearsServiceEnvironment(t *testing.T, store storage.Store) {
 	} {
 		assert.NoError(t, store.Record(t.Context(), reported))
 	}
-	assert.NoError(t, store.Clear(t.Context(), "users", "production"))
-	assertStored(t, store, staging)
+	assert.NoError(t, store.Clear(t.Context(), "users", "production", since.Add(time.Minute)))
+	assertRecorded(t, store, staging)
+
+	// A mirror still quarantined keeps sending the cleared quarantine.
+	assert.NoError(t, store.Record(t.Context(), divergence("production", model.Ingress, since)))
+	assertRecorded(t, store, staging)
+	later := divergence("production", model.Ingress, since.Add(2*time.Minute))
+	assert.NoError(t, store.Record(t.Context(), later))
+	assertRecorded(t, store, later, staging)
 }
 
 // testRecordsConcurrently checks that concurrent writes to different sources
@@ -161,7 +297,7 @@ func testRecordsConcurrently(t *testing.T, store storage.Store) {
 		wg.Go(func() { assert.NoError(t, store.Record(t.Context(), reported)) })
 	}
 	wg.Wait()
-	assertStored(t, store, expected...)
+	assertRecorded(t, store, expected...)
 }
 
 func divergence(environment string, direction model.Direction, since time.Time) model.Divergence {
@@ -174,14 +310,14 @@ func divergence(environment string, direction model.Direction, since time.Time) 
 	}
 }
 
-// assertStored checks the store holds exactly the expected divergences, in any order.
-func assertStored(t *testing.T, store storage.Store, expected ...model.Divergence) {
+// assertRecorded checks the store holds exactly the expected divergences, in any order.
+func assertRecorded(t *testing.T, store storage.Store, expected ...model.Divergence) {
 	t.Helper()
-	stored, err := store.List(t.Context())
+	recorded, err := store.Divergences(t.Context())
 	assert.NoError(t, err)
 	bySource := func(a, b model.Divergence) int {
 		return cmp.Or(cmp.Compare(a.Environment, b.Environment), cmp.Compare(a.Direction, b.Direction))
 	}
-	slices.SortFunc(stored, bySource)
-	assert.Equal(t, slices.SortedFunc(slices.Values(expected), bySource), stored)
+	slices.SortFunc(recorded, bySource)
+	assert.Equal(t, slices.SortedFunc(slices.Values(expected), bySource), recorded)
 }

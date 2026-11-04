@@ -28,10 +28,11 @@ func reportingFlags() []string {
 // expectedReporting is the reporter config that reportingFlags parse to.
 func expectedReporting() reporter.Config {
 	return reporter.Config{
-		Client:      client.Config{URL: "http://server.example"},
-		Service:     "users",
-		Environment: "production",
-		Revision:    "abc123",
+		Client:            client.Config{URL: "http://server.example"},
+		Service:           "users",
+		Environment:       "production",
+		Revision:          "abc123",
+		HeartbeatInterval: 30 * time.Second,
 	}
 }
 
@@ -84,10 +85,11 @@ func TestSuperviseCommandReadsFlagsFromEnvironment(t *testing.T) {
 	})
 	assert.NoError(t, err)
 	expected := reporter.Config{
-		Client:      client.Config{URL: "http://server.example"},
-		Service:     "invoices",
-		Environment: "production-us-west-2",
-		Revision:    "3f9c2a1",
+		Client:            client.Config{URL: "http://server.example"},
+		Service:           "invoices",
+		Environment:       "production-us-west-2",
+		Revision:          "3f9c2a1",
+		HeartbeatInterval: 30 * time.Second,
 	}
 	assert.Equal(t, expected, command.Supervise.Supervisor.Server)
 }
@@ -104,28 +106,29 @@ func TestVersionFlagIgnoresEnvironment(t *testing.T) {
 	t.Fatal("no version flag")
 }
 
-func TestDivergencesCommands(t *testing.T) {
+func TestStatusCommands(t *testing.T) {
 	command := &cli.CommandLine{}
 	parser, err := newParser(command)
 	assert.NoError(t, err)
-	_, err = parser.Parse([]string{"divergences", "--server-url=http://server.example", "--service=users"})
+	_, err = parser.Parse([]string{"status", "--server-url=http://server.example", "--service=users", "--revision=abc123"})
 	assert.NoError(t, err)
-	assert.Equal(t, "users", command.Divergences.List.Service)
-	assert.Equal(t, client.Config{URL: "http://server.example"}, command.Divergences.Client)
+	assert.Equal(t, "users", command.Status.List.Service)
+	assert.Equal(t, "abc123", command.Status.List.Revision)
+	assert.Equal(t, client.Config{URL: "http://server.example"}, command.Status.Client)
 
 	// The server URL belongs to the group, so it applies to clear wherever it
 	// appears, not to the default list command.
 	for _, args := range [][]string{
-		{"divergences", "clear", "--server-url=http://server.example", "--service=users", "--environment=production"},
-		{"divergences", "--server-url=http://server.example", "clear", "--service=users", "--environment=production"},
+		{"status", "clear", "--server-url=http://server.example", "--service=users", "--environment=production"},
+		{"status", "--server-url=http://server.example", "clear", "--service=users", "--environment=production"},
 	} {
 		command = &cli.CommandLine{}
 		parser, err = newParser(command)
 		assert.NoError(t, err)
 		_, err = parser.Parse(args)
 		assert.NoError(t, err)
-		assert.Equal(t, client.Config{URL: "http://server.example"}, command.Divergences.Client)
-		assert.Equal(t, server.ClearConfig{Service: "users", Environment: "production"}, command.Divergences.Clear.Clear)
+		assert.Equal(t, client.Config{URL: "http://server.example"}, command.Status.Client)
+		assert.Equal(t, server.ClearConfig{Service: "users", Environment: "production"}, command.Status.Clear.Clear)
 	}
 }
 
@@ -136,8 +139,9 @@ func TestServeCommandEmbedsConfig(t *testing.T) {
 	_, err = parser.Parse([]string{"serve", "--listen=127.0.0.1:50071", "--storage=redis://localhost:6379/0"})
 	assert.NoError(t, err)
 	expected := server.ServeConfig{
-		Listen:  "127.0.0.1:50071",
-		Storage: storage.Config{Storage: &url.URL{Scheme: "redis", Host: "localhost:6379", Path: "/0"}},
+		Listen:   "127.0.0.1:50071",
+		Storage:  storage.Config{Storage: &url.URL{Scheme: "redis", Host: "localhost:6379", Path: "/0"}},
+		StateTTL: 90 * time.Second,
 	}
 	assert.Equal(t, expected, command.Serve.Serve)
 }

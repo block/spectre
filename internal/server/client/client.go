@@ -11,18 +11,14 @@ import (
 	"connectrpc.com/connect/v2/connecthttp"
 	"github.com/alecthomas/errors"
 
-	"github.com/block/spectre/internal/logger"
 	"github.com/block/spectre/internal/model"
 	"github.com/block/spectre/internal/server/wire"
 	pb "github.com/block/spectre/spectrepb"
 	"github.com/block/spectre/spectrepb/spectrepbconnect"
 )
 
-const (
-	attemptTimeout = 10 * time.Second
-	minRetryDelay  = time.Second
-	maxRetryDelay  = time.Minute
-)
+// heartbeatTimeout bounds one heartbeat, so a slow server never delays the next.
+const heartbeatTimeout = 10 * time.Second
 
 // Config locates the SPECTRE server.
 type Config struct {
@@ -60,46 +56,24 @@ func New(config Config) *Client {
 	return &Client{rpc: spectrepbconnect.NewSpectreServiceClient(connect.NewClient(connecthttp.NewTransport(httpClient, config.URL)))}
 }
 
-// Quarantine records a mirror's quarantine. A mirror reports each one only once,
-// so failures retry with backoff until the server accepts or rejects it.
-func (c *Client) Quarantine(ctx context.Context, divergence model.Divergence) error {
-	request := &pb.QuarantineRequest{Divergence: wire.DivergenceMessage(divergence)}
-	for delay := minRetryDelay; ; delay = min(delay*2, maxRetryDelay) {
-		err := c.quarantineOnce(ctx, request)
-		if err == nil || ctx.Err() != nil || connect.CodeOf(err) == connect.CodeInvalidArgument {
-			return err
-		}
-		logger.FromContext(ctx).WarnContext(ctx, "Failed to report quarantine to the SPECTRE server", "error", err, "retry", delay)
-		select {
-		case <-time.After(delay):
-		case <-ctx.Done():
-			return errors.WithStack(ctx.Err())
-		}
-	}
-}
-
-func (c *Client) quarantineOnce(ctx context.Context, request *pb.QuarantineRequest) error {
-	ctx, cancel := context.WithTimeout(ctx, attemptTimeout)
+// Update sends a mirror's latest state. It does not retry, because the
+// next heartbeat replaces it.
+func (c *Client) Update(ctx context.Context, state model.State) error {
+	ctx, cancel := context.WithTimeout(ctx, heartbeatTimeout)
 	defer cancel()
-	_, err := c.rpc.Quarantine(ctx, request)
-	return errors.Wrap(err, "report quarantine")
+	_, err := c.rpc.Update(ctx, &pb.UpdateRequest{State: wire.StateMessage(state)})
+	return errors.Wrap(err, "send heartbeat")
 }
 
-// ListDivergences returns the divergences that filter selects, ordered by source.
-func (c *Client) ListDivergences(ctx context.Context, filter model.DivergenceFilter) ([]model.Divergence, error) {
+// ListDivergences returns the states of the reporting mirrors and the
+// recorded divergences that filter selects, ordered by source.
+func (c *Client) ListDivergences(ctx context.Context, filter model.DivergenceFilter) ([]model.State, []model.Divergence, error) {
 	response, err := c.rpc.ListDivergences(ctx, wire.FilterMessage(filter))
 	if err != nil {
-		return nil, errors.Wrap(err, "list divergences")
+		return nil, nil, errors.Wrap(err, "list divergences")
 	}
-	divergences := make([]model.Divergence, 0, len(response.GetDivergences()))
-	for _, message := range response.GetDivergences() {
-		divergence, err := wire.DivergenceFromMessage(message)
-		if err != nil {
-			return nil, errors.Wrap(err, "list divergences")
-		}
-		divergences = append(divergences, divergence)
-	}
-	return divergences, nil
+	states, divergences, err := wire.ListFromResponse(response)
+	return states, divergences, errors.Wrap(err, "list divergences")
 }
 
 // ClearDivergences removes the divergences of one service environment.
