@@ -87,10 +87,12 @@ host, such as `--server-url=http://spectre.mesh --server-socket=@egress.sock`.
 
 A mirror sends everything to the server over one stream, which begins with its
 whole state. It then sends each quarantine as it begins, and a keepalive every
-`--server-keepalive-interval` (30s by default) when nothing else is sent. When
-the stream fails, the mirror logs it and reconnects with backoff, from 1s up to
-1m. It also replaces the stream after `--server-stream-max-age` (10m by
-default, with jitter), so streams spread across server replicas.
+`--server-keepalive-interval` (30s by default) when nothing else is sent.
+Keep the interval below the idle timeout of any proxy in front of the server;
+Caddy, for one, ends a request stream after 60s without data. When the stream
+fails, the mirror logs it and reconnects with backoff, from 1s up to 1m. It also
+replaces the stream after `--server-stream-max-age` (10m by default, with
+jitter), so streams spread across server replicas.
 
 List the reporting mirrors and recorded divergences with
 `spectre status --server-url=URL`. Filter with `--service`,
