@@ -25,7 +25,7 @@ func StateMessage(state model.State) *pb.State {
 	// Ingress first, so a state always encodes the same way.
 	for _, direction := range []model.Direction{model.Ingress, model.Egress} {
 		if quarantine, ok := state.Quarantines[direction]; ok {
-			message.Quarantines = append(message.Quarantines, quarantineMessage(direction, quarantine))
+			message.Quarantines = append(message.Quarantines, QuarantineMessage(direction, quarantine))
 		}
 	}
 	return message
@@ -52,16 +52,12 @@ func StateFromMessage(message *pb.State) (model.State, error) {
 		state.Quarantines = make(map[model.Direction]model.Quarantine, len(quarantines))
 	}
 	for _, quarantine := range quarantines {
-		direction, err := directionFromMessage(quarantine.GetDirection())
+		direction, restored, err := QuarantineFromMessage(quarantine)
 		if err != nil {
-			return model.State{}, errors.Wrap(err, "quarantine")
+			return model.State{}, err
 		}
 		if _, ok := state.Quarantines[direction]; ok {
 			return model.State{}, errors.Errorf("state holds more than one %s quarantine", direction)
-		}
-		restored, err := quarantineFromMessage(quarantine)
-		if err != nil {
-			return model.State{}, errors.Wrap(err, "quarantine")
 		}
 		state.Quarantines[direction] = restored
 	}
@@ -74,7 +70,7 @@ func DivergenceMessage(divergence model.Divergence) *pb.Divergence {
 		Service:     divergence.Service,
 		Environment: divergence.Environment,
 		Revision:    divergence.Revision,
-		Quarantine:  quarantineMessage(divergence.Direction, divergence.Quarantine),
+		Quarantine:  QuarantineMessage(divergence.Direction, divergence.Quarantine),
 	}
 }
 
@@ -87,13 +83,9 @@ func DivergenceFromMessage(message *pb.Divergence) (model.Divergence, error) {
 	if message.GetQuarantine() == nil {
 		return model.Divergence{}, errors.New("divergence needs a quarantine")
 	}
-	direction, err := directionFromMessage(message.GetQuarantine().GetDirection())
+	direction, quarantine, err := QuarantineFromMessage(message.GetQuarantine())
 	if err != nil {
-		return model.Divergence{}, errors.Wrap(err, "quarantine")
-	}
-	quarantine, err := quarantineFromMessage(message.GetQuarantine())
-	if err != nil {
-		return model.Divergence{}, errors.Wrap(err, "quarantine")
+		return model.Divergence{}, err
 	}
 	return model.Divergence{
 		Service:     message.GetService(),
@@ -168,7 +160,9 @@ func FilterFromMessage(request *pb.ListDivergencesRequest) model.DivergenceFilte
 	}
 }
 
-func quarantineMessage(direction model.Direction, status model.Quarantine) *pb.Quarantine {
+// QuarantineMessage returns the message that reports the quarantine of the
+// proxy in direction.
+func QuarantineMessage(direction model.Direction, status model.Quarantine) *pb.Quarantine {
 	reason := status.Reason
 	message := &pb.Quarantine{
 		Direction:   directionMessage(direction),
@@ -186,6 +180,20 @@ func quarantineMessage(direction model.Direction, status model.Quarantine) *pb.Q
 		}
 	}
 	return message
+}
+
+// QuarantineFromMessage restores a reported quarantine and the direction of
+// the proxy that holds it.
+func QuarantineFromMessage(message *pb.Quarantine) (model.Direction, model.Quarantine, error) {
+	direction, err := directionFromMessage(message.GetDirection())
+	if err != nil {
+		return "", model.Quarantine{}, errors.Wrap(err, "quarantine")
+	}
+	quarantine, err := quarantineFromMessage(message)
+	if err != nil {
+		return "", model.Quarantine{}, errors.Wrap(err, "quarantine")
+	}
+	return direction, quarantine, nil
 }
 
 // quarantineFromMessage restores a reported quarantine, which must say when it began.

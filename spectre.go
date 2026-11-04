@@ -51,7 +51,7 @@ func WithTemplateRepo(source string) Option {
 }
 
 // WithServerURL sets the default base URL of the SPECTRE server that commands
-// such as spectre divergences and spectre supervise call.
+// such as spectre status and spectre supervise call.
 func WithServerURL(url string) Option {
 	return func(registered *extensions) {
 		registered.kongOptions = append(registered.kongOptions, kong.Vars{"server_url": url})

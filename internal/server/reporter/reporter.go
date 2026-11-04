@@ -1,10 +1,13 @@
-// Package reporter sends a mirror's heartbeats to the SPECTRE server.
+// Package reporter streams a mirror's state to the SPECTRE server.
 package reporter
 
 import (
 	"context"
 	"maps"
+	"math/rand/v2"
 	"time"
+
+	"github.com/alecthomas/errors"
 
 	"github.com/block/spectre/internal"
 	"github.com/block/spectre/internal/logger"
@@ -18,7 +21,7 @@ type Config struct {
 	Service           string        `required:"" help:"Service the mirror runs, reported to the SPECTRE server."`
 	Environment       string        `required:"" help:"Environment the mirror runs in, such as production-us-west-2, reported to the SPECTRE server."`
 	Revision          string        `required:"" help:"Commit of the candidate the mirror runs, reported to the SPECTRE server."`
-	HeartbeatInterval time.Duration `default:"30s" help:"How often the mirror sends its state to the SPECTRE server."`
+	KeepaliveInterval time.Duration `default:"30s" help:"How often the mirror shows the SPECTRE server it still runs when nothing has changed. Keep it below the server's --state-ttl."`
 }
 
 // Source is a proxy whose quarantine a mirror reports.
@@ -28,7 +31,13 @@ type Source struct {
 	Quarantined <-chan model.Quarantine
 }
 
-// Reporter sends a mirror's state to the SPECTRE server.
+// Retries of a lost update stream back off between these delays.
+const (
+	minRetryDelay = time.Second
+	maxRetryDelay = time.Minute
+)
+
+// Reporter streams a mirror's state to the SPECTRE server.
 type Reporter struct {
 	config  Config
 	client  *client.Client
@@ -46,8 +55,8 @@ type sourceQuarantine struct {
 	quarantine model.Quarantine
 }
 
-// Run sends a heartbeat at once, at every interval, and when a source
-// quarantines, until ctx is cancelled.
+// Run streams the mirror's state until ctx is cancelled, reconnecting with
+// backoff whenever the stream ends. Failures are only logged.
 func (r *Reporter) Run(ctx context.Context) {
 	started := time.Now()
 	quarantined := make(chan sourceQuarantine)
@@ -55,33 +64,66 @@ func (r *Reporter) Run(ctx context.Context) {
 		go forward(ctx, source, quarantined)
 	}
 	quarantines := map[model.Direction]model.Quarantine{}
-	ticker := time.NewTicker(r.config.HeartbeatInterval)
-	defer ticker.Stop()
+	delay := minRetryDelay
 	for {
-		r.heartbeat(ctx, time.Since(started), quarantines)
+		opened := time.Now()
+		err := r.stream(ctx, started, quarantines, quarantined)
+		if ctx.Err() != nil {
+			return
+		}
+		// Only consecutive quick failures back off further.
+		if time.Since(opened) > maxRetryDelay {
+			delay = minRetryDelay
+		}
+		wait := delay/2 + rand.N(delay/2)
+		logger.FromContext(ctx).WarnContext(ctx, "Lost the update stream to the SPECTRE server", "error", err, "retry", wait)
 		select {
 		case <-ctx.Done():
 			return
+		case <-time.After(wait):
+		case status := <-quarantined:
+			// Reconnect at once, so the server learns of the quarantine.
+			quarantines[status.direction] = status.quarantine
+		}
+		delay = min(delay*2, maxRetryDelay)
+	}
+}
+
+// stream sends the mirror's whole state, then each quarantine as it begins and
+// a keepalive at every interval, until the stream fails or ctx ends.
+func (r *Reporter) stream(ctx context.Context, started time.Time, quarantines map[model.Direction]model.Quarantine, quarantined <-chan sourceQuarantine) error {
+	updates, err := r.client.Update(ctx, r.state(time.Since(started), quarantines))
+	if err != nil {
+		return errors.WithStack(err)
+	}
+	defer updates.Close() //nolint:errcheck // The stream has already failed or its context has ended.
+	ticker := time.NewTicker(r.config.KeepaliveInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return errors.WithStack(ctx.Err())
 		case <-ticker.C:
+			err = updates.Keepalive()
 		case status := <-quarantined:
 			quarantines[status.direction] = status.quarantine
+			err = updates.Quarantine(status.direction, status.quarantine)
+		}
+		if err != nil {
+			return errors.WithStack(err)
 		}
 	}
 }
 
-// heartbeat sends the mirror's state. A failure is only logged, so the
-// SPECTRE server never blocks the mirror.
-func (r *Reporter) heartbeat(ctx context.Context, uptime time.Duration, quarantines map[model.Direction]model.Quarantine) {
-	state := model.State{
+// state returns the mirror's whole state.
+func (r *Reporter) state(uptime time.Duration, quarantines map[model.Direction]model.Quarantine) model.State {
+	return model.State{
 		Service:        r.config.Service,
 		Environment:    r.config.Environment,
 		Revision:       r.config.Revision,
 		SpectreVersion: internal.Version,
 		Uptime:         uptime,
 		Quarantines:    maps.Clone(quarantines),
-	}
-	if err := r.client.Heartbeat(ctx, state); err != nil && ctx.Err() == nil {
-		logger.FromContext(ctx).WarnContext(ctx, "Failed to send heartbeat to the SPECTRE server", "error", err)
 	}
 }
 

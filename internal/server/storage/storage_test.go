@@ -252,10 +252,10 @@ func testKeepsLatestQuarantine(t *testing.T, store storage.Store) {
 	for _, reported := range []model.Divergence{
 		divergence("production", model.Ingress, first),
 		latest,
-		// A heartbeat from before the mirror restarted and quarantined again.
+		// An update from before the mirror restarted and quarantined again.
 		divergence("production", model.Ingress, first.Add(-time.Minute)),
 		egress,
-		// Every heartbeat repeats the quarantine.
+		// Every update repeats the quarantine.
 		egress,
 	} {
 		assert.NoError(t, store.Record(t.Context(), reported))

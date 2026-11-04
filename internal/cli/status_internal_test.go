@@ -16,7 +16,7 @@ import (
 	"github.com/block/spectre/internal/server/storage"
 )
 
-func TestDivergencesCommands(t *testing.T) {
+func TestStatusCommands(t *testing.T) {
 	store := storage.NewMemory()
 	httpServer := httptest.NewServer(server.NewService(store, time.Hour).Handler())
 	t.Cleanup(httpServer.Close)
@@ -54,11 +54,12 @@ func TestDivergencesCommands(t *testing.T) {
 		Uptime:         12*time.Minute + 300*time.Millisecond,
 	}
 	for _, state := range []model.State{quarantined, healthy} {
-		assert.NoError(t, spectre.Heartbeat(t.Context(), state))
+		assert.NoError(t, store.Put(t.Context(), state, time.Now()))
 	}
+	assert.NoError(t, store.Record(t.Context(), model.Divergence{Service: "users", Environment: "production", Revision: "def456", Direction: model.Ingress, Quarantine: quarantined.Quarantines[model.Ingress]}))
 
 	var text strings.Builder
-	list := divergencesListCommand{}
+	list := statusListCommand{}
 	assert.NoError(t, list.Run(t.Context(), spectre, Output{Writer: &text}))
 	assert.Equal(t, `users canary not reporting
   egress: no matching reference call
@@ -106,10 +107,10 @@ users def456 staging spectre v1.2.3, up 12m0s
 	assert.NoError(t, json.Unmarshal([]byte(data.String()), &printed))
 	assert.Equal(t, expected, printed)
 
-	clearCommand := divergencesClearCommand{Clear: server.ClearConfig{Service: "users", Environment: "production"}}
+	clearCommand := statusClearCommand{Clear: server.ClearConfig{Service: "users", Environment: "production"}}
 	assert.NoError(t, clearCommand.Run(t.Context(), spectre))
 	text.Reset()
-	list = divergencesListCommand{Environment: "production"}
+	list = statusListCommand{Environment: "production"}
 	assert.NoError(t, list.Run(t.Context(), spectre, Output{Writer: &text}))
 	// The mirror still holds its quarantine, so it lists until the mirror restarts.
 	assert.Equal(t, `users def456 production spectre v1.2.3, up 1h30m0s
@@ -118,7 +119,7 @@ users def456 staging spectre v1.2.3, up 12m0s
 `, text.String())
 
 	text.Reset()
-	list = divergencesListCommand{Service: "invoices"}
+	list = statusListCommand{Service: "invoices"}
 	assert.NoError(t, list.Run(t.Context(), spectre, Output{Writer: &text}))
 	assert.Equal(t, "No mirrors or divergences.\n", text.String())
 }

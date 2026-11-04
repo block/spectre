@@ -19,22 +19,22 @@ import (
 	"github.com/block/spectre/internal/server/wire"
 )
 
-// divergencesCommand groups the commands for mirrors and their divergences. It
+// statusCommand groups the commands for mirrors and their divergences. It
 // owns the server URL so a flag before "clear" is not taken by the default list command.
-type divergencesCommand struct { //nolint:singleusestruct // A Kong command group; folding it would flatten its subcommands.
-	Client client.Config           `embed:""`
-	List   divergencesListCommand  `cmd:"" default:"withargs" help:"List the reporting mirrors and the divergences mirrors reported. This is the default."`
-	Clear  divergencesClearCommand `cmd:"" help:"Clear the divergences of a service environment once they are dealt with."`
+type statusCommand struct { //nolint:singleusestruct // A Kong command group; folding it would flatten its subcommands.
+	Client client.Config      `embed:""`
+	List   statusListCommand  `cmd:"" default:"withargs" help:"List the reporting mirrors and the divergences mirrors reported. This is the default."`
+	Clear  statusClearCommand `cmd:"" help:"Clear the divergences of a service environment once they are dealt with."`
 }
 
 // ProvideClient gives the subcommands a client of the server the group's flags
 // locate. Kong calls it at run time, after every parse hook has set the URL.
-func (c *divergencesCommand) ProvideClient() *client.Client {
+func (c *statusCommand) ProvideClient() *client.Client {
 	return client.New(c.Client)
 }
 
-// divergencesListCommand lists the reporting mirrors and recorded divergences.
-type divergencesListCommand struct {
+// statusListCommand lists the reporting mirrors and recorded divergences.
+type statusListCommand struct {
 	JSON        bool   `help:"Print JSON instead of text."`
 	Service     string `help:"Only list mirrors and divergences of this service."`
 	Environment string `help:"Only list mirrors and divergences in this environment."`
@@ -42,7 +42,7 @@ type divergencesListCommand struct {
 	Node        string `help:"Only list quarantines on routes of this migration state node."`
 }
 
-func (c *divergencesListCommand) Run(ctx context.Context, server *client.Client, out Output) error {
+func (c *statusListCommand) Run(ctx context.Context, server *client.Client, out Output) error {
 	// No reported value is empty, so an empty flag leaves its filter unset.
 	filter := model.DivergenceFilter{
 		Service:     Zero(c.Service),
@@ -70,12 +70,12 @@ func (c *divergencesListCommand) Run(ctx context.Context, server *client.Client,
 	return nil
 }
 
-// divergencesClearCommand clears the divergences of a service environment.
-type divergencesClearCommand struct {
+// statusClearCommand clears the divergences of a service environment.
+type statusClearCommand struct {
 	Clear server.ClearConfig `embed:""`
 }
 
-func (c *divergencesClearCommand) Run(ctx context.Context, server *client.Client) error {
+func (c *statusClearCommand) Run(ctx context.Context, server *client.Client) error {
 	return errors.WithStack(server.ClearDivergences(ctx, c.Clear.Service, c.Clear.Environment))
 }
 

@@ -24,8 +24,8 @@ const (
 // reflection-formatted method names, remove the leading slash and convert the remaining slash to a
 // period.
 const (
-	// SpectreServiceHeartbeatProcedure is the procedure name of the SpectreService's Heartbeat RPC.
-	SpectreServiceHeartbeatProcedure = "/spectre.v1.SpectreService/Heartbeat"
+	// SpectreServiceUpdateProcedure is the procedure name of the SpectreService's Update RPC.
+	SpectreServiceUpdateProcedure = "/spectre.v1.SpectreService/Update"
 	// SpectreServiceListDivergencesProcedure is the procedure name of the SpectreService's
 	// ListDivergences RPC.
 	SpectreServiceListDivergencesProcedure = "/spectre.v1.SpectreService/ListDivergences"
@@ -35,11 +35,11 @@ const (
 )
 
 var (
-	spectreServiceHeartbeatSpec = sync.OnceValue(func() connect.Spec {
+	spectreServiceUpdateSpec = sync.OnceValue(func() connect.Spec {
 		return connect.Spec{
-			StreamType: connect.StreamTypeUnary,
-			Schema:     spectrepb.File_spectre_v1_spectre_proto.Services().ByName("SpectreService").Methods().ByName("Heartbeat"),
-			Procedure:  SpectreServiceHeartbeatProcedure,
+			StreamType: connect.StreamTypeClient,
+			Schema:     spectrepb.File_spectre_v1_spectre_proto.Services().ByName("SpectreService").Methods().ByName("Update"),
+			Procedure:  SpectreServiceUpdateProcedure,
 		}
 	})
 	spectreServiceListDivergencesSpec = sync.OnceValue(func() connect.Spec {
@@ -60,9 +60,9 @@ var (
 
 // SpectreServiceClient is a client for the spectre.v1.SpectreService service.
 type SpectreServiceClient interface {
-	// Heartbeat replaces the state of a service environment's mirror. A mirror
-	// sends one periodically and whenever its candidate is quarantined.
-	Heartbeat(context.Context, *spectrepb.HeartbeatRequest) (*spectrepb.HeartbeatResponse, error)
+	// Update streams a mirror's state for as long as the mirror runs. Each
+	// stream begins with the whole state, then changes it or keeps it alive.
+	Update(context.Context) (SpectreServiceUpdateClientStream, error)
 	// ListDivergences returns the state of each mirror the server still
 	// considers current, and the latest divergence each mirror reported.
 	ListDivergences(context.Context, *spectrepb.ListDivergencesRequest) (*spectrepb.ListDivergencesResponse, error)
@@ -77,11 +77,40 @@ func NewSpectreServiceClient(client *connect.Client) SpectreServiceClient {
 	return &spectreServiceClient{client: client}
 }
 
+// SpectreServiceUpdateClientStream is the client stream for the SpectreService's Update RPC.
+type SpectreServiceUpdateClientStream struct {
+	stream connect.ClientStream
+}
+
+// SendHeaders opens the stream and flushes the request headers without a message. The first Send or
+// Receive does this implicitly.
+func (s SpectreServiceUpdateClientStream) SendHeaders() error {
+	return s.stream.SendHeaders()
+}
+
+// Send sends a request message to the server.
+func (s SpectreServiceUpdateClientStream) Send(req *spectrepb.UpdateRequest) error {
+	return s.stream.Send(req)
+}
+
+// CloseAndReceive closes the request side of the stream and returns the single response message. It
+// reads the stream to completion to release its resources.
+func (s SpectreServiceUpdateClientStream) CloseAndReceive() (*spectrepb.UpdateResponse, error) {
+	if err := s.stream.CloseSend(); err != nil {
+		return nil, err
+	}
+	var res spectrepb.UpdateResponse
+	if err := s.stream.Receive(&res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
 // SpectreServiceHandler is an implementation of the spectre.v1.SpectreService service.
 type SpectreServiceHandler interface {
-	// Heartbeat replaces the state of a service environment's mirror. A mirror
-	// sends one periodically and whenever its candidate is quarantined.
-	Heartbeat(context.Context, *spectrepb.HeartbeatRequest) (*spectrepb.HeartbeatResponse, error)
+	// Update streams a mirror's state for as long as the mirror runs. Each
+	// stream begins with the whole state, then changes it or keeps it alive.
+	Update(context.Context, SpectreServiceUpdateServerStream) (*spectrepb.UpdateResponse, error)
 	// ListDivergences returns the state of each mirror the server still
 	// considers current, and the latest divergence each mirror reported.
 	ListDivergences(context.Context, *spectrepb.ListDivergencesRequest) (*spectrepb.ListDivergencesResponse, error)
@@ -95,17 +124,31 @@ type SpectreServiceHandler interface {
 func RegisterSpectreServiceHandler(server *connect.Server, svc SpectreServiceHandler) {
 	adapter := spectreServiceHandler{svc: svc}
 	server.Register(
-		connect.Method{Spec: spectreServiceHeartbeatSpec(), Handler: adapter.heartbeat},
+		connect.Method{Spec: spectreServiceUpdateSpec(), Handler: adapter.update},
 		connect.Method{Spec: spectreServiceListDivergencesSpec(), Handler: adapter.listDivergences},
 		connect.Method{Spec: spectreServiceClearDivergencesSpec(), Handler: adapter.clearDivergences},
 	)
 }
 
+// SpectreServiceUpdateServerStream is the server stream for the SpectreService's Update RPC.
+type SpectreServiceUpdateServerStream struct {
+	stream connect.ServerStream
+}
+
+// Receive returns the next request message from the client.
+func (s SpectreServiceUpdateServerStream) Receive() (*spectrepb.UpdateRequest, error) {
+	var req spectrepb.UpdateRequest
+	if err := s.stream.Receive(&req); err != nil {
+		return nil, err
+	}
+	return &req, nil
+}
+
 // UnimplementedSpectreServiceHandler returns CodeUnimplemented from all methods.
 type UnimplementedSpectreServiceHandler struct{}
 
-func (UnimplementedSpectreServiceHandler) Heartbeat(context.Context, *spectrepb.HeartbeatRequest) (*spectrepb.HeartbeatResponse, error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, "spectre.v1.SpectreService.Heartbeat is not implemented")
+func (UnimplementedSpectreServiceHandler) Update(context.Context, SpectreServiceUpdateServerStream) (*spectrepb.UpdateResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "spectre.v1.SpectreService.Update is not implemented")
 }
 
 func (UnimplementedSpectreServiceHandler) ListDivergences(context.Context, *spectrepb.ListDivergencesRequest) (*spectrepb.ListDivergencesResponse, error) {
@@ -120,12 +163,12 @@ type spectreServiceClient struct {
 	client *connect.Client
 }
 
-func (c *spectreServiceClient) Heartbeat(ctx context.Context, req *spectrepb.HeartbeatRequest) (*spectrepb.HeartbeatResponse, error) {
-	var res spectrepb.HeartbeatResponse
-	if err := c.client.CallUnary(ctx, spectreServiceHeartbeatSpec(), req, &res); err != nil {
-		return nil, err
+func (c *spectreServiceClient) Update(ctx context.Context) (SpectreServiceUpdateClientStream, error) {
+	stream, err := c.client.CallClientStream(ctx, spectreServiceUpdateSpec())
+	if err != nil {
+		return SpectreServiceUpdateClientStream{}, err
 	}
-	return &res, nil
+	return SpectreServiceUpdateClientStream{stream: stream}, nil
 }
 
 func (c *spectreServiceClient) ListDivergences(ctx context.Context, req *spectrepb.ListDivergencesRequest) (*spectrepb.ListDivergencesResponse, error) {
@@ -146,12 +189,8 @@ func (c *spectreServiceClient) ClearDivergences(ctx context.Context, req *spectr
 
 type spectreServiceHandler struct{ svc SpectreServiceHandler }
 
-func (h spectreServiceHandler) heartbeat(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
-	var req spectrepb.HeartbeatRequest
-	if err := stream.Receive(&req); err != nil {
-		return err
-	}
-	res, err := h.svc.Heartbeat(ctx, &req)
+func (h spectreServiceHandler) update(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	res, err := h.svc.Update(ctx, SpectreServiceUpdateServerStream{stream: stream})
 	if err != nil {
 		return err
 	}

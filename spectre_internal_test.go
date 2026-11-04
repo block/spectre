@@ -80,8 +80,8 @@ func TestWithServerURLSetsDefault(t *testing.T) {
 		args     []string
 		expected string
 	}{
-		{name: "Default", args: []string{"divergences"}, expected: "http://default.example"},
-		{name: "Flag", args: []string{"divergences", "--server-url=http://flag.example"}, expected: "http://flag.example"},
+		{name: "Default", args: []string{"status"}, expected: "http://default.example"},
+		{name: "Flag", args: []string{"status", "--server-url=http://flag.example"}, expected: "http://flag.example"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -92,7 +92,7 @@ func TestWithServerURLSetsDefault(t *testing.T) {
 			_, err = parser.Parse(test.args)
 			assert.NoError(t, err)
 
-			assert.Equal(t, test.expected, command.Divergences.Client.URL)
+			assert.Equal(t, test.expected, command.Status.Client.URL)
 		})
 	}
 }
@@ -101,9 +101,9 @@ func TestServerURLRequiredWithoutDefault(t *testing.T) {
 	parser, err := newParser(&cli.CommandLine{})
 	assert.NoError(t, err)
 
-	_, err = parser.Parse([]string{"divergences"})
+	_, err = parser.Parse([]string{"status"})
 
-	assert.EqualError(t, err, "divergences: no SPECTRE server URL; pass --server-url, or build spectre with spectre.WithServerURL")
+	assert.EqualError(t, err, "status: no SPECTRE server URL; pass --server-url, or build spectre with spectre.WithServerURL")
 }
 
 // pushCommand's default needs both a variable from WithKongOptions and the

@@ -26,11 +26,11 @@ type CommandLine struct {
 	// A deployment's own SPECTRE_VERSION must not make every command exit.
 	Version kong.VersionFlag `env:"-" help:"Print the version and exit."`
 
-	Supervise   superviseCommand   `cmd:"" help:"Supervise a candidate and a reference behind the embedded proxies, splitting resources between them."`
-	Serve       serveCommand       `cmd:"" help:"Run the SPECTRE server, which mirrors send their heartbeats to."`
-	Gen         genCommand         `cmd:"" help:"Generate TypeScript schema declarations and the script API."`
-	Divergences divergencesCommand `cmd:"" help:"List the mirrors reporting to the SPECTRE server and the divergences they reported, or clear divergences."`
-	State       stateCommand       `cmd:"" help:"Describe a service's migration state."`
+	Supervise superviseCommand `cmd:"" help:"Supervise a candidate and a reference behind the embedded proxies, splitting resources between them."`
+	Serve     serveCommand     `cmd:"" help:"Run the SPECTRE server, which mirrors stream their states to."`
+	Gen       genCommand       `cmd:"" help:"Generate TypeScript schema declarations and the script API."`
+	Status    statusCommand    `cmd:"" help:"List the mirrors reporting to the SPECTRE server and the divergences they reported, or clear divergences."`
+	State     stateCommand     `cmd:"" help:"Describe a service's migration state."`
 
 	Init initCommand `cmd:"" help:"Set a service checkout up for a SPECTRE migration from a template."`
 }
