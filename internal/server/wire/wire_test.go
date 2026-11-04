@@ -21,18 +21,18 @@ func TestStateRoundTrip(t *testing.T) {
 		state model.State
 	}{
 		{name: "Healthy", state: model.State{
-			Service:         "users",
-			Environment:     "production",
-			CandidateCommit: "abc123",
-			SpectreVersion:  "v0.47.0",
-			Uptime:          3 * time.Hour,
+			Service:        "users",
+			Environment:    "production",
+			Revision:       "abc123",
+			SpectreVersion: "v0.47.0",
+			Uptime:         3 * time.Hour,
 		}},
 		{name: "Quarantined", state: model.State{
-			Service:         "users",
-			Environment:     "staging",
-			CandidateCommit: "abc123",
-			SpectreVersion:  "v0.47.0",
-			Uptime:          time.Minute,
+			Service:        "users",
+			Environment:    "staging",
+			Revision:       "abc123",
+			SpectreVersion: "v0.47.0",
+			Uptime:         time.Minute,
 			Quarantines: map[model.Direction]model.Quarantine{
 				model.Ingress: {Since: since, Reason: model.QuarantineReason{
 					Kind:        model.QuarantineDivergent,
@@ -61,10 +61,10 @@ func TestStateFromMessageRejectsInvalid(t *testing.T) {
 		return &pb.Quarantine{Direction: direction, Since: timestamppb.Now(), Kind: pb.Quarantine_KIND_UNMATCHED}
 	}
 	valid := func() *pb.State {
-		return &pb.State{Service: "users", Environment: "production", CandidateCommit: "abc123", Uptime: durationpb.New(time.Minute)}
+		return &pb.State{Service: "users", Environment: "production", Revision: "abc123", Uptime: durationpb.New(time.Minute)}
 	}
 	withoutCommit := valid()
-	withoutCommit.CandidateCommit = ""
+	withoutCommit.Revision = ""
 	withoutUptime := valid()
 	withoutUptime.Uptime = nil
 	withoutDirection := valid()
@@ -80,7 +80,7 @@ func TestStateFromMessageRejectsInvalid(t *testing.T) {
 		state *pb.State
 		err   string
 	}{
-		{name: "WithoutCandidateCommit", state: withoutCommit, err: "state needs a service, environment, and candidate commit"},
+		{name: "WithoutRevision", state: withoutCommit, err: "state needs a service, environment, and revision"},
 		{name: "WithoutUptime", state: withoutUptime, err: "state needs an uptime"},
 		{name: "UnspecifiedDirection", state: withoutDirection, err: "quarantine: unknown direction DIRECTION_UNSPECIFIED"},
 		{name: "DuplicateDirection", state: duplicate, err: "state holds more than one ingress quarantine"},
@@ -101,7 +101,7 @@ func TestFilterRoundTrip(t *testing.T) {
 		filter model.DivergenceFilter
 	}{
 		{name: "Unset"},
-		{name: "Set", filter: model.DivergenceFilter{Service: Some("users"), Environment: Some("production"), CandidateCommit: Some("abc123"), Node: Some("users")}},
+		{name: "Set", filter: model.DivergenceFilter{Service: Some("users"), Environment: Some("production"), Revision: Some("abc123"), Node: Some("users")}},
 		// An empty filter value is set, and matches only empty values.
 		{name: "Empty", filter: model.DivergenceFilter{Node: Some("")}},
 	}
@@ -114,17 +114,17 @@ func TestFilterRoundTrip(t *testing.T) {
 
 func TestListRoundTrip(t *testing.T) {
 	states := []model.State{{
-		Service:         "users",
-		Environment:     "production",
-		CandidateCommit: "def456",
-		SpectreVersion:  "v0.47.0",
-		Uptime:          time.Minute,
+		Service:        "users",
+		Environment:    "production",
+		Revision:       "def456",
+		SpectreVersion: "v0.47.0",
+		Uptime:         time.Minute,
 	}}
 	divergences := []model.Divergence{{
-		Service:         "users",
-		Environment:     "production",
-		CandidateCommit: "abc123",
-		Direction:       model.Egress,
+		Service:     "users",
+		Environment: "production",
+		Revision:    "abc123",
+		Direction:   model.Egress,
 		Quarantine: model.Quarantine{Since: time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC), Reason: model.QuarantineReason{
 			Kind:    model.QuarantineUnmatched,
 			Traffic: Some(model.Traffic{Direction: model.Egress, Protocol: model.ProtocolHTTP, Route: "POST api.example/v1/charges"}),
@@ -140,14 +140,14 @@ func TestListRoundTrip(t *testing.T) {
 func TestDivergenceFromMessageRejectsInvalid(t *testing.T) {
 	valid := func() *pb.Divergence {
 		return &pb.Divergence{
-			Service:         "users",
-			Environment:     "production",
-			CandidateCommit: "abc123",
-			Quarantine:      &pb.Quarantine{Direction: pb.Direction_DIRECTION_INGRESS, Since: timestamppb.Now(), Kind: pb.Quarantine_KIND_UNMATCHED},
+			Service:     "users",
+			Environment: "production",
+			Revision:    "abc123",
+			Quarantine:  &pb.Quarantine{Direction: pb.Direction_DIRECTION_INGRESS, Since: timestamppb.Now(), Kind: pb.Quarantine_KIND_UNMATCHED},
 		}
 	}
 	withoutCommit := valid()
-	withoutCommit.CandidateCommit = ""
+	withoutCommit.Revision = ""
 	withoutQuarantine := valid()
 	withoutQuarantine.Quarantine = nil
 	withoutDirection := valid()
@@ -159,7 +159,7 @@ func TestDivergenceFromMessageRejectsInvalid(t *testing.T) {
 		divergence *pb.Divergence
 		err        string
 	}{
-		{name: "WithoutCandidateCommit", divergence: withoutCommit, err: "divergence needs a service, environment, and candidate commit"},
+		{name: "WithoutRevision", divergence: withoutCommit, err: "divergence needs a service, environment, and revision"},
 		{name: "WithoutQuarantine", divergence: withoutQuarantine, err: "divergence needs a quarantine"},
 		{name: "UnspecifiedDirection", divergence: withoutDirection, err: "quarantine: unknown direction DIRECTION_UNSPECIFIED"},
 		{name: "WithoutSince", divergence: withoutSince, err: "quarantine: quarantine needs its start time"},

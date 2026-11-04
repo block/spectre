@@ -38,17 +38,17 @@ type divergencesListCommand struct {
 	JSON        bool   `help:"Print JSON instead of text."`
 	Service     string `help:"Only list mirrors and divergences of this service."`
 	Environment string `help:"Only list mirrors and divergences in this environment."`
-	Revision    string `help:"Only list mirrors and divergences of this candidate commit."`
+	Revision    string `help:"Only list mirrors and divergences of this candidate revision."`
 	Node        string `help:"Only list quarantines on routes of this migration state node."`
 }
 
 func (c *divergencesListCommand) Run(ctx context.Context, server *client.Client, out Output) error {
 	// No reported value is empty, so an empty flag leaves its filter unset.
 	filter := model.DivergenceFilter{
-		Service:         Zero(c.Service),
-		Environment:     Zero(c.Environment),
-		CandidateCommit: Zero(c.Revision),
-		Node:            Zero(c.Node),
+		Service:     Zero(c.Service),
+		Environment: Zero(c.Environment),
+		Revision:    Zero(c.Revision),
+		Node:        Zero(c.Node),
 	}
 	states, divergences, err := server.ListDivergences(ctx, filter)
 	if err != nil {
@@ -119,7 +119,7 @@ func (m *mirror) render(palette terminal.Palette) string {
 	state, reporting := m.State.Get()
 	if reporting {
 		about := fmt.Sprintf("spectre %s, up %s", state.SpectreVersion, state.Uptime.Round(time.Second))
-		fmt.Fprintf(&text, "%s %s %s %s\n", palette.Bold(m.Service), state.CandidateCommit, palette.Dim(m.Environment), palette.Dim(about))
+		fmt.Fprintf(&text, "%s %s %s %s\n", palette.Bold(m.Service), state.Revision, palette.Dim(m.Environment), palette.Dim(about))
 		if len(state.Quarantines) == 0 {
 			fmt.Fprintf(&text, "  %s\n", palette.Green("healthy"))
 		}
@@ -136,7 +136,7 @@ func (m *mirror) render(palette terminal.Palette) string {
 		if ok && current.Since.Equal(divergence.Quarantine.Since) {
 			continue
 		}
-		since := fmt.Sprintf("quarantined %s on %s", timestamp(divergence.Quarantine.Since), divergence.CandidateCommit)
+		since := fmt.Sprintf("quarantined %s on %s", timestamp(divergence.Quarantine.Since), divergence.Revision)
 		if reporting {
 			since += ", in an earlier run"
 		}

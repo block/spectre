@@ -41,7 +41,7 @@ message HeartbeatResponse {}
 message ListDivergencesRequest {
   optional string service = 1;
   optional string environment = 2;
-  optional string candidate_commit = 3;
+  optional string revision = 3;
   // Node matches only quarantines on routes of that migration state node.
   optional string node = 4;
 }
@@ -64,8 +64,8 @@ message ClearDivergencesResponse {}
 message Divergence {
   string service = 1;
   string environment = 2;
-  // CandidateCommit is the commit of the candidate the mirror ran.
-  string candidate_commit = 3;
+  // Revision is the commit of the candidate the mirror ran.
+  string revision = 3;
   Quarantine quarantine = 4;
 }
 
@@ -113,8 +113,8 @@ message Traffic {
 message State {
   string service = 1;
   string environment = 2;
-  // CandidateCommit is the commit of the candidate the mirror runs.
-  string candidate_commit = 3;
+  // Revision is the commit of the candidate the mirror runs.
+  string revision = 3;
   // SpectreVersion is the version of SPECTRE the mirror runs.
   string spectre_version = 4;
   // Uptime is how long the mirror has run. Quarantine lasts until the mirror

@@ -16,11 +16,11 @@ import (
 // StateMessage returns the message that reports state.
 func StateMessage(state model.State) *pb.State {
 	message := &pb.State{
-		Service:         state.Service,
-		Environment:     state.Environment,
-		CandidateCommit: state.CandidateCommit,
-		SpectreVersion:  state.SpectreVersion,
-		Uptime:          durationpb.New(state.Uptime),
+		Service:        state.Service,
+		Environment:    state.Environment,
+		Revision:       state.Revision,
+		SpectreVersion: state.SpectreVersion,
+		Uptime:         durationpb.New(state.Uptime),
 	}
 	// Ingress first, so a state always encodes the same way.
 	for _, direction := range []model.Direction{model.Ingress, model.Egress} {
@@ -34,18 +34,18 @@ func StateMessage(state model.State) *pb.State {
 // StateFromMessage restores a reported state, checking that it identifies its
 // mirror and holds at most one quarantine per direction.
 func StateFromMessage(message *pb.State) (model.State, error) {
-	if message.GetService() == "" || message.GetEnvironment() == "" || message.GetCandidateCommit() == "" {
-		return model.State{}, errors.New("state needs a service, environment, and candidate commit")
+	if message.GetService() == "" || message.GetEnvironment() == "" || message.GetRevision() == "" {
+		return model.State{}, errors.New("state needs a service, environment, and revision")
 	}
 	if message.GetUptime() == nil {
 		return model.State{}, errors.New("state needs an uptime")
 	}
 	state := model.State{
-		Service:         message.GetService(),
-		Environment:     message.GetEnvironment(),
-		CandidateCommit: message.GetCandidateCommit(),
-		SpectreVersion:  message.GetSpectreVersion(),
-		Uptime:          message.GetUptime().AsDuration(),
+		Service:        message.GetService(),
+		Environment:    message.GetEnvironment(),
+		Revision:       message.GetRevision(),
+		SpectreVersion: message.GetSpectreVersion(),
+		Uptime:         message.GetUptime().AsDuration(),
 	}
 	quarantines := message.GetQuarantines()
 	if len(quarantines) > 0 {
@@ -71,18 +71,18 @@ func StateFromMessage(message *pb.State) (model.State, error) {
 // DivergenceMessage returns the message that reports divergence.
 func DivergenceMessage(divergence model.Divergence) *pb.Divergence {
 	return &pb.Divergence{
-		Service:         divergence.Service,
-		Environment:     divergence.Environment,
-		CandidateCommit: divergence.CandidateCommit,
-		Quarantine:      quarantineMessage(divergence.Direction, divergence.Quarantine),
+		Service:     divergence.Service,
+		Environment: divergence.Environment,
+		Revision:    divergence.Revision,
+		Quarantine:  quarantineMessage(divergence.Direction, divergence.Quarantine),
 	}
 }
 
 // DivergenceFromMessage restores a listed divergence, checking that it
 // identifies its mirror and direction.
 func DivergenceFromMessage(message *pb.Divergence) (model.Divergence, error) {
-	if message.GetService() == "" || message.GetEnvironment() == "" || message.GetCandidateCommit() == "" {
-		return model.Divergence{}, errors.New("divergence needs a service, environment, and candidate commit")
+	if message.GetService() == "" || message.GetEnvironment() == "" || message.GetRevision() == "" {
+		return model.Divergence{}, errors.New("divergence needs a service, environment, and revision")
 	}
 	if message.GetQuarantine() == nil {
 		return model.Divergence{}, errors.New("divergence needs a quarantine")
@@ -96,11 +96,11 @@ func DivergenceFromMessage(message *pb.Divergence) (model.Divergence, error) {
 		return model.Divergence{}, errors.Wrap(err, "quarantine")
 	}
 	return model.Divergence{
-		Service:         message.GetService(),
-		Environment:     message.GetEnvironment(),
-		CandidateCommit: message.GetCandidateCommit(),
-		Direction:       direction,
-		Quarantine:      quarantine,
+		Service:     message.GetService(),
+		Environment: message.GetEnvironment(),
+		Revision:    message.GetRevision(),
+		Direction:   direction,
+		Quarantine:  quarantine,
 	}, nil
 }
 
@@ -150,10 +150,10 @@ func ListJSON(states []model.State, divergences []model.Divergence) ([]byte, err
 // FilterMessage returns the request that lists what filter selects.
 func FilterMessage(filter model.DivergenceFilter) *pb.ListDivergencesRequest {
 	return &pb.ListDivergencesRequest{
-		Service:         filter.Service.Ptr(),
-		Environment:     filter.Environment.Ptr(),
-		CandidateCommit: filter.CandidateCommit.Ptr(),
-		Node:            filter.Node.Ptr(),
+		Service:     filter.Service.Ptr(),
+		Environment: filter.Environment.Ptr(),
+		Revision:    filter.Revision.Ptr(),
+		Node:        filter.Node.Ptr(),
 	}
 }
 
@@ -161,10 +161,10 @@ func FilterMessage(filter model.DivergenceFilter) *pb.ListDivergencesRequest {
 func FilterFromMessage(request *pb.ListDivergencesRequest) model.DivergenceFilter {
 	// Getters hide whether an optional field is set, so presence is a nil check.
 	return model.DivergenceFilter{
-		Service:         From(request.GetService(), request.Service != nil),
-		Environment:     From(request.GetEnvironment(), request.Environment != nil),
-		CandidateCommit: From(request.GetCandidateCommit(), request.CandidateCommit != nil),
-		Node:            From(request.GetNode(), request.Node != nil),
+		Service:     From(request.GetService(), request.Service != nil),
+		Environment: From(request.GetEnvironment(), request.Environment != nil),
+		Revision:    From(request.GetRevision(), request.Revision != nil),
+		Node:        From(request.GetNode(), request.Node != nil),
 	}
 }
 

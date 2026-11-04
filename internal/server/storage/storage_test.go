@@ -141,10 +141,10 @@ func TestRedisReadsRecordedDivergences(t *testing.T) {
 	divergences, err := store.Divergences(t.Context())
 	assert.NoError(t, err)
 	expected := []model.Divergence{{
-		Service:         "users",
-		Environment:     "production",
-		CandidateCommit: "abc123",
-		Direction:       model.Egress,
+		Service:     "users",
+		Environment: "production",
+		Revision:    "abc123",
+		Direction:   model.Egress,
 		Quarantine: model.Quarantine{
 			Since:  time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC),
 			Reason: model.QuarantineReason{Kind: model.QuarantineUnmatched, Detail: "no matching reference call"},
@@ -220,11 +220,11 @@ func testPutsConcurrently(t *testing.T, store storage.Store) {
 
 func state(environment string, uptime time.Duration) model.State {
 	return model.State{
-		Service:         "users",
-		Environment:     environment,
-		CandidateCommit: "abc123",
-		SpectreVersion:  "v1.2.3",
-		Uptime:          uptime,
+		Service:        "users",
+		Environment:    environment,
+		Revision:       "abc123",
+		SpectreVersion: "v1.2.3",
+		Uptime:         uptime,
 	}
 }
 
@@ -302,11 +302,11 @@ func testRecordsConcurrently(t *testing.T, store storage.Store) {
 
 func divergence(environment string, direction model.Direction, since time.Time) model.Divergence {
 	return model.Divergence{
-		Service:         "users",
-		Environment:     environment,
-		CandidateCommit: "abc123",
-		Direction:       direction,
-		Quarantine:      model.Quarantine{Since: since, Reason: model.QuarantineReason{Kind: model.QuarantineCapacity}},
+		Service:     "users",
+		Environment: environment,
+		Revision:    "abc123",
+		Direction:   direction,
+		Quarantine:  model.Quarantine{Since: since, Reason: model.QuarantineReason{Kind: model.QuarantineCapacity}},
 	}
 }
 

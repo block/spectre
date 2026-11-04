@@ -54,11 +54,11 @@ func (s *Service) Heartbeat(ctx context.Context, request *pb.HeartbeatRequest) (
 	}
 	for direction, quarantine := range state.Quarantines {
 		divergence := model.Divergence{
-			Service:         state.Service,
-			Environment:     state.Environment,
-			CandidateCommit: state.CandidateCommit,
-			Direction:       direction,
-			Quarantine:      quarantine,
+			Service:     state.Service,
+			Environment: state.Environment,
+			Revision:    state.Revision,
+			Direction:   direction,
+			Quarantine:  quarantine,
 		}
 		if err := s.store.Record(ctx, divergence); err != nil {
 			return nil, connect.NewError(connect.CodeUnavailable, err.Error()).WithCause(err)

@@ -25,17 +25,17 @@ func TestDivergencesCommands(t *testing.T) {
 	unmatched := model.QuarantineReason{Kind: model.QuarantineUnmatched, Detail: "no matching reference call"}
 	// Divergences from mirror runs that have since stopped or restarted.
 	for _, earlier := range []model.Divergence{
-		{Service: "users", Environment: "canary", CandidateCommit: "abc123", Direction: model.Egress, Quarantine: model.Quarantine{Since: first, Reason: unmatched}},
-		{Service: "users", Environment: "production", CandidateCommit: "abc123", Direction: model.Egress, Quarantine: model.Quarantine{Since: first, Reason: unmatched}},
+		{Service: "users", Environment: "canary", Revision: "abc123", Direction: model.Egress, Quarantine: model.Quarantine{Since: first, Reason: unmatched}},
+		{Service: "users", Environment: "production", Revision: "abc123", Direction: model.Egress, Quarantine: model.Quarantine{Since: first, Reason: unmatched}},
 	} {
 		assert.NoError(t, store.Record(t.Context(), earlier))
 	}
 	quarantined := model.State{
-		Service:         "users",
-		Environment:     "production",
-		CandidateCommit: "def456",
-		SpectreVersion:  "v1.2.3",
-		Uptime:          90 * time.Minute,
+		Service:        "users",
+		Environment:    "production",
+		Revision:       "def456",
+		SpectreVersion: "v1.2.3",
+		Uptime:         90 * time.Minute,
 		//nolint:exhaustive // Only the ingress proxy quarantined in this run.
 		Quarantines: map[model.Direction]model.Quarantine{
 			model.Ingress: {Since: first.Add(time.Minute), Reason: model.QuarantineReason{
@@ -47,11 +47,11 @@ func TestDivergencesCommands(t *testing.T) {
 		},
 	}
 	healthy := model.State{
-		Service:         "users",
-		Environment:     "staging",
-		CandidateCommit: "def456",
-		SpectreVersion:  "v1.2.3",
-		Uptime:          12*time.Minute + 300*time.Millisecond,
+		Service:        "users",
+		Environment:    "staging",
+		Revision:       "def456",
+		SpectreVersion: "v1.2.3",
+		Uptime:         12*time.Minute + 300*time.Millisecond,
 	}
 	for _, state := range []model.State{quarantined, healthy} {
 		assert.NoError(t, spectre.Heartbeat(t.Context(), state))
@@ -91,7 +91,7 @@ users def456 staging spectre v1.2.3, up 12m0s
 		"states": [{
 			"service": "users",
 			"environment": "production",
-			"candidateCommit": "def456",
+			"revision": "def456",
 			"spectreVersion": "v1.2.3",
 			"uptime": "5400s",
 			"quarantines": [`+quarantine+`]
@@ -99,7 +99,7 @@ users def456 staging spectre v1.2.3, up 12m0s
 		"divergences": [{
 			"service": "users",
 			"environment": "production",
-			"candidateCommit": "def456",
+			"revision": "def456",
 			"quarantine": `+quarantine+`
 		}]
 	}`), &expected))

@@ -226,10 +226,10 @@ func (*HeartbeatResponse) Descriptor() ([]byte, []int) {
 // ListDivergencesRequest filters mirror states and divergences. An unset filter
 // matches every value.
 type ListDivergencesRequest struct {
-	state           protoimpl.MessageState `protogen:"open.v1"`
-	Service         *string                `protobuf:"bytes,1,opt,name=service,proto3,oneof" json:"service,omitempty"`
-	Environment     *string                `protobuf:"bytes,2,opt,name=environment,proto3,oneof" json:"environment,omitempty"`
-	CandidateCommit *string                `protobuf:"bytes,3,opt,name=candidate_commit,json=candidateCommit,proto3,oneof" json:"candidate_commit,omitempty"`
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	Service     *string                `protobuf:"bytes,1,opt,name=service,proto3,oneof" json:"service,omitempty"`
+	Environment *string                `protobuf:"bytes,2,opt,name=environment,proto3,oneof" json:"environment,omitempty"`
+	Revision    *string                `protobuf:"bytes,3,opt,name=revision,proto3,oneof" json:"revision,omitempty"`
 	// Node matches only quarantines on routes of that migration state node.
 	Node          *string `protobuf:"bytes,4,opt,name=node,proto3,oneof" json:"node,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -280,9 +280,9 @@ func (x *ListDivergencesRequest) GetEnvironment() string {
 	return ""
 }
 
-func (x *ListDivergencesRequest) GetCandidateCommit() string {
-	if x != nil && x.CandidateCommit != nil {
-		return *x.CandidateCommit
+func (x *ListDivergencesRequest) GetRevision() string {
+	if x != nil && x.Revision != nil {
+		return *x.Revision
 	}
 	return ""
 }
@@ -441,11 +441,11 @@ type Divergence struct {
 	state       protoimpl.MessageState `protogen:"open.v1"`
 	Service     string                 `protobuf:"bytes,1,opt,name=service,proto3" json:"service,omitempty"`
 	Environment string                 `protobuf:"bytes,2,opt,name=environment,proto3" json:"environment,omitempty"`
-	// CandidateCommit is the commit of the candidate the mirror ran.
-	CandidateCommit string      `protobuf:"bytes,3,opt,name=candidate_commit,json=candidateCommit,proto3" json:"candidate_commit,omitempty"`
-	Quarantine      *Quarantine `protobuf:"bytes,4,opt,name=quarantine,proto3" json:"quarantine,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// Revision is the commit of the candidate the mirror ran.
+	Revision      string      `protobuf:"bytes,3,opt,name=revision,proto3" json:"revision,omitempty"`
+	Quarantine    *Quarantine `protobuf:"bytes,4,opt,name=quarantine,proto3" json:"quarantine,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Divergence) Reset() {
@@ -492,9 +492,9 @@ func (x *Divergence) GetEnvironment() string {
 	return ""
 }
 
-func (x *Divergence) GetCandidateCommit() string {
+func (x *Divergence) GetRevision() string {
 	if x != nil {
-		return x.CandidateCommit
+		return x.Revision
 	}
 	return ""
 }
@@ -670,8 +670,8 @@ type State struct {
 	state       protoimpl.MessageState `protogen:"open.v1"`
 	Service     string                 `protobuf:"bytes,1,opt,name=service,proto3" json:"service,omitempty"`
 	Environment string                 `protobuf:"bytes,2,opt,name=environment,proto3" json:"environment,omitempty"`
-	// CandidateCommit is the commit of the candidate the mirror runs.
-	CandidateCommit string `protobuf:"bytes,3,opt,name=candidate_commit,json=candidateCommit,proto3" json:"candidate_commit,omitempty"`
+	// Revision is the commit of the candidate the mirror runs.
+	Revision string `protobuf:"bytes,3,opt,name=revision,proto3" json:"revision,omitempty"`
 	// SpectreVersion is the version of SPECTRE the mirror runs.
 	SpectreVersion string `protobuf:"bytes,4,opt,name=spectre_version,json=spectreVersion,proto3" json:"spectre_version,omitempty"`
 	// Uptime is how long the mirror has run. Quarantine lasts until the mirror
@@ -727,9 +727,9 @@ func (x *State) GetEnvironment() string {
 	return ""
 }
 
-func (x *State) GetCandidateCommit() string {
+func (x *State) GetRevision() string {
 	if x != nil {
-		return x.CandidateCommit
+		return x.Revision
 	}
 	return ""
 }
@@ -763,16 +763,16 @@ const file_spectre_v1_spectre_proto_rawDesc = "" +
 	"spectre.v1\x1a\x1egoogle/protobuf/duration.proto\x1a\x1fgoogle/protobuf/timestamp.proto\";\n" +
 	"\x10HeartbeatRequest\x12'\n" +
 	"\x05state\x18\x01 \x01(\v2\x11.spectre.v1.StateR\x05state\"\x13\n" +
-	"\x11HeartbeatResponse\"\xe1\x01\n" +
+	"\x11HeartbeatResponse\"\xca\x01\n" +
 	"\x16ListDivergencesRequest\x12\x1d\n" +
 	"\aservice\x18\x01 \x01(\tH\x00R\aservice\x88\x01\x01\x12%\n" +
-	"\venvironment\x18\x02 \x01(\tH\x01R\venvironment\x88\x01\x01\x12.\n" +
-	"\x10candidate_commit\x18\x03 \x01(\tH\x02R\x0fcandidateCommit\x88\x01\x01\x12\x17\n" +
+	"\venvironment\x18\x02 \x01(\tH\x01R\venvironment\x88\x01\x01\x12\x1f\n" +
+	"\brevision\x18\x03 \x01(\tH\x02R\brevision\x88\x01\x01\x12\x17\n" +
 	"\x04node\x18\x04 \x01(\tH\x03R\x04node\x88\x01\x01B\n" +
 	"\n" +
 	"\b_serviceB\x0e\n" +
-	"\f_environmentB\x13\n" +
-	"\x11_candidate_commitB\a\n" +
+	"\f_environmentB\v\n" +
+	"\t_revisionB\a\n" +
 	"\x05_node\"~\n" +
 	"\x17ListDivergencesResponse\x12)\n" +
 	"\x06states\x18\x01 \x03(\v2\x11.spectre.v1.StateR\x06states\x128\n" +
@@ -780,12 +780,12 @@ const file_spectre_v1_spectre_proto_rawDesc = "" +
 	"\x17ClearDivergencesRequest\x12\x18\n" +
 	"\aservice\x18\x01 \x01(\tR\aservice\x12 \n" +
 	"\venvironment\x18\x02 \x01(\tR\venvironment\"\x1a\n" +
-	"\x18ClearDivergencesResponse\"\xab\x01\n" +
+	"\x18ClearDivergencesResponse\"\x9c\x01\n" +
 	"\n" +
 	"Divergence\x12\x18\n" +
 	"\aservice\x18\x01 \x01(\tR\aservice\x12 \n" +
-	"\venvironment\x18\x02 \x01(\tR\venvironment\x12)\n" +
-	"\x10candidate_commit\x18\x03 \x01(\tR\x0fcandidateCommit\x126\n" +
+	"\venvironment\x18\x02 \x01(\tR\venvironment\x12\x1a\n" +
+	"\brevision\x18\x03 \x01(\tR\brevision\x126\n" +
 	"\n" +
 	"quarantine\x18\x04 \x01(\v2\x16.spectre.v1.QuarantineR\n" +
 	"quarantine\"\xbf\x03\n" +
@@ -810,11 +810,11 @@ const file_spectre_v1_spectre_proto_rawDesc = "" +
 	"\aTraffic\x123\n" +
 	"\tdirection\x18\x01 \x01(\x0e2\x15.spectre.v1.DirectionR\tdirection\x12\x1a\n" +
 	"\bprotocol\x18\x02 \x01(\tR\bprotocol\x12\x14\n" +
-	"\x05route\x18\x03 \x01(\tR\x05route\"\x84\x02\n" +
+	"\x05route\x18\x03 \x01(\tR\x05route\"\xf5\x01\n" +
 	"\x05State\x12\x18\n" +
 	"\aservice\x18\x01 \x01(\tR\aservice\x12 \n" +
-	"\venvironment\x18\x02 \x01(\tR\venvironment\x12)\n" +
-	"\x10candidate_commit\x18\x03 \x01(\tR\x0fcandidateCommit\x12'\n" +
+	"\venvironment\x18\x02 \x01(\tR\venvironment\x12\x1a\n" +
+	"\brevision\x18\x03 \x01(\tR\brevision\x12'\n" +
 	"\x0fspectre_version\x18\x04 \x01(\tR\x0espectreVersion\x121\n" +
 	"\x06uptime\x18\x05 \x01(\v2\x19.google.protobuf.DurationR\x06uptime\x128\n" +
 	"\vquarantines\x18\x06 \x03(\v2\x16.spectre.v1.QuarantineR\vquarantines*S\n" +

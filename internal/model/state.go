@@ -7,9 +7,9 @@ import "time"
 type State struct {
 	Service     string `json:"service"`
 	Environment string `json:"environment"`
-	// CandidateCommit is the commit of the candidate the mirror runs.
-	CandidateCommit string `json:"candidate_commit"`
-	SpectreVersion  string `json:"spectre_version"`
+	// Revision is the commit of the candidate the mirror runs.
+	Revision       string `json:"revision"`
+	SpectreVersion string `json:"spectre_version"`
 	// Uptime is how long the mirror has run. Without quarantines, the candidate
 	// has been healthy that long, because quarantine lasts for the process.
 	Uptime time.Duration `json:"uptime"`

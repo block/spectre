@@ -65,7 +65,7 @@ and `docker.io/blockossreleases/spectre`.
 ## SPECTRE server
 
 `spectre serve` collects the heartbeats that mirrors send. Each heartbeat
-carries the mirror's latest state: its candidate commit, SPECTRE version,
+carries the mirror's latest state: its candidate revision, SPECTRE version,
 uptime, and quarantines. The server also records each quarantine as a
 divergence that outlives the mirror run. It listens on `127.0.0.1:50070` by
 default and keeps everything in memory, so a restart loses it. To keep them in Redis instead, pass a Redis URL to `--storage`, such as

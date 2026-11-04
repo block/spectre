@@ -73,12 +73,12 @@ func (r *Reporter) Run(ctx context.Context) {
 // SPECTRE server never blocks the mirror.
 func (r *Reporter) heartbeat(ctx context.Context, uptime time.Duration, quarantines map[model.Direction]model.Quarantine) {
 	state := model.State{
-		Service:         r.config.Service,
-		Environment:     r.config.Environment,
-		CandidateCommit: r.config.Revision,
-		SpectreVersion:  internal.Version,
-		Uptime:          uptime,
-		Quarantines:     maps.Clone(quarantines),
+		Service:        r.config.Service,
+		Environment:    r.config.Environment,
+		Revision:       r.config.Revision,
+		SpectreVersion: internal.Version,
+		Uptime:         uptime,
+		Quarantines:    maps.Clone(quarantines),
 	}
 	if err := r.client.Heartbeat(ctx, state); err != nil && ctx.Err() == nil {
 		logger.FromContext(ctx).WarnContext(ctx, "Failed to send heartbeat to the SPECTRE server", "error", err)

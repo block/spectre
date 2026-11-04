@@ -27,12 +27,12 @@ func newRPC(t *testing.T) spectrepbconnect.SpectreServiceClient {
 
 func state(environment string, uptime time.Duration, quarantines ...*pb.Quarantine) *pb.State {
 	return &pb.State{
-		Service:         "users",
-		Environment:     environment,
-		CandidateCommit: "abc123",
-		SpectreVersion:  "v1.2.3",
-		Uptime:          durationpb.New(uptime),
-		Quarantines:     quarantines,
+		Service:        "users",
+		Environment:    environment,
+		Revision:       "abc123",
+		SpectreVersion: "v1.2.3",
+		Uptime:         durationpb.New(uptime),
+		Quarantines:    quarantines,
 	}
 }
 
@@ -48,7 +48,7 @@ func TestHeartbeatKeepsLatestState(t *testing.T) {
 		Differences: []string{"body.name"},
 	}
 	latest := state("production", 2*time.Minute, quarantine)
-	divergence := &pb.Divergence{Service: "users", Environment: "production", CandidateCommit: "abc123", Quarantine: quarantine}
+	divergence := &pb.Divergence{Service: "users", Environment: "production", Revision: "abc123", Quarantine: quarantine}
 	staging := state("staging", time.Minute)
 	for _, sent := range []*pb.State{state("production", time.Minute), staging, latest} {
 		_, err := rpc.Heartbeat(t.Context(), &pb.HeartbeatRequest{State: sent})
@@ -64,7 +64,7 @@ func TestHeartbeatKeepsLatestState(t *testing.T) {
 		{name: "All", request: &pb.ListDivergencesRequest{}, expected: all},
 		{name: "Environment", request: &pb.ListDivergencesRequest{Environment: proto.String("staging")}, expected: &pb.ListDivergencesResponse{States: []*pb.State{staging}}},
 		{name: "Node", request: &pb.ListDivergencesRequest{Node: proto.String("users")}, expected: &pb.ListDivergencesResponse{States: []*pb.State{latest}, Divergences: []*pb.Divergence{divergence}}},
-		{name: "CandidateCommit", request: &pb.ListDivergencesRequest{CandidateCommit: proto.String("def456")}, expected: &pb.ListDivergencesResponse{}},
+		{name: "Revision", request: &pb.ListDivergencesRequest{Revision: proto.String("def456")}, expected: &pb.ListDivergencesResponse{}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -80,7 +80,7 @@ func TestDivergencesOutliveRestartUntilCleared(t *testing.T) {
 	quarantine := &pb.Quarantine{Direction: pb.Direction_DIRECTION_EGRESS, Since: timestamppb.Now(), Kind: pb.Quarantine_KIND_UNMATCHED}
 	quarantined := state("production", time.Minute, quarantine)
 	redeployed := state("production", time.Second)
-	redeployed.CandidateCommit = "def456"
+	redeployed.Revision = "def456"
 	heartbeat := func(sent *pb.State) {
 		_, err := rpc.Heartbeat(t.Context(), &pb.HeartbeatRequest{State: sent})
 		assert.NoError(t, err)
@@ -92,7 +92,7 @@ func TestDivergencesOutliveRestartUntilCleared(t *testing.T) {
 	}
 	heartbeat(quarantined)
 	heartbeat(redeployed)
-	divergence := &pb.Divergence{Service: "users", Environment: "production", CandidateCommit: "abc123", Quarantine: quarantine}
+	divergence := &pb.Divergence{Service: "users", Environment: "production", Revision: "abc123", Quarantine: quarantine}
 	expected := &pb.ListDivergencesResponse{States: []*pb.State{redeployed}, Divergences: []*pb.Divergence{divergence}}
 	assert.True(t, proto.Equal(expected, list()), "%v", list())
 
@@ -113,7 +113,7 @@ func TestHeartbeatRejectsInvalidState(t *testing.T) {
 		return &pb.Quarantine{Direction: direction, Since: timestamppb.Now(), Kind: pb.Quarantine_KIND_UNMATCHED}
 	}
 	withoutCommit := state("production", time.Minute)
-	withoutCommit.CandidateCommit = ""
+	withoutCommit.Revision = ""
 	withoutUptime := state("production", time.Minute)
 	withoutUptime.Uptime = nil
 	withoutKind := state("production", time.Minute, quarantine(pb.Direction_DIRECTION_INGRESS))
@@ -125,7 +125,7 @@ func TestHeartbeatRejectsInvalidState(t *testing.T) {
 		state *pb.State
 	}{
 		{name: "WithoutState"},
-		{name: "WithoutCandidateCommit", state: withoutCommit},
+		{name: "WithoutRevision", state: withoutCommit},
 		{name: "WithoutUptime", state: withoutUptime},
 		{name: "UnspecifiedQuarantineDirection", state: state("production", time.Minute, quarantine(pb.Direction_DIRECTION_UNSPECIFIED))},
 		{name: "RepeatedDirection", state: state("production", time.Minute, quarantine(pb.Direction_DIRECTION_INGRESS), quarantine(pb.Direction_DIRECTION_INGRESS))},
