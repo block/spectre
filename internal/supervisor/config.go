@@ -80,10 +80,10 @@ func NewConfig() Config {
 		Candidate: placeholder,
 		Reference: placeholder,
 		Server: reporter.Config{
-			Client:          client.Config{URL: placeholder},
-			Service:         placeholder,
-			Environment:     placeholder,
-			CandidateCommit: placeholder,
+			Client:      client.Config{URL: placeholder},
+			Service:     placeholder,
+			Environment: placeholder,
+			Revision:    placeholder,
 		},
 	}
 	// The server URL's default interpolates a variable that only spectre.Main sets.
@@ -95,7 +95,7 @@ func NewConfig() Config {
 	config.Server.Client = client.Config{}
 	config.Server.Service = ""
 	config.Server.Environment = ""
-	config.Server.CandidateCommit = ""
+	config.Server.Revision = ""
 	return config
 }
 

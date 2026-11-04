@@ -84,7 +84,7 @@ spectre supervise \
   --server-url=http://spectre-server:50070 \
   --service=my-service \
   --environment=production \
-  --candidate-commit=3f9c2a1 \
+  --revision=3f9c2a1 \
   --reference='my-service --listen=$SPECTRE_LISTEN --upstream=$SPECTRE_EGRESS' \
   --candidate='my-service-v2 --listen=$SPECTRE_LISTEN --upstream=$SPECTRE_EGRESS' \
   --destination=api.internal=https://api.internal \

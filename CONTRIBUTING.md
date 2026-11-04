@@ -75,9 +75,9 @@ nodes with `addr`, such as
 
 Every mirror reports to a server, so `spectre supervise` requires its URL,
 `--server-url`, and the mirror's identity, `--service`, `--environment`, and
-`--candidate-commit`. Set them in a deployment with the matching
-`SPECTRE_SERVER_URL`, `SPECTRE_SERVICE`, `SPECTRE_ENVIRONMENT`, and
-`SPECTRE_CANDIDATE_COMMIT` variables.
+`--revision`, the candidate's commit. Set them in a deployment with the
+matching `SPECTRE_SERVER_URL`, `SPECTRE_SERVICE`, `SPECTRE_ENVIRONMENT`, and
+`SPECTRE_REVISION` variables.
 Every flag can be set from a `SPECTRE_` variable named after it.
 
 Where the server is only reachable through a service mesh's unix egress socket,
@@ -89,10 +89,10 @@ A mirror sends a heartbeat when it starts, every `--heartbeat-interval` (30s by
 default), and as soon as it quarantines. A failed heartbeat is only logged.
 
 List the reporting mirrors with `spectre divergences --server-url=URL`. Filter
-with `--service`, `--environment`, `--candidate-commit`, or `--node`, and print
-JSON with `--json`. A mirror stays listed until it misses heartbeats for the
-server's `--state-ttl` (90s by default), so keep that above the heartbeat
-interval. A mirror stays quarantined until it restarts.
+with `--service`, `--environment`, `--revision`, or `--node`, and print JSON
+with `--json`. A mirror stays listed until it misses heartbeats for the server's
+`--state-ttl` (90s by default), so keep that above the heartbeat interval. A
+mirror stays quarantined until it restarts.
 
 ## Egress proxy
 
@@ -134,7 +134,7 @@ spectre supervise \
   --server-url=http://127.0.0.1:50070 \
   --service=sample \
   --environment=local \
-  --candidate-commit=local \
+  --revision=local \
   --reference='spectre-sample --listen=$SPECTRE_LISTEN' \
   --candidate='spectre-sample --listen=$SPECTRE_LISTEN' \
   --scripts-dir=internal/sample/scripts \

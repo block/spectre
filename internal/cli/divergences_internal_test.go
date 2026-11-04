@@ -65,7 +65,7 @@ users def456 staging spectre v1.2.3, up 12m0s
 
 	var data strings.Builder
 	command.JSON = true
-	command.CandidateCommit = "def456"
+	command.Revision = "def456"
 	assert.NoError(t, command.Run(t.Context(), Output{Writer: &data}))
 	// Protobuf JSON output varies its whitespace, so compare decoded values.
 	var expected, printed any

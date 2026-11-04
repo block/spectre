@@ -23,7 +23,7 @@ exec spectre supervise \
   --server-url=http://127.0.0.1:50070 \
   --service=sample \
   --environment=demo \
-  --candidate-commit=demo \
+  --revision=demo \
   --socket-dir="$sockets" \
   --reference="$service" \
   --candidate="$service" \

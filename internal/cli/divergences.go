@@ -17,12 +17,12 @@ import (
 // divergencesCommand lists the mirrors reporting to the SPECTRE server and
 // their quarantines.
 type divergencesCommand struct {
-	Client          client.Config `embed:""`
-	JSON            bool          `help:"Print JSON instead of text."`
-	Service         string        `help:"Only list mirrors of this service."`
-	Environment     string        `help:"Only list mirrors in this environment."`
-	CandidateCommit string        `help:"Only list mirrors running this candidate commit."`
-	Node            string        `help:"Only list mirrors quarantined on routes of this migration state node."`
+	Client      client.Config `embed:""`
+	JSON        bool          `help:"Print JSON instead of text."`
+	Service     string        `help:"Only list mirrors of this service."`
+	Environment string        `help:"Only list mirrors in this environment."`
+	Revision    string        `help:"Only list mirrors running this candidate commit."`
+	Node        string        `help:"Only list mirrors quarantined on routes of this migration state node."`
 }
 
 func (c *divergencesCommand) Run(ctx context.Context, out Output) error {
@@ -30,7 +30,7 @@ func (c *divergencesCommand) Run(ctx context.Context, out Output) error {
 	filter := model.StateFilter{
 		Service:         Zero(c.Service),
 		Environment:     Zero(c.Environment),
-		CandidateCommit: Zero(c.CandidateCommit),
+		CandidateCommit: Zero(c.Revision),
 		Node:            Zero(c.Node),
 	}
 	states, err := client.New(c.Client).ListStates(ctx, filter)

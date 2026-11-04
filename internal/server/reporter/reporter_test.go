@@ -47,7 +47,7 @@ func TestReporterSendsHeartbeatOnQuarantine(t *testing.T) {
 		Client:            client.Config{URL: httpServer.URL},
 		Service:           "users",
 		Environment:       "production",
-		CandidateCommit:   "abc123",
+		Revision:          "abc123",
 		HeartbeatInterval: time.Hour,
 	}
 	spectre := client.New(config.Client)

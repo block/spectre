@@ -17,7 +17,7 @@ type Config struct {
 	Client            client.Config `embed:""`
 	Service           string        `required:"" help:"Service the mirror runs, reported to the SPECTRE server."`
 	Environment       string        `required:"" help:"Environment the mirror runs in, such as production-us-west-2, reported to the SPECTRE server."`
-	CandidateCommit   string        `required:"" help:"Commit of the candidate the mirror runs, reported to the SPECTRE server."`
+	Revision          string        `required:"" help:"Commit of the candidate the mirror runs, reported to the SPECTRE server."`
 	HeartbeatInterval time.Duration `default:"30s" help:"How often the mirror sends its state to the SPECTRE server."`
 }
 
@@ -75,7 +75,7 @@ func (r *Reporter) heartbeat(ctx context.Context, uptime time.Duration, quaranti
 	state := model.State{
 		Service:         r.config.Service,
 		Environment:     r.config.Environment,
-		CandidateCommit: r.config.CandidateCommit,
+		CandidateCommit: r.config.Revision,
 		SpectreVersion:  internal.Version,
 		Uptime:          uptime,
 		Quarantines:     maps.Clone(quarantines),
