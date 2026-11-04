@@ -1,24 +1,27 @@
-// Package reporter sends a mirror's heartbeats to the SPECTRE server.
+// Package reporter streams what a mirror sends the SPECTRE server: its state
+// and every change to it, over one stream.
 package reporter
 
 import (
 	"context"
 	"maps"
+	"sync"
 	"time"
 
 	"github.com/block/spectre/internal"
 	"github.com/block/spectre/internal/logger"
 	"github.com/block/spectre/internal/model"
 	"github.com/block/spectre/internal/server/client"
+	"github.com/block/spectre/internal/stream"
 )
 
-// Config configures how a mirror reports its state to the SPECTRE server.
+// Config configures how a mirror reports to the SPECTRE server.
 type Config struct {
-	Client            client.Config `embed:""`
-	Service           string        `required:"" help:"Service the mirror runs, reported to the SPECTRE server."`
-	Environment       string        `required:"" help:"Environment the mirror runs in, such as production-us-west-2, reported to the SPECTRE server."`
-	Revision          string        `required:"" help:"Commit of the candidate the mirror runs, reported to the SPECTRE server."`
-	HeartbeatInterval time.Duration `default:"30s" help:"How often the mirror sends its state to the SPECTRE server."`
+	Client      client.Config `embed:""`
+	Stream      stream.Config `embed:"" prefix:"server-"`
+	Service     string        `required:"" help:"Service the mirror runs, reported to the SPECTRE server."`
+	Environment string        `required:"" help:"Environment the mirror runs in, such as production-us-west-2, reported to the SPECTRE server."`
+	Revision    string        `required:"" help:"Commit of the candidate the mirror runs, reported to the SPECTRE server."`
 }
 
 // Source is a proxy whose quarantine a mirror reports.
@@ -28,71 +31,62 @@ type Source struct {
 	Quarantined <-chan model.Quarantine
 }
 
-// Reporter sends a mirror's state to the SPECTRE server.
+// Reporter streams a mirror's state to the SPECTRE server.
 type Reporter struct {
 	config  Config
 	client  *client.Client
 	sources []Source
+	started time.Time
+
+	mu          sync.Mutex
+	quarantines map[model.Direction]model.Quarantine
 }
 
 // New reports the state of a mirror and its sources through server.
 func New(config Config, server *client.Client, sources ...Source) *Reporter {
-	return &Reporter{config: config, client: server, sources: sources}
+	return &Reporter{config: config, client: server, sources: sources, started: time.Now(), quarantines: map[model.Direction]model.Quarantine{}}
 }
 
-// sourceQuarantine is a quarantine of the source in direction.
-type sourceQuarantine struct {
-	direction  model.Direction
-	quarantine model.Quarantine
-}
-
-// Run sends a heartbeat at once, at every interval, and when a source
-// quarantines, until ctx is cancelled.
+// Run streams the mirror's state until ctx is cancelled. Every stream begins
+// with the whole state, then sends each quarantine as it begins.
 func (r *Reporter) Run(ctx context.Context) {
-	started := time.Now()
-	quarantined := make(chan sourceQuarantine)
-	for _, source := range r.sources {
-		go forward(ctx, source, quarantined)
+	dial := func(ctx context.Context) (stream.Conn[model.Update], error) {
+		return r.client.OpenUpdates(ctx)
 	}
-	quarantines := map[model.Direction]model.Quarantine{}
-	ticker := time.NewTicker(r.config.HeartbeatInterval)
-	defer ticker.Stop()
-	for {
-		r.heartbeat(ctx, time.Since(started), quarantines)
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-		case status := <-quarantined:
-			quarantines[status.direction] = status.quarantine
+	resync := func() []model.Update { return []model.Update{r.state()} }
+	keepalive := func() model.Update { return model.Keepalive{} }
+	outbox := stream.NewOutbox(r.config.Stream, dial, resync, keepalive)
+	for _, source := range r.sources {
+		go r.report(ctx, source, outbox)
+	}
+	outbox.Run(ctx)
+}
+
+// report sends the source's quarantine once it begins. The state holds it too,
+// so a stream that fails before sending it resyncs it.
+func (r *Reporter) report(ctx context.Context, source Source, outbox *stream.Outbox[model.Update]) {
+	select {
+	case quarantine := <-source.Quarantined:
+		r.mu.Lock()
+		r.quarantines[source.Direction] = quarantine
+		r.mu.Unlock()
+		if !outbox.Send(model.QuarantineUpdate{Direction: source.Direction, Quarantine: quarantine}) {
+			logger.FromContext(ctx).WarnContext(ctx, "Dropped a quarantine update for the SPECTRE server; the next stream resyncs it")
 		}
+	case <-ctx.Done():
 	}
 }
 
-// heartbeat sends the mirror's state. A failure is only logged, so the
-// SPECTRE server never blocks the mirror.
-func (r *Reporter) heartbeat(ctx context.Context, uptime time.Duration, quarantines map[model.Direction]model.Quarantine) {
-	state := model.State{
+// state returns the mirror's whole state.
+func (r *Reporter) state() model.State {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return model.State{
 		Service:        r.config.Service,
 		Environment:    r.config.Environment,
 		Revision:       r.config.Revision,
 		SpectreVersion: internal.Version,
-		Uptime:         uptime,
-		Quarantines:    maps.Clone(quarantines),
-	}
-	if err := r.client.Update(ctx, state); err != nil && ctx.Err() == nil {
-		logger.FromContext(ctx).WarnContext(ctx, "Failed to send heartbeat to the SPECTRE server", "error", err)
-	}
-}
-
-// forward passes the source's quarantine on to quarantined.
-func forward(ctx context.Context, source Source, quarantined chan<- sourceQuarantine) {
-	select {
-	case status := <-source.Quarantined:
-		select {
-		case quarantined <- sourceQuarantine{direction: source.Direction, quarantine: status}:
-		case <-ctx.Done():
-		}
-	case <-ctx.Done():
+		Uptime:         time.Since(r.started),
+		Quarantines:    maps.Clone(r.quarantines),
 	}
 }

@@ -5,7 +5,6 @@ import (
 	"context"
 	"net"
 	"net/http"
-	"time"
 
 	"connectrpc.com/connect/v2"
 	"connectrpc.com/connect/v2/connecthttp"
@@ -16,9 +15,6 @@ import (
 	pb "github.com/block/spectre/spectrepb"
 	"github.com/block/spectre/spectrepb/spectrepbconnect"
 )
-
-// heartbeatTimeout bounds one heartbeat, so a slow server never delays the next.
-const heartbeatTimeout = 10 * time.Second
 
 // Config locates the SPECTRE server.
 type Config struct {
@@ -56,13 +52,14 @@ func New(config Config) *Client {
 	return &Client{rpc: spectrepbconnect.NewSpectreServiceClient(connect.NewClient(connecthttp.NewTransport(httpClient, config.URL)))}
 }
 
-// Update sends a mirror's latest state. It does not retry, because the
-// next heartbeat replaces it.
-func (c *Client) Update(ctx context.Context, state model.State) error {
-	ctx, cancel := context.WithTimeout(ctx, heartbeatTimeout)
-	defer cancel()
-	_, err := c.rpc.Update(ctx, &pb.UpdateRequest{State: wire.StateMessage(state)})
-	return errors.Wrap(err, "send heartbeat")
+// OpenUpdates opens a stream of a mirror's updates, which lasts until ctx ends
+// or the stream is closed.
+func (c *Client) OpenUpdates(ctx context.Context) (*Updates, error) {
+	stream, err := c.rpc.Update(ctx)
+	if err != nil {
+		return nil, errors.Wrap(err, "open update stream")
+	}
+	return newUpdates(stream), nil
 }
 
 // ListDivergences returns the states of the reporting mirrors and the
@@ -81,4 +78,25 @@ func (c *Client) ClearDivergences(ctx context.Context, service, environment stri
 	request := &pb.ClearDivergencesRequest{Service: service, Environment: environment}
 	_, err := c.rpc.ClearDivergences(ctx, request)
 	return errors.Wrap(err, "clear divergences")
+}
+
+// Updates streams changes to a mirror's state to the SPECTRE server.
+type Updates struct {
+	stream spectrepbconnect.SpectreServiceUpdateClientStream
+}
+
+func newUpdates(stream spectrepbconnect.SpectreServiceUpdateClientStream) *Updates {
+	return &Updates{stream: stream}
+}
+
+// Send sends update. It fails once the server has ended the stream, and
+// CloseAndReceive then returns why it did.
+func (u *Updates) Send(update model.Update) error {
+	return errors.Wrap(u.stream.Send(wire.UpdateMessage(update)), "send update")
+}
+
+// CloseAndReceive ends the stream and returns the error the server ended it with.
+func (u *Updates) CloseAndReceive() error {
+	_, err := u.stream.CloseAndReceive()
+	return errors.Wrap(err, "close update stream")
 }

@@ -1,0 +1,20 @@
+package model
+
+// Update is one message of the stream a mirror sends the SPECTRE server. Every
+// stream begins with the mirror's whole State.
+//
+//sumtype:decl
+type Update interface{ update() }
+
+// QuarantineUpdate adds the quarantine of the proxy in Direction to the state.
+type QuarantineUpdate struct {
+	Direction  Direction
+	Quarantine Quarantine
+}
+
+func (QuarantineUpdate) update() {}
+
+// Keepalive shows the server that a quiet mirror still runs.
+type Keepalive struct{}
+
+func (Keepalive) update() {}

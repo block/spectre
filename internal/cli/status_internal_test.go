@@ -54,8 +54,9 @@ func TestStatusCommands(t *testing.T) {
 		Uptime:         12*time.Minute + 300*time.Millisecond,
 	}
 	for _, state := range []model.State{quarantined, healthy} {
-		assert.NoError(t, spectre.Update(t.Context(), state))
+		assert.NoError(t, store.Put(t.Context(), state, time.Now()))
 	}
+	assert.NoError(t, store.Record(t.Context(), model.Divergence{Service: "users", Environment: "production", Revision: "def456", Direction: model.Ingress, Quarantine: quarantined.Quarantines[model.Ingress]}))
 
 	var text strings.Builder
 	list := statusListCommand{}
