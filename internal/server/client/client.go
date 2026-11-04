@@ -95,6 +95,12 @@ func (u *Updates) Send(update model.Update) error {
 	return errors.Wrap(u.stream.Send(wire.UpdateMessage(update)), "send update")
 }
 
+// Keepalive shows the server that a quiet mirror is still connected.
+func (u *Updates) Keepalive() error {
+	keepalive := &pb.UpdateRequest{Update: &pb.UpdateRequest_Keepalive{Keepalive: &pb.Keepalive{}}}
+	return errors.Wrap(u.stream.Send(keepalive), "send keepalive")
+}
+
 // CloseAndReceive ends the stream and returns the error the server ended it with.
 func (u *Updates) CloseAndReceive() error {
 	_, err := u.stream.CloseAndReceive()

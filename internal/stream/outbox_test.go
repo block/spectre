@@ -33,6 +33,10 @@ func (c *conn) Send(message string) error {
 	return nil
 }
 
+func (c *conn) Keepalive() error {
+	return c.Send("keepalive")
+}
+
 func (c *conn) CloseAndReceive() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -82,7 +86,7 @@ func (d *dialer) streams() []sent {
 // run runs an outbox until the test ends.
 func run(t *testing.T, config stream.Config, d *dialer) *stream.Outbox[string] {
 	t.Helper()
-	outbox := stream.NewOutbox(config, d.dial, func() []string { return []string{"state"} }, func() string { return "keepalive" })
+	outbox := stream.NewOutbox(config, d.dial, func() []string { return []string{"state"} })
 	ctx, cancel := context.WithCancel(t.Context())
 	go outbox.Run(ctx)
 	t.Cleanup(func() {
@@ -156,7 +160,7 @@ func TestOutboxReplacesAgedStream(t *testing.T) {
 }
 
 func TestOutboxDropsWhenQueueIsFull(t *testing.T) {
-	outbox := stream.NewOutbox(config, (&dialer{}).dial, func() []string { return nil }, func() string { return "keepalive" })
+	outbox := stream.NewOutbox(config, (&dialer{}).dial, func() []string { return nil })
 	queued := 0
 	for outbox.Send("event") {
 		queued++

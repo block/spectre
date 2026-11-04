@@ -163,23 +163,27 @@ func Serve(ctx context.Context, config ServeConfig) error {
 }
 
 // nextState applies a streamed update to the state a stream has built. A
-// stream must begin with the whole state.
+// stream must begin with the whole state, and a keepalive leaves it as it is.
 func nextState(state Option[model.State], message *pb.UpdateRequest) (model.State, error) {
+	current, started := state.Get()
+	if message.GetKeepalive() != nil {
+		if !started {
+			return model.State{}, errors.New("an update stream must begin with the mirror's state")
+		}
+		return current, nil
+	}
 	update, err := wire.UpdateFromMessage(message)
 	if err != nil {
 		return model.State{}, errors.WithStack(err)
 	}
-	if whole, ok := update.(model.State); ok {
-		return whole, nil
-	}
-	current, ok := state.Get()
-	if !ok {
-		return model.State{}, errors.New("an update stream must begin with the mirror's state")
-	}
 	switch update := update.(type) {
+	case model.State:
+		return update, nil
 	case model.QuarantineUpdate:
+		if !started {
+			return model.State{}, errors.New("an update stream must begin with the mirror's state")
+		}
 		return current.Quarantined(update.Direction, update.Quarantine), nil
-	case model.State, model.Keepalive:
 	}
 	return current, nil
 }

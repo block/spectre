@@ -71,13 +71,11 @@ func UpdateMessage(update model.Update) *pb.UpdateRequest {
 		return &pb.UpdateRequest{Update: &pb.UpdateRequest_State{State: StateMessage(update)}}
 	case model.QuarantineUpdate:
 		return &pb.UpdateRequest{Update: &pb.UpdateRequest_Quarantine{Quarantine: QuarantineMessage(update.Direction, update.Quarantine)}}
-	case model.Keepalive:
-		return &pb.UpdateRequest{Update: &pb.UpdateRequest_Keepalive{Keepalive: &pb.Keepalive{}}}
 	}
 	return &pb.UpdateRequest{}
 }
 
-// UpdateFromMessage restores a streamed update.
+// UpdateFromMessage restores a streamed update. A keepalive holds none.
 func UpdateFromMessage(message *pb.UpdateRequest) (model.Update, error) {
 	switch update := message.GetUpdate().(type) {
 	case *pb.UpdateRequest_State:
@@ -89,7 +87,7 @@ func UpdateFromMessage(message *pb.UpdateRequest) (model.Update, error) {
 		}
 		return model.QuarantineUpdate{Direction: direction, Quarantine: quarantine}, nil
 	case *pb.UpdateRequest_Keepalive:
-		return model.Keepalive{}, nil
+		return nil, errors.New("a keepalive holds no update")
 	}
 	return nil, errors.New("update holds nothing")
 }

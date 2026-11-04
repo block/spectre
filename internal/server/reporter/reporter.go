@@ -54,8 +54,7 @@ func (r *Reporter) Run(ctx context.Context) {
 		return r.client.OpenUpdates(ctx)
 	}
 	resync := func() []model.Update { return []model.Update{r.state()} }
-	keepalive := func() model.Update { return model.Keepalive{} }
-	outbox := stream.NewOutbox(r.config.Stream, dial, resync, keepalive)
+	outbox := stream.NewOutbox(r.config.Stream, dial, resync)
 	for _, source := range r.sources {
 		go r.report(ctx, source, outbox)
 	}

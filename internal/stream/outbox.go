@@ -2,7 +2,8 @@
 // stream from a client open through failures and sends it what producers queue.
 // Every stream it opens begins with a resync of the client's whole state, so
 // only events need queueing, and a stream may fail at any time without losing
-// state. EndEarly lets a server end such a stream before the client does.
+// state. A quiet stream sends keepalives, which carry no message. EndEarly
+// lets a server end such a stream before the client does.
 package stream
 
 import (
@@ -19,6 +20,8 @@ import (
 type Conn[M any] interface {
 	// Send sends message. It fails once the server has ended the stream.
 	Send(message M) error
+	// Keepalive shows the server that a quiet client is still connected.
+	Keepalive() error
 	// CloseAndReceive ends the stream and returns the error the server ended it with.
 	CloseAndReceive() error
 }
@@ -48,17 +51,16 @@ const queueSize = 256
 
 // Outbox keeps one stream open and sends it the messages producers queue.
 type Outbox[M any] struct {
-	config    Config
-	dial      func(ctx context.Context) (Conn[M], error)
-	resync    func() []M
-	keepalive func() M
-	queue     chan M
+	config Config
+	dial   func(ctx context.Context) (Conn[M], error)
+	resync func() []M
+	queue  chan M
 }
 
 // NewOutbox returns an outbox that opens streams with dial. Each stream begins
-// with the messages resync returns, and a quiet stream sends keepalive.
-func NewOutbox[M any](config Config, dial func(ctx context.Context) (Conn[M], error), resync func() []M, keepalive func() M) *Outbox[M] {
-	return &Outbox[M]{config: config, dial: dial, resync: resync, keepalive: keepalive, queue: make(chan M, queueSize)}
+// with the messages resync returns.
+func NewOutbox[M any](config Config, dial func(ctx context.Context) (Conn[M], error), resync func() []M) *Outbox[M] {
+	return &Outbox[M]{config: config, dial: dial, resync: resync, queue: make(chan M, queueSize)}
 }
 
 // Send queues message for the stream without blocking. It drops the message
@@ -119,7 +121,6 @@ func (o *Outbox[M]) stream(ctx context.Context) error {
 	age := time.NewTimer(jitter(o.config.MaxAge))
 	defer age.Stop()
 	for {
-		var message M
 		select {
 		case <-ctx.Done():
 			cancel()
@@ -128,10 +129,11 @@ func (o *Outbox[M]) stream(ctx context.Context) error {
 		case <-age.C:
 			return errors.Wrap(conn.CloseAndReceive(), "close aged stream")
 		case <-keepalive.C:
-			message = o.keepalive()
-		case message = <-o.queue:
+			err = conn.Keepalive()
+		case message := <-o.queue:
+			err = conn.Send(message)
 		}
-		if err := conn.Send(message); err != nil {
+		if err != nil {
 			return failed(conn, err)
 		}
 		keepalive.Reset(o.config.KeepaliveInterval)

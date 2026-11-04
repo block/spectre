@@ -13,8 +13,3 @@ type QuarantineUpdate struct {
 }
 
 func (QuarantineUpdate) update() {}
-
-// Keepalive shows the server that a quiet mirror still runs.
-type Keepalive struct{}
-
-func (Keepalive) update() {}
