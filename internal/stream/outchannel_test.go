@@ -14,7 +14,7 @@ import (
 	"github.com/block/spectre/internal/stream"
 )
 
-// conn records what an outbox sends on one stream.
+// conn records what a channel sends on one stream.
 type conn struct {
 	mu   sync.Mutex
 	sent []string
@@ -53,7 +53,7 @@ type sent struct {
 	Closed   bool
 }
 
-// dialer hands out a new conn for every stream an outbox opens.
+// dialer hands out a new conn for every stream a channel opens.
 type dialer struct {
 	mu    sync.Mutex
 	conns []*conn
@@ -83,32 +83,32 @@ func (d *dialer) streams() []sent {
 	return streams
 }
 
-// run runs an outbox until the test ends.
-func run(t *testing.T, config stream.Config, d *dialer) *stream.Outbox[string] {
+// run runs a channel until the test ends.
+func run(t *testing.T, config stream.Config, d *dialer) *stream.OutChannel[string] {
 	t.Helper()
-	outbox := stream.NewOutbox(config, d.dial, func() []string { return []string{"state"} })
+	channel := stream.NewOutChannel(config, d.dial, func() []string { return []string{"state"} })
 	ctx, cancel := context.WithCancel(t.Context())
-	go outbox.Run(ctx)
+	go channel.Run(ctx)
 	t.Cleanup(func() {
 		cancel()
 		synctest.Wait()
 	})
-	return outbox
+	return channel
 }
 
 var config = stream.Config{KeepaliveInterval: 30 * time.Second, MaxAge: time.Hour}
 
-func TestOutboxResyncsThenSendsAndKeepsAlive(t *testing.T) {
+func TestOutChannelResyncsThenSendsAndKeepsAlive(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		d := &dialer{}
-		outbox := run(t, config, d)
-		assert.True(t, outbox.Send("event"))
+		channel := run(t, config, d)
+		assert.True(t, channel.Send("event"))
 		synctest.Wait()
 		assert.Equal(t, []sent{{Messages: []string{"state", "event"}}}, d.streams())
 
 		// Only a quiet stream sends keepalives.
 		time.Sleep(20 * time.Second)
-		assert.True(t, outbox.Send("later"))
+		assert.True(t, channel.Send("later"))
 		time.Sleep(20 * time.Second)
 		synctest.Wait()
 		assert.Equal(t, []sent{{Messages: []string{"state", "event", "later"}}}, d.streams())
@@ -118,13 +118,13 @@ func TestOutboxResyncsThenSendsAndKeepsAlive(t *testing.T) {
 	})
 }
 
-func TestOutboxReconnectsWithBackoff(t *testing.T) {
+func TestOutChannelReconnectsWithBackoff(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		// The first two streams end after the resync, the third lasts.
 		d := &dialer{limit: []int{1, 1}}
-		outbox := run(t, config, d)
+		channel := run(t, config, d)
 		synctest.Wait()
-		assert.True(t, outbox.Send("lost"))
+		assert.True(t, channel.Send("lost"))
 		synctest.Wait()
 		failed := sent{Messages: []string{"state"}, Closed: true}
 		assert.Equal(t, []sent{failed}, d.streams())
@@ -133,7 +133,7 @@ func TestOutboxReconnectsWithBackoff(t *testing.T) {
 		time.Sleep(time.Second)
 		synctest.Wait()
 		assert.Equal(t, []sent{failed, {Messages: []string{"state"}}}, d.streams())
-		assert.True(t, outbox.Send("lost again"))
+		assert.True(t, channel.Send("lost again"))
 		time.Sleep(time.Second - time.Nanosecond)
 		synctest.Wait()
 		assert.Equal(t, 2, len(d.streams()))
@@ -143,7 +143,7 @@ func TestOutboxReconnectsWithBackoff(t *testing.T) {
 	})
 }
 
-func TestOutboxReplacesAgedStream(t *testing.T) {
+func TestOutChannelReplacesAgedStream(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		d := &dialer{}
 		run(t, stream.Config{KeepaliveInterval: time.Hour, MaxAge: 10 * time.Minute}, d)
@@ -159,10 +159,10 @@ func TestOutboxReplacesAgedStream(t *testing.T) {
 	})
 }
 
-func TestOutboxDropsWhenQueueIsFull(t *testing.T) {
-	outbox := stream.NewOutbox(config, (&dialer{}).dial, func() []string { return nil })
+func TestOutChannelDropsWhenQueueIsFull(t *testing.T) {
+	channel := stream.NewOutChannel(config, (&dialer{}).dial, func() []string { return nil })
 	queued := 0
-	for outbox.Send("event") {
+	for channel.Send("event") {
 		queued++
 	}
 	assert.Equal(t, 256, queued)

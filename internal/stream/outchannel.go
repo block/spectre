@@ -1,4 +1,4 @@
-// Package stream keeps long-lived client streams open. An Outbox keeps one
+// Package stream keeps long-lived client streams open. An OutChannel keeps one
 // stream from a client open through failures and sends it what producers queue.
 // Every stream it opens begins with a resync of the client's whole state, so
 // only events need queueing, and a stream may fail at any time without losing
@@ -26,7 +26,7 @@ type Conn[M any] interface {
 	CloseAndReceive() error
 }
 
-// Config configures how an outbox keeps its stream open.
+// Config configures how a channel keeps its stream open.
 type Config struct {
 	KeepaliveInterval time.Duration `default:"30s" help:"How often to send a keepalive on a stream that is otherwise quiet."`
 	MaxAge            time.Duration `name:"stream-max-age" default:"10m" help:"How long a stream lasts, with jitter, before it is replaced, so streams spread across servers."`
@@ -49,25 +49,25 @@ const (
 // queueSize is how many messages wait for a stream before Send drops them.
 const queueSize = 256
 
-// Outbox keeps one stream open and sends it the messages producers queue.
-type Outbox[M any] struct {
+// OutChannel keeps one stream open and sends it the messages producers queue.
+type OutChannel[M any] struct {
 	config Config
 	dial   func(ctx context.Context) (Conn[M], error)
 	resync func() []M
 	queue  chan M
 }
 
-// NewOutbox returns an outbox that opens streams with dial. Each stream begins
+// NewOutChannel returns a channel that opens streams with dial. Each stream begins
 // with the messages resync returns.
-func NewOutbox[M any](config Config, dial func(ctx context.Context) (Conn[M], error), resync func() []M) *Outbox[M] {
-	return &Outbox[M]{config: config, dial: dial, resync: resync, queue: make(chan M, queueSize)}
+func NewOutChannel[M any](config Config, dial func(ctx context.Context) (Conn[M], error), resync func() []M) *OutChannel[M] {
+	return &OutChannel[M]{config: config, dial: dial, resync: resync, queue: make(chan M, queueSize)}
 }
 
 // Send queues message for the stream without blocking. It drops the message
 // when the queue is full. A queued message is lost if its stream fails.
-func (o *Outbox[M]) Send(message M) (queued bool) {
+func (c *OutChannel[M]) Send(message M) (queued bool) {
 	select {
-	case o.queue <- message:
+	case c.queue <- message:
 		return true
 	default:
 		return false
@@ -76,11 +76,11 @@ func (o *Outbox[M]) Send(message M) (queued bool) {
 
 // Run keeps a stream open until ctx ends, replacing it when it fails, with
 // backoff, or when it reaches its age. Failures are only logged.
-func (o *Outbox[M]) Run(ctx context.Context) {
+func (c *OutChannel[M]) Run(ctx context.Context) {
 	delay := minRetryDelay
 	for {
 		opened := time.Now()
-		err := o.stream(ctx)
+		err := c.stream(ctx)
 		if ctx.Err() != nil {
 			return
 		}
@@ -104,21 +104,21 @@ func (o *Outbox[M]) Run(ctx context.Context) {
 
 // stream sends on one stream until it fails or ctx ends. It returns nil once
 // the stream reaches its age and the server accepts it closing.
-func (o *Outbox[M]) stream(ctx context.Context) error {
+func (c *OutChannel[M]) stream(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	conn, err := o.dial(ctx)
+	conn, err := c.dial(ctx)
 	if err != nil {
 		return errors.Wrap(err, "open stream")
 	}
-	for _, message := range o.resync() {
+	for _, message := range c.resync() {
 		if err := conn.Send(message); err != nil {
 			return failed(conn, err)
 		}
 	}
-	keepalive := time.NewTimer(o.config.KeepaliveInterval)
+	keepalive := time.NewTimer(c.config.KeepaliveInterval)
 	defer keepalive.Stop()
-	age := time.NewTimer(jitter(o.config.MaxAge))
+	age := time.NewTimer(jitter(c.config.MaxAge))
 	defer age.Stop()
 	for {
 		select {
@@ -130,13 +130,13 @@ func (o *Outbox[M]) stream(ctx context.Context) error {
 			return errors.Wrap(conn.CloseAndReceive(), "close aged stream")
 		case <-keepalive.C:
 			err = conn.Keepalive()
-		case message := <-o.queue:
+		case message := <-c.queue:
 			err = conn.Send(message)
 		}
 		if err != nil {
 			return failed(conn, err)
 		}
-		keepalive.Reset(o.config.KeepaliveInterval)
+		keepalive.Reset(c.config.KeepaliveInterval)
 	}
 }
 

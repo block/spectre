@@ -54,22 +54,22 @@ func (r *Reporter) Run(ctx context.Context) {
 		return r.client.OpenUpdates(ctx)
 	}
 	resync := func() []model.Update { return []model.Update{r.state()} }
-	outbox := stream.NewOutbox(r.config.Stream, dial, resync)
+	channel := stream.NewOutChannel(r.config.Stream, dial, resync)
 	for _, source := range r.sources {
-		go r.report(ctx, source, outbox)
+		go r.report(ctx, source, channel)
 	}
-	outbox.Run(ctx)
+	channel.Run(ctx)
 }
 
 // report sends the source's quarantine once it begins. The state holds it too,
 // so a stream that fails before sending it resyncs it.
-func (r *Reporter) report(ctx context.Context, source Source, outbox *stream.Outbox[model.Update]) {
+func (r *Reporter) report(ctx context.Context, source Source, channel *stream.OutChannel[model.Update]) {
 	select {
 	case quarantine := <-source.Quarantined:
 		r.mu.Lock()
 		r.quarantines[source.Direction] = quarantine
 		r.mu.Unlock()
-		if !outbox.Send(model.QuarantineUpdate{Direction: source.Direction, Quarantine: quarantine}) {
+		if !channel.Send(model.QuarantineUpdate{Direction: source.Direction, Quarantine: quarantine}) {
 			logger.FromContext(ctx).WarnContext(ctx, "Dropped a quarantine update for the SPECTRE server; the next stream resyncs it")
 		}
 	case <-ctx.Done():
