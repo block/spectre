@@ -9,7 +9,6 @@ import (
 	"github.com/alecthomas/errors"
 	. "github.com/alecthomas/types/optional"
 
-	"github.com/block/spectre/internal/logger"
 	"github.com/block/spectre/internal/model"
 )
 
@@ -57,10 +56,10 @@ func (r *CandidateRun) cancel() {
 
 // Start admits candidate work that cancel stops, returning None when it is refused.
 // Exceeding the concurrency limit quarantines the candidate.
-func (c *Candidates) Start(ctx context.Context, cancel context.CancelFunc) Option[*CandidateRun] {
+func (c *Candidates) Start(cancel context.CancelFunc) Option[*CandidateRun] {
 	run, capacityExceeded := c.admit(cancel)
 	if capacityExceeded {
-		c.Quarantine(ctx, model.QuarantineReason{Kind: model.QuarantineCapacity, Detail: "candidate concurrency limit exceeded"})
+		c.Quarantine(model.QuarantineReason{Kind: model.QuarantineCapacity, Detail: "candidate concurrency limit exceeded"})
 	}
 	return run
 }
@@ -95,7 +94,7 @@ func (c *Candidates) Finish(run *CandidateRun) {
 
 // Quarantine refuses all further candidate work and cancels active runs. Only
 // the first reason is kept.
-func (c *Candidates) Quarantine(ctx context.Context, reason model.QuarantineReason) {
+func (c *Candidates) Quarantine(reason model.QuarantineReason) {
 	// Publish quarantine before cancelling active runs so concurrent admission
 	// cannot send more traffic to the candidate.
 	c.mu.Lock()
@@ -109,13 +108,12 @@ func (c *Candidates) Quarantine(ctx context.Context, reason model.QuarantineReas
 	runs := c.snapshot()
 	c.mu.Unlock()
 
-	// Cancellation and logging may acquire transport or output locks, so keep
-	// them off the reference request path that detected the quarantine.
+	// Cancellation may acquire transport locks, so keep it off the reference
+	// request path that detected the quarantine. Only the server is told of it.
 	go func() {
 		for _, run := range runs {
 			run.cancel()
 		}
-		logger.FromContext(ctx).ErrorContext(context.WithoutCancel(ctx), "Candidate quarantined", "event", logger.EventQuarantine, "reason", reason.String())
 	}()
 }
 

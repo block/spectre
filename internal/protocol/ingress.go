@@ -306,10 +306,10 @@ func (p *ingressPairs) start(protocol model.Protocol, route model.Route, ignored
 }
 
 // join pairs a candidate request with its reference, quarantining it if it cannot.
-func (p *ingressPairs) join(ctx context.Context, protocol model.Protocol, route model.Route, requestID Option[RequestID]) (Decision, error) {
+func (p *ingressPairs) join(protocol model.Protocol, route model.Route, requestID Option[RequestID]) (Decision, error) {
 	exchange, err := p.admit(protocol, requestID)
 	if err != nil {
-		p.quarantine.Quarantine(ctx, model.QuarantineReason{
+		p.quarantine.Quarantine(model.QuarantineReason{
 			Kind: model.QuarantinePairing, Traffic: Some(ingressTraffic(protocol, route)), Detail: err.Error(),
 		})
 		return nil, err
@@ -425,10 +425,8 @@ func (p *ingressPairs) candidateUnable(ctx context.Context, exchange Exchange, r
 // report logs a comparison and applies the fail-closed policy to it.
 func (p *ingressPairs) report(ctx context.Context, pair *ingressPair, result comparisonResult, latency time.Duration) {
 	attributes := append([]any{"event", logger.EventCorrelation}, pair.describe()...)
+	// Differences go only to the SPECTRE server, through the quarantine.
 	attributes = append(attributes, "outcome", result.outcome)
-	if len(result.differences) > 0 {
-		attributes = append(attributes, "differences", model.DifferenceLines(result.differences, result.truncated))
-	}
 	if result.reason != "" {
 		attributes = append(attributes, "reason", result.reason)
 	}
@@ -439,11 +437,11 @@ func (p *ingressPairs) report(ctx context.Context, pair *ingressPair, result com
 	switch result.outcome {
 	case outcomeEquivalent, outcomeSkipped:
 	case outcomeDivergent:
-		p.quarantine.Quarantine(ctx, model.QuarantineReason{
+		p.quarantine.Quarantine(model.QuarantineReason{
 			Kind: model.QuarantineDivergent, Traffic: Some(pair.traffic()), Differences: result.differences, Truncated: result.truncated,
 		})
 	case outcomeUnable:
-		p.quarantine.Quarantine(ctx, model.QuarantineReason{
+		p.quarantine.Quarantine(model.QuarantineReason{
 			Kind: model.QuarantineUnable, Traffic: Some(pair.traffic()), Detail: "response comparison failed: " + result.reason,
 		})
 	}
@@ -484,10 +482,10 @@ func newIngressCandidate(pairs *ingressPairs, protocol model.Protocol) *ingressC
 	return &ingressCandidate{pairs: pairs, protocol: protocol}
 }
 
-func (c *ingressCandidate) ProcessRequest(ctx context.Context, requestID Option[RequestID], route model.Route, _ Option[string],
+func (c *ingressCandidate) ProcessRequest(_ context.Context, requestID Option[RequestID], route model.Route, _ Option[string],
 	_ func(ctx context.Context) (Message, error),
 ) (Decision, error) {
-	return c.pairs.join(ctx, c.protocol, route, requestID)
+	return c.pairs.join(c.protocol, route, requestID)
 }
 
 func (c *ingressCandidate) ProcessResponse(ctx context.Context, exchange Exchange, response Response) {

@@ -59,7 +59,7 @@ type Matcher interface {
 
 // Quarantiner stops all candidate traffic.
 type Quarantiner interface {
-	Quarantine(ctx context.Context, reason model.QuarantineReason)
+	Quarantine(reason model.QuarantineReason)
 }
 
 // Raw is a server's own record of a response, which an intercept replays.

@@ -277,7 +277,7 @@ func (e *Egress) upstream(request *http.Request) Option[*httputil.ReverseProxy] 
 func (e *Egress) serveCandidate(writer http.ResponseWriter, request *http.Request) {
 	ctx, cancel := context.WithCancel(request.Context())
 	defer cancel()
-	run, admitted := e.candidates.Start(ctx, cancel).Get()
+	run, admitted := e.candidates.Start(cancel).Get()
 	if !admitted {
 		http.Error(writer, "candidate requests are refused", http.StatusServiceUnavailable)
 		return

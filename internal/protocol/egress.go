@@ -119,7 +119,7 @@ func (q *egressQueue) forward(ctx context.Context, protocol model.Protocol, rout
 		hash, err := q.hash(background, protocol, route, "reference", request)
 		if err != nil {
 			pending.abandon()
-			q.quarantine.Quarantine(background, egressReason(model.QuarantineUnable, protocol, route, errors.Wrap(err, "identify reference request")))
+			q.quarantine.Quarantine(egressReason(model.QuarantineUnable, protocol, route, errors.Wrap(err, "identify reference request")))
 			return
 		}
 		q.add(hash, pending)
@@ -135,7 +135,7 @@ func (q *egressQueue) intercept(ctx context.Context, protocol model.Protocol, ro
 	if err != nil {
 		// The candidate giving up explains the failure.
 		if ctx.Err() == nil {
-			q.quarantine.Quarantine(ctx, egressReason(kind, protocol, route, err))
+			q.quarantine.Quarantine(egressReason(kind, protocol, route, err))
 		}
 		return nil, err
 	}

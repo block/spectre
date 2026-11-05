@@ -47,6 +47,23 @@ wait_for_log_count() {
 	exit 1
 }
 
+# wait_for_quarantine waits until the SPECTRE server lists a quarantine of the
+# mirror that matches a jq filter. Quarantines are reported only to the server.
+wait_for_quarantine() {
+	filter=$1
+	attempt=0
+	while [ "$attempt" -lt 100 ]; do
+		if spectre status --server-url=http://127.0.0.1:50070 --service=sample --environment=integration --json |
+			jq -e "[.states[]?.quarantines[]? | select($filter)] | length > 0" >/dev/null; then
+			return
+		fi
+		attempt=$((attempt + 1))
+		sleep 0.1
+	done
+	printf 'timed out waiting for the SPECTRE server to list quarantine %s\n' "$filter" >&2
+	exit 1
+}
+
 # comparison matches the record ingress logs when it finishes comparing a route.
 comparison() {
 	printf '.msg == "Response comparison completed" and .event == "correlation" and .protocol == "http" and .route == "%s" and .outcome == "%s"' "$1" "$2"
@@ -115,7 +132,7 @@ verify() {
 	fi
 	wait_for_log candidate '.path == "/spectre.sample.v1.UserService/GetUser"'
 	wait_for_log ingress "$(comparison 'POST /spectre.sample.v1.UserService/GetUser' divergent)"
-	wait_for_log ingress '.msg == "Candidate quarantined"'
+	wait_for_quarantine '.direction == "DIRECTION_INGRESS" and .kind == "KIND_DIVERGENT" and (.differences | length > 0)'
 
 	candidate_list_calls=$(count_log candidate "$list_users")
 	grpcurl -plaintext -unix -connect-timeout 2 -max-time 5 \
@@ -134,7 +151,7 @@ verify() {
 		printf 'unmatched candidate dependency call returned %s, expected 502\n' "$status" >&2
 		exit 1
 	fi
-	wait_for_log egress '.msg == "Candidate quarantined"'
+	wait_for_quarantine '.direction == "DIRECTION_EGRESS"'
 	status=$(fetch_forecast_as_candidate london)
 	if [ "$status" != 503 ]; then
 		printf 'quarantined egress returned %s, expected 503\n' "$status" >&2

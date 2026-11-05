@@ -44,26 +44,26 @@ func TestIngressComparesResponses(t *testing.T) {
 			reference:   protocol.Response{Decode: decoded("OK", message(responseType, "london", ""))},
 			candidate:   protocol.Response{Decode: decoded("OK", message(responseType, "paris", ""))},
 			quarantined: []string{"response differences: ~ $.value"},
-			logged:      map[string]any{"outcome": "divergent", "differences": []any{"~ $.value"}},
+			logged:      map[string]any{"outcome": "divergent"},
 		},
 		"UntypedMessagesSkipNormalisers": {
 			reference: protocol.Response{Decode: decoded("OK", message(None[schema.TypeRef](), "london", "first"))},
 			candidate: protocol.Response{Decode: decoded("OK", message(None[schema.TypeRef](), "london", "second"))},
 			// Untyped keys are payload data, so no path quotes them.
 			quarantined: []string{"response differences: ~ $[*]"},
-			logged:      map[string]any{"outcome": "divergent", "differences": []any{"~ $[*]"}},
+			logged:      map[string]any{"outcome": "divergent"},
 		},
 		"Status": {
 			reference:   protocol.Response{Decode: decoded("OK", message(responseType, "london", ""))},
 			candidate:   protocol.Response{Decode: decoded("NOT_FOUND", message(responseType, "london", ""))},
 			quarantined: []string{"response differences: ~ $status"},
-			logged:      map[string]any{"outcome": "divergent", "differences": []any{"~ $status"}},
+			logged:      map[string]any{"outcome": "divergent"},
 		},
 		"MissingCandidateMessage": {
 			reference:   protocol.Response{Decode: decoded("OK", message(responseType, "london", ""))},
 			candidate:   protocol.Response{Decode: statusOnly("OK")},
 			quarantined: []string{"response differences: - $"},
-			logged:      map[string]any{"outcome": "divergent", "differences": []any{"- $"}},
+			logged:      map[string]any{"outcome": "divergent"},
 		},
 		"DifferentMessageTypes": {
 			reference:   protocol.Response{Decode: decoded("OK", message(responseType, "london", ""))},
@@ -75,13 +75,13 @@ func TestIngressComparesResponses(t *testing.T) {
 			reference:   protocol.Response{Decode: undecodable(Some("OK"), "bad body")},
 			candidate:   protocol.Response{Decode: statusOnly("NOT_FOUND")},
 			quarantined: []string{"response differences: ~ $status"},
-			logged:      map[string]any{"outcome": "divergent", "differences": []any{"~ $status"}},
+			logged:      map[string]any{"outcome": "divergent"},
 		},
 		"StatusDespiteCandidateDecodeFailure": {
 			reference:   protocol.Response{Decode: statusOnly("OK")},
 			candidate:   protocol.Response{Decode: undecodable(Some("NOT_FOUND"), "bad body")},
 			quarantined: []string{"response differences: ~ $status"},
-			logged:      map[string]any{"outcome": "divergent", "differences": []any{"~ $status"}},
+			logged:      map[string]any{"outcome": "divergent"},
 		},
 		"ReferenceDecodeFailure": {
 			reference:   protocol.Response{Decode: undecodable(Some("OK"), "bad body")},
@@ -179,7 +179,7 @@ func TestIngressAppliesRules(t *testing.T) {
 			reference:   side{content: protocol.Content{Status: Some("503"), Ignored: Some("rule ignores the response")}},
 			candidate:   side{content: protocol.Content{Status: Some("200")}},
 			quarantined: []string{"response differences: ~ $status"},
-			logged:      map[string]any{"outcome": "divergent", "differences": []any{"~ $status"}},
+			logged:      map[string]any{"outcome": "divergent"},
 		},
 		"OneIgnoredWithSameStatus": {
 			reference:   side{content: protocol.Content{Status: Some("503"), Ignored: Some("rule ignores the response")}},
@@ -196,7 +196,7 @@ func TestIngressAppliesRules(t *testing.T) {
 			reference:   side{content: protocol.Content{Status: Some("200"), Message: message(responseType, "london", "")}, rule: Some(normalised)},
 			candidate:   side{content: protocol.Content{Status: Some("201"), Message: message(responseType, "paris", "")}, rule: Some(normalised)},
 			quarantined: []string{"response differences: ~ $.value"},
-			logged:      map[string]any{"outcome": "divergent", "differences": []any{"~ $.value"}},
+			logged:      map[string]any{"outcome": "divergent"},
 		},
 		"StatusNotCompared": {
 			reference: side{content: protocol.Content{Status: Some("200"), Message: message(responseType, "london", "")}, rule: Some(bodyOnly)},
@@ -207,7 +207,7 @@ func TestIngressAppliesRules(t *testing.T) {
 			reference:   side{content: protocol.Content{Status: Some("500"), Failure: Some(errors.New("bad body"))}, rule: Some(bodyOnly)},
 			candidate:   side{content: protocol.Content{Status: Some("200"), Message: message(responseType, "london", "")}, rule: Some(bodyOnly)},
 			quarantined: []string{"response differences: ~ $status"},
-			logged:      map[string]any{"outcome": "divergent", "differences": []any{"~ $status"}},
+			logged:      map[string]any{"outcome": "divergent"},
 		},
 		"NormaliserNeedsHTTPStatus": {
 			reference:   side{content: protocol.Content{Status: Some("OK")}, rule: Some(bodyOnly)},

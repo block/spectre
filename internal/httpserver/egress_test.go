@@ -26,7 +26,9 @@ import (
 
 	"github.com/block/spectre/internal/descriptors"
 	"github.com/block/spectre/internal/httpserver"
+	"github.com/block/spectre/internal/model"
 	"github.com/block/spectre/internal/protocol"
+	"github.com/block/spectre/internal/proxy"
 )
 
 const (
@@ -78,7 +80,7 @@ func TestReplaysRawJSONWithoutDescriptors(t *testing.T) {
 	candidate := send(t, harness.Candidate, dependencyHost, london)
 
 	assert.Equal(t, reference, candidate)
-	assert.False(t, strings.Contains(harness.Logs.String(), "Candidate quarantined"))
+	assert.False(t, harness.Quarantined())
 }
 
 func TestReplaysGlobDestination(t *testing.T) {
@@ -94,7 +96,7 @@ func TestReplaysGlobDestination(t *testing.T) {
 
 	assert.Equal(t, "reference", reference.Body)
 	assert.Equal(t, reference, candidate)
-	assert.False(t, strings.Contains(harness.Logs.String(), "Candidate quarantined"))
+	assert.False(t, harness.Quarantined())
 }
 
 func TestCandidateWaitsForReference(t *testing.T) {
@@ -110,7 +112,7 @@ func TestCandidateWaitsForReference(t *testing.T) {
 	send(t, harness.Reference, dependencyHost, london)
 
 	assert.Equal(t, "reference", (<-candidate).Body)
-	assert.False(t, strings.Contains(harness.Logs.String(), "Candidate quarantined"))
+	assert.False(t, harness.Quarantined())
 }
 
 func TestForwardsReferenceTrafficItCannotIdentify(t *testing.T) {
@@ -255,7 +257,7 @@ func TestServeShutsDownWhileCandidateWaits(t *testing.T) {
 
 	assert.NoError(t, stop())
 	assert.Equal(t, http.StatusBadGateway, (<-candidate).Status)
-	assert.False(t, strings.Contains(harness.Logs.String(), "Candidate quarantined"))
+	assert.False(t, harness.Quarantined())
 }
 
 func TestForwardsDependencyHealthPaths(t *testing.T) {
@@ -369,6 +371,7 @@ type harness struct {
 	Candidate net.Listener
 	Health    net.Listener
 	Logs      *syncBuffer
+	egress    *httpserver.Egress
 }
 
 func newHarness(t *testing.T, upstream string) *harness {
@@ -398,6 +401,7 @@ func (h *harness) Start(t *testing.T) (stop func() error) {
 	ctx, cancel := context.WithCancel(withLogs(t, h.Logs))
 	egressProxy, err := httpserver.NewEgress(ctx, h.Config, h.Engine, http.DefaultTransport)
 	assert.NoError(t, err)
+	h.egress = egressProxy
 	done := make(chan error, 1)
 	go func() { done <- egressProxy.Serve(ctx, h.Reference, h.Candidate, h.Health) }()
 	stop = sync.OnceValue(func() error {
@@ -425,10 +429,15 @@ import type { GetForecastRequest } from "spectre.sample.v1";
 	assert.NoError(t, os.WriteFile(filepath.Join(h.Engine.Comparison.ScriptsDir, "endpoints.ts"), []byte(script), 0o600))
 }
 
-// QuarantineReason waits for the quarantine log, which is written asynchronously.
+// QuarantineReason waits for the quarantine, which egress may begin asynchronously.
 func (h *harness) QuarantineReason(t *testing.T) string {
 	t.Helper()
-	return waitForRecords[quarantineRecord](t, h.Logs, "Candidate quarantined", 1)[0].Reason
+	return waitForQuarantine(t, h.egress.Candidates()).String()
+}
+
+// Quarantined reports whether the egress has quarantined the candidate.
+func (h *harness) Quarantined() bool {
+	return h.egress.Candidates().QuarantineStatus().Ok()
 }
 
 // WaitForCandidateHash waits until a candidate request is normalised, which
@@ -453,10 +462,17 @@ func newEgress(t *testing.T, config httpserver.EgressConfig, engineConfig protoc
 	return errors.WithStack2(httpserver.NewEgress(t.Context(), config, engineConfig, http.DefaultTransport))
 }
 
-// quarantineRecord is a "Candidate quarantined" log record.
-type quarantineRecord struct {
-	Event  string `json:"event"`
-	Reason string `json:"reason"`
+// waitForQuarantine waits for candidates to begin a quarantine and returns its
+// reason. It consumes the single quarantine delivery.
+func waitForQuarantine(t *testing.T, candidates *proxy.Candidates) model.QuarantineReason {
+	t.Helper()
+	select {
+	case quarantine := <-candidates.Quarantined():
+		return quarantine.Reason
+	case <-time.After(5 * time.Second):
+		t.Fatal("candidate was not quarantined")
+		return model.QuarantineReason{}
+	}
 }
 
 // matchRecord is a "Candidate request matched a reference request" log record.
@@ -486,7 +502,7 @@ func logRecords[T any](t *testing.T, logs *syncBuffer, message string) []T {
 }
 
 // waitForRecords polls until count records with message are logged, because
-// quarantine and comparison log asynchronously.
+// comparison logs asynchronously.
 func waitForRecords[T any](t *testing.T, logs *syncBuffer, message string, count int) []T {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
@@ -502,7 +518,7 @@ func waitForRecords[T any](t *testing.T, logs *syncBuffer, message string, count
 	}
 }
 
-// syncBuffer collects log output written from request and quarantine goroutines.
+// syncBuffer collects log output written from request and comparison goroutines.
 type syncBuffer struct {
 	mu     sync.Mutex
 	buffer bytes.Buffer

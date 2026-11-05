@@ -22,9 +22,9 @@ func TestCandidatesQuarantineStatus(t *testing.T) {
 	}
 
 	gap := model.QuarantineReason{Kind: model.QuarantineUnable, Detail: "schema gap"}
-	candidates.Quarantine(context.Background(), gap)
+	candidates.Quarantine(gap)
 	// Only the first reason is kept.
-	candidates.Quarantine(context.Background(), model.QuarantineReason{Kind: model.QuarantineCapacity, Detail: "later"})
+	candidates.Quarantine(model.QuarantineReason{Kind: model.QuarantineCapacity, Detail: "later"})
 
 	delivered := <-candidates.Quarantined()
 	status, quarantined := candidates.QuarantineStatus().Get()
@@ -44,8 +44,8 @@ func TestCandidatesConcurrencyLimitQuarantines(t *testing.T) {
 
 	_, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	assert.True(t, candidates.Start(context.Background(), cancel).Ok())
-	assert.False(t, candidates.Start(context.Background(), cancel).Ok())
+	assert.True(t, candidates.Start(cancel).Ok())
+	assert.False(t, candidates.Start(cancel).Ok())
 
 	status, quarantined := candidates.QuarantineStatus().Get()
 	assert.True(t, quarantined)
