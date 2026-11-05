@@ -45,3 +45,25 @@ func TestHealthEndpoints(t *testing.T) {
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/readyz", nil))
 	assert.Equal(t, http.StatusServiceUnavailable, response.Code)
 }
+
+func TestAllIsReadyWhileEveryHandlerIs(t *testing.T) {
+	first := health.New(http.NotFoundHandler())
+	second := health.New(http.NotFoundHandler())
+	all := health.NewAll(first, second)
+	readiness := func() int {
+		response := httptest.NewRecorder()
+		all.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+		return response.Code
+	}
+	assert.Equal(t, http.StatusServiceUnavailable, readiness())
+	first.SetReady(true)
+	assert.Equal(t, http.StatusServiceUnavailable, readiness())
+	second.SetReady(true)
+	assert.Equal(t, http.StatusNoContent, readiness())
+	first.SetReady(false)
+	assert.Equal(t, http.StatusServiceUnavailable, readiness())
+
+	response := httptest.NewRecorder()
+	all.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/users", nil))
+	assert.Equal(t, http.StatusNotFound, response.Code)
+}

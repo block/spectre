@@ -1,12 +1,14 @@
 package netaddr_test
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/alecthomas/assert/v2"
 	. "github.com/alecthomas/types/optional"
@@ -174,6 +176,45 @@ func TestListenTCP(t *testing.T) {
 	assert.NoError(t, err)
 	t.Cleanup(func() { assert.NoError(t, response.Body.Close()) })
 	assert.Equal(t, http.StatusNoContent, response.StatusCode)
+}
+
+func TestAwaitAccepting(t *testing.T) {
+	tcp, err := netaddr.ParseListen("127.0.0.1:0").Listen(t.Context())
+	assert.NoError(t, err)
+	t.Cleanup(func() { assert.NoError(t, tcp.Close()) })
+	socket := filepath.Join(shortSocketDir(t), "accepting.sock")
+	unix, err := netaddr.ParseListen("unix:" + socket).Listen(t.Context())
+	assert.NoError(t, err)
+	t.Cleanup(func() { assert.NoError(t, unix.Close()) })
+
+	for name, test := range map[string]struct {
+		endpoint string
+		parse    func(value string) (*netaddr.Endpoint, error)
+		accepts  bool
+	}{
+		"TCPBackend":  {endpoint: "http://" + tcp.Addr().String(), parse: netaddr.ParseBackend, accepts: true},
+		"UnixBackend": {endpoint: "h2c+unix:" + socket, parse: netaddr.ParseBackend, accepts: true},
+		"TCPListener": {endpoint: tcp.Addr().String(), parse: parseListen, accepts: true},
+		"Closed":      {endpoint: "http://127.0.0.1:1", parse: netaddr.ParseBackend},
+		"MissingUnix": {endpoint: "http+unix:" + socket + ".missing", parse: netaddr.ParseBackend},
+	} {
+		t.Run(name, func(t *testing.T) {
+			endpoint, err := test.parse(test.endpoint)
+			assert.NoError(t, err)
+			ctx, cancel := context.WithTimeout(t.Context(), 300*time.Millisecond)
+			defer cancel()
+			err = endpoint.AwaitAccepting(ctx)
+			if test.accepts {
+				assert.NoError(t, err)
+				return
+			}
+			assert.Error(t, err)
+		})
+	}
+}
+
+func parseListen(value string) (*netaddr.Endpoint, error) {
+	return netaddr.ParseListen(value), nil
 }
 
 // shortSocketDir returns a temporary directory with a short path so unix socket

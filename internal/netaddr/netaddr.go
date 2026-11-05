@@ -9,6 +9,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/alecthomas/errors"
 	. "github.com/alecthomas/types/optional"
@@ -23,6 +24,9 @@ const (
 	unixPrefix    = "unix:"
 	hostLocalhost = "localhost"
 )
+
+// acceptPollInterval is how long AwaitAccepting waits between dials.
+const acceptPollInterval = 100 * time.Millisecond
 
 // Endpoint is a parsed listen or backend address. Backend endpoints also carry
 // a target URL, an h2c flag, and a resolved port.
@@ -135,6 +139,27 @@ func (e *Endpoint) Listen(ctx context.Context) (net.Listener, error) {
 func (e *Endpoint) DialContext(ctx context.Context, _ string, _ string) (net.Conn, error) {
 	conn, err := (&net.Dialer{}).DialContext(ctx, networkUnix, e.address)
 	return conn, errors.Wrap(err, "dial unix socket")
+}
+
+// AwaitAccepting dials the endpoint until it accepts a connection, returning the
+// last dial error once ctx ends first.
+func (e *Endpoint) AwaitAccepting(ctx context.Context) error {
+	address := e.address
+	if target, ok := e.url.Get(); ok && e.network == networkTCP {
+		address = net.JoinHostPort(target.Hostname(), strconv.Itoa(int(e.port)))
+	}
+	dialer := &net.Dialer{Timeout: time.Second}
+	for {
+		conn, err := dialer.DialContext(ctx, e.network, address)
+		if err == nil {
+			return errors.WithStack(conn.Close())
+		}
+		select {
+		case <-ctx.Done():
+			return errors.Wrapf(err, "%s did not accept a connection", address)
+		case <-time.After(acceptPollInterval):
+		}
+	}
 }
 
 // Network reports the listener network, "tcp" or "unix".

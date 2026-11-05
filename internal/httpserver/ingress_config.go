@@ -22,6 +22,8 @@ type IngressConfig struct {
 	Candidate string `required:"" help:"Candidate backend URL on a loopback IP or unix socket: http, https, h2c, http+unix, or h2c+unix."`
 	// CandidateTimeout limits the duration of a candidate request.
 	CandidateTimeout time.Duration `default:"30s" help:"Maximum duration of a candidate request."`
+	// CandidateStartupTimeout bounds how long the candidate has to accept a first connection.
+	CandidateStartupTimeout time.Duration `default:"5m" help:"Maximum time for the candidate to accept a first connection before it is quarantined. Ingress sends it nothing until then."`
 	// Reflection loads and compares both backends' descriptors at startup.
 	Reflection bool `default:"true" negatable:"" help:"Load backend descriptors with gRPC reflection and require them to match."`
 	// ReflectionTimeout limits the startup descriptor comparison.
@@ -54,6 +56,7 @@ func (c IngressConfig) ListenNetworkAddress() (network string, address string) {
 func (c IngressConfig) Validate() error {
 	if err := requirePositive(
 		limit[time.Duration]{name: "candidate timeout", value: c.CandidateTimeout},
+		limit[time.Duration]{name: "candidate startup timeout", value: c.CandidateStartupTimeout},
 		limit[time.Duration]{name: "reflection timeout", value: c.ReflectionTimeout},
 	); err != nil {
 		return err

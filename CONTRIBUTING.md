@@ -30,7 +30,8 @@ The candidate's and reference's stdout passes through with a label added, and st
 passes through unchanged. A JSON object line gains a leading
 `"spectre.subsystem": "candidate"` or `"reference"` member and is otherwise left as
 written; any other line is prefixed with `candidate: ` or `reference: `. SPECTRE's own
-lines carry `spectre.subsystem` set to `supervisor`, `ingress` or `egress`.
+lines carry `spectre.subsystem` set to `supervisor`, `mirror`, `ingress`, `egress`
+or `health`.
 
 `spectre supervise` accepts `--config=FILE` to load flag values from a TOML file. Keys are
 flag names without the leading dashes, and command-line flags take precedence:
@@ -62,6 +63,35 @@ egress sandbox.
 Releases are published for Linux AMD64 and ARM64 as `ghcr.io/block/spectre`
 and `docker.io/blockossreleases/spectre`.
 
+## Proxies for services that run elsewhere
+
+`spectre proxy` runs the same proxies and server reporting as `spectre supervise`,
+but never starts the services, so the candidate and reference can run in other
+containers of the same pod. Pass where ingress reaches each service with
+`--reference-url` and `--candidate-url`, and give each service the matching
+egress address, `--reference-egress-listen` or `--candidate-egress-listen`, as
+its dependency proxy. Any address may be a unix socket in a shared volume:
+
+```sh
+spectre proxy \
+  --listen=0.0.0.0:8080 \
+  --reference-url=h2c+unix:/sockets/reference.sock \
+  --candidate-url=h2c+unix:/sockets/candidate.sock \
+  --reference-egress-listen=unix:/sockets/egress-reference.sock \
+  --candidate-egress-listen=unix:/sockets/egress-candidate.sock \
+  --health-listen=0.0.0.0:8081 \
+  --server-url=... --service=... --environment=... --revision=...
+```
+
+Ingress is ready once the reference accepts connections, and with
+`--reflection` once the candidate does too. It mirrors nothing until the
+candidate first accepts a connection, so a slow candidate start is not a
+divergence. A candidate that accepts nothing within
+`--candidate-startup-timeout` (5m by default) is quarantined.
+
+`--health-listen` serves `/livez`, and `/readyz` once both proxies are ready,
+over TCP so a kubelet's HTTP probes can reach them.
+
 ## SPECTRE server
 
 `spectre serve` collects the states that mirrors stream to it: each mirror's
@@ -73,7 +103,8 @@ default and keeps everything in memory, so a restart loses it. To keep them in R
 nodes with `addr`, such as
 `--storage=redis-cluster://localhost:7000?addr=localhost:7001`.
 
-Every mirror reports to a server, so `spectre supervise` requires its URL,
+Every mirror reports to a server, so `spectre supervise` and `spectre proxy`
+require its URL,
 `--server-url`, and the mirror's identity, `--service`, `--environment`, and
 `--revision`, the candidate's commit. Set them in a deployment with the
 matching `SPECTRE_SERVER_URL`, `SPECTRE_SERVICE`, `SPECTRE_ENVIRONMENT`, and

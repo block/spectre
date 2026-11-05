@@ -273,3 +273,15 @@ func TestMissingContextLogger(t *testing.T) {
 	ctx = logger.WithLogger(ctx, nil)
 	assert.False(t, logger.FromContext(ctx).Enabled(ctx, slog.LevelError))
 }
+
+func TestWithSubsystem(t *testing.T) {
+	var output bytes.Buffer
+	ctx := logger.WithLogger(t.Context(), slog.New(slog.NewJSONHandler(&output, nil)))
+	ctx = logger.WithSubsystem(ctx, "egress")
+	logger.FromContext(ctx).InfoContext(ctx, "logged")
+	var record struct {
+		Subsystem string `json:"spectre.subsystem"`
+	}
+	assert.NoError(t, json.Unmarshal(output.Bytes(), &record))
+	assert.Equal(t, "egress", record.Subsystem)
+}

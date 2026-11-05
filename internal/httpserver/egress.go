@@ -167,6 +167,11 @@ func (e *Egress) Candidates() *proxy.Candidates {
 	return e.candidates
 }
 
+// Health reports the egress readiness.
+func (e *Egress) Health() *health.Handler {
+	return e.health
+}
+
 func (e *Egress) markReady(context.Context) {
 	e.health.SetReady(true)
 }
