@@ -1,4 +1,4 @@
-package mirror_test
+package proxies_test
 
 import (
 	"context"
@@ -14,7 +14,7 @@ import (
 	"github.com/alecthomas/assert/v2"
 
 	"github.com/block/spectre/internal/httpserver"
-	"github.com/block/spectre/internal/mirror"
+	"github.com/block/spectre/internal/proxies"
 	"github.com/block/spectre/internal/state"
 )
 
@@ -32,7 +32,7 @@ func TestProxyMirrorsServicesThatRunElsewhere(t *testing.T) {
 
 	dir := shortSocketDir(t)
 	socket := func(name string) string { return filepath.Join(dir, name) }
-	config := mirror.ProxyConfig{
+	config := proxies.ProxyConfig{
 		Listen:                "unix:" + socket("ingress.sock"),
 		ReferenceURL:          reference.URL,
 		CandidateURL:          candidate.URL,
@@ -40,12 +40,12 @@ func TestProxyMirrorsServicesThatRunElsewhere(t *testing.T) {
 		CandidateEgressListen: "unix:" + socket("egress-candidate.sock"),
 		EgressHealthListen:    "unix:" + socket("egress-health.sock"),
 		HealthListen:          "unix:" + socket("health.sock"),
-		Mirror:                mirror.NewConfig(),
+		Mirror:                proxies.NewConfig(),
 	}
 	config.Mirror.Reflection = false
 	config.Mirror.ScriptsDir = t.TempDir()
 	config.Mirror.SchemaDir = t.TempDir()
-	proxy, err := mirror.NewProxy(t.Context(), config, testCatalog(t))
+	proxy, err := proxies.NewProxy(t.Context(), config, testCatalog(t))
 	assert.NoError(t, err)
 
 	ctx, cancel := context.WithCancel(t.Context())
@@ -78,9 +78,9 @@ func TestProxyMirrorsServicesThatRunElsewhere(t *testing.T) {
 }
 
 func TestNewProxyValidates(t *testing.T) {
-	config := mirror.ProxyConfig{Mirror: mirror.NewConfig()}
+	config := proxies.ProxyConfig{Mirror: proxies.NewConfig()}
 	config.Mirror.MatchWindow = 0
-	_, err := mirror.NewProxy(t.Context(), config, testCatalog(t))
+	_, err := proxies.NewProxy(t.Context(), config, testCatalog(t))
 	assert.EqualError(t, err, "match window must be positive")
 }
 

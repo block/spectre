@@ -79,9 +79,9 @@ func (c *statusClearCommand) Run(ctx context.Context, server *client.Client) err
 	return errors.WithStack(server.ClearDivergences(ctx, c.Clear.Service, c.Clear.Environment))
 }
 
-// listedMirror is what the server lists for one service environment: its state, if
+// mirror is what the server lists for one service environment: its state, if
 // it is reporting, and its recorded divergences.
-type listedMirror struct {
+type mirror struct {
 	Service, Environment string
 	State                Option[model.State]
 	Divergences          []model.Divergence
@@ -89,12 +89,12 @@ type listedMirror struct {
 
 // groupMirrors groups states and divergences by service environment, ordered
 // by service and environment.
-func groupMirrors(states []model.State, divergences []model.Divergence) []*listedMirror {
-	byKey := map[[2]string]*listedMirror{}
-	get := func(service, environment string) *listedMirror {
+func groupMirrors(states []model.State, divergences []model.Divergence) []*mirror {
+	byKey := map[[2]string]*mirror{}
+	get := func(service, environment string) *mirror {
 		key := [2]string{service, environment}
 		if _, ok := byKey[key]; !ok {
-			byKey[key] = &listedMirror{Service: service, Environment: environment}
+			byKey[key] = &mirror{Service: service, Environment: environment}
 		}
 		return byKey[key]
 	}
@@ -106,7 +106,7 @@ func groupMirrors(states []model.State, divergences []model.Divergence) []*liste
 		found.Divergences = append(found.Divergences, divergence)
 	}
 	mirrors := slices.Collect(maps.Values(byKey))
-	slices.SortFunc(mirrors, func(a, b *listedMirror) int {
+	slices.SortFunc(mirrors, func(a, b *mirror) int {
 		return cmp.Or(cmp.Compare(a.Service, b.Service), cmp.Compare(a.Environment, b.Environment))
 	})
 	return mirrors
@@ -114,7 +114,7 @@ func groupMirrors(states []model.State, divergences []model.Divergence) []*liste
 
 // render describes the mirror's state, then each recorded divergence that is
 // not one of its current quarantines.
-func (m *listedMirror) render(palette terminal.Palette) string {
+func (m *mirror) render(palette terminal.Palette) string {
 	var text strings.Builder
 	state, reporting := m.State.Get()
 	if reporting {

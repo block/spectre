@@ -19,7 +19,7 @@ import (
 
 	"github.com/block/spectre/internal/httpserver"
 	"github.com/block/spectre/internal/logger"
-	"github.com/block/spectre/internal/mirror"
+	"github.com/block/spectre/internal/proxies"
 	"github.com/block/spectre/internal/state"
 )
 
@@ -128,7 +128,7 @@ func TestWiring(t *testing.T) {
 			s, err := New(t.Context(), config, testCatalog(t))
 			assert.NoError(t, err)
 			socket := func(name string) string { return filepath.Join(config.SocketDir, name) }
-			assert.Equal(t, mirror.Wiring{
+			assert.Equal(t, proxies.Wiring{
 				Listen:          config.Listen,
 				Reference:       test.backend(socket("reference.sock")),
 				Candidate:       test.backend(socket("candidate.sock")),

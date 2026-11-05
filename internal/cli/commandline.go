@@ -12,7 +12,7 @@ import (
 	"github.com/block/spectre/internal/descriptors"
 	"github.com/block/spectre/internal/jsonschema"
 	"github.com/block/spectre/internal/logger"
-	"github.com/block/spectre/internal/mirror"
+	"github.com/block/spectre/internal/proxies"
 	"github.com/block/spectre/internal/scaffold"
 	"github.com/block/spectre/internal/server"
 	"github.com/block/spectre/internal/state"
@@ -70,11 +70,11 @@ func (c *superviseCommand) Run(ctx context.Context, catalog *state.Catalog) erro
 
 // proxyCommand runs the embedded proxies in front of services that run elsewhere.
 type proxyCommand struct {
-	Proxy mirror.ProxyConfig `embed:""`
+	Proxy proxies.ProxyConfig `embed:""`
 }
 
 func (c *proxyCommand) Run(ctx context.Context, catalog *state.Catalog) error {
-	proxy, err := mirror.NewProxy(ctx, c.Proxy, catalog)
+	proxy, err := proxies.NewProxy(ctx, c.Proxy, catalog)
 	if err != nil {
 		return errors.WithStack(err)
 	}

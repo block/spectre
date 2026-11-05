@@ -1,7 +1,7 @@
-// Package mirror runs the SPECTRE proxies in front of a reference and a candidate
+// Package proxies runs the SPECTRE proxies in front of a reference and a candidate
 // service, and streams the mirror's state to the SPECTRE server. It never starts
 // the services itself.
-package mirror
+package proxies
 
 import (
 	"time"

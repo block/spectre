@@ -13,7 +13,7 @@ import (
 	"github.com/alecthomas/assert/v2"
 
 	"github.com/block/spectre/internal/cli"
-	"github.com/block/spectre/internal/mirror"
+	"github.com/block/spectre/internal/proxies"
 	"github.com/block/spectre/internal/server"
 	"github.com/block/spectre/internal/server/client"
 	"github.com/block/spectre/internal/server/reporter"
@@ -122,7 +122,7 @@ func TestProxyCommandReadsFlagsFromEnvironment(t *testing.T) {
 	assert.NoError(t, err)
 	_, err = parser.Parse([]string{"proxy"})
 	assert.NoError(t, err)
-	expected := mirror.ProxyConfig{
+	expected := proxies.ProxyConfig{
 		Listen:                "0.0.0.0:8080",
 		ReferenceURL:          "h2c+unix:/sockets/reference.sock",
 		CandidateURL:          "h2c+unix:/sockets/candidate.sock",
@@ -130,7 +130,7 @@ func TestProxyCommandReadsFlagsFromEnvironment(t *testing.T) {
 		CandidateEgressListen: "unix:/sockets/egress-candidate.sock",
 		EgressHealthListen:    "127.0.0.1:50062",
 		HealthListen:          "0.0.0.0:8081",
-		Mirror:                mirror.NewConfig(),
+		Mirror:                proxies.NewConfig(),
 	}
 	expected.Mirror.CandidateStartupTimeout = 10 * time.Minute
 	expected.Mirror.ScriptsDir = scripts

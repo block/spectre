@@ -8,7 +8,7 @@ import (
 	"github.com/alecthomas/errors"
 	"github.com/alecthomas/kong"
 
-	"github.com/block/spectre/internal/mirror"
+	"github.com/block/spectre/internal/proxies"
 	"github.com/block/spectre/internal/server/client"
 	"github.com/block/spectre/internal/server/reporter"
 )
@@ -28,7 +28,7 @@ type Config struct {
 	// SocketDir holds the unix sockets wiring the proxies to the services.
 	SocketDir string `default:"dist/sockets" help:"Directory for the unix sockets wiring the proxies to the services."`
 	// Mirror configures the proxies and reporting.
-	Mirror mirror.Config `embed:""`
+	Mirror proxies.Config `embed:""`
 	// Limits configures the cgroup resource split between the services.
 	Limits LimitConfig `embed:""`
 	// SeccompEgress blocks the candidate from opening IP sockets with seccomp,

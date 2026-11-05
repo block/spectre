@@ -12,8 +12,8 @@ import (
 	. "github.com/alecthomas/types/optional"
 
 	"github.com/block/spectre/internal/logger"
-	"github.com/block/spectre/internal/mirror"
 	"github.com/block/spectre/internal/netaddr"
+	"github.com/block/spectre/internal/proxies"
 	"github.com/block/spectre/internal/state"
 )
 
@@ -29,7 +29,7 @@ type Supervisor struct {
 	config  Config
 	log     *slog.Logger
 	selfExe string
-	mirror  *mirror.Mirror
+	mirror  *proxies.Mirror
 
 	egressReference string
 	egressCandidate string
@@ -71,7 +71,7 @@ func New(ctx context.Context, config Config, catalog *state.Catalog) (*Superviso
 	if err := s.prepareWiring(); err != nil {
 		return nil, err
 	}
-	s.mirror, err = mirror.New(ctx, config.Mirror, s.wiring(), catalog)
+	s.mirror, err = proxies.New(ctx, config.Mirror, s.wiring(), catalog)
 	if err != nil {
 		return nil, errors.WithStack(err)
 	}
@@ -268,8 +268,8 @@ func (s *Supervisor) command(ctx context.Context, name string, arg ...string) *e
 }
 
 // wiring connects the proxies to the services through the socket directory.
-func (s *Supervisor) wiring() mirror.Wiring {
-	return mirror.Wiring{
+func (s *Supervisor) wiring() proxies.Wiring {
+	return proxies.Wiring{
 		Listen:          s.config.Listen,
 		Reference:       backendURL(s.config.ReferenceProtocol, s.referenceSock),
 		Candidate:       backendURL(s.config.CandidateProtocol, s.candidateSock),
