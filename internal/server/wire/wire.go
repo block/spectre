@@ -22,6 +22,9 @@ func StateMessage(state model.State) *pb.State {
 		SpectreVersion: state.SpectreVersion,
 		Uptime:         durationpb.New(state.Uptime),
 	}
+	if len(state.Calls.Routes) > 0 || state.Calls.Other > 0 {
+		message.Calls = CallsMessage(state.Calls)
+	}
 	// Ingress first, so a state always encodes the same way.
 	for _, direction := range []model.Direction{model.Ingress, model.Egress} {
 		if quarantine, ok := state.Quarantines[direction]; ok {
@@ -47,6 +50,11 @@ func StateFromMessage(message *pb.State) (model.State, error) {
 		SpectreVersion: message.GetSpectreVersion(),
 		Uptime:         message.GetUptime().AsDuration(),
 	}
+	calls, err := CallsFromMessage(message.GetCalls())
+	if err != nil {
+		return model.State{}, err
+	}
+	state.Calls = calls
 	quarantines := message.GetQuarantines()
 	if len(quarantines) > 0 {
 		state.Quarantines = make(map[model.Direction]model.Quarantine, len(quarantines))
@@ -71,6 +79,8 @@ func UpdateMessage(update model.Update) *pb.UpdateRequest {
 		return &pb.UpdateRequest{Update: &pb.UpdateRequest_State{State: StateMessage(update)}}
 	case model.QuarantineUpdate:
 		return &pb.UpdateRequest{Update: &pb.UpdateRequest_Quarantine{Quarantine: QuarantineMessage(update.Direction, update.Quarantine)}}
+	case model.Calls:
+		return &pb.UpdateRequest{Update: &pb.UpdateRequest_Calls{Calls: CallsMessage(update)}}
 	}
 	return &pb.UpdateRequest{}
 }
@@ -86,10 +96,41 @@ func UpdateFromMessage(message *pb.UpdateRequest) (model.Update, error) {
 			return nil, err
 		}
 		return model.QuarantineUpdate{Direction: direction, Quarantine: quarantine}, nil
+	case *pb.UpdateRequest_Calls:
+		return CallsFromMessage(update.Calls)
 	case *pb.UpdateRequest_Keepalive:
 		return nil, errors.New("a keepalive holds no update")
 	}
 	return nil, errors.New("update holds nothing")
+}
+
+// CallsMessage returns the message that reports call counts.
+func CallsMessage(calls model.Calls) *pb.Calls {
+	message := &pb.Calls{Other: calls.Other}
+	if len(calls.Routes) > 0 {
+		message.Routes = make(map[string]uint64, len(calls.Routes))
+	}
+	for route, count := range calls.Routes {
+		message.Routes[string(route)] = count
+	}
+	return message
+}
+
+// CallsFromMessage restores reported call counts, checking that each names
+// its route. An absent message counts no calls.
+func CallsFromMessage(message *pb.Calls) (model.Calls, error) {
+	calls := model.Calls{Other: message.GetOther()}
+	routes := message.GetRoutes()
+	if len(routes) > 0 {
+		calls.Routes = make(map[model.Route]uint64, len(routes))
+	}
+	for route, count := range routes {
+		if route == "" {
+			return model.Calls{}, errors.New("call counts need a route")
+		}
+		calls.Routes[model.Route(route)] = count //nolint:typeboundary // protobuf map keys are plain strings
+	}
+	return calls, nil
 }
 
 // DivergenceMessage returns the message that reports divergence.

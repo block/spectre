@@ -18,6 +18,7 @@ type State struct {
 	Uptime time.Duration `json:"uptime"`
 	// Quarantines holds the quarantine of each direction whose proxy has one.
 	Quarantines map[Direction]Quarantine `json:"quarantines,omitempty"`
+	Calls       Calls                    `json:"calls,omitzero"`
 }
 
 func (State) update() {}

@@ -46,6 +46,14 @@ func TestStateRoundTrip(t *testing.T) {
 				}},
 			},
 		}},
+		{name: "Called", state: model.State{
+			Service:        "users",
+			Environment:    "production",
+			Revision:       "abc123",
+			SpectreVersion: "v0.47.0",
+			Uptime:         time.Hour,
+			Calls:          model.Calls{Routes: map[model.Route]uint64{"GET /v1/users": 22, "POST /v1/users": 1}, Other: 3},
+		}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -75,6 +83,8 @@ func TestStateFromMessageRejectsInvalid(t *testing.T) {
 	withoutSince.Quarantines = []*pb.Quarantine{{Direction: pb.Direction_DIRECTION_INGRESS, Kind: pb.Quarantine_KIND_UNMATCHED}}
 	withoutKind := valid()
 	withoutKind.Quarantines = []*pb.Quarantine{{Direction: pb.Direction_DIRECTION_INGRESS, Since: timestamppb.Now()}}
+	withoutRoute := valid()
+	withoutRoute.Calls = &pb.Calls{Routes: map[string]uint64{"": 1}}
 	tests := []struct {
 		name  string
 		state *pb.State
@@ -86,6 +96,7 @@ func TestStateFromMessageRejectsInvalid(t *testing.T) {
 		{name: "DuplicateDirection", state: duplicate, err: "state holds more than one ingress quarantine"},
 		{name: "WithoutSince", state: withoutSince, err: "quarantine: quarantine needs its start time"},
 		{name: "UnspecifiedKind", state: withoutKind, err: "quarantine: unknown quarantine kind KIND_UNSPECIFIED"},
+		{name: "CallsWithoutRoute", state: withoutRoute, err: "call counts need a route"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

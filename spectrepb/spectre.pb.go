@@ -150,6 +150,7 @@ type UpdateRequest struct {
 	//	*UpdateRequest_State
 	//	*UpdateRequest_Quarantine
 	//	*UpdateRequest_Keepalive
+	//	*UpdateRequest_Calls
 	Update        isUpdateRequest_Update `protobuf_oneof:"update"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -219,6 +220,15 @@ func (x *UpdateRequest) GetKeepalive() *Keepalive {
 	return nil
 }
 
+func (x *UpdateRequest) GetCalls() *Calls {
+	if x != nil {
+		if x, ok := x.Update.(*UpdateRequest_Calls); ok {
+			return x.Calls
+		}
+	}
+	return nil
+}
+
 type isUpdateRequest_Update interface {
 	isUpdateRequest_Update()
 }
@@ -238,11 +248,18 @@ type UpdateRequest_Keepalive struct {
 	Keepalive *Keepalive `protobuf:"bytes,3,opt,name=keepalive,proto3,oneof"`
 }
 
+type UpdateRequest_Calls struct {
+	// Calls replaces the state's call counts.
+	Calls *Calls `protobuf:"bytes,4,opt,name=calls,proto3,oneof"`
+}
+
 func (*UpdateRequest_State) isUpdateRequest_Update() {}
 
 func (*UpdateRequest_Quarantine) isUpdateRequest_Update() {}
 
 func (*UpdateRequest_Keepalive) isUpdateRequest_Update() {}
+
+func (*UpdateRequest_Calls) isUpdateRequest_Update() {}
 
 // Keepalive carries nothing; it only keeps a quiet stream alive.
 type Keepalive struct {
@@ -773,6 +790,7 @@ type State struct {
 	Uptime *durationpb.Duration `protobuf:"bytes,5,opt,name=uptime,proto3" json:"uptime,omitempty"`
 	// Quarantines holds at most one quarantine per direction.
 	Quarantines   []*Quarantine `protobuf:"bytes,6,rep,name=quarantines,proto3" json:"quarantines,omitempty"`
+	Calls         *Calls        `protobuf:"bytes,7,opt,name=calls,proto3" json:"calls,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -849,18 +867,82 @@ func (x *State) GetQuarantines() []*Quarantine {
 	return nil
 }
 
+func (x *State) GetCalls() *Calls {
+	if x != nil {
+		return x.Calls
+	}
+	return nil
+}
+
+// Calls counts the requests the mirror's ingress proxy received on each route
+// since the mirror started.
+type Calls struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Routes maps each route to its number of requests.
+	Routes map[string]uint64 `protobuf:"bytes,1,rep,name=routes,proto3" json:"routes,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"varint,2,opt,name=value"`
+	// Other counts requests to routes beyond the most a mirror counts.
+	Other         uint64 `protobuf:"varint,2,opt,name=other,proto3" json:"other,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Calls) Reset() {
+	*x = Calls{}
+	mi := &file_spectre_v1_spectre_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Calls) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Calls) ProtoMessage() {}
+
+func (x *Calls) ProtoReflect() protoreflect.Message {
+	mi := &file_spectre_v1_spectre_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Calls.ProtoReflect.Descriptor instead.
+func (*Calls) Descriptor() ([]byte, []int) {
+	return file_spectre_v1_spectre_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *Calls) GetRoutes() map[string]uint64 {
+	if x != nil {
+		return x.Routes
+	}
+	return nil
+}
+
+func (x *Calls) GetOther() uint64 {
+	if x != nil {
+		return x.Other
+	}
+	return 0
+}
+
 var File_spectre_v1_spectre_proto protoreflect.FileDescriptor
 
 const file_spectre_v1_spectre_proto_rawDesc = "" +
 	"\n" +
 	"\x18spectre/v1/spectre.proto\x12\n" +
-	"spectre.v1\x1a\x1egoogle/protobuf/duration.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xb5\x01\n" +
+	"spectre.v1\x1a\x1egoogle/protobuf/duration.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xe0\x01\n" +
 	"\rUpdateRequest\x12)\n" +
 	"\x05state\x18\x01 \x01(\v2\x11.spectre.v1.StateH\x00R\x05state\x128\n" +
 	"\n" +
 	"quarantine\x18\x02 \x01(\v2\x16.spectre.v1.QuarantineH\x00R\n" +
 	"quarantine\x125\n" +
-	"\tkeepalive\x18\x03 \x01(\v2\x15.spectre.v1.KeepaliveH\x00R\tkeepaliveB\b\n" +
+	"\tkeepalive\x18\x03 \x01(\v2\x15.spectre.v1.KeepaliveH\x00R\tkeepalive\x12)\n" +
+	"\x05calls\x18\x04 \x01(\v2\x11.spectre.v1.CallsH\x00R\x05callsB\b\n" +
 	"\x06update\"\v\n" +
 	"\tKeepalive\"\x10\n" +
 	"\x0eUpdateResponse\"\xca\x01\n" +
@@ -910,14 +992,21 @@ const file_spectre_v1_spectre_proto_rawDesc = "" +
 	"\aTraffic\x123\n" +
 	"\tdirection\x18\x01 \x01(\x0e2\x15.spectre.v1.DirectionR\tdirection\x12\x1a\n" +
 	"\bprotocol\x18\x02 \x01(\tR\bprotocol\x12\x14\n" +
-	"\x05route\x18\x03 \x01(\tR\x05route\"\xf5\x01\n" +
+	"\x05route\x18\x03 \x01(\tR\x05route\"\x9e\x02\n" +
 	"\x05State\x12\x18\n" +
 	"\aservice\x18\x01 \x01(\tR\aservice\x12 \n" +
 	"\venvironment\x18\x02 \x01(\tR\venvironment\x12\x1a\n" +
 	"\brevision\x18\x03 \x01(\tR\brevision\x12'\n" +
 	"\x0fspectre_version\x18\x04 \x01(\tR\x0espectreVersion\x121\n" +
 	"\x06uptime\x18\x05 \x01(\v2\x19.google.protobuf.DurationR\x06uptime\x128\n" +
-	"\vquarantines\x18\x06 \x03(\v2\x16.spectre.v1.QuarantineR\vquarantines*S\n" +
+	"\vquarantines\x18\x06 \x03(\v2\x16.spectre.v1.QuarantineR\vquarantines\x12'\n" +
+	"\x05calls\x18\a \x01(\v2\x11.spectre.v1.CallsR\x05calls\"\x8f\x01\n" +
+	"\x05Calls\x125\n" +
+	"\x06routes\x18\x01 \x03(\v2\x1d.spectre.v1.Calls.RoutesEntryR\x06routes\x12\x14\n" +
+	"\x05other\x18\x02 \x01(\x04R\x05other\x1a9\n" +
+	"\vRoutesEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\x04R\x05value:\x028\x01*S\n" +
 	"\tDirection\x12\x19\n" +
 	"\x15DIRECTION_UNSPECIFIED\x10\x00\x12\x15\n" +
 	"\x11DIRECTION_INGRESS\x10\x01\x12\x14\n" +
@@ -940,7 +1029,7 @@ func file_spectre_v1_spectre_proto_rawDescGZIP() []byte {
 }
 
 var file_spectre_v1_spectre_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_spectre_v1_spectre_proto_msgTypes = make([]protoimpl.MessageInfo, 11)
+var file_spectre_v1_spectre_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
 var file_spectre_v1_spectre_proto_goTypes = []any{
 	(Direction)(0),                   // 0: spectre.v1.Direction
 	(Quarantine_Kind)(0),             // 1: spectre.v1.Quarantine.Kind
@@ -955,34 +1044,39 @@ var file_spectre_v1_spectre_proto_goTypes = []any{
 	(*Quarantine)(nil),               // 10: spectre.v1.Quarantine
 	(*Traffic)(nil),                  // 11: spectre.v1.Traffic
 	(*State)(nil),                    // 12: spectre.v1.State
-	(*timestamppb.Timestamp)(nil),    // 13: google.protobuf.Timestamp
-	(*durationpb.Duration)(nil),      // 14: google.protobuf.Duration
+	(*Calls)(nil),                    // 13: spectre.v1.Calls
+	nil,                              // 14: spectre.v1.Calls.RoutesEntry
+	(*timestamppb.Timestamp)(nil),    // 15: google.protobuf.Timestamp
+	(*durationpb.Duration)(nil),      // 16: google.protobuf.Duration
 }
 var file_spectre_v1_spectre_proto_depIdxs = []int32{
 	12, // 0: spectre.v1.UpdateRequest.state:type_name -> spectre.v1.State
 	10, // 1: spectre.v1.UpdateRequest.quarantine:type_name -> spectre.v1.Quarantine
 	3,  // 2: spectre.v1.UpdateRequest.keepalive:type_name -> spectre.v1.Keepalive
-	12, // 3: spectre.v1.ListDivergencesResponse.states:type_name -> spectre.v1.State
-	9,  // 4: spectre.v1.ListDivergencesResponse.divergences:type_name -> spectre.v1.Divergence
-	10, // 5: spectre.v1.Divergence.quarantine:type_name -> spectre.v1.Quarantine
-	13, // 6: spectre.v1.Quarantine.since:type_name -> google.protobuf.Timestamp
-	1,  // 7: spectre.v1.Quarantine.kind:type_name -> spectre.v1.Quarantine.Kind
-	11, // 8: spectre.v1.Quarantine.traffic:type_name -> spectre.v1.Traffic
-	0,  // 9: spectre.v1.Quarantine.direction:type_name -> spectre.v1.Direction
-	0,  // 10: spectre.v1.Traffic.direction:type_name -> spectre.v1.Direction
-	14, // 11: spectre.v1.State.uptime:type_name -> google.protobuf.Duration
-	10, // 12: spectre.v1.State.quarantines:type_name -> spectre.v1.Quarantine
-	2,  // 13: spectre.v1.SpectreService.Update:input_type -> spectre.v1.UpdateRequest
-	5,  // 14: spectre.v1.SpectreService.ListDivergences:input_type -> spectre.v1.ListDivergencesRequest
-	7,  // 15: spectre.v1.SpectreService.ClearDivergences:input_type -> spectre.v1.ClearDivergencesRequest
-	4,  // 16: spectre.v1.SpectreService.Update:output_type -> spectre.v1.UpdateResponse
-	6,  // 17: spectre.v1.SpectreService.ListDivergences:output_type -> spectre.v1.ListDivergencesResponse
-	8,  // 18: spectre.v1.SpectreService.ClearDivergences:output_type -> spectre.v1.ClearDivergencesResponse
-	16, // [16:19] is the sub-list for method output_type
-	13, // [13:16] is the sub-list for method input_type
-	13, // [13:13] is the sub-list for extension type_name
-	13, // [13:13] is the sub-list for extension extendee
-	0,  // [0:13] is the sub-list for field type_name
+	13, // 3: spectre.v1.UpdateRequest.calls:type_name -> spectre.v1.Calls
+	12, // 4: spectre.v1.ListDivergencesResponse.states:type_name -> spectre.v1.State
+	9,  // 5: spectre.v1.ListDivergencesResponse.divergences:type_name -> spectre.v1.Divergence
+	10, // 6: spectre.v1.Divergence.quarantine:type_name -> spectre.v1.Quarantine
+	15, // 7: spectre.v1.Quarantine.since:type_name -> google.protobuf.Timestamp
+	1,  // 8: spectre.v1.Quarantine.kind:type_name -> spectre.v1.Quarantine.Kind
+	11, // 9: spectre.v1.Quarantine.traffic:type_name -> spectre.v1.Traffic
+	0,  // 10: spectre.v1.Quarantine.direction:type_name -> spectre.v1.Direction
+	0,  // 11: spectre.v1.Traffic.direction:type_name -> spectre.v1.Direction
+	16, // 12: spectre.v1.State.uptime:type_name -> google.protobuf.Duration
+	10, // 13: spectre.v1.State.quarantines:type_name -> spectre.v1.Quarantine
+	13, // 14: spectre.v1.State.calls:type_name -> spectre.v1.Calls
+	14, // 15: spectre.v1.Calls.routes:type_name -> spectre.v1.Calls.RoutesEntry
+	2,  // 16: spectre.v1.SpectreService.Update:input_type -> spectre.v1.UpdateRequest
+	5,  // 17: spectre.v1.SpectreService.ListDivergences:input_type -> spectre.v1.ListDivergencesRequest
+	7,  // 18: spectre.v1.SpectreService.ClearDivergences:input_type -> spectre.v1.ClearDivergencesRequest
+	4,  // 19: spectre.v1.SpectreService.Update:output_type -> spectre.v1.UpdateResponse
+	6,  // 20: spectre.v1.SpectreService.ListDivergences:output_type -> spectre.v1.ListDivergencesResponse
+	8,  // 21: spectre.v1.SpectreService.ClearDivergences:output_type -> spectre.v1.ClearDivergencesResponse
+	19, // [19:22] is the sub-list for method output_type
+	16, // [16:19] is the sub-list for method input_type
+	16, // [16:16] is the sub-list for extension type_name
+	16, // [16:16] is the sub-list for extension extendee
+	0,  // [0:16] is the sub-list for field type_name
 }
 
 func init() { file_spectre_v1_spectre_proto_init() }
@@ -994,6 +1088,7 @@ func file_spectre_v1_spectre_proto_init() {
 		(*UpdateRequest_State)(nil),
 		(*UpdateRequest_Quarantine)(nil),
 		(*UpdateRequest_Keepalive)(nil),
+		(*UpdateRequest_Calls)(nil),
 	}
 	file_spectre_v1_spectre_proto_msgTypes[3].OneofWrappers = []any{}
 	file_spectre_v1_spectre_proto_msgTypes[8].OneofWrappers = []any{}
@@ -1003,7 +1098,7 @@ func file_spectre_v1_spectre_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_spectre_v1_spectre_proto_rawDesc), len(file_spectre_v1_spectre_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   11,
+			NumMessages:   13,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

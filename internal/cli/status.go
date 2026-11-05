@@ -128,6 +128,7 @@ func (m *mirror) render(palette terminal.Palette) string {
 				fmt.Fprintf(&text, "  %s\n  %s\n", palette.Red(describe(direction, quarantine.Reason)), palette.Dim("quarantined "+timestamp(quarantine.Since)))
 			}
 		}
+		renderCalls(&text, state.Calls)
 	} else {
 		fmt.Fprintf(&text, "%s %s %s\n", palette.Bold(m.Service), palette.Dim(m.Environment), palette.Dim("not reporting"))
 	}
@@ -143,6 +144,23 @@ func (m *mirror) render(palette terminal.Palette) string {
 		fmt.Fprintf(&text, "  %s\n  %s\n", palette.Yellow(describe(divergence.Direction, divergence.Quarantine.Reason)), palette.Dim(since))
 	}
 	return text.String()
+}
+
+// renderCalls lists the requests on each route, ordered by route.
+func renderCalls(text *strings.Builder, calls model.Calls) {
+	for _, route := range slices.Sorted(maps.Keys(calls.Routes)) {
+		fmt.Fprintf(text, "    %s: %s\n", route, callCount(calls.Routes[route]))
+	}
+	if calls.Other > 0 {
+		fmt.Fprintf(text, "    other routes: %s\n", callCount(calls.Other))
+	}
+}
+
+func callCount(count uint64) string {
+	if count == 1 {
+		return "1 call"
+	}
+	return fmt.Sprintf("%d calls", count)
 }
 
 func timestamp(at time.Time) string {

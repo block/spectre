@@ -86,9 +86,11 @@ pass the socket as `--server-socket` and the server's mesh address as
 host, such as `--server-url=http://spectre.mesh --server-socket=@egress.sock`.
 
 A mirror sends everything to the server over one stream, which begins with its
-whole state. It then sends each quarantine as it begins, and a keepalive every
-`--server-keepalive-interval` (30s by default) when nothing else is sent.
-Keep the interval below the idle timeout of any proxy in front of the server;
+whole state. It then sends each quarantine as it begins. Every
+`--server-keepalive-interval` (30s by default) when nothing else is sent, it
+sends the number of requests its ingress proxy has received on each route if
+those changed, or else a keepalive. It counts at most 100 routes, and counts
+requests to any further routes together. Keep the interval below the idle timeout of any proxy in front of the server;
 Caddy, for one, ends a request stream after 60s without data. When the stream
 fails, the mirror logs it and reconnects with backoff, from 1s up to 1m. It also
 replaces the stream after `--server-stream-max-age` (10m by default, with
@@ -96,7 +98,8 @@ jitter), so streams spread across server replicas.
 
 List the reporting mirrors and recorded divergences with
 `spectre status --server-url=URL`. Filter with `--service`,
-`--environment`, `--revision`, or `--node`, and print JSON with `--json`. A
+`--environment`, `--revision`, or `--node`, and print JSON with `--json`. Each
+mirror lists its calls per route, which lag by up to the keepalive interval. A
 mirror stays listed until it sends nothing for the server's `--state-ttl`
 (90s by default), so keep that above the keepalive interval. A mirror stays
 quarantined until it restarts.

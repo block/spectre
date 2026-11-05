@@ -62,6 +62,10 @@ func quarantined(quarantine *pb.Quarantine) *pb.UpdateRequest {
 	return &pb.UpdateRequest{Update: &pb.UpdateRequest_Quarantine{Quarantine: quarantine}}
 }
 
+func called(calls *pb.Calls) *pb.UpdateRequest {
+	return &pb.UpdateRequest{Update: &pb.UpdateRequest_Calls{Calls: calls}}
+}
+
 func keepalive() *pb.UpdateRequest {
 	return &pb.UpdateRequest{Update: &pb.UpdateRequest_Keepalive{Keepalive: &pb.Keepalive{}}}
 }
@@ -98,10 +102,12 @@ func TestUpdateKeepsLatestState(t *testing.T) {
 		Differences: []string{"body.name"},
 	}
 	staging := state("staging", time.Minute)
-	assert.NoError(t, update(t, rpc, whole(state("production", time.Hour)), keepalive(), quarantined(quarantine), keepalive()))
+	calls := &pb.Calls{Routes: map[string]uint64{"GET /v1/users": 22}}
+	assert.NoError(t, update(t, rpc, whole(state("production", time.Hour)), keepalive(), quarantined(quarantine), called(&pb.Calls{Other: 1}), called(calls), keepalive()))
 	assert.NoError(t, update(t, rpc, whole(staging)))
 
 	production := withoutUptime(state("production", time.Hour, quarantine))
+	production.Calls = calls
 	divergence := &pb.Divergence{Service: "users", Environment: "production", Revision: "abc123", Quarantine: quarantine}
 	tests := []struct {
 		name     string
@@ -171,6 +177,8 @@ func TestUpdateRejectsInvalidStream(t *testing.T) {
 		{name: "WithoutState", requests: []*pb.UpdateRequest{whole(nil)}},
 		{name: "BeginsWithKeepalive", requests: []*pb.UpdateRequest{keepalive()}},
 		{name: "BeginsWithQuarantine", requests: []*pb.UpdateRequest{quarantined(quarantine(pb.Direction_DIRECTION_INGRESS))}},
+		{name: "BeginsWithCalls", requests: []*pb.UpdateRequest{called(&pb.Calls{Other: 1})}},
+		{name: "CallsWithoutRoute", requests: []*pb.UpdateRequest{whole(state("production", time.Minute)), called(&pb.Calls{Routes: map[string]uint64{"": 1}})}},
 		{name: "WithoutRevision", requests: []*pb.UpdateRequest{whole(withoutCommit)}},
 		{name: "WithoutUptime", requests: []*pb.UpdateRequest{whole(withoutUptime)}},
 		{name: "UnspecifiedQuarantineDirection", requests: []*pb.UpdateRequest{whole(state("production", time.Minute, quarantine(pb.Direction_DIRECTION_UNSPECIFIED)))}},
