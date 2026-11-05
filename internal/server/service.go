@@ -45,8 +45,8 @@ func (s *Service) Handler() http.Handler {
 	return endearly.New(mux)
 }
 
-// Update keeps the state a mirror streams. Every message stores the whole
-// state, which keeps it listed, and records the divergence of each quarantine.
+// Update keeps the state a mirror streams. Every message stores the whole state,
+// and a state or quarantine also records the divergence of each quarantine.
 func (s *Service) Update(ctx context.Context, updates spectrepbconnect.SpectreServiceUpdateServerStream) (*pb.UpdateResponse, error) {
 	var state Option[model.State]
 	var measured time.Time
@@ -73,7 +73,7 @@ func (s *Service) Update(ctx context.Context, updates spectrepbconnect.SpectreSe
 		if err := s.store.Put(ctx, stored, now); err != nil {
 			return nil, connect.NewError(connect.CodeUnavailable, err.Error()).WithCause(err)
 		}
-		if message.GetKeepalive() != nil {
+		if message.GetKeepalive() != nil || message.GetCalls() != nil {
 			continue
 		}
 		if err := s.recordQuarantines(ctx, current); err != nil {
@@ -184,6 +184,12 @@ func nextState(state Option[model.State], message *pb.UpdateRequest) (model.Stat
 			return model.State{}, errors.New("an update stream must begin with the mirror's state")
 		}
 		return current.Quarantined(update.Direction, update.Quarantine), nil
+	case model.Calls:
+		if !started {
+			return model.State{}, errors.New("an update stream must begin with the mirror's state")
+		}
+		current.Calls = update
+		return current, nil
 	}
 	return current, nil
 }

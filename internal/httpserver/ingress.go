@@ -45,6 +45,7 @@ type Ingress struct {
 	descriptors    Option[DescriptorLoader]
 	static         *descriptorpb.FileDescriptorSet
 	candidates     *proxy.Candidates
+	calls          *proxy.CallCounter
 	quarantiner    *nodeQuarantiner
 	// migration maps each route in the migration state to its node.
 	migration Option[*route.Map[stateRoute]]
@@ -119,6 +120,7 @@ func NewIngress(
 		descriptors:    loader,
 		static:         static,
 		candidates:     candidates,
+		calls:          proxy.NewCallCounter(),
 		quarantiner:    quarantiner,
 		migration:      migrationRoutes,
 	}
@@ -232,7 +234,14 @@ func (i *Ingress) Candidates() *proxy.Candidates {
 	return i.candidates
 }
 
+// Calls returns the requests ingress has received on each route.
+func (i *Ingress) Calls() model.Calls {
+	return i.calls.Calls()
+}
+
 func (i *Ingress) serveProxy(writer http.ResponseWriter, request *http.Request) {
+	route := i.route(request)
+	i.calls.Count(route)
 	select {
 	case i.requests <- struct{}{}:
 		defer func() { <-i.requests }()
@@ -255,7 +264,6 @@ func (i *Ingress) serveProxy(writer http.ResponseWriter, request *http.Request) 
 		i.referenceProxy.ServeHTTP(writer, referenceRequest)
 		return
 	}
-	route := i.route(request)
 	ignored, decode := i.classify(request)
 	reference, err := i.reference.process(request.Context(), None[protocol.RequestID](), route, ignored, unreadRequest)
 	forward, forwarded := reference.(protocol.DecisionForward)

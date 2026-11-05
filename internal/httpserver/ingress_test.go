@@ -1150,6 +1150,14 @@ status = "migrated"
 	referenceMu.Lock()
 	defer referenceMu.Unlock()
 	assert.Equal(t, []string{"/pending/a", "/ignored/a", "/grpc.reflection.v1.ServerReflection/ServerReflectionInfo", "/migrated/a", "/unlisted"}, referencePaths)
+	// Calls count under the migration state pattern that lists their route.
+	assert.Equal(t, model.Calls{Routes: map[model.Route]uint64{
+		"GET /pending/{name}": 1,
+		"GET /ignored/a":      1,
+		"POST /grpc.reflection.v1.ServerReflection/ServerReflectionInfo": 1,
+		"GET /migrated/{name}": 1,
+		"GET /unlisted":        1,
+	}}, handler.Calls())
 }
 
 func TestQuarantineNamesNodeOfRoute(t *testing.T) {

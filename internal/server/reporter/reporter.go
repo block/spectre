@@ -1,9 +1,9 @@
 // Package reporter streams what a mirror sends the SPECTRE server over one
 // stream. Every stream begins with the mirror's whole state, then sends each
 // quarantine as it begins, so a stream may fail at any time without losing
-// state. A quiet stream sends keepalives. A failed stream is replaced with
-// backoff, and a stream is replaced when it ages, so streams spread across
-// servers.
+// state. Every keepalive interval it sends the call counts if they changed,
+// or else a keepalive. A failed stream is replaced with backoff, and a stream
+// is replaced when it ages, so streams spread across servers.
 package reporter
 
 import (
@@ -22,7 +22,7 @@ import (
 // Config configures how a mirror reports to the SPECTRE server.
 type Config struct {
 	Client            client.Config `embed:""`
-	KeepaliveInterval time.Duration `name:"server-keepalive-interval" default:"30s" help:"How often to send a keepalive on a stream to the SPECTRE server that is otherwise quiet."`
+	KeepaliveInterval time.Duration `name:"server-keepalive-interval" default:"30s" help:"How often to send changed call counts, or else a keepalive, on a stream to the SPECTRE server that is otherwise quiet."`
 	StreamMaxAge      time.Duration `name:"server-stream-max-age" default:"10m" help:"How long a stream to the SPECTRE server lasts, with jitter, before it is replaced, so streams spread across servers."`
 	Service           string        `required:"" help:"Service the mirror runs, reported to the SPECTRE server."`
 	Environment       string        `required:"" help:"Environment the mirror runs in, such as production-us-west-2, reported to the SPECTRE server."`
@@ -55,14 +55,23 @@ type Reporter struct {
 	config  Config
 	client  *client.Client
 	sources []Source
+	// calls returns the requests the ingress proxy has received on each route.
+	calls   func() model.Calls
 	started time.Time
 	// quarantines belongs to the goroutine that runs streams.
 	quarantines map[model.Direction]model.Quarantine
 }
 
-// New reports the state of a mirror and its sources through server.
-func New(config Config, server *client.Client, sources ...Source) *Reporter {
-	return &Reporter{config: config, client: server, sources: sources, started: time.Now(), quarantines: map[model.Direction]model.Quarantine{}}
+// New reports the state of a mirror, its call counts, and its sources through server.
+func New(config Config, server *client.Client, calls func() model.Calls, sources ...Source) *Reporter {
+	return &Reporter{
+		config:      config,
+		client:      server,
+		sources:     sources,
+		calls:       calls,
+		started:     time.Now(),
+		quarantines: map[model.Direction]model.Quarantine{},
+	}
 }
 
 // Run keeps a stream open until ctx ends, replacing it when it fails, with
@@ -107,9 +116,11 @@ func (r *Reporter) stream(ctx context.Context, quarantines <-chan model.Quaranti
 	if err != nil {
 		return errors.Wrap(err, "open stream")
 	}
-	if err := updates.Send(r.state()); err != nil {
+	state := r.state()
+	if err := updates.Send(state); err != nil {
 		return failed(updates, err)
 	}
+	sent := state.Calls
 	keepalive := time.NewTimer(r.config.KeepaliveInterval)
 	defer keepalive.Stop()
 	age := time.NewTimer(jitter(r.config.StreamMaxAge))
@@ -123,7 +134,12 @@ func (r *Reporter) stream(ctx context.Context, quarantines <-chan model.Quaranti
 		case <-age.C:
 			return errors.Wrap(updates.CloseAndReceive(), "close aged stream")
 		case <-keepalive.C:
-			err = updates.Keepalive()
+			if calls := r.calls(); !calls.Equal(sent) {
+				sent = calls
+				err = updates.Send(calls)
+			} else {
+				err = updates.Keepalive()
+			}
 		case update := <-quarantines:
 			// Recorded first, so the next stream's state holds it if this send fails.
 			r.quarantines[update.Direction] = update.Quarantine
@@ -145,6 +161,7 @@ func (r *Reporter) state() model.State {
 		SpectreVersion: internal.Version,
 		Uptime:         time.Since(r.started),
 		Quarantines:    r.quarantines,
+		Calls:          r.calls(),
 	}
 }
 

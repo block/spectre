@@ -45,6 +45,7 @@ func TestStatusCommands(t *testing.T) {
 				Differences: []string{"body.name"},
 			}},
 		},
+		Calls: model.Calls{Routes: map[model.Route]uint64{"GET /v1/users": 1}},
 	}
 	healthy := model.State{
 		Service:        "users",
@@ -52,6 +53,7 @@ func TestStatusCommands(t *testing.T) {
 		Revision:       "def456",
 		SpectreVersion: "v1.2.3",
 		Uptime:         12*time.Minute + 300*time.Millisecond,
+		Calls:          model.Calls{Routes: map[model.Route]uint64{"POST /v1/users": 66, "GET /v1/users": 22}, Other: 3},
 	}
 	for _, state := range []model.State{quarantined, healthy} {
 		assert.NoError(t, store.Put(t.Context(), state, time.Now()))
@@ -67,10 +69,14 @@ func TestStatusCommands(t *testing.T) {
 users def456 production spectre v1.2.3, up 1h30m0s
   ingress http GET /v1/users: response differences: body.name (node users)
   quarantined 2026-10-01T12:01:00Z
+    GET /v1/users: 1 call
   egress: no matching reference call
   quarantined 2026-10-01T12:00:00Z on abc123, in an earlier run
 users def456 staging spectre v1.2.3, up 12m0s
   healthy
+    GET /v1/users: 22 calls
+    POST /v1/users: 66 calls
+    other routes: 3 calls
 `, text.String())
 
 	var data strings.Builder
@@ -95,7 +101,8 @@ users def456 staging spectre v1.2.3, up 12m0s
 			"revision": "def456",
 			"spectreVersion": "v1.2.3",
 			"uptime": "5400s",
-			"quarantines": [`+quarantine+`]
+			"quarantines": [`+quarantine+`],
+			"calls": {"routes": {"GET /v1/users": "1"}}
 		}],
 		"divergences": [{
 			"service": "users",
@@ -116,6 +123,7 @@ users def456 staging spectre v1.2.3, up 12m0s
 	assert.Equal(t, `users def456 production spectre v1.2.3, up 1h30m0s
   ingress http GET /v1/users: response differences: body.name (node users)
   quarantined 2026-10-01T12:01:00Z
+    GET /v1/users: 1 call
 `, text.String())
 
 	text.Reset()

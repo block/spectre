@@ -13,6 +13,7 @@ import (
 
 	"github.com/block/spectre/internal"
 	"github.com/block/spectre/internal/model"
+	"github.com/block/spectre/internal/proxy"
 	"github.com/block/spectre/internal/server"
 	"github.com/block/spectre/internal/server/client"
 	"github.com/block/spectre/internal/server/reporter"
@@ -28,6 +29,7 @@ type mirror struct {
 	// streams counts the streams the reporter opened.
 	streams *atomic.Int32
 	egress  chan model.Quarantine
+	calls   *proxy.CallCounter
 }
 
 // run runs a reporter against a server that lists states received within ttl
@@ -57,11 +59,12 @@ func run(t *testing.T, ttl time.Duration, failures int32, keepalive, maxAge time
 	spectre := client.New(config.Client)
 	egress := make(chan model.Quarantine, 1)
 	ingress := make(chan model.Quarantine, 1)
-	reporting := reporter.New(config, spectre, reporter.Source{Direction: model.Ingress, Quarantined: ingress}, reporter.Source{Direction: model.Egress, Quarantined: egress})
+	calls := proxy.NewCallCounter()
+	reporting := reporter.New(config, spectre, calls.Calls, reporter.Source{Direction: model.Ingress, Quarantined: ingress}, reporter.Source{Direction: model.Egress, Quarantined: egress})
 	ctx, cancel := context.WithCancel(t.Context())
 	t.Cleanup(cancel)
 	go reporting.Run(ctx)
-	return mirror{spectre: spectre, streams: streams, egress: egress}
+	return mirror{spectre: spectre, streams: streams, egress: egress, calls: calls}
 }
 
 // eventually fails the test unless done returns true within timeout.
@@ -125,6 +128,23 @@ func TestReporterKeepsQuietStreamListed(t *testing.T) {
 	time.Sleep(500 * time.Millisecond)
 	states, _ := m.states(t)
 	assert.Equal(t, 1, len(states))
+	assert.Equal(t, int32(1), m.streams.Load())
+}
+
+func TestReporterSendsChangedCalls(t *testing.T) {
+	m := run(t, time.Hour, 0, 20*time.Millisecond, time.Hour)
+	m.calls.Count("GET /v1/users")
+	calls := func(expected model.Calls) func() bool {
+		return func() bool {
+			states, _ := m.states(t)
+			return len(states) == 1 && states[0].Calls.Equal(expected)
+		}
+	}
+	eventually(t, 10*time.Second, calls(model.Calls{Routes: map[model.Route]uint64{"GET /v1/users": 1}}))
+
+	m.calls.Count("GET /v1/users")
+	m.calls.Count("POST /v1/users")
+	eventually(t, 10*time.Second, calls(model.Calls{Routes: map[model.Route]uint64{"GET /v1/users": 2, "POST /v1/users": 1}}))
 	assert.Equal(t, int32(1), m.streams.Load())
 }
 

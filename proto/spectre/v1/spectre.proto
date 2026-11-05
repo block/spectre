@@ -38,6 +38,8 @@ message UpdateRequest {
     Quarantine quarantine = 2;
     // Keepalive shows the mirror still runs when nothing has changed.
     Keepalive keepalive = 3;
+    // Calls replaces the state's call counts.
+    Calls calls = 4;
   }
 }
 
@@ -132,4 +134,14 @@ message State {
   google.protobuf.Duration uptime = 5;
   // Quarantines holds at most one quarantine per direction.
   repeated Quarantine quarantines = 6;
+  Calls calls = 7;
+}
+
+// Calls counts the requests the mirror's ingress proxy received on each route
+// since the mirror started.
+message Calls {
+  // Routes maps each route to its number of requests.
+  map<string, uint64> routes = 1;
+  // Other counts requests to routes beyond the most a mirror counts.
+  uint64 other = 2;
 }
