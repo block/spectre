@@ -107,10 +107,51 @@ message Quarantine {
   Traffic traffic = 3;
   // Node is the migration state node that owns an ingress route.
   optional string node = 4;
-  repeated string differences = 5;
+  reserved 5;
   string detail = 6;
   // Direction is the proxy that quarantined the candidate.
   Direction direction = 7;
+  // Differences are where and how a divergent candidate's response differs.
+  repeated Difference differences = 8;
+  // Truncated means the responses had more differences than are listed.
+  bool truncated = 9;
+}
+
+// Difference is where and how a candidate's response differs from the
+// reference's. It names only schema fields and JSON types, never values.
+message Difference {
+  // Change is how the candidate's value at the path differs.
+  enum Change {
+    CHANGE_UNSPECIFIED = 0;
+    // The reference has a value at the path and the candidate does not.
+    CHANGE_MISSING = 1;
+    // The candidate has a value at the path and the reference does not.
+    CHANGE_ADDED = 2;
+    // Both have values of the same JSON type that differ.
+    CHANGE_CHANGED = 3;
+    // Both have values, of different JSON types.
+    CHANGE_RETYPED = 4;
+  }
+
+  // Path names declared fields; payload keys and merged list indexes are [*].
+  string path = 1;
+  Change change = 2;
+  // Reference and candidate types are set only when the change is retyped.
+  JSONType reference_type = 3;
+  JSONType candidate_type = 4;
+  // Count is how many keys or list elements the path stands for.
+  uint32 count = 5;
+}
+
+// JSONType is the type of a JSON value.
+enum JSONType {
+  JSON_TYPE_UNSPECIFIED = 0;
+  JSON_TYPE_NULL = 1;
+  JSON_TYPE_BOOLEAN = 2;
+  JSON_TYPE_NUMBER = 3;
+  JSON_TYPE_STRING = 4;
+  JSON_TYPE_OBJECT = 5;
+  JSON_TYPE_LIST = 6;
 }
 
 // Traffic identifies the request that caused a quarantine.

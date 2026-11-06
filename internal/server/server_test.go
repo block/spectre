@@ -99,7 +99,7 @@ func TestUpdateKeepsLatestState(t *testing.T) {
 		Kind:        pb.Quarantine_KIND_DIVERGENT,
 		Traffic:     &pb.Traffic{Direction: pb.Direction_DIRECTION_INGRESS, Protocol: "http", Route: "GET /v1/users"},
 		Node:        proto.String("users"),
-		Differences: []string{"body.name"},
+		Differences: []*pb.Difference{{Path: "$.name", Change: pb.Difference_CHANGE_CHANGED, Count: 1}},
 	}
 	staging := state("staging", time.Minute)
 	calls := &pb.Calls{Routes: map[string]uint64{"GET /v1/users": 22}}

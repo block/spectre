@@ -33,15 +33,17 @@ type QuarantineReason struct {
 	Traffic Option[Traffic] `json:"traffic,omitzero"`
 	// Node is the migration state node that owns an ingress route.
 	Node Option[string] `json:"node,omitzero"`
-	// Differences are the field paths of a divergence, without values.
-	Differences []string `json:"differences,omitempty"`
-	Detail      string   `json:"detail,omitempty"`
+	// Differences are where and how the responses of a divergence differ, without values.
+	Differences []Difference `json:"differences,omitempty"`
+	// Truncated means the responses had more differences than are listed.
+	Truncated bool   `json:"truncated,omitzero"`
+	Detail    string `json:"detail,omitempty"`
 }
 
 // String describes the reason for logs.
 func (r QuarantineReason) String() string {
 	if r.Kind == QuarantineDivergent {
-		return "response differences: " + strings.Join(r.Differences, ", ")
+		return "response differences: " + strings.Join(DifferenceLines(r.Differences, r.Truncated), ", ")
 	}
 	return r.Detail
 }

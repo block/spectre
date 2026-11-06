@@ -194,6 +194,24 @@ func (p documentPath) parent() documentPath {
 	return newDocumentPath(p.parts[:len(p.parts)-1])
 }
 
+// reported returns the path as a difference reports it.
+func (p documentPath) reported() reportedPath {
+	parts := make([]pathPart, len(p.parts))
+	for i, part := range p.parts {
+		parts[i] = part
+		if _, indexed := part.arrayIndex(); indexed {
+			parts[i] = newAnyKeyPathPart()
+		}
+	}
+	return reportedPath{text: p.String(), wildcard: newDocumentPath(parts).String()}
+}
+
+// reportedPath is a difference's path, and the same path with each list index as [*].
+type reportedPath struct {
+	text     string
+	wildcard string
+}
+
 func (p documentPath) String() string {
 	var output strings.Builder
 	output.WriteByte('$')

@@ -125,7 +125,8 @@ func (m *mirror) render(palette terminal.Palette) string {
 		}
 		for _, direction := range []model.Direction{model.Ingress, model.Egress} {
 			if quarantine, ok := state.Quarantines[direction]; ok {
-				fmt.Fprintf(&text, "  %s\n  %s\n", palette.Red(describe(direction, quarantine.Reason)), palette.Dim("quarantined "+timestamp(quarantine.Since)))
+				renderReason(&text, palette.Red, direction, quarantine.Reason)
+				fmt.Fprintf(&text, "  %s\n", palette.Dim("quarantined "+timestamp(quarantine.Since)))
 			}
 		}
 		renderCalls(&text, state.Calls)
@@ -141,7 +142,8 @@ func (m *mirror) render(palette terminal.Palette) string {
 		if reporting {
 			since += ", in an earlier run"
 		}
-		fmt.Fprintf(&text, "  %s\n  %s\n", palette.Yellow(describe(divergence.Direction, divergence.Quarantine.Reason)), palette.Dim(since))
+		renderReason(&text, palette.Yellow, divergence.Direction, divergence.Quarantine.Reason)
+		fmt.Fprintf(&text, "  %s\n", palette.Dim(since))
 	}
 	return text.String()
 }
@@ -167,12 +169,27 @@ func timestamp(at time.Time) string {
 	return at.UTC().Format(time.RFC3339)
 }
 
-// describe renders a quarantine as the mirror logged it, with the direction,
-// route, and node it names.
+// renderReason writes a quarantine reason in colour, with a divergence's
+// differences on lines of their own.
+func renderReason(text *strings.Builder, colour func(text string) string, direction model.Direction, reason model.QuarantineReason) {
+	fmt.Fprintf(text, "  %s\n", colour(describe(direction, reason)))
+	if reason.Kind != model.QuarantineDivergent {
+		return
+	}
+	for _, line := range model.DifferenceLines(reason.Differences, reason.Truncated) {
+		fmt.Fprintf(text, "    %s\n", colour(line))
+	}
+}
+
+// describe summarises a quarantine with the direction, route, and node it names.
 func describe(direction model.Direction, reason model.QuarantineReason) string {
-	text := fmt.Sprintf("%s: %s", direction, reason)
+	summary := reason.String()
+	if reason.Kind == model.QuarantineDivergent {
+		summary = "response differences"
+	}
+	text := fmt.Sprintf("%s: %s", direction, summary)
 	if traffic, ok := reason.Traffic.Get(); ok {
-		text = fmt.Sprintf("%s %s %s: %s", direction, traffic.Protocol, traffic.Route, reason)
+		text = fmt.Sprintf("%s %s %s: %s", direction, traffic.Protocol, traffic.Route, summary)
 	}
 	if node, ok := reason.Node.Get(); ok {
 		text += fmt.Sprintf(" (node %s)", node)

@@ -237,7 +237,8 @@ func QuarantineMessage(direction model.Direction, status model.Quarantine) *pb.Q
 		Direction:   directionMessage(direction),
 		Since:       timestamppb.New(status.Since),
 		Kind:        kindMessage(reason.Kind),
-		Differences: reason.Differences,
+		Differences: differenceMessages(reason.Differences),
+		Truncated:   reason.Truncated,
 		Detail:      reason.Detail,
 		Node:        reason.Node.Ptr(),
 	}
@@ -284,10 +285,15 @@ func reasonFromMessage(message *pb.Quarantine) (model.QuarantineReason, error) {
 	if err != nil {
 		return model.QuarantineReason{}, err
 	}
+	differences, err := differencesFromMessages(message.GetDifferences())
+	if err != nil {
+		return model.QuarantineReason{}, err
+	}
 	reason := model.QuarantineReason{
 		Kind:        kind,
 		Node:        Zero(message.GetNode()),
-		Differences: message.GetDifferences(),
+		Differences: differences,
+		Truncated:   message.GetTruncated(),
 		Detail:      message.GetDetail(),
 	}
 	if traffic := message.GetTraffic(); traffic != nil {
@@ -303,6 +309,115 @@ func reasonFromMessage(message *pb.Quarantine) (model.QuarantineReason, error) {
 	}
 	return reason, nil
 }
+func differenceMessages(differences []model.Difference) []*pb.Difference {
+	messages := make([]*pb.Difference, 0, len(differences))
+	for _, difference := range differences {
+		message := &pb.Difference{
+			Path:   difference.Path,
+			Change: changeMessage(difference.Change),
+			Count:  uint32(max(difference.Count, 0)), //nolint:gosec // Counts are bounded by payload size.
+		}
+		if retype, ok := difference.Retype.Get(); ok {
+			message.ReferenceType = jsonTypeMessage(retype.Reference)
+			message.CandidateType = jsonTypeMessage(retype.Candidate)
+		}
+		messages = append(messages, message)
+	}
+	return messages
+}
+
+// differencesFromMessages restores reported differences. Only a retyped
+// difference has types, and it must have both.
+func differencesFromMessages(messages []*pb.Difference) ([]model.Difference, error) {
+	var differences []model.Difference
+	for _, message := range messages {
+		change, err := changeFromMessage(message.GetChange())
+		if err != nil {
+			return nil, err
+		}
+		difference := model.Difference{Path: message.GetPath(), Change: change, Count: int(message.GetCount())}
+		if change == model.ChangeRetyped {
+			reference, err := jsonTypeFromMessage(message.GetReferenceType())
+			if err != nil {
+				return nil, err
+			}
+			candidate, err := jsonTypeFromMessage(message.GetCandidateType())
+			if err != nil {
+				return nil, err
+			}
+			difference.Retype = Some(model.Retype{Reference: reference, Candidate: candidate})
+		}
+		differences = append(differences, difference)
+	}
+	return differences, nil
+}
+
+func changeMessage(change model.Change) pb.Difference_Change {
+	switch change {
+	case model.ChangeMissing:
+		return pb.Difference_CHANGE_MISSING
+	case model.ChangeAdded:
+		return pb.Difference_CHANGE_ADDED
+	case model.ChangeChanged:
+		return pb.Difference_CHANGE_CHANGED
+	case model.ChangeRetyped:
+		return pb.Difference_CHANGE_RETYPED
+	}
+	return pb.Difference_CHANGE_UNSPECIFIED
+}
+
+func changeFromMessage(change pb.Difference_Change) (model.Change, error) {
+	switch change {
+	case pb.Difference_CHANGE_MISSING:
+		return model.ChangeMissing, nil
+	case pb.Difference_CHANGE_ADDED:
+		return model.ChangeAdded, nil
+	case pb.Difference_CHANGE_CHANGED:
+		return model.ChangeChanged, nil
+	case pb.Difference_CHANGE_RETYPED:
+		return model.ChangeRetyped, nil
+	case pb.Difference_CHANGE_UNSPECIFIED:
+	}
+	return "", errors.Errorf("unknown difference change %s", change)
+}
+
+func jsonTypeMessage(jsonType model.JSONType) pb.JSONType {
+	switch jsonType {
+	case model.JSONNull:
+		return pb.JSONType_JSON_TYPE_NULL
+	case model.JSONBoolean:
+		return pb.JSONType_JSON_TYPE_BOOLEAN
+	case model.JSONNumber:
+		return pb.JSONType_JSON_TYPE_NUMBER
+	case model.JSONString:
+		return pb.JSONType_JSON_TYPE_STRING
+	case model.JSONObject:
+		return pb.JSONType_JSON_TYPE_OBJECT
+	case model.JSONList:
+		return pb.JSONType_JSON_TYPE_LIST
+	}
+	return pb.JSONType_JSON_TYPE_UNSPECIFIED
+}
+
+func jsonTypeFromMessage(jsonType pb.JSONType) (model.JSONType, error) {
+	switch jsonType {
+	case pb.JSONType_JSON_TYPE_NULL:
+		return model.JSONNull, nil
+	case pb.JSONType_JSON_TYPE_BOOLEAN:
+		return model.JSONBoolean, nil
+	case pb.JSONType_JSON_TYPE_NUMBER:
+		return model.JSONNumber, nil
+	case pb.JSONType_JSON_TYPE_STRING:
+		return model.JSONString, nil
+	case pb.JSONType_JSON_TYPE_OBJECT:
+		return model.JSONObject, nil
+	case pb.JSONType_JSON_TYPE_LIST:
+		return model.JSONList, nil
+	case pb.JSONType_JSON_TYPE_UNSPECIFIED:
+	}
+	return "", errors.Errorf("unknown JSON type %s", jsonType)
+}
+
 func kindMessage(kind model.QuarantineKind) pb.Quarantine_Kind {
 	switch kind {
 	case model.QuarantineDivergent:

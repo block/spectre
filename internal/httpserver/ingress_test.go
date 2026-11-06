@@ -305,14 +305,14 @@ func TestComparisonDoesNotDelayReferenceAndDivergenceQuarantines(t *testing.T) {
 	}
 	close(releaseCandidate)
 
-	assert.Equal(t, quarantineRecord{Event: "quarantine", Reason: "response differences: $.value"},
+	assert.Equal(t, quarantineRecord{Event: "quarantine", Reason: "response differences: ~ $.value"},
 		waitForRecords[quarantineRecord](t, logs, "Candidate quarantined", 1)[0])
 	assert.Equal(t, []comparisonRecord{{
 		Event:       "correlation",
 		Protocol:    "http",
 		Route:       "GET /compared/a%2Fb",
 		Outcome:     "divergent",
-		Differences: []string{"$.value"},
+		Differences: []string{"~ $.value"},
 	}}, logRecords[comparisonRecord](t, logs, "Response comparison completed"))
 	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequestWithContext(ctx, http.MethodGet, "http://proxy.example/compared/second", nil))
 	assert.Equal(t, int32(1), candidateCalls.Load())
@@ -395,14 +395,14 @@ func TestStatusDifferenceIsDivergentWhenCandidateBodyIsUndecodable(t *testing.T)
 
 	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequestWithContext(ctx, http.MethodGet, "http://proxy.example/compared/item", nil))
 
-	assert.Equal(t, quarantineRecord{Event: "quarantine", Reason: "response differences: $status"},
+	assert.Equal(t, quarantineRecord{Event: "quarantine", Reason: "response differences: ~ $status"},
 		waitForRecords[quarantineRecord](t, logs, "Candidate quarantined", 1)[0])
 	assert.Equal(t, []comparisonRecord{{
 		Event:       "correlation",
 		Protocol:    "http",
 		Route:       "GET /compared/item",
 		Outcome:     "divergent",
-		Differences: []string{"$status"},
+		Differences: []string{"~ $status"},
 	}}, logRecords[comparisonRecord](t, logs, "Response comparison completed"))
 	assert.NoError(t, handler.Shutdown(t.Context()))
 }
@@ -415,7 +415,7 @@ func TestRulesCompareOnlyTheStatusOfServerErrors(t *testing.T) {
 		expected        comparisonRecord
 	}{
 		"SameStatus":      {candidateStatus: http.StatusInternalServerError, expected: comparisonRecord{Outcome: "equivalent"}},
-		"DifferentStatus": {candidateStatus: http.StatusBadGateway, expected: comparisonRecord{Outcome: "divergent", Differences: []string{"$status"}}},
+		"DifferentStatus": {candidateStatus: http.StatusBadGateway, expected: comparisonRecord{Outcome: "divergent", Differences: []string{"~ $status"}}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			transport := roundTripperFunc(func(request *http.Request) (*http.Response, error) {
@@ -1291,7 +1291,7 @@ status = "migrated"
 				Kind:        model.QuarantineDivergent,
 				Traffic:     Some(model.Traffic{Direction: model.Ingress, Protocol: model.ProtocolHTTP, Route: model.Route(test.pattern)}),
 				Node:        Some("forecasts"),
-				Differences: []string{"$.value"},
+				Differences: []model.Difference{{Path: "$.value", Change: model.ChangeChanged, Count: 1}},
 			}, status.Reason)
 			assert.NoError(t, handler.Shutdown(t.Context()))
 		})
@@ -1445,10 +1445,11 @@ ingress.http("GET /ignored/{name}").ignore();
 
 // comparisonRecord is a "Response comparison completed" log record without its timing.
 type comparisonRecord struct {
-	Event       string   `json:"event"`
-	Protocol    string   `json:"protocol"`
-	Route       string   `json:"route"`
-	Outcome     string   `json:"outcome"`
+	Event    string `json:"event"`
+	Protocol string `json:"protocol"`
+	Route    string `json:"route"`
+	Outcome  string `json:"outcome"`
+	// Differences are diff lines, as in spectre status.
 	Differences []string `json:"differences"`
 	Reason      string   `json:"reason"`
 }
