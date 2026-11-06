@@ -61,7 +61,7 @@ For example, this template mimics a service that logs millisecond timestamps, it
 A warning from the ingress proxy is then written as:
 
 ```json
-{"context": {"spectre.subsystem": "ingress", "route": "GET /v1/users"}, "message": "Candidate quarantined", "service": "payments", "severity": "WARNING", "ts": 1767225600000}
+{"context": {"spectre.subsystem": "ingress", "route": "GET /v1/users"}, "message": "Candidate request failed", "service": "payments", "severity": "WARNING", "ts": 1767225600000}
 ```
 
 SPECTRE's own lines carry the same `spectre.subsystem` key, set to `supervisor`, `ingress` or `egress`, so one key identifies every component across both paths.

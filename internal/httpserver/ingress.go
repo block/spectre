@@ -180,13 +180,13 @@ func newNodeQuarantiner(candidates *proxy.Candidates, owners map[model.Route]str
 	return &nodeQuarantiner{candidates: candidates, owners: owners}
 }
 
-func (q *nodeQuarantiner) Quarantine(ctx context.Context, reason model.QuarantineReason) {
+func (q *nodeQuarantiner) Quarantine(reason model.QuarantineReason) {
 	if traffic, ok := reason.Traffic.Get(); ok && traffic.Direction == model.Ingress && traffic.Protocol == model.ProtocolHTTP {
 		if node, owned := q.owners[traffic.Route]; owned {
 			reason.Node = Some(node)
 		}
 	}
-	q.candidates.Quarantine(ctx, reason)
+	q.candidates.Quarantine(reason)
 }
 
 // route is a request's engine route: the migration state pattern that lists it,
@@ -271,7 +271,7 @@ func (i *Ingress) serveProxy(writer http.ResponseWriter, request *http.Request) 
 	// Candidate work may outlive reference delivery, but its own timeout bounds its lifetime.
 	candidateContext := context.WithoutCancel(request.Context())
 	candidateContext, cancel := context.WithTimeout(candidateContext, i.config.CandidateTimeout)
-	run, admitted := i.candidates.Start(candidateContext, cancel).Get()
+	run, admitted := i.candidates.Start(cancel).Get()
 	if !admitted {
 		cancel()
 		i.referenceProxy.ServeHTTP(writer, referenceRequest)
@@ -293,7 +293,7 @@ func (i *Ingress) serveProxy(writer http.ResponseWriter, request *http.Request) 
 		cancel()
 		i.candidates.Finish(run)
 	} else {
-		body := i.mirror(candidateContext, request, referenceRequest, cancel)
+		body := i.mirror(request, referenceRequest, cancel)
 		candidateRequest := request.Clone(candidateContext)
 		candidateRequest.Body = body
 		candidateRequest.GetBody = nil
@@ -325,15 +325,15 @@ func (i *Ingress) mirrors(request *http.Request) bool {
 	if _, ignored := i.routes.Responses(request.Method, path, request.Header); ignored.Ok() || strings.HasPrefix(path, "/grpc.reflection.") {
 		return false
 	}
-	i.candidates.Quarantine(request.Context(), i.reason(model.QuarantineUnlisted, request,
+	i.candidates.Quarantine(i.reason(model.QuarantineUnlisted, request,
 		"route "+request.Method+" "+path+" is in no node of the migration state"))
 	return false
 }
 
 // mirror makes the reference request body the sole producer of the candidate's body.
-func (i *Ingress) mirror(ctx context.Context, request, referenceRequest *http.Request, abort context.CancelFunc) *streamBody {
+func (i *Ingress) mirror(request, referenceRequest *http.Request, abort context.CancelFunc) *streamBody {
 	body := newStreamBody(i.buffer, func(err error) {
-		i.quarantiner.Quarantine(ctx, i.reason(model.QuarantineCapacity, request, err.Error()))
+		i.quarantiner.Quarantine(i.reason(model.QuarantineCapacity, request, err.Error()))
 	}, abort)
 	if request.Body == nil || request.Body == http.NoBody {
 		body.closeWriter(io.EOF)
@@ -424,7 +424,7 @@ func (i *Ingress) awaitCandidate(ctx context.Context) (started bool) {
 	case ctx.Err() != nil:
 		return false
 	case err != nil:
-		i.candidates.Quarantine(ctx, model.QuarantineReason{
+		i.candidates.Quarantine(model.QuarantineReason{
 			Kind:   model.QuarantineUnable,
 			Detail: "candidate did not accept a connection within " + i.config.CandidateStartupTimeout.String(),
 		})

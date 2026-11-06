@@ -47,7 +47,6 @@ func New(config Config, output io.Writer) *slog.Logger {
 
 // Event names for the notable proxy events, used as the event tag value.
 const (
-	EventQuarantine  = "quarantine"
 	EventReceived    = "received"
 	EventCorrelation = "correlation"
 )

@@ -3,7 +3,6 @@ package message_test
 import (
 	"bytes"
 	"compress/gzip"
-	"context"
 	"encoding/binary"
 	"net/http"
 	"os"
@@ -293,7 +292,7 @@ func TestBindsTextWithoutDescriptors(t *testing.T) {
 // discardQuarantine accepts quarantine requests, which decoding never makes.
 type discardQuarantine struct{}
 
-func (discardQuarantine) Quarantine(_ context.Context, _ model.QuarantineReason) {}
+func (discardQuarantine) Quarantine(_ model.QuarantineReason) {}
 
 // buildDecoder declares the scripts' endpoints through the engine, as servers do.
 func buildDecoder(t *testing.T, set *descriptorpb.FileDescriptorSet, declarations, scripts map[string]string) (*message.Decoder, error) {

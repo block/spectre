@@ -175,7 +175,7 @@ type recordingQuarantiner struct {
 	reasons []model.QuarantineReason
 }
 
-func (q *recordingQuarantiner) Quarantine(_ context.Context, reason model.QuarantineReason) {
+func (q *recordingQuarantiner) Quarantine(reason model.QuarantineReason) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	q.reasons = append(q.reasons, reason)
