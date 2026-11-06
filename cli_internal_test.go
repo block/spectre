@@ -13,6 +13,7 @@ import (
 	"github.com/alecthomas/assert/v2"
 
 	"github.com/block/spectre/internal/cli"
+	"github.com/block/spectre/internal/contain"
 	"github.com/block/spectre/internal/proxies"
 	"github.com/block/spectre/internal/server"
 	"github.com/block/spectre/internal/server/client"
@@ -140,6 +141,16 @@ func TestProxyCommandReadsFlagsFromEnvironment(t *testing.T) {
 	expected.Mirror.Server.Environment = "production-us-west-2"
 	expected.Mirror.Server.Revision = "3f9c2a1"
 	assert.Equal(t, expected, command.Proxy.Proxy)
+}
+
+func TestContainCommandReadsUIDFromEnvironment(t *testing.T) {
+	t.Setenv("SPECTRE_UID", "1002")
+	command := &cli.CommandLine{}
+	parser, err := newParser(command)
+	assert.NoError(t, err)
+	_, err = parser.Parse([]string{"contain"})
+	assert.NoError(t, err)
+	assert.Equal(t, contain.Config{UID: 1002}, command.Contain.Contain)
 }
 
 func TestVersionFlagIgnoresEnvironment(t *testing.T) {

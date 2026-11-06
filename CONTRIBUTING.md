@@ -92,6 +92,14 @@ divergence. A candidate that accepts nothing within
 `--health-listen` serves `/livez`, and `/readyz` once both proxies are ready,
 over TCP so a kubelet's HTTP probes can reach them.
 
+A candidate in its own container must reach dependencies only through its
+egress socket. Run it as a user of its own, and run `spectre contain
+--uid=<candidate uid>` in an init container with root and `NET_ADMIN`. It
+installs Linux packet filter rules that reject that user's IPv4 and IPv6
+traffic, including loopback and DNS, since the pod's containers share one
+network. Replies on connections other containers open to the candidate still
+pass, and unix sockets are unaffected. Running it again replaces the rules.
+
 ## SPECTRE server
 
 `spectre serve` collects the states that mirrors stream to it: each mirror's
