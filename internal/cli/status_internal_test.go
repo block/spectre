@@ -39,10 +39,15 @@ func TestStatusCommands(t *testing.T) {
 		//nolint:exhaustive // Only the ingress proxy quarantined in this run.
 		Quarantines: map[model.Direction]model.Quarantine{
 			model.Ingress: {Since: first.Add(time.Minute), Reason: model.QuarantineReason{
-				Kind:        model.QuarantineDivergent,
-				Traffic:     Some(model.Traffic{Direction: model.Ingress, Protocol: model.ProtocolHTTP, Route: "GET /v1/users"}),
-				Node:        Some("users"),
-				Differences: []string{"body.name"},
+				Kind:    model.QuarantineDivergent,
+				Traffic: Some(model.Traffic{Direction: model.Ingress, Protocol: model.ProtocolHTTP, Route: "GET /v1/users"}),
+				Node:    Some("users"),
+				Differences: []model.Difference{
+					{Path: "$.name", Change: model.ChangeChanged, Count: 1},
+					{Path: "$.emails[*]", Change: model.ChangeMissing, Count: 2},
+					{Path: "$.owner", Change: model.ChangeRetyped, Retype: Some(model.Retype{Reference: model.JSONObject, Candidate: model.JSONNull}), Count: 1},
+				},
+				Truncated: true,
 			}},
 		},
 		Calls: model.Calls{Routes: map[model.Route]uint64{"GET /v1/users": 1}},
@@ -67,7 +72,11 @@ func TestStatusCommands(t *testing.T) {
   egress: no matching reference call
   quarantined 2026-10-01T12:00:00Z on abc123
 users def456 production spectre v1.2.3, up 1h30m0s
-  ingress http GET /v1/users: response differences: body.name (node users)
+  ingress http GET /v1/users: response differences (node users)
+    ~ $.name
+    - $.emails[*] ×2
+    ! $.owner object → null
+    … more
   quarantined 2026-10-01T12:01:00Z
     GET /v1/users: 1 call
   egress: no matching reference call
@@ -91,7 +100,12 @@ users def456 staging spectre v1.2.3, up 12m0s
 		"kind": "KIND_DIVERGENT",
 		"traffic": {"direction": "DIRECTION_INGRESS", "protocol": "http", "route": "GET /v1/users"},
 		"node": "users",
-		"differences": ["body.name"]
+		"differences": [
+			{"path": "$.name", "change": "CHANGE_CHANGED", "count": 1},
+			{"path": "$.emails[*]", "change": "CHANGE_MISSING", "count": 2},
+			{"path": "$.owner", "change": "CHANGE_RETYPED", "referenceType": "JSON_TYPE_OBJECT", "candidateType": "JSON_TYPE_NULL", "count": 1}
+		],
+		"truncated": true
 	}`
 	var expected, printed any
 	assert.NoError(t, json.Unmarshal([]byte(`{
@@ -121,7 +135,11 @@ users def456 staging spectre v1.2.3, up 12m0s
 	assert.NoError(t, list.Run(t.Context(), spectre, Output{Writer: &text}))
 	// The mirror still holds its quarantine, so it lists until the mirror restarts.
 	assert.Equal(t, `users def456 production spectre v1.2.3, up 1h30m0s
-  ingress http GET /v1/users: response differences: body.name (node users)
+  ingress http GET /v1/users: response differences (node users)
+    ~ $.name
+    - $.emails[*] ×2
+    ! $.owner object → null
+    … more
   quarantined 2026-10-01T12:01:00Z
     GET /v1/users: 1 call
 `, text.String())

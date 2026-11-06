@@ -250,20 +250,21 @@ func (s *Scripts) normalisedResponse(match javascript.ActionMatch, result Option
 	return status, body, nil
 }
 
-// Compare normalises both payloads as typeName and returns the paths at which
-// they differ. Untyped payloads are compared without normalisers.
-func (s *Scripts) Compare(ctx context.Context, typeName Option[schema.TypeRef], reference, candidate any) (differences []string, err error) {
+// Compare normalises both payloads as typeName and returns where they differ, and
+// whether they differ in more places. Untyped payloads are compared without normalisers.
+func (s *Scripts) Compare(ctx context.Context, typeName Option[schema.TypeRef], reference, candidate any) (differences []model.Difference, truncated bool, err error) {
 	ctx, cancel := context.WithTimeout(ctx, s.timeout)
 	defer cancel()
 	normalisedReference, err := s.normalise(ctx, typeName, "reference", reference)
 	if err != nil {
-		return nil, errors.Wrap(err, "normalise reference")
+		return nil, false, errors.Wrap(err, "normalise reference")
 	}
 	normalisedCandidate, err := s.normalise(ctx, typeName, "candidate", candidate)
 	if err != nil {
-		return nil, errors.Wrap(err, "normalise candidate")
+		return nil, false, errors.Wrap(err, "normalise candidate")
 	}
-	return comparisoninternal.Diff(normalisedReference, normalisedCandidate), nil
+	differences, truncated = comparisoninternal.Diff(normalisedReference, normalisedCandidate)
+	return differences, truncated, nil
 }
 
 // Hash returns SHA-256 over identity and the canonical JSON of the normalised

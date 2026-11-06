@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -18,6 +19,7 @@ import (
 	"github.com/block/spectre/internal/comparison"
 	"github.com/block/spectre/internal/comparison/javascript"
 	"github.com/block/spectre/internal/logger"
+	"github.com/block/spectre/internal/model"
 	"github.com/block/spectre/internal/schema"
 )
 
@@ -283,11 +285,11 @@ func TestLoadsEveryScriptAsOneSet(t *testing.T) {
 		{`http("GET /_status")`, javascript.ActionIgnore{}},
 	}, rules)
 
-	differences, err := scripts.Compare(t.Context(), Some[schema.TypeRef]("test.v1.Response"),
+	differences, truncated, err := scripts.Compare(t.Context(), Some[schema.TypeRef]("test.v1.Response"),
 		decode(t, `{"stable":"SAME","owner":{"name":"ALICE"}}`),
 		decode(t, `{"stable":"same","owner":{"name":"alice"}}`))
 	assert.NoError(t, err)
-	assert.Equal(t, []string{}, differences)
+	assert.Equal(t, []string{}, model.DifferenceLines(differences, truncated))
 }
 
 func TestCompareAppliesNormalisers(t *testing.T) {
@@ -325,7 +327,7 @@ func TestCompareAppliesNormalisers(t *testing.T) {
 			script:    `spectre.field<v1.Response, "ignored">((value) => value?.toLowerCase());`,
 			reference: `{"stable":"same","ignored":"First"}`,
 			candidate: `{"stable":"same","ignored":"second"}`,
-			expected:  []string{"$.ignored"},
+			expected:  []string{"~ $.ignored"},
 		},
 		"ParentReceivesNormalisedChildren": {
 			typeName: response,
@@ -375,7 +377,7 @@ func TestCompareAppliesNormalisers(t *testing.T) {
 			typeName:  response,
 			reference: `{"stable":"first"}`,
 			candidate: `{"stable":"second"}`,
-			expected:  []string{"$.stable"},
+			expected:  []string{"~ $.stable"},
 		},
 		"UntypedSkipsNormalisers": {
 			script:    `spectre.field<v1.Response, "ignored">(() => undefined);`,
@@ -383,25 +385,55 @@ func TestCompareAppliesNormalisers(t *testing.T) {
 			reference: `{"stable":"same","ignored":"first"}`,
 			candidate: `{"stable":"same","ignored":"second"}`,
 			// Untyped keys are payload data, so no path quotes them.
-			expected: []string{"$[*]"},
+			expected: []string{"~ $[*]"},
 		},
 		"MapKeysAreNotReported": {
 			typeName:  response,
 			reference: `{"stable":"same","labels":{"alice@example.com":"a"}}`,
 			candidate: `{"stable":"same","labels":{"alice@example.com":"b","bob@example.com":"c"}}`,
-			expected:  []string{"$.labels[*]"},
+			expected:  []string{"~ $.labels[*]", "+ $.labels[*]"},
 		},
 		"DeclaredFieldsUnderListsAreReported": {
 			typeName:  response,
 			reference: `{"stable":"same","users":[{"name":"alice"}]}`,
 			candidate: `{"stable":"same","users":[{"name":"bob"}]}`,
-			expected:  []string{"$.users[0].name"},
+			expected:  []string{"~ $.users[0].name"},
+		},
+		"MissingField": {
+			typeName:  response,
+			reference: `{"stable":"same","ignored":"first"}`,
+			candidate: `{"stable":"same"}`,
+			expected:  []string{"- $.ignored"},
+		},
+		"RetypedField": {
+			typeName:  response,
+			reference: `{"stable":"same","owner":{"name":"alice"}}`,
+			candidate: `{"stable":"same","owner":null}`,
+			expected:  []string{"! $.owner object → null"},
+		},
+		"SameFieldInEveryElementIsMerged": {
+			typeName:  response,
+			reference: `{"stable":"same","users":[{"name":"alice"},{"name":"bob"}]}`,
+			candidate: `{"stable":"same","users":[{"name":"carol"},{"name":"dave"}]}`,
+			expected:  []string{"~ $.users[*].name ×2"},
+		},
+		"ExtraElementsAreCounted": {
+			typeName:  response,
+			reference: `{"stable":"same","users":[{"name":"alice"},{"name":"bob"},{"name":"carol"}]}`,
+			candidate: `{"stable":"same","users":[{"name":"alice"}]}`,
+			expected:  []string{"- $.users[*] ×2"},
+		},
+		"TooManyDifferencesAreTruncated": {
+			typeName:  response,
+			reference: `{"stable":"same","users":[` + strings.Repeat(`{"name":"alice"},`, 100) + `{"name":"alice"}]}`,
+			candidate: `{"stable":"same","users":[` + strings.Repeat(`{"name":"bob"},`, 100) + `{"name":"bob"}]}`,
+			expected:  []string{"~ $.users[*].name ×100", "… more"},
 		},
 		"ExplicitDefaultsRemainPresent": {
 			typeName:  Some[schema.TypeRef]("raw.Response"),
 			reference: `{"stable":"same"}`,
 			candidate: `{"stable":"same","ignored":"","count":0,"enabled":false,"roles":[],"metadata":{}}`,
-			expected:  []string{"$.count", "$.enabled", "$.ignored", "$.metadata", "$.roles"},
+			expected:  []string{"+ $.count", "+ $.enabled", "+ $.ignored", "+ $.metadata", "+ $.roles"},
 		},
 		"FieldNormaliserMayChangeType": {
 			script:    `spectre.field<raw.Response, "stable">((): any => ({replacement: true}));`,
@@ -423,10 +455,10 @@ func TestCompareAppliesNormalisers(t *testing.T) {
 				expected = []string{}
 			}
 
-			differences, err := scripts.Compare(t.Context(), test.typeName, decode(t, test.reference), decode(t, test.candidate))
+			differences, truncated, err := scripts.Compare(t.Context(), test.typeName, decode(t, test.reference), decode(t, test.candidate))
 
 			assert.NoError(t, err)
-			assert.Equal(t, expected, differences)
+			assert.Equal(t, expected, model.DifferenceLines(differences, truncated))
 		})
 	}
 }
@@ -434,11 +466,11 @@ func TestCompareAppliesNormalisers(t *testing.T) {
 func TestCompareRejectsNonJSONNormaliserResult(t *testing.T) {
 	scripts := newScripts(t, `spectre.message<v1.Response>((): any => () => true);`)
 
-	differences, err := scripts.Compare(t.Context(), Some[schema.TypeRef]("test.v1.Response"), decode(t, `{"stable":"same"}`), decode(t, `{"stable":"same"}`))
+	differences, _, err := scripts.Compare(t.Context(), Some[schema.TypeRef]("test.v1.Response"), decode(t, `{"stable":"same"}`), decode(t, `{"stable":"same"}`))
 
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "normalise reference")
-	assert.Equal(t, []string(nil), differences)
+	assert.Equal(t, []model.Difference(nil), differences)
 }
 
 func TestInterruptsRunawayNormaliser(t *testing.T) {
@@ -449,7 +481,7 @@ func TestInterruptsRunawayNormaliser(t *testing.T) {
 	scripts, err := comparison.New(t.Context(), config)
 	assert.NoError(t, err)
 
-	_, err = scripts.Compare(t.Context(), Some[schema.TypeRef]("test.v1.Response"), decode(t, `{"stable":"same"}`), decode(t, `{"stable":"same"}`))
+	_, _, err = scripts.Compare(t.Context(), Some[schema.TypeRef]("test.v1.Response"), decode(t, `{"stable":"same"}`), decode(t, `{"stable":"same"}`))
 	assert.Error(t, err)
 
 	_, err = scripts.Hash(t.Context(), "identity", Some[schema.TypeRef]("test.v1.Response"), "reference", decode(t, `{"stable":"same"}`))
@@ -466,12 +498,13 @@ func TestLogsIndividualNormaliserResults(t *testing.T) {
 	scripts, err := comparison.New(ctx, config)
 	assert.NoError(t, err)
 
-	differences, err := scripts.Compare(ctx, Some[schema.TypeRef]("test.v1.Response"),
+	differences, truncated, err := scripts.Compare(ctx, Some[schema.TypeRef]("test.v1.Response"),
 		decode(t, `{"stable":"first","ignored":"first"}`),
 		decode(t, `{"stable":"second","ignored":"second"}`))
 
 	assert.NoError(t, err)
-	assert.Equal(t, []string{"$.stable"}, differences)
+	assert.Equal(t, []model.Difference{{Path: "$.stable", Change: model.ChangeChanged, Count: 1}}, differences)
+	assert.False(t, truncated)
 	logs := output.String()
 	assert.Contains(t, logs, `"msg":"Payload normaliser completed","kind":"field","target":"test.v1.Response.ignored","side":"reference","payload_path":"$.ignored"`)
 	assert.Contains(t, logs, `"msg":"Payload normaliser completed","kind":"field","target":"test.v1.Response.stable","side":"candidate","payload_path":"$.stable"`)

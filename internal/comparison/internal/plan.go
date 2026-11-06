@@ -9,6 +9,7 @@ import (
 	. "github.com/alecthomas/types/optional"
 
 	"github.com/block/spectre/internal/comparison/javascript"
+	"github.com/block/spectre/internal/model"
 	"github.com/block/spectre/internal/schema"
 )
 
@@ -95,14 +96,8 @@ func (n *Normalised) CanonicalJSON() ([]byte, error) {
 	return data, errors.Wrap(err, "encode canonical JSON")
 }
 
-// Diff returns the paths at which two normalised payloads differ, without values.
-// Both payloads are instances of the reference's declared type.
-func Diff(reference, candidate *Normalised) (differences []string) {
-	root := newDocumentPath(nil)
-	referenceRoot, referencePresent := reference.document().Export().Get()
-	candidateRoot, candidatePresent := candidate.document().Export().Get()
-	if referencePresent != candidatePresent {
-		return []string{root.String()}
-	}
-	return reference.differ().compare(referenceRoot, candidateRoot, root)
+// Diff returns where and how two normalised payloads differ, without values, and
+// whether there were more differences. Both are instances of the reference's type.
+func Diff(reference, candidate *Normalised) (differences []model.Difference, truncated bool) {
+	return reference.differ().compare(reference.document().Export(), candidate.document().Export())
 }

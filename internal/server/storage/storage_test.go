@@ -179,10 +179,15 @@ func testReplacesState(t *testing.T, store storage.Store) {
 	latest.Quarantines = map[model.Direction]model.Quarantine{model.Ingress: {
 		Since: received,
 		Reason: model.QuarantineReason{
-			Kind:        model.QuarantineDivergent,
-			Traffic:     Some(model.Traffic{Direction: model.Ingress, Protocol: model.ProtocolHTTP, Route: "GET /v1/users"}),
-			Node:        Some("users"),
-			Differences: []string{"body.name"},
+			Kind:    model.QuarantineDivergent,
+			Traffic: Some(model.Traffic{Direction: model.Ingress, Protocol: model.ProtocolHTTP, Route: "GET /v1/users"}),
+			Node:    Some("users"),
+			Differences: []model.Difference{
+				{Path: "$.name", Change: model.ChangeChanged, Count: 1},
+				{Path: "$.emails[*]", Change: model.ChangeMissing, Count: 2},
+				{Path: "$.owner", Change: model.ChangeRetyped, Retype: Some(model.Retype{Reference: model.JSONObject, Candidate: model.JSONNull}), Count: 1},
+			},
+			Truncated: true,
 		},
 	}}
 	staging := state("staging", time.Minute)
@@ -243,10 +248,15 @@ func testKeepsLatestQuarantine(t *testing.T, store storage.Store) {
 	first := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
 	latest := divergence("production", model.Ingress, first.Add(time.Minute))
 	latest.Quarantine.Reason = model.QuarantineReason{
-		Kind:        model.QuarantineDivergent,
-		Traffic:     Some(model.Traffic{Direction: model.Ingress, Protocol: model.ProtocolHTTP, Route: "GET /v1/users"}),
-		Node:        Some("users"),
-		Differences: []string{"body.name"},
+		Kind:    model.QuarantineDivergent,
+		Traffic: Some(model.Traffic{Direction: model.Ingress, Protocol: model.ProtocolHTTP, Route: "GET /v1/users"}),
+		Node:    Some("users"),
+		Differences: []model.Difference{
+			{Path: "$.name", Change: model.ChangeChanged, Count: 1},
+			{Path: "$.emails[*]", Change: model.ChangeMissing, Count: 2},
+			{Path: "$.owner", Change: model.ChangeRetyped, Retype: Some(model.Retype{Reference: model.JSONObject, Candidate: model.JSONNull}), Count: 1},
+		},
+		Truncated: true,
 	}
 	egress := divergence("production", model.Egress, first)
 	for _, reported := range []model.Divergence{

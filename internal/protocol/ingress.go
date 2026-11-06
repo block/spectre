@@ -30,7 +30,8 @@ const (
 // comparisonResult describes a comparison without exposing response values.
 type comparisonResult struct {
 	outcome     outcome
-	differences []string
+	differences []model.Difference
+	truncated   bool
 	reason      string
 }
 
@@ -38,8 +39,13 @@ func newComparisonResult(outcome outcome, reason string) comparisonResult {
 	return comparisonResult{outcome: outcome, reason: reason}
 }
 
-func newDifferenceResult(differences ...string) comparisonResult {
-	return comparisonResult{outcome: outcomeDivergent, differences: differences}
+func newDifferenceResult(truncated bool, differences ...model.Difference) comparisonResult {
+	return comparisonResult{outcome: outcomeDivergent, differences: differences, truncated: truncated}
+}
+
+// rootDifference is a difference in a response's status or presence, which is not a payload path.
+func rootDifference(path string, change model.Change) comparisonResult {
+	return newDifferenceResult(false, model.Difference{Path: path, Change: change, Count: 1})
 }
 
 // ingressPairs pairs each reference request with its mirrored candidate request
@@ -191,7 +197,7 @@ func compareResponses(ctx context.Context, scripts *comparison.Scripts, outcome 
 	candidateStatus, candidateKnown := candidateContent.Status.Get()
 	decoded := !referenceContent.Failure.Ok() && !candidateContent.Failure.Ok()
 	if referenceKnown && candidateKnown && referenceStatus != candidateStatus && (!decoded || referenceContent.Ignored.Ok() || candidateContent.Ignored.Ok()) {
-		return newDifferenceResult("$status")
+		return rootDifference("$status", model.ChangeChanged)
 	}
 	if failure, failed := referenceContent.Failure.Get(); failed {
 		return newComparisonResult(outcomeUnable, "reference: "+failure.Error())
@@ -214,7 +220,7 @@ func compareResponses(ctx context.Context, scripts *comparison.Scripts, outcome 
 		return newComparisonResult(outcomeUnable, "candidate: "+err.Error())
 	}
 	if referenceContent.Status != candidateContent.Status {
-		return newDifferenceResult("$status")
+		return rootDifference("$status", model.ChangeChanged)
 	}
 	return compareMessages(ctx, scripts, referenceContent.Message, candidateContent.Message)
 }
@@ -256,17 +262,19 @@ func compareMessages(ctx context.Context, scripts *comparison.Scripts, reference
 	switch {
 	case !referenceOK && !candidateOK:
 		return newComparisonResult(outcomeEquivalent, "")
-	case referenceOK != candidateOK:
-		return newDifferenceResult("$")
+	case !candidateOK:
+		return rootDifference("$", model.ChangeMissing)
+	case !referenceOK:
+		return rootDifference("$", model.ChangeAdded)
 	case referenceMessage.Type != candidateMessage.Type:
 		return newComparisonResult(outcomeUnable, "reference and candidate messages have different types")
 	}
-	differences, err := scripts.Compare(ctx, referenceMessage.Type, referenceMessage.Value, candidateMessage.Value)
+	differences, truncated, err := scripts.Compare(ctx, referenceMessage.Type, referenceMessage.Value, candidateMessage.Value)
 	if err != nil {
 		return newComparisonResult(outcomeUnable, err.Error())
 	}
 	if len(differences) > 0 {
-		return newDifferenceResult(differences...)
+		return newDifferenceResult(truncated, differences...)
 	}
 	return newComparisonResult(outcomeEquivalent, "")
 }
@@ -419,7 +427,7 @@ func (p *ingressPairs) report(ctx context.Context, pair *ingressPair, result com
 	attributes := append([]any{"event", logger.EventCorrelation}, pair.describe()...)
 	attributes = append(attributes, "outcome", result.outcome)
 	if len(result.differences) > 0 {
-		attributes = append(attributes, "differences", result.differences)
+		attributes = append(attributes, "differences", model.DifferenceLines(result.differences, result.truncated))
 	}
 	if result.reason != "" {
 		attributes = append(attributes, "reason", result.reason)
@@ -432,7 +440,7 @@ func (p *ingressPairs) report(ctx context.Context, pair *ingressPair, result com
 	case outcomeEquivalent, outcomeSkipped:
 	case outcomeDivergent:
 		p.quarantine.Quarantine(ctx, model.QuarantineReason{
-			Kind: model.QuarantineDivergent, Traffic: Some(pair.traffic()), Differences: result.differences,
+			Kind: model.QuarantineDivergent, Traffic: Some(pair.traffic()), Differences: result.differences, Truncated: result.truncated,
 		})
 	case outcomeUnable:
 		p.quarantine.Quarantine(ctx, model.QuarantineReason{

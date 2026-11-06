@@ -35,10 +35,15 @@ func TestStateRoundTrip(t *testing.T) {
 			Uptime:         time.Minute,
 			Quarantines: map[model.Direction]model.Quarantine{
 				model.Ingress: {Since: since, Reason: model.QuarantineReason{
-					Kind:        model.QuarantineDivergent,
-					Traffic:     Some(model.Traffic{Direction: model.Ingress, Protocol: model.ProtocolHTTP, Route: "GET /v1/users"}),
-					Node:        Some("users"),
-					Differences: []string{"body.name"},
+					Kind:    model.QuarantineDivergent,
+					Traffic: Some(model.Traffic{Direction: model.Ingress, Protocol: model.ProtocolHTTP, Route: "GET /v1/users"}),
+					Node:    Some("users"),
+					Differences: []model.Difference{
+						{Path: "$.name", Change: model.ChangeChanged, Count: 1},
+						{Path: "$.emails[*]", Change: model.ChangeMissing, Count: 2},
+						{Path: "$.owner", Change: model.ChangeRetyped, Retype: Some(model.Retype{Reference: model.JSONObject, Candidate: model.JSONNull}), Count: 1},
+					},
+					Truncated: true,
 				}},
 				model.Egress: {Since: since, Reason: model.QuarantineReason{
 					Kind:   model.QuarantineCapacity,
