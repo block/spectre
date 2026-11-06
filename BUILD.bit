@@ -71,6 +71,11 @@ explicit test-container(version = "dev") = exec.test {
   command = "container.test.sh #{local-image(version = version).ref} #{version}"
   inputs = ["scripts/container.test.sh"]
 }
+# Runs the demo image as a multi-container mirror pod in a local kind cluster.
+explicit test-mirror-pod = exec.test {
+  command = "mirror-pod.test.sh #{demo-image.ref}"
+  inputs = ["scripts/mirror-pod.test.sh", "demo/mirror-pod.yaml", "bin/kind", "bin/kubectl"]
+}
 fmt-go[go-module] = go.fmt { dir = go-module }
 fmt-check-go[go-module] = go.fmt-l { dir = go-module }
 fmt-action-pins = exec {

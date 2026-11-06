@@ -154,6 +154,17 @@ func TestListenAndDialUnixSocket(t *testing.T) {
 	assert.Equal(t, http.StatusNoContent, response.StatusCode)
 }
 
+func TestListenSharesUnixSocketWithGroup(t *testing.T) {
+	socket := filepath.Join(shortSocketDir(t), "shared.sock")
+	listener, err := netaddr.ParseListen("unix:" + socket).Listen(t.Context())
+	assert.NoError(t, err)
+	t.Cleanup(func() { assert.NoError(t, listener.Close()) })
+
+	info, err := os.Stat(socket)
+	assert.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o660), info.Mode().Perm())
+}
+
 func TestListenRefusesNonSocketFile(t *testing.T) {
 	path := filepath.Join(shortSocketDir(t), "regular")
 	assert.NoError(t, os.WriteFile(path, []byte("not a socket"), 0o600))

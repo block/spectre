@@ -100,6 +100,13 @@ traffic, including loopback and DNS, since the pod's containers share one
 network. Replies on connections other containers open to the candidate still
 pass, and unix sockets are unaffected. Running it again replaces the rules.
 
+SPECTRE creates unix socket files readable and writable by their group, so
+containers running as different users connect through the pod's shared
+`fsGroup`. A candidate that creates its own listening socket must allow the
+same. `demo/mirror-pod.yaml` lays out such a pod; `bit test-mirror-pod` runs it
+in a local kind cluster with Docker and checks that it mirrors, replays egress,
+and refuses the candidate's direct IP traffic.
+
 ## SPECTRE server
 
 `spectre serve` collects the states that mirrors stream to it: each mirror's
