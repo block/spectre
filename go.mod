@@ -16,6 +16,7 @@ require (
 	github.com/alicebob/miniredis/v2 v2.40.0
 	github.com/block/scaffolder v1.12.0
 	github.com/gobwas/glob v1.1.0
+	github.com/google/nftables v0.3.0
 	github.com/grafana/sobek v0.0.0-20260915160442-8a431c44cd7b
 	github.com/lmittmann/tint v1.2.1
 	github.com/microsoft/TypeScript/tsc/shim/typescript v0.0.0
@@ -40,10 +41,13 @@ require (
 	github.com/dop251/goja v0.0.0-20260311135729-065cd970411c // indirect
 	github.com/go-sourcemap/sourcemap v2.1.4+incompatible // indirect
 	github.com/gofrs/uuid/v5 v5.2.0 // indirect
+	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/google/pprof v0.0.0-20230207041349-798e818bf904 // indirect
 	github.com/hexops/gotextdiff v1.0.3 // indirect
 	github.com/klauspost/compress v1.20.0 // indirect
 	github.com/klauspost/cpuid/v2 v2.4.0 // indirect
+	github.com/mdlayher/netlink v1.7.3-0.20250113171957-fbb4dce95f42 // indirect
+	github.com/mdlayher/socket v0.5.0 // indirect
 	github.com/microsoft/TypeScript/tsc v0.0.0-20261030221203-6161772c1370 // indirect
 	github.com/pelletier/go-toml v1.9.5 // indirect
 	github.com/yuin/gopher-lua v1.1.1 // indirect

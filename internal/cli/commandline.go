@@ -9,6 +9,7 @@ import (
 	"github.com/alecthomas/kong"
 
 	"github.com/block/spectre/internal/comparison/javascript"
+	"github.com/block/spectre/internal/contain"
 	"github.com/block/spectre/internal/descriptors"
 	"github.com/block/spectre/internal/jsonschema"
 	"github.com/block/spectre/internal/logger"
@@ -29,6 +30,7 @@ type CommandLine struct {
 
 	Supervise superviseCommand `cmd:"" help:"Supervise a candidate and a reference behind the embedded proxies, splitting resources between them."`
 	Proxy     proxyCommand     `cmd:"" help:"Run the embedded proxies in front of a candidate and a reference that run elsewhere, such as in other containers of the same pod."`
+	Contain   containCommand   `cmd:"" help:"Reject a user's IPv4 and IPv6 traffic, such as a candidate's in its own container, so it reaches dependencies only through unix sockets. Needs Linux, root and NET_ADMIN."`
 	Serve     serveCommand     `cmd:"" help:"Run the SPECTRE server, which mirrors stream their states to."`
 	Gen       genCommand       `cmd:"" help:"Generate TypeScript schema declarations and the script API."`
 	Status    statusCommand    `cmd:"" help:"List the mirrors reporting to the SPECTRE server and the divergences they reported, or clear divergences."`
@@ -79,6 +81,15 @@ func (c *proxyCommand) Run(ctx context.Context, catalog *state.Catalog) error {
 		return errors.WithStack(err)
 	}
 	return errors.WithStack(proxy.Run(ctx))
+}
+
+// containCommand rejects a user's IP traffic with the kernel's packet filter.
+type containCommand struct {
+	Contain contain.Config `embed:""`
+}
+
+func (c *containCommand) Run(ctx context.Context) error {
+	return errors.WithStack(contain.Apply(ctx, c.Contain))
 }
 
 // genCommand groups the schema declaration generators.
