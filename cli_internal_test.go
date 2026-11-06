@@ -13,6 +13,7 @@ import (
 	"github.com/alecthomas/assert/v2"
 
 	"github.com/block/spectre/internal/cli"
+	"github.com/block/spectre/internal/proxies"
 	"github.com/block/spectre/internal/server"
 	"github.com/block/spectre/internal/server/client"
 	"github.com/block/spectre/internal/server/reporter"
@@ -59,13 +60,13 @@ func TestSuperviseCommandEmbedsConfig(t *testing.T) {
 	expected := supervisor.NewConfig()
 	expected.Candidate = "run-candidate"
 	expected.Reference = "run-reference"
-	expected.Destinations = map[string]string{"forecasts.example": "http://127.0.0.1:50053"}
-	expected.MatchWindow = 2 * time.Second
-	expected.ScriptsDir = scripts
-	expected.SchemaDir = schema
-	expected.Descriptors.DescriptorsDir = descriptors
+	expected.Mirror.Destinations = map[string]string{"forecasts.example": "http://127.0.0.1:50053"}
+	expected.Mirror.MatchWindow = 2 * time.Second
+	expected.Mirror.ScriptsDir = scripts
+	expected.Mirror.SchemaDir = schema
+	expected.Mirror.Descriptors.DescriptorsDir = descriptors
 	expected.Limits.Enabled = false
-	expected.Server = expectedReporting()
+	expected.Mirror.Server = expectedReporting()
 	assert.Equal(t, expected, command.Supervise.Supervisor)
 }
 
@@ -93,7 +94,52 @@ func TestSuperviseCommandReadsFlagsFromEnvironment(t *testing.T) {
 		KeepaliveInterval: 30 * time.Second,
 		StreamMaxAge:      10 * time.Minute,
 	}
-	assert.Equal(t, expected, command.Supervise.Supervisor.Server)
+	assert.Equal(t, expected, command.Supervise.Supervisor.Mirror.Server)
+}
+
+func TestProxyCommandReadsFlagsFromEnvironment(t *testing.T) {
+	scripts := t.TempDir()
+	schema := writeSchemaDir(t)
+	for name, value := range map[string]string{
+		"SPECTRE_LISTEN":                    "0.0.0.0:8080",
+		"SPECTRE_REFERENCE_URL":             "h2c+unix:/sockets/reference.sock",
+		"SPECTRE_CANDIDATE_URL":             "h2c+unix:/sockets/candidate.sock",
+		"SPECTRE_REFERENCE_EGRESS_LISTEN":   "unix:/sockets/egress-reference.sock",
+		"SPECTRE_CANDIDATE_EGRESS_LISTEN":   "unix:/sockets/egress-candidate.sock",
+		"SPECTRE_HEALTH_LISTEN":             "0.0.0.0:8081",
+		"SPECTRE_CANDIDATE_STARTUP_TIMEOUT": "10m",
+		"SPECTRE_SCRIPTS_DIR":               scripts,
+		"SPECTRE_SCHEMA_DIR":                schema,
+		"SPECTRE_SERVER_URL":                "http://server.example",
+		"SPECTRE_SERVICE":                   "invoices",
+		"SPECTRE_ENVIRONMENT":               "production-us-west-2",
+		"SPECTRE_REVISION":                  "3f9c2a1",
+	} {
+		t.Setenv(name, value)
+	}
+	command := &cli.CommandLine{}
+	parser, err := newParser(command)
+	assert.NoError(t, err)
+	_, err = parser.Parse([]string{"proxy"})
+	assert.NoError(t, err)
+	expected := proxies.ProxyConfig{
+		Listen:                "0.0.0.0:8080",
+		ReferenceURL:          "h2c+unix:/sockets/reference.sock",
+		CandidateURL:          "h2c+unix:/sockets/candidate.sock",
+		ReferenceEgressListen: "unix:/sockets/egress-reference.sock",
+		CandidateEgressListen: "unix:/sockets/egress-candidate.sock",
+		EgressHealthListen:    "127.0.0.1:50062",
+		HealthListen:          "0.0.0.0:8081",
+		Mirror:                proxies.NewConfig(),
+	}
+	expected.Mirror.CandidateStartupTimeout = 10 * time.Minute
+	expected.Mirror.ScriptsDir = scripts
+	expected.Mirror.SchemaDir = schema
+	expected.Mirror.Server.Client.URL = "http://server.example"
+	expected.Mirror.Server.Service = "invoices"
+	expected.Mirror.Server.Environment = "production-us-west-2"
+	expected.Mirror.Server.Revision = "3f9c2a1"
+	assert.Equal(t, expected, command.Proxy.Proxy)
 }
 
 func TestVersionFlagIgnoresEnvironment(t *testing.T) {
@@ -200,12 +246,12 @@ descriptors-dir = %q
 	expected := supervisor.NewConfig()
 	expected.Candidate = "run-candidate"
 	expected.Reference = "run-reference"
-	expected.Destinations = map[string]string{"forecasts.example": "http://127.0.0.1:50053"}
-	expected.MatchWindow = 3 * time.Second
-	expected.ScriptsDir = scripts
-	expected.SchemaDir = schema
-	expected.Descriptors.DescriptorsDir = descriptors
-	expected.Server = expectedReporting()
+	expected.Mirror.Destinations = map[string]string{"forecasts.example": "http://127.0.0.1:50053"}
+	expected.Mirror.MatchWindow = 3 * time.Second
+	expected.Mirror.ScriptsDir = scripts
+	expected.Mirror.SchemaDir = schema
+	expected.Mirror.Descriptors.DescriptorsDir = descriptors
+	expected.Mirror.Server = expectedReporting()
 	assert.Equal(t, expected, command.Supervise.Supervisor)
 }
 

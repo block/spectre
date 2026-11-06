@@ -3,30 +3,19 @@ package supervisor
 import (
 	"context"
 	"log/slog"
-	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"syscall"
-	"time"
 
 	"github.com/alecthomas/errors"
 	. "github.com/alecthomas/types/optional"
 
-	"github.com/block/spectre/internal/descriptors"
-	"github.com/block/spectre/internal/httpserver"
 	"github.com/block/spectre/internal/logger"
-	"github.com/block/spectre/internal/model"
 	"github.com/block/spectre/internal/netaddr"
-	"github.com/block/spectre/internal/protocol"
-	"github.com/block/spectre/internal/server/client"
-	"github.com/block/spectre/internal/server/reporter"
+	"github.com/block/spectre/internal/proxies"
 	"github.com/block/spectre/internal/state"
 )
-
-// subsystemKey labels the component that wrote a line, in SPECTRE's logs and the
-// services' passed-through ones. The namespace keeps it clear of services' own fields.
-const subsystemKey = "spectre.subsystem"
 
 // roles name the service leaves and their wiring.
 const (
@@ -37,19 +26,16 @@ const (
 // Supervisor runs the candidate and reference services behind the SPECTRE
 // proxies, with the candidate's egress sandboxed and host resources split.
 type Supervisor struct {
-	config    Config
-	log       *slog.Logger
-	selfExe   string
-	migration Option[state.State]
+	config  Config
+	log     *slog.Logger
+	selfExe string
+	mirror  *proxies.Mirror
 
 	egressReference string
 	egressCandidate string
 	egressHealth    string
 	referenceSock   string
 	candidateSock   string
-
-	ingress *httpserver.Ingress
-	egress  *httpserver.Egress
 
 	limits  Option[*cgroups]
 	running int
@@ -75,30 +61,26 @@ func New(ctx context.Context, config Config, catalog *state.Catalog) (*Superviso
 	if err != nil {
 		return nil, errors.Wrap(err, "find supervisor executable")
 	}
-	migration := None[state.State]()
-	if config.StateFile != "" {
-		loaded, err := state.Load(config.StateFile, catalog)
-		if err != nil {
-			return nil, errors.Wrapf(err, "load migration state %s", config.StateFile)
-		}
-		migration = Some(loaded)
+	s := &Supervisor{
+		config:  config,
+		log:     logger.FromContext(ctx).With(logger.SubsystemKey, "supervisor"),
+		selfExe: selfExe,
+		limits:  None[*cgroups](),
+		exits:   make(chan exit, 3),
 	}
-	return &Supervisor{
-		config:    config,
-		log:       logger.FromContext(ctx).With(subsystemKey, "supervisor"),
-		selfExe:   selfExe,
-		migration: migration,
-		limits:    None[*cgroups](),
-		exits:     make(chan exit, 4),
-	}, nil
+	if err := s.prepareWiring(); err != nil {
+		return nil, err
+	}
+	s.mirror, err = proxies.New(ctx, config.Mirror, s.wiring(), catalog)
+	if err != nil {
+		return nil, errors.WithStack(err)
+	}
+	return s, nil
 }
 
 // Run starts the proxies and services, then runs until the context is cancelled
 // or a component exits, after which it stops the rest.
 func (s *Supervisor) Run(ctx context.Context) error {
-	if err := s.prepareWiring(); err != nil {
-		return err
-	}
 	if err := s.setupLimits(ctx); err != nil {
 		return err
 	}
@@ -184,110 +166,40 @@ func (s *Supervisor) cleanupLimits(ctx context.Context) {
 	}
 }
 
-// startAll brings up the proxies and services in dependency order, waiting for
-// each service to accept connections before the next.
+// startAll brings up the proxies, then each service in turn, waiting for each to
+// accept connections before the next.
 func (s *Supervisor) startAll(ctx context.Context) error {
-	if err := s.startEgress(ctx); err != nil {
-		return err
+	if err := s.mirror.Start(ctx); err != nil {
+		return errors.WithStack(err)
 	}
+	s.running++
+	go func() { s.exits <- exit{name: "mirror", err: s.mirror.Wait(ctx)} }()
 	reference := s.serviceProcess(ctx, roleReference, httpUnix(s.egressReference), unixListen(s.referenceSock), false)
-	if err := s.launchService(ctx, reference, "unix", s.referenceSock); err != nil {
+	if err := s.launchService(ctx, reference, s.referenceSock); err != nil {
 		return err
 	}
 	candidate := s.serviceProcess(ctx, roleCandidate, httpUnix(s.egressCandidate), unixListen(s.candidateSock), s.sandboxActive())
-	if err := s.launchService(ctx, candidate, "unix", s.candidateSock); err != nil {
+	if err := s.launchService(ctx, candidate, s.candidateSock); err != nil {
 		return err
 	}
 	if err := s.place(reference.pid(), roleReference); err != nil {
 		return err
 	}
-	if err := s.place(candidate.pid(), roleCandidate); err != nil {
-		return err
-	}
-	if err := s.startIngress(ctx); err != nil {
-		return err
-	}
-	s.startReporter(ctx)
-	return nil
-}
-
-// startReporter streams the mirror's state, with ingress call counts and both
-// proxies' quarantines, to the SPECTRE server. Reporting never stops the mirror.
-func (s *Supervisor) startReporter(ctx context.Context) {
-	reporter := reporter.New(s.config.Server, client.New(s.config.Server.Client), s.ingress.Calls,
-		reporter.Source{Direction: model.Ingress, Quarantined: s.ingress.Candidates().Quarantined()},
-		reporter.Source{Direction: model.Egress, Quarantined: s.egress.Candidates().Quarantined()},
-	)
-	go reporter.Run(logger.WithLogger(ctx, s.log))
-	s.log.InfoContext(ctx, "Reporting to the SPECTRE server", "url", s.config.Server.Client.URL)
-}
-
-// startEgress builds the egress proxy, opens its listeners, and serves it.
-func (s *Supervisor) startEgress(ctx context.Context) error {
-	config := s.egressConfig()
-	transport := httpserver.NewTransport(config.TransportConfig)
-	proxyContext := withProxyLogger(ctx, "egress")
-	handler, err := httpserver.NewEgress(proxyContext, config, s.engineConfig(), transport)
-	if err != nil {
-		transport.CloseIdleConnections()
-		return errors.Wrap(err, "configure egress")
-	}
-	s.egress = handler
-	listeners, err := listenAll(ctx, config.ReferenceListen, config.CandidateListen, config.HealthListen)
-	if err != nil {
-		transport.CloseIdleConnections()
-		return errors.Wrap(err, "listen for egress")
-	}
-	s.runProxy(ctx, "egress", transport, func() error {
-		return handler.Serve(proxyContext, listeners[0], listeners[1], listeners[2])
-	})
-	return nil
-}
-
-// startIngress builds the ingress proxy, opens its listener, and serves it.
-func (s *Supervisor) startIngress(ctx context.Context) error {
-	config := s.ingressConfig()
-	transport := httpserver.NewTransport(config.TransportConfig)
-	loader := Some[httpserver.DescriptorLoader](descriptors.NewReflectionLoader())
-	proxyContext := withProxyLogger(ctx, "ingress")
-	handler, err := httpserver.NewIngress(proxyContext, config, s.engineConfig(), transport, loader, s.migration)
-	if err != nil {
-		transport.CloseIdleConnections()
-		return errors.Wrap(err, "configure ingress")
-	}
-	s.ingress = handler
-	listener, err := netaddr.ParseListen(config.Listen).Listen(ctx)
-	if err != nil {
-		transport.CloseIdleConnections()
-		return errors.Wrap(err, "listen for ingress")
-	}
-	s.runProxy(ctx, "ingress", transport, func() error {
-		return handler.Serve(proxyContext, listener)
-	})
-	return nil
-}
-
-// runProxy serves a proxy in the background, reporting its exit and releasing the
-// transport's idle connections when it stops.
-func (s *Supervisor) runProxy(ctx context.Context, name string, transport *httpserver.Transport, serve func() error) {
-	s.running++
-	go func() {
-		defer transport.CloseIdleConnections()
-		s.exits <- exit{name: name, err: serve()}
-	}()
-	s.log.InfoContext(ctx, "Started proxy", "name", name)
+	return s.place(candidate.pid(), roleCandidate)
 }
 
 // launchService starts a service process, watches for its exit, and waits until
 // it listens.
-func (s *Supervisor) launchService(ctx context.Context, process *managedProcess, network string, address string) error {
+func (s *Supervisor) launchService(ctx context.Context, process *managedProcess, socket string) error {
 	if err := process.start(); err != nil {
 		return err
 	}
 	s.running++
 	go func() { s.exits <- exit{name: process.Name(), err: process.wait()} }()
 	s.log.InfoContext(ctx, "Started process", "name", process.Name(), "pid", process.pid())
-	if err := waitListening(ctx, network, address, s.config.StartupTimeout); err != nil {
+	startup, cancel := context.WithTimeout(ctx, s.config.StartupTimeout)
+	defer cancel()
+	if err := netaddr.ParseListen(unixListen(socket)).AwaitAccepting(startup); err != nil {
 		return errors.Wrapf(err, "%s did not start listening", process.Name())
 	}
 	return nil
@@ -355,84 +267,16 @@ func (s *Supervisor) command(ctx context.Context, name string, arg ...string) *e
 	return cmd
 }
 
-// engineConfig builds the comparison engine configuration shared by both proxies.
-func (s *Supervisor) engineConfig() protocol.Config {
-	config := protocol.NewConfig()
-	config.Comparison.ScriptsDir = s.config.ScriptsDir
-	config.Comparison.Schema.SchemaDir = s.config.SchemaDir
-	config.MatchWindow = s.config.MatchWindow
-	return config
-}
-
-// egressConfig builds the egress proxy configuration from the socket topology.
-func (s *Supervisor) egressConfig() httpserver.EgressConfig {
-	config := httpserver.NewEgressConfig()
-	config.ReferenceListen = unixListen(s.egressReference)
-	config.CandidateListen = unixListen(s.egressCandidate)
-	config.HealthListen = unixListen(s.egressHealth)
-	config.Destinations = s.config.Destinations
-	config.Descriptors = s.config.Descriptors
-	return config
-}
-
-// ingressConfig builds the ingress proxy configuration from the socket topology.
-func (s *Supervisor) ingressConfig() httpserver.IngressConfig {
-	config := httpserver.NewIngressConfig()
-	config.Listen = s.config.Listen
-	config.Reference = backendURL(s.config.ReferenceProtocol, s.referenceSock)
-	config.Candidate = backendURL(s.config.CandidateProtocol, s.candidateSock)
-	config.Reflection = s.config.Reflection
-	config.Descriptors = s.config.Descriptors
-	return config
-}
-
-// withProxyLogger returns a context whose logger tags every line with the proxy name.
-func withProxyLogger(ctx context.Context, name string) context.Context {
-	return logger.WithLogger(ctx, logger.FromContext(ctx).With(subsystemKey, name))
-}
-
-// listenAll opens every address in order, closing any already opened on failure.
-func listenAll(ctx context.Context, addresses ...string) ([]net.Listener, error) {
-	listeners := make([]net.Listener, 0, len(addresses))
-	for _, address := range addresses {
-		listener, err := netaddr.ParseListen(address).Listen(ctx)
-		if err != nil {
-			return nil, errors.Join(errors.Wrapf(err, "listen on %s", address), closeListeners(listeners))
-		}
-		listeners = append(listeners, listener)
-	}
-	return listeners, nil
-}
-
-// closeListeners closes every listener, joining any errors.
-func closeListeners(listeners []net.Listener) error {
-	closeErrors := make([]error, 0, len(listeners))
-	for _, listener := range listeners {
-		closeErrors = append(closeErrors, listener.Close())
-	}
-	return errors.Join(closeErrors...)
-}
-
-// waitListening polls until the address accepts a connection or the timeout elapses.
-func waitListening(ctx context.Context, network string, address string, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
-	dialer := &net.Dialer{Timeout: time.Second}
-	for {
-		conn, err := dialer.DialContext(ctx, network, address)
-		if err == nil {
-			return errors.WithStack(conn.Close())
-		}
-		if ctx.Err() != nil {
-			return errors.WithStack(ctx.Err())
-		}
-		if time.Now().After(deadline) {
-			return errors.Wrapf(err, "timed out dialing %s", address)
-		}
-		select {
-		case <-ctx.Done():
-			return errors.WithStack(ctx.Err())
-		case <-time.After(100 * time.Millisecond):
-		}
+// wiring connects the proxies to the services through the socket directory.
+func (s *Supervisor) wiring() proxies.Wiring {
+	return proxies.Wiring{
+		Listen:          s.config.Listen,
+		Reference:       backendURL(s.config.ReferenceProtocol, s.referenceSock),
+		Candidate:       backendURL(s.config.CandidateProtocol, s.candidateSock),
+		ReferenceEgress: unixListen(s.egressReference),
+		CandidateEgress: unixListen(s.egressCandidate),
+		EgressHealth:    unixListen(s.egressHealth),
+		Health:          None[string](),
 	}
 }
 

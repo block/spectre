@@ -12,6 +12,7 @@ import (
 	"github.com/block/spectre/internal/descriptors"
 	"github.com/block/spectre/internal/jsonschema"
 	"github.com/block/spectre/internal/logger"
+	"github.com/block/spectre/internal/proxies"
 	"github.com/block/spectre/internal/scaffold"
 	"github.com/block/spectre/internal/server"
 	"github.com/block/spectre/internal/state"
@@ -27,6 +28,7 @@ type CommandLine struct {
 	Version kong.VersionFlag `env:"-" help:"Print the version and exit."`
 
 	Supervise superviseCommand `cmd:"" help:"Supervise a candidate and a reference behind the embedded proxies, splitting resources between them."`
+	Proxy     proxyCommand     `cmd:"" help:"Run the embedded proxies in front of a candidate and a reference that run elsewhere, such as in other containers of the same pod."`
 	Serve     serveCommand     `cmd:"" help:"Run the SPECTRE server, which mirrors stream their states to."`
 	Gen       genCommand       `cmd:"" help:"Generate TypeScript schema declarations and the script API."`
 	Status    statusCommand    `cmd:"" help:"List the mirrors reporting to the SPECTRE server and the divergences they reported, or clear divergences."`
@@ -64,6 +66,19 @@ func (c *superviseCommand) Run(ctx context.Context, catalog *state.Catalog) erro
 		return errors.WithStack(err)
 	}
 	return errors.WithStack(super.Run(ctx))
+}
+
+// proxyCommand runs the embedded proxies in front of services that run elsewhere.
+type proxyCommand struct {
+	Proxy proxies.ProxyConfig `embed:""`
+}
+
+func (c *proxyCommand) Run(ctx context.Context, catalog *state.Catalog) error {
+	proxy, err := proxies.NewProxy(ctx, c.Proxy, catalog)
+	if err != nil {
+		return errors.WithStack(err)
+	}
+	return errors.WithStack(proxy.Run(ctx))
 }
 
 // genCommand groups the schema declaration generators.

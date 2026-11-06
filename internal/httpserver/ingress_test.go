@@ -273,6 +273,7 @@ func TestCandidateDoesNotDelayReferenceResponse(t *testing.T) {
 }
 
 func TestComparisonDoesNotDelayReferenceAndDivergenceQuarantines(t *testing.T) {
+	candidateAddress := acceptingAddress(t)
 	releaseCandidate := make(chan struct{})
 	var candidateCalls atomic.Int32
 	transport := roundTripperFunc(func(request *http.Request) (*http.Response, error) {
@@ -289,7 +290,7 @@ func TestComparisonDoesNotDelayReferenceAndDivergenceQuarantines(t *testing.T) {
 	})
 	logs := &syncBuffer{}
 	ctx := withLogs(t, logs)
-	handler := newTestHandlerWithFakeBackends(t, transport)
+	handler := newTestHandlerWithFakeBackends(t, candidateAddress, transport)
 	serveIngress(ctx, t, handler)
 
 	firstDone := make(chan struct{})
@@ -319,6 +320,7 @@ func TestComparisonDoesNotDelayReferenceAndDivergenceQuarantines(t *testing.T) {
 }
 
 func TestCapturesBackendLatenciesForComparison(t *testing.T) {
+	candidateAddress := acceptingAddress(t)
 	transport := roundTripperFunc(func(request *http.Request) (*http.Response, error) {
 		// The candidate is measurably slower, so the logged delta is positive.
 		delay := time.Millisecond
@@ -330,7 +332,7 @@ func TestCapturesBackendLatenciesForComparison(t *testing.T) {
 	})
 	logs := &syncBuffer{}
 	ctx := withLogs(t, logs)
-	handler := newTestHandlerWithFakeBackends(t, transport)
+	handler := newTestHandlerWithFakeBackends(t, candidateAddress, transport)
 	serveIngress(ctx, t, handler)
 	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequestWithContext(ctx, http.MethodGet, "http://proxy.example/compared/forecast", nil))
 
@@ -345,6 +347,7 @@ func TestCapturesBackendLatenciesForComparison(t *testing.T) {
 }
 
 func TestReferenceFailureQuarantinesCandidate(t *testing.T) {
+	candidateAddress := acceptingAddress(t)
 	transport := roundTripperFunc(func(request *http.Request) (*http.Response, error) {
 		if request.URL.Host != candidateAddress {
 			return nil, errors.New("connection refused")
@@ -353,7 +356,7 @@ func TestReferenceFailureQuarantinesCandidate(t *testing.T) {
 	})
 	logs := &syncBuffer{}
 	ctx := withLogs(t, logs)
-	handler := newTestHandlerWithFakeBackends(t, transport)
+	handler := newTestHandlerWithFakeBackends(t, candidateAddress, transport)
 	serveIngress(ctx, t, handler)
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequestWithContext(ctx, http.MethodGet, "http://proxy.example/compared/failed", nil))
@@ -373,6 +376,7 @@ func TestReferenceFailureQuarantinesCandidate(t *testing.T) {
 
 // A status difference is divergent even when the candidate's body cannot be decoded.
 func TestStatusDifferenceIsDivergentWhenCandidateBodyIsUndecodable(t *testing.T) {
+	candidateAddress := acceptingAddress(t)
 	transport := roundTripperFunc(func(request *http.Request) (*http.Response, error) {
 		if request.URL.Host != candidateAddress {
 			return jsonResponse(request, `{"value":"same"}`), nil
@@ -386,7 +390,7 @@ func TestStatusDifferenceIsDivergentWhenCandidateBodyIsUndecodable(t *testing.T)
 	})
 	logs := &syncBuffer{}
 	ctx := withLogs(t, logs)
-	handler := newTestHandlerWithFakeBackends(t, transport)
+	handler := newTestHandlerWithFakeBackends(t, candidateAddress, transport)
 	serveIngress(ctx, t, handler)
 
 	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequestWithContext(ctx, http.MethodGet, "http://proxy.example/compared/item", nil))
@@ -405,6 +409,7 @@ func TestStatusDifferenceIsDivergentWhenCandidateBodyIsUndecodable(t *testing.T)
 
 // A rule can compare only the status of server errors whose bodies differ.
 func TestRulesCompareOnlyTheStatusOfServerErrors(t *testing.T) {
+	candidateAddress := acceptingAddress(t)
 	for name, test := range map[string]struct {
 		candidateStatus int
 		expected        comparisonRecord
@@ -429,7 +434,7 @@ func TestRulesCompareOnlyTheStatusOfServerErrors(t *testing.T) {
 			})
 			logs := &syncBuffer{}
 			ctx := withLogs(t, logs)
-			handler := newTestHandlerWithFakeBackends(t, transport)
+			handler := newTestHandlerWithFakeBackends(t, candidateAddress, transport)
 			serveIngress(ctx, t, handler)
 
 			handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequestWithContext(ctx, http.MethodGet, "http://proxy.example/failing/item", nil))
@@ -442,6 +447,7 @@ func TestRulesCompareOnlyTheStatusOfServerErrors(t *testing.T) {
 }
 
 func TestClassifiesResponsesForComparison(t *testing.T) {
+	candidateAddress := acceptingAddress(t)
 	for name, test := range map[string]struct {
 		target   string
 		expected comparisonRecord
@@ -473,7 +479,7 @@ func TestClassifiesResponsesForComparison(t *testing.T) {
 			})
 			logs := &syncBuffer{}
 			ctx := withLogs(t, logs)
-			handler := newTestHandlerWithFakeBackends(t, transport)
+			handler := newTestHandlerWithFakeBackends(t, candidateAddress, transport)
 			serveIngress(ctx, t, handler)
 			handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequestWithContext(ctx, http.MethodGet, "http://proxy.example"+test.target, nil))
 
@@ -527,7 +533,7 @@ func TestHealthEndpointsAreLocalAndTrackReadiness(t *testing.T) {
 	})
 	logs := &syncBuffer{}
 	ctx := withLogs(t, logs)
-	config := newTestConfig(t, "http://127.0.0.1:50051", "http://127.0.0.1:50052")
+	config := newTestConfig(t, "http://"+acceptingAddress(t), "http://"+acceptingAddress(t))
 	handler, err := newIngress(t, config, newEngineConfig(t), transport, Some[httpserver.DescriptorLoader](matchingDescriptorLoader()))
 	assert.NoError(t, err)
 	response := httptest.NewRecorder()
@@ -578,6 +584,83 @@ func TestHealthEndpointsAreLocalAndTrackReadiness(t *testing.T) {
 	assert.False(t, strings.Contains(logs.String(), `"msg":"HTTP request"`))
 }
 
+func TestWaitsForBackendsToAccept(t *testing.T) {
+	for name, reflection := range map[string]bool{"Reflection": true, "NoReflection": false} {
+		t.Run(name, func(t *testing.T) {
+			reference := listen(t)
+			referenceAddress := reference.Addr().String()
+			assert.NoError(t, reference.Close())
+			candidateSocket := filepath.Join(shortSocketDir(t), "candidate.sock")
+			var candidateCalls atomic.Int32
+			// A unix backend's requests carry the host localhost.
+			transport := roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+				if request.URL.Host == "localhost" {
+					candidateCalls.Add(1)
+				}
+				return noContentResponse(request), nil
+			})
+			config := newTestConfig(t, "http://"+referenceAddress, "http+unix:"+candidateSocket)
+			config.Reflection = reflection
+			handler, err := newIngress(t, config, newEngineConfig(t), transport, Some[httpserver.DescriptorLoader](matchingDescriptorLoader()))
+			assert.NoError(t, err)
+			startIngress(t.Context(), t, handler)
+			send := func() {
+				response := httptest.NewRecorder()
+				handler.ServeHTTP(response, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/v1/items", nil))
+				assert.Equal(t, http.StatusNoContent, response.Code)
+			}
+
+			time.Sleep(100 * time.Millisecond)
+			awaitReadiness(t, handler, http.StatusServiceUnavailable)
+			listenOn(t, "tcp", referenceAddress)
+			if !reflection {
+				awaitReadiness(t, handler, http.StatusNoContent)
+				send()
+				assert.Equal(t, int32(0), candidateCalls.Load())
+			}
+
+			listenOn(t, "unix", candidateSocket)
+			awaitReadiness(t, handler, http.StatusNoContent)
+			deadline := time.Now().Add(5 * time.Second)
+			for candidateCalls.Load() == 0 {
+				assert.True(t, time.Now().Before(deadline), "ingress never mirrored to the started candidate")
+				send()
+				time.Sleep(10 * time.Millisecond)
+			}
+		})
+	}
+}
+
+// listenOn listens on address until the test ends, without serving it.
+func listenOn(t *testing.T, network string, address string) {
+	t.Helper()
+	listener, err := (&net.ListenConfig{}).Listen(t.Context(), network, address)
+	assert.NoError(t, err)
+	t.Cleanup(func() { _ = listener.Close() })
+}
+
+func TestQuarantinesCandidateThatNeverAccepts(t *testing.T) {
+	missing := filepath.Join(shortSocketDir(t), "missing.sock")
+	config := newTestConfig(t, "http://"+acceptingAddress(t), "http+unix:"+missing)
+	config.Reflection = false
+	config.CandidateStartupTimeout = 100 * time.Millisecond
+	transport := roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+		return noContentResponse(request), nil
+	})
+	handler, err := newIngress(t, config, newEngineConfig(t), transport, None[httpserver.DescriptorLoader]())
+	assert.NoError(t, err)
+	serveIngress(t.Context(), t, handler)
+
+	deadline := time.Now().Add(5 * time.Second)
+	for !handler.Candidates().QuarantineStatus().Ok() {
+		assert.True(t, time.Now().Before(deadline), "candidate was never quarantined")
+		time.Sleep(10 * time.Millisecond)
+	}
+	status, _ := handler.Candidates().QuarantineStatus().Get()
+	expected := model.QuarantineReason{Kind: model.QuarantineUnable, Detail: "candidate did not accept a connection within 100ms"}
+	assert.Equal(t, expected, status.Reason)
+}
+
 func TestDescriptorMismatchKeepsServerUnreadyAndLogs(t *testing.T) {
 	conflictingStatic := &descriptorpb.FileDescriptorSet{File: []*descriptorpb.FileDescriptorProto{{
 		Name:    new("test.proto"),
@@ -603,7 +686,7 @@ func TestDescriptorMismatchKeepsServerUnreadyAndLogs(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			config := newTestConfig(t, "http://127.0.0.1:50051", "http://127.0.0.1:50052")
+			config := newTestConfig(t, "http://"+acceptingAddress(t), "http://"+acceptingAddress(t))
 			config.Descriptors.DescriptorsDir = test.static
 			logs := &syncBuffer{}
 			ctx := withLogs(t, logs)
@@ -663,7 +746,7 @@ func TestComparesWithStaticAndReflectedDescriptors(t *testing.T) {
 		"ReflectedAndStatic": {reflection: true, static: Some(static), expected: equivalent},
 	} {
 		t.Run(name, func(t *testing.T) {
-			config := newTestConfig(t, "http://127.0.0.1:50051", "http://127.0.0.1:50052")
+			config := newTestConfig(t, "http://"+acceptingAddress(t), "http://"+acceptingAddress(t))
 			config.Reflection = test.reflection
 			if set, ok := test.static.Get(); ok {
 				config.Descriptors.DescriptorsDir = writeDescriptorsDir(t, set)
@@ -900,10 +983,11 @@ func TestDefaultBufferSupportsCandidateConcurrencyLimit(t *testing.T) {
 }
 
 func TestReferenceEarlyCloseAbortsCandidateWithoutQuarantine(t *testing.T) {
+	candidateAddress := acceptingAddress(t)
 	candidateError := make(chan error, 1)
 	laterCandidate := make(chan struct{}, 1)
 	transport := roundTripperFunc(func(request *http.Request) (*http.Response, error) {
-		if request.URL.Host == "127.0.0.1:50052" {
+		if request.URL.Host == candidateAddress {
 			var err error
 			if request.Body != nil {
 				_, err = io.ReadAll(request.Body)
@@ -922,7 +1006,7 @@ func TestReferenceEarlyCloseAbortsCandidateWithoutQuarantine(t *testing.T) {
 	})
 	logs := &syncBuffer{}
 	ctx := withLogs(t, logs)
-	handler := newTestHandlerWithFakeBackends(t, transport)
+	handler := newTestHandlerWithFakeBackends(t, candidateAddress, transport)
 	serveIngress(ctx, t, handler)
 	earlyRequest := httptest.NewRequestWithContext(ctx, http.MethodPost, "http://proxy.example/compared/early", strings.NewReader("unread body"))
 	earlyRequest.ContentLength = -1
@@ -945,6 +1029,7 @@ func TestReferenceEarlyCloseAbortsCandidateWithoutQuarantine(t *testing.T) {
 }
 
 func TestAbortedCandidateResponseQuarantinesCandidate(t *testing.T) {
+	candidateAddress := acceptingAddress(t)
 	for name, test := range map[string]struct {
 		path        string
 		expected    comparisonRecord
@@ -974,7 +1059,7 @@ func TestAbortedCandidateResponseQuarantinesCandidate(t *testing.T) {
 			})
 			logs := &syncBuffer{}
 			ctx := withLogs(t, logs)
-			handler := newTestHandlerWithFakeBackends(t, transport)
+			handler := newTestHandlerWithFakeBackends(t, candidateAddress, transport)
 			serveIngress(ctx, t, handler)
 			// ReverseProxy only panics to abort a copy when the request comes from an HTTP server.
 			serverRequest := func(path string) *http.Request {
@@ -1093,6 +1178,7 @@ func TestCandidateConcurrencyLimitQuarantinesAllRequests(t *testing.T) {
 }
 
 func TestMirrorsOnlyRoutesOfMigratedNodes(t *testing.T) {
+	candidateAddress := acceptingAddress(t)
 	candidatePaths := make(chan string, 8)
 	var referencePaths []string
 	var referenceMu sync.Mutex
@@ -1118,7 +1204,7 @@ status = "migrated"
 "GET /pending/{name}" = {}
 `), catalog)
 	assert.NoError(t, err)
-	config := newTestConfig(t, "http://127.0.0.1:50051", "http://"+candidateAddress)
+	config := newTestConfig(t, "http://"+acceptingAddress(t), "http://"+candidateAddress)
 	handler, err := httpserver.NewIngress(t.Context(), config, newEngineConfig(t), transport, Some[httpserver.DescriptorLoader](matchingDescriptorLoader()), Some(migration))
 	assert.NoError(t, err)
 
@@ -1161,6 +1247,7 @@ status = "migrated"
 }
 
 func TestQuarantineNamesNodeOfRoute(t *testing.T) {
+	candidateAddress := acceptingAddress(t)
 	transport := roundTripperFunc(func(request *http.Request) (*http.Response, error) {
 		if request.URL.Host == candidateAddress {
 			return jsonResponse(request, `{"value":"candidate"}`), nil
@@ -1187,7 +1274,7 @@ status = "migrated"
 %q = {}
 `, test.pattern), catalog)
 			assert.NoError(t, err)
-			config := newTestConfig(t, "http://127.0.0.1:50051", "http://"+candidateAddress)
+			config := newTestConfig(t, "http://"+acceptingAddress(t), "http://"+candidateAddress)
 			handler, err := httpserver.NewIngress(t.Context(), config, newEngineConfig(t), transport, Some[httpserver.DescriptorLoader](matchingDescriptorLoader()), Some(migration))
 			assert.NoError(t, err)
 			serveIngress(t.Context(), t, handler)
@@ -1212,6 +1299,7 @@ status = "migrated"
 }
 
 func TestRejectsInvalidStateRoute(t *testing.T) {
+	candidateAddress := acceptingAddress(t)
 	migration := state.State{Nodes: []state.Node{{
 		ID:     "api",
 		Status: state.Migrated,
@@ -1219,7 +1307,7 @@ func TestRejectsInvalidStateRoute(t *testing.T) {
 			{Direction: model.Ingress, Protocol: model.ProtocolHTTP}: {"routes": map[string]any{"/no-method": map[string]any{}}},
 		},
 	}}}
-	config := newTestConfig(t, "http://127.0.0.1:50051", "http://"+candidateAddress)
+	config := newTestConfig(t, "http://"+acceptingAddress(t), "http://"+candidateAddress)
 	_, err := httpserver.NewIngress(t.Context(), config, newEngineConfig(t), http.DefaultTransport, Some[httpserver.DescriptorLoader](matchingDescriptorLoader()), Some(migration))
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "route migration state: node api: route pattern \"/no-method\" must have the form")
@@ -1335,8 +1423,14 @@ func TestIngressRejectsUnsafeConfiguration(t *testing.T) {
 	}
 }
 
-// candidateAddress is the candidate backend of fixtures that use a fake transport.
-const candidateAddress = "127.0.0.1:50052"
+// acceptingAddress is a loopback address that accepts connections until the test
+// ends, for a fake backend behind a fake transport.
+func acceptingAddress(t *testing.T) string {
+	t.Helper()
+	listener := listen(t)
+	t.Cleanup(func() { _ = listener.Close() })
+	return listener.Addr().String()
+}
 
 // ingressScript compares or ignores the /compared and /ignored fixture routes, and
 // compares only the status of /failing server errors.
@@ -1372,10 +1466,11 @@ func newTestHandlerWithTransport(t *testing.T, reference, candidate string, tran
 	return handler
 }
 
-// newTestHandlerWithFakeBackends proxies through transport to fake backends.
-func newTestHandlerWithFakeBackends(t *testing.T, transport http.RoundTripper) *httpserver.Ingress {
+// newTestHandlerWithFakeBackends proxies through transport to fake backends, with
+// the candidate at candidateAddress.
+func newTestHandlerWithFakeBackends(t *testing.T, candidateAddress string, transport http.RoundTripper) *httpserver.Ingress {
 	t.Helper()
-	config := newTestConfig(t, "http://127.0.0.1:50051", "http://"+candidateAddress)
+	config := newTestConfig(t, "http://"+acceptingAddress(t), "http://"+candidateAddress)
 	handler, err := newIngress(t, config, newEngineConfig(t), transport, Some[httpserver.DescriptorLoader](matchingDescriptorLoader()))
 	assert.NoError(t, err)
 	return handler
@@ -1397,6 +1492,13 @@ func newIngress(
 // only once it is ready, so it returns after that.
 func serveIngress(ctx context.Context, t *testing.T, handler *httpserver.Ingress) {
 	t.Helper()
+	startIngress(ctx, t, handler)
+	awaitReadiness(t, handler, http.StatusNoContent)
+}
+
+// startIngress serves handler with ctx until the test ends, without waiting for it.
+func startIngress(ctx context.Context, t *testing.T, handler *httpserver.Ingress) {
+	t.Helper()
 	listener := listen(t)
 	ctx, cancel := context.WithCancel(ctx)
 	serveDone := make(chan error, 1)
@@ -1410,15 +1512,20 @@ func serveIngress(ctx context.Context, t *testing.T, handler *httpserver.Ingress
 			t.Error("ingress server did not stop after cancellation")
 		}
 	})
+}
+
+// awaitReadiness waits for handler's readiness endpoint to answer status.
+func awaitReadiness(t *testing.T, handler *httpserver.Ingress, status int) {
+	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		response := httptest.NewRecorder()
 		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/readyz", nil))
-		if response.Code == http.StatusNoContent {
+		if response.Code == status {
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("ingress did not become ready")
+			t.Fatalf("ingress readiness did not become %d", status)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}

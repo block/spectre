@@ -7,6 +7,8 @@ import (
 	"strconv"
 
 	"github.com/alecthomas/errors"
+
+	"github.com/block/spectre/internal/logger"
 )
 
 // maxServiceLine bounds the output held while waiting for a newline, so a service
@@ -26,7 +28,7 @@ type serviceLogWriter struct {
 // output that serialises Writes, as *os.File does, never interleaves two services.
 func newServiceLogWriter(output io.Writer, role string) *serviceLogWriter {
 	// Both strings are ASCII constants, so Go quoting is valid JSON.
-	label := []byte(strconv.Quote(subsystemKey) + ":" + strconv.Quote(role))
+	label := []byte(strconv.Quote(logger.SubsystemKey) + ":" + strconv.Quote(role))
 	return &serviceLogWriter{output: output, role: role, label: label}
 }
 

@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/alecthomas/errors"
 	. "github.com/alecthomas/types/optional"
@@ -34,19 +35,24 @@ import (
 type Ingress struct {
 	referenceProxy *httputil.ReverseProxy
 	candidateProxy *httputil.ReverseProxy
-	reference      *point
-	candidate      *point
-	config         IngressConfig
-	engine         *protocol.Engine
-	routes         *route.Matcher
-	buffer         *proxy.Budget
-	requests       chan struct{}
-	health         *health.Handler
-	descriptors    Option[DescriptorLoader]
-	static         *descriptorpb.FileDescriptorSet
-	candidates     *proxy.Candidates
-	calls          *proxy.CallCounter
-	quarantiner    *nodeQuarantiner
+	// referenceBackend and candidateBackend are dialed until each first accepts.
+	referenceBackend *netaddr.Endpoint
+	candidateBackend *netaddr.Endpoint
+	// awaitingCandidate holds mirroring from Serve's start until the candidate accepts.
+	awaitingCandidate atomic.Bool
+	reference         *point
+	candidate         *point
+	config            IngressConfig
+	engine            *protocol.Engine
+	routes            *route.Matcher
+	buffer            *proxy.Budget
+	requests          chan struct{}
+	health            *health.Handler
+	descriptors       Option[DescriptorLoader]
+	static            *descriptorpb.FileDescriptorSet
+	candidates        *proxy.Candidates
+	calls             *proxy.CallCounter
+	quarantiner       *nodeQuarantiner
 	// migration maps each route in the migration state to its node.
 	migration Option[*route.Map[stateRoute]]
 	// mu guards decoder, which is set once descriptors are configured.
@@ -108,21 +114,23 @@ func NewIngress(
 	// Each response is decoded and dropped, so its recording needs only its own limit.
 	responseBudget := func() *proxy.Budget { return proxy.NewBudget(config.ComparisonMaxBodyBytes) }
 	ingress := &Ingress{
-		referenceProxy: referenceProxy,
-		candidateProxy: candidateProxy,
-		reference:      newPoint(engine.IngressReference(model.ProtocolHTTP), responseBudget, true, false),
-		candidate:      newPoint(engine.IngressCandidate(model.ProtocolHTTP), responseBudget, false, false),
-		config:         config,
-		engine:         engine,
-		routes:         routes,
-		buffer:         proxy.NewBudget(config.CandidateBufferBytes),
-		requests:       make(chan struct{}, config.MaxInFlightRequests),
-		descriptors:    loader,
-		static:         static,
-		candidates:     candidates,
-		calls:          proxy.NewCallCounter(),
-		quarantiner:    quarantiner,
-		migration:      migrationRoutes,
+		referenceProxy:   referenceProxy,
+		candidateProxy:   candidateProxy,
+		referenceBackend: reference,
+		candidateBackend: candidate,
+		reference:        newPoint(engine.IngressReference(model.ProtocolHTTP), responseBudget, true, false),
+		candidate:        newPoint(engine.IngressCandidate(model.ProtocolHTTP), responseBudget, false, false),
+		config:           config,
+		engine:           engine,
+		routes:           routes,
+		buffer:           proxy.NewBudget(config.CandidateBufferBytes),
+		requests:         make(chan struct{}, config.MaxInFlightRequests),
+		descriptors:      loader,
+		static:           static,
+		candidates:       candidates,
+		calls:            proxy.NewCallCounter(),
+		quarantiner:      quarantiner,
+		migration:        migrationRoutes,
 	}
 	requestHandler := logging.New(http.HandlerFunc(ingress.serveProxy), logger.EventReceived)
 	ingress.health = health.New(requestHandler)
@@ -234,6 +242,11 @@ func (i *Ingress) Candidates() *proxy.Candidates {
 	return i.candidates
 }
 
+// Health reports the ingress readiness.
+func (i *Ingress) Health() *health.Handler {
+	return i.health
+}
+
 // Calls returns the requests ingress has received on each route.
 func (i *Ingress) Calls() model.Calls {
 	return i.calls.Calls()
@@ -297,6 +310,9 @@ func (i *Ingress) serveProxy(writer http.ResponseWriter, request *http.Request) 
 // mirrors reports whether the migration state lets a request reach the candidate.
 // A route no node lists quarantines the candidate, unless ingress never compares it.
 func (i *Ingress) mirrors(request *http.Request) bool {
+	if i.awaitingCandidate.Load() {
+		return false
+	}
 	routes, ok := i.migration.Get()
 	if !ok {
 		return true
@@ -370,11 +386,53 @@ func (i *Ingress) Shutdown(ctx context.Context) error {
 }
 
 // Serve accepts ingress traffic until the context is cancelled or the server fails.
-// Readiness remains false until the comparison schema is configured.
+// Readiness remains false until the reference accepts and the schema is configured.
 func (i *Ingress) Serve(ctx context.Context, listener net.Listener) error {
 	bindings := []Binding{NewBinding(listener, i)}
-	lifecycle := NewLifecycle(i.configureSchema, i.markUnready, i.Shutdown)
+	lifecycle := NewLifecycle(i.start, i.markUnready, i.Shutdown)
 	return errors.Wrap(Serve(ctx, i.config.Config, bindings, lifecycle), "serve ingress")
+}
+
+// start waits for the backends in the background, so Serve can still stop.
+func (i *Ingress) start(ctx context.Context) {
+	i.awaitingCandidate.Store(true)
+	go i.awaitBackends(ctx)
+}
+
+// awaitBackends readies ingress once the reference accepts, and mirrors once the
+// candidate does. Reflection reads both, so it also waits for the candidate.
+func (i *Ingress) awaitBackends(ctx context.Context) {
+	if err := i.referenceBackend.AwaitAccepting(ctx); err != nil {
+		return
+	}
+	logger.FromContext(ctx).InfoContext(ctx, "Reference accepts connections")
+	if !i.config.Reflection {
+		i.configureSchema(ctx)
+	}
+	if i.awaitCandidate(ctx) && i.config.Reflection {
+		i.configureSchema(ctx)
+	}
+}
+
+// awaitCandidate starts mirroring once the candidate accepts a connection, and
+// quarantines it when it does not within the startup timeout.
+func (i *Ingress) awaitCandidate(ctx context.Context) (started bool) {
+	startup, cancel := context.WithTimeout(ctx, i.config.CandidateStartupTimeout)
+	defer cancel()
+	err := i.candidateBackend.AwaitAccepting(startup)
+	switch {
+	case ctx.Err() != nil:
+		return false
+	case err != nil:
+		i.candidates.Quarantine(ctx, model.QuarantineReason{
+			Kind:   model.QuarantineUnable,
+			Detail: "candidate did not accept a connection within " + i.config.CandidateStartupTimeout.String(),
+		})
+		return false
+	}
+	i.awaitingCandidate.Store(false)
+	logger.FromContext(ctx).InfoContext(ctx, "Candidate accepts connections; mirroring starts")
+	return true
 }
 
 func (i *Ingress) markUnready() {
@@ -411,7 +469,9 @@ func (i *Ingress) configureSchema(ctx context.Context) {
 	i.mu.Lock()
 	i.decoder = Some(decoder)
 	i.mu.Unlock()
-	i.health.SetReady(true)
+	if ctx.Err() == nil {
+		i.health.SetReady(true)
+	}
 }
 
 func (i *Ingress) loadDescriptors(ctx context.Context) (*descriptorpb.FileDescriptorSet, *descriptorpb.FileDescriptorSet, error) {

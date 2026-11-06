@@ -52,6 +52,15 @@ const (
 	EventCorrelation = "correlation"
 )
 
+// SubsystemKey labels the component that wrote a line, in SPECTRE's logs and the
+// services' passed-through ones. The namespace keeps it clear of services' own fields.
+const SubsystemKey = "spectre.subsystem"
+
+// WithSubsystem returns a child context whose logger tags every line with subsystem.
+func WithSubsystem(ctx context.Context, subsystem string) context.Context {
+	return WithLogger(ctx, FromContext(ctx).With(SubsystemKey, subsystem))
+}
+
 // WithLogger returns a child context carrying log without changing the parent context.
 func WithLogger(ctx context.Context, log *slog.Logger) context.Context {
 	return context.WithValue(ctx, newContextKey(), log)

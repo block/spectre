@@ -8,7 +8,7 @@ import (
 	"github.com/alecthomas/errors"
 	"github.com/alecthomas/kong"
 
-	"github.com/block/spectre/internal/descriptors"
+	"github.com/block/spectre/internal/proxies"
 	"github.com/block/spectre/internal/server/client"
 	"github.com/block/spectre/internal/server/reporter"
 )
@@ -23,31 +23,17 @@ type Config struct {
 	CandidateProtocol string `name:"candidate-protocol" enum:"h2c,http" default:"h2c" help:"Protocol the ingress uses to reach the candidate: h2c (unencrypted HTTP/2) or http (HTTP/1.1)."`
 	// ReferenceProtocol is the protocol the ingress uses to reach the reference.
 	ReferenceProtocol string `name:"reference-protocol" enum:"h2c,http" default:"h2c" help:"Protocol the ingress uses to reach the reference: h2c (unencrypted HTTP/2) or http (HTTP/1.1)."`
-	// Reflection loads and compares both backends' descriptors via gRPC reflection.
-	Reflection bool `name:"reflection" negatable:"" default:"true" help:"Load backend descriptors with gRPC reflection and require them to match; disable to compare using only the static descriptors."`
 	// Listen is the public ingress address that clients send traffic to.
 	Listen string `default:"127.0.0.1:50050" help:"Public ingress address: host:port, or unix:<path|@abstract> for a unix socket."`
 	// SocketDir holds the unix sockets wiring the proxies to the services.
 	SocketDir string `default:"dist/sockets" help:"Directory for the unix sockets wiring the proxies to the services."`
-	// Destinations maps each request host to its upstream URL for egress.
-	Destinations map[string]string `name:"destination" placeholder:"HOST=URL" help:"Upstream URL for requests to HOST, passed to the egress proxy. HOST may be a glob, such as *.example. Repeat for each dependency."`
-	// ScriptsDir holds the comparison scripts passed to both proxies.
-	ScriptsDir string `type:"existingdir" placeholder:"DIR" help:"Directory of comparison scripts passed to both proxies."`
-	// StateFile is the migration state that decides which routes ingress mirrors.
-	StateFile string `type:"existingfile" placeholder:"FILE" help:"Migration state TOML file. Ingress mirrors only routes of migrated nodes, and quarantines the candidate on a route no node lists. Without it, every request is mirrored."`
-	// SchemaDir holds the TypeScript schema passed to both proxies.
-	SchemaDir string `type:"existingdir" placeholder:"DIR" help:"Directory of TypeScript schema passed to both proxies."`
-	// MatchWindow bounds how long a candidate call waits for a matching reference call.
-	MatchWindow time.Duration `default:"5s" help:"Maximum time a candidate egress call waits for an equivalent reference call before a 502."`
-	// Descriptors supplies protobuf descriptors to both proxies.
-	Descriptors descriptors.Config `embed:""`
+	// Mirror configures the proxies and reporting.
+	Mirror proxies.Config `embed:""`
 	// Limits configures the cgroup resource split between the services.
 	Limits LimitConfig `embed:""`
 	// SeccompEgress blocks the candidate from opening IP sockets with seccomp,
 	// so it can only reach dependencies through the egress proxy.
 	SeccompEgress bool `name:"seccomp-egress" negatable:"" default:"true" help:"Block the candidate from opening IPv4 and IPv6 sockets with a seccomp filter, leaving only the egress proxy's unix socket."`
-	// Server reports the mirror's state to the SPECTRE server.
-	Server reporter.Config `embed:""`
 	// StartupTimeout bounds how long each process has to start listening.
 	StartupTimeout time.Duration `default:"30s" help:"Maximum time for each process to begin accepting connections."`
 	// ShutdownTimeout bounds graceful shutdown before processes are killed.
@@ -76,15 +62,12 @@ type LimitConfig struct {
 func NewConfig() Config {
 	// ApplyDefaults validates required fields, so seed them while applying tag defaults.
 	const placeholder = "placeholder"
-	config := Config{
-		Candidate: placeholder,
-		Reference: placeholder,
-		Server: reporter.Config{
-			Client:      client.Config{URL: placeholder},
-			Service:     placeholder,
-			Environment: placeholder,
-			Revision:    placeholder,
-		},
+	config := Config{Candidate: placeholder, Reference: placeholder}
+	config.Mirror.Server = reporter.Config{
+		Client:      client.Config{URL: placeholder},
+		Service:     placeholder,
+		Environment: placeholder,
+		Revision:    placeholder,
 	}
 	// The server URL's default interpolates a variable that only spectre.Main sets.
 	if err := kong.ApplyDefaults(&config, kong.Vars{"server_url": ""}); err != nil {
@@ -92,10 +75,10 @@ func NewConfig() Config {
 	}
 	config.Candidate = ""
 	config.Reference = ""
-	config.Server.Client = client.Config{}
-	config.Server.Service = ""
-	config.Server.Environment = ""
-	config.Server.Revision = ""
+	config.Mirror.Server.Client = client.Config{}
+	config.Mirror.Server.Service = ""
+	config.Mirror.Server.Environment = ""
+	config.Mirror.Server.Revision = ""
 	return config
 }
 
@@ -108,10 +91,7 @@ func (c Config) Validate() error {
 	if c.StartupTimeout <= 0 || c.ShutdownTimeout <= 0 {
 		return errors.New("startup and shutdown timeouts must be positive")
 	}
-	if c.MatchWindow <= 0 {
-		return errors.New("match window must be positive")
-	}
-	if err := c.Server.Validate(); err != nil {
+	if err := c.Mirror.Validate(); err != nil {
 		return errors.WithStack(err)
 	}
 	return errors.WithStack(c.Limits.Validate())
