@@ -15,13 +15,14 @@ import (
 )
 
 var testWiring = Wiring{
-	Listen:          "127.0.0.1:50050",
-	Reference:       "h2c+unix:/sockets/reference.sock",
-	Candidate:       "http+unix:/sockets/candidate.sock",
-	ReferenceEgress: "unix:/sockets/egress-reference.sock",
-	CandidateEgress: "unix:/sockets/egress-candidate.sock",
-	EgressHealth:    "unix:/sockets/egress-health.sock",
-	Health:          None[string](),
+	Listen:            "127.0.0.1:50050",
+	Reference:         "h2c+unix:/sockets/reference.sock",
+	Candidate:         "http+unix:/sockets/candidate.sock",
+	ReferenceEgress:   "unix:/sockets/egress-reference.sock",
+	CandidateEgress:   "unix:/sockets/egress-candidate.sock",
+	CandidateRedirect: Some("127.0.0.1:15001"),
+	EgressHealth:      "unix:/sockets/egress-health.sock",
+	Health:            None[string](),
 }
 
 func testMirror(t *testing.T, config Config) *Mirror {
@@ -79,6 +80,7 @@ func TestEgressConfig(t *testing.T) {
 	expected.ReferenceListen = testWiring.ReferenceEgress
 	expected.CandidateListen = testWiring.CandidateEgress
 	expected.HealthListen = testWiring.EgressHealth
+	expected.CandidateRedirectListen = "127.0.0.1:15001"
 	expected.Destinations = config.Destinations
 	expected.Descriptors = config.Descriptors
 	assert.Equal(t, expected, testMirror(t, config).egressConfig())

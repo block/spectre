@@ -68,6 +68,13 @@ func NewEgress(
 		candidateListen,
 		netaddr.ParseListen(config.HealthListen),
 	}
+	if config.CandidateRedirectListen != "" {
+		redirectListen := netaddr.ParseListen(config.CandidateRedirectListen)
+		if !redirectListen.IsLoopback() {
+			return nil, errors.New("candidate redirect listener must use a loopback IP address")
+		}
+		listeners = append(listeners, redirectListen)
+	}
 	destinations, err := egressDestinations(ctx, config.Destinations, transport, listeners)
 	if err != nil {
 		return nil, err
@@ -150,13 +157,19 @@ func egressDestinations(ctx context.Context, upstreams map[string]string, transp
 	return destinations, nil
 }
 
-// Serve accepts reference, candidate, and health traffic until the context is
-// cancelled or a server fails. Readiness turns true once the servers start.
-func (e *Egress) Serve(ctx context.Context, reference net.Listener, candidate net.Listener, probes net.Listener) error {
+// Serve accepts reference, candidate, health, and any redirected candidate traffic
+// until the context is cancelled or a server fails. Readiness turns true once they start.
+func (e *Egress) Serve(ctx context.Context, reference net.Listener, candidate net.Listener, probes net.Listener,
+	redirect Option[net.Listener],
+) error {
 	bindings := []Binding{
 		NewBinding(reference, e.referenceHandler),
 		NewBinding(candidate, e.candidateHandler),
 		NewBinding(probes, e.health),
+	}
+	if listener, ok := redirect.Get(); ok {
+		reject := func(destination string, protocol string) { e.quarantineRedirected(ctx, destination, protocol) }
+		bindings = append(bindings, NewBinding(newRedirectListener(listener, reject), e.candidateHandler))
 	}
 	lifecycle := NewLifecycle(e.markReady, e.stop, e.drain)
 	return errors.Wrap(Serve(ctx, e.config, bindings, lifecycle), "serve egress")
@@ -302,6 +315,15 @@ func (e *Egress) serveCandidate(writer http.ResponseWriter, request *http.Reques
 		return
 	}
 	e.candidatePoint.respond(writer, request, decision, None[*httputil.ReverseProxy](), noDecode)
+}
+
+// quarantineRedirected quarantines the candidate for a redirected connection that
+// egress cannot replay, so the candidate never gets a response.
+func (e *Egress) quarantineRedirected(ctx context.Context, destination string, protocol string) {
+	e.candidates.Quarantine(ctx, model.QuarantineReason{
+		Kind:   model.QuarantineUnable,
+		Detail: "candidate sent " + protocol + " to " + destination + ", which egress cannot replay",
+	})
 }
 
 // route names a request by the endpoint pattern it matches, so requests that

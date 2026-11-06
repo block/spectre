@@ -30,6 +30,8 @@ type Wiring struct {
 	// ReferenceEgress and CandidateEgress receive each service's dependency calls.
 	ReferenceEgress string
 	CandidateEgress string
+	// CandidateRedirect receives the candidate's connections that iptables redirected.
+	CandidateRedirect Option[string]
 	// EgressHealth serves the egress proxy's own health endpoints.
 	EgressHealth string
 	// Health serves the health of both proxies.
@@ -151,13 +153,21 @@ func (m *Mirror) startEgress(ctx context.Context) error {
 		return errors.Wrap(err, "configure egress")
 	}
 	m.egress = handler
-	listeners, err := listenAll(ctx, config.ReferenceListen, config.CandidateListen, config.HealthListen)
+	addresses := []string{config.ReferenceListen, config.CandidateListen, config.HealthListen}
+	if redirect, ok := m.wiring.CandidateRedirect.Get(); ok {
+		addresses = append(addresses, redirect)
+	}
+	listeners, err := listenAll(ctx, addresses...)
 	if err != nil {
 		transport.CloseIdleConnections()
 		return errors.Wrap(err, "listen for egress")
 	}
+	redirect := None[net.Listener]()
+	if len(listeners) > 3 {
+		redirect = Some(listeners[3])
+	}
 	m.serve(ctx, "egress", transport.CloseIdleConnections, func() error {
-		return handler.Serve(proxyContext, listeners[0], listeners[1], listeners[2])
+		return handler.Serve(proxyContext, listeners[0], listeners[1], listeners[2], redirect)
 	})
 	return nil
 }
@@ -250,6 +260,7 @@ func (m *Mirror) egressConfig() httpserver.EgressConfig {
 	config.ReferenceListen = m.wiring.ReferenceEgress
 	config.CandidateListen = m.wiring.CandidateEgress
 	config.HealthListen = m.wiring.EgressHealth
+	config.CandidateRedirectListen = m.wiring.CandidateRedirect.Default("")
 	config.Destinations = m.config.Destinations
 	config.Descriptors = m.config.Descriptors
 	return config

@@ -92,6 +92,13 @@ divergence. A candidate that accepts nothing within
 `--health-listen` serves `/livez`, and `/readyz` once both proxies are ready,
 over TCP so a kubelet's HTTP probes can reach them.
 
+A candidate in its own container can still open TCP connections that bypass
+its egress socket. Redirect them with iptables to `--candidate-redirect-listen`,
+a loopback TCP address such as `127.0.0.1:15001`. Egress handles redirected HTTP
+as it does on the candidate egress listener. When the candidate sends TLS, any
+other protocol, or nothing before the read header timeout, egress quarantines it
+with the connection's original destination, since it cannot replay that call.
+
 ## SPECTRE server
 
 `spectre serve` collects the states that mirrors stream to it: each mirror's

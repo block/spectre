@@ -106,6 +106,7 @@ func TestProxyCommandReadsFlagsFromEnvironment(t *testing.T) {
 		"SPECTRE_CANDIDATE_URL":             "h2c+unix:/sockets/candidate.sock",
 		"SPECTRE_REFERENCE_EGRESS_LISTEN":   "unix:/sockets/egress-reference.sock",
 		"SPECTRE_CANDIDATE_EGRESS_LISTEN":   "unix:/sockets/egress-candidate.sock",
+		"SPECTRE_CANDIDATE_REDIRECT_LISTEN": "127.0.0.1:15001",
 		"SPECTRE_HEALTH_LISTEN":             "0.0.0.0:8081",
 		"SPECTRE_CANDIDATE_STARTUP_TIMEOUT": "10m",
 		"SPECTRE_SCRIPTS_DIR":               scripts,
@@ -123,14 +124,15 @@ func TestProxyCommandReadsFlagsFromEnvironment(t *testing.T) {
 	_, err = parser.Parse([]string{"proxy"})
 	assert.NoError(t, err)
 	expected := proxies.ProxyConfig{
-		Listen:                "0.0.0.0:8080",
-		ReferenceURL:          "h2c+unix:/sockets/reference.sock",
-		CandidateURL:          "h2c+unix:/sockets/candidate.sock",
-		ReferenceEgressListen: "unix:/sockets/egress-reference.sock",
-		CandidateEgressListen: "unix:/sockets/egress-candidate.sock",
-		EgressHealthListen:    "127.0.0.1:50062",
-		HealthListen:          "0.0.0.0:8081",
-		Mirror:                proxies.NewConfig(),
+		Listen:                  "0.0.0.0:8080",
+		ReferenceURL:            "h2c+unix:/sockets/reference.sock",
+		CandidateURL:            "h2c+unix:/sockets/candidate.sock",
+		ReferenceEgressListen:   "unix:/sockets/egress-reference.sock",
+		CandidateEgressListen:   "unix:/sockets/egress-candidate.sock",
+		CandidateRedirectListen: "127.0.0.1:15001",
+		EgressHealthListen:      "127.0.0.1:50062",
+		HealthListen:            "0.0.0.0:8081",
+		Mirror:                  proxies.NewConfig(),
 	}
 	expected.Mirror.CandidateStartupTimeout = 10 * time.Minute
 	expected.Mirror.ScriptsDir = scripts

@@ -129,13 +129,14 @@ func TestWiring(t *testing.T) {
 			assert.NoError(t, err)
 			socket := func(name string) string { return filepath.Join(config.SocketDir, name) }
 			assert.Equal(t, proxies.Wiring{
-				Listen:          config.Listen,
-				Reference:       test.backend(socket("reference.sock")),
-				Candidate:       test.backend(socket("candidate.sock")),
-				ReferenceEgress: unixListen(socket("egress-reference.sock")),
-				CandidateEgress: unixListen(socket("egress-candidate.sock")),
-				EgressHealth:    unixListen(socket("egress-health.sock")),
-				Health:          None[string](),
+				Listen:            config.Listen,
+				Reference:         test.backend(socket("reference.sock")),
+				Candidate:         test.backend(socket("candidate.sock")),
+				ReferenceEgress:   unixListen(socket("egress-reference.sock")),
+				CandidateEgress:   unixListen(socket("egress-candidate.sock")),
+				CandidateRedirect: None[string](),
+				EgressHealth:      unixListen(socket("egress-health.sock")),
+				Health:            None[string](),
 			}, s.wiring())
 		})
 	}

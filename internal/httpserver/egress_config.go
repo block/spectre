@@ -12,6 +12,9 @@ type EgressConfig struct {
 	// CandidateListen receives candidate traffic. It must stay local: a loopback
 	// IP or a unix socket.
 	CandidateListen string `default:"127.0.0.1:50061" help:"Candidate listener address on a loopback IP or unix socket: host:port, or unix:<path|@abstract>."`
+	// CandidateRedirectListen receives the candidate's TCP connections that iptables
+	// redirected to egress. Empty disables it.
+	CandidateRedirectListen string `placeholder:"HOST:PORT" help:"Loopback TCP address that iptables redirects the candidate's connections to, such as 127.0.0.1:15001. HTTP is handled as on the candidate listener; TLS, other protocols, or silence until the read header timeout quarantine the candidate."`
 	// HealthListen serves liveness and readiness. Probes need their own listener,
 	// because any path on the traffic listeners may belong to a dependency.
 	HealthListen string `default:"127.0.0.1:50062" help:"Health listener address for /livez and /readyz: host:port, or unix:<path|@abstract>."`

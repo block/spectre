@@ -18,6 +18,9 @@ type ProxyConfig struct {
 	ReferenceEgressListen string `default:"127.0.0.1:50060" help:"Address the reference sends its dependency calls to: host:port, or unix:<path|@abstract>."`
 	// CandidateEgressListen receives the candidate's dependency calls.
 	CandidateEgressListen string `default:"127.0.0.1:50061" help:"Address the candidate sends its dependency calls to, on a loopback IP or unix socket: host:port, or unix:<path|@abstract>."`
+	// CandidateRedirectListen receives the candidate's connections that iptables
+	// redirected. Empty disables it.
+	CandidateRedirectListen string `placeholder:"HOST:PORT" help:"Loopback TCP address that iptables redirects the candidate's connections to, such as 127.0.0.1:15001. HTTP is handled as on the candidate egress listener; TLS, other protocols, or silence until the read header timeout quarantine the candidate."`
 	// EgressHealthListen serves the egress proxy's own health endpoints.
 	EgressHealthListen string `default:"127.0.0.1:50062" help:"Address of the egress proxy's own /livez and /readyz: host:port, or unix:<path|@abstract>."`
 	// HealthListen serves the health of both proxies, for probes.
@@ -33,13 +36,18 @@ func (c ProxyConfig) Validate() error {
 
 // wiring connects the proxies to the addresses on the command line.
 func (c ProxyConfig) wiring() Wiring {
+	redirect := None[string]()
+	if c.CandidateRedirectListen != "" {
+		redirect = Some(c.CandidateRedirectListen)
+	}
 	return Wiring{
-		Listen:          c.Listen,
-		Reference:       c.ReferenceURL,
-		Candidate:       c.CandidateURL,
-		ReferenceEgress: c.ReferenceEgressListen,
-		CandidateEgress: c.CandidateEgressListen,
-		EgressHealth:    c.EgressHealthListen,
-		Health:          Some(c.HealthListen),
+		Listen:            c.Listen,
+		Reference:         c.ReferenceURL,
+		Candidate:         c.CandidateURL,
+		ReferenceEgress:   c.ReferenceEgressListen,
+		CandidateEgress:   c.CandidateEgressListen,
+		CandidateRedirect: redirect,
+		EgressHealth:      c.EgressHealthListen,
+		Health:            Some(c.HealthListen),
 	}
 }

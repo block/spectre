@@ -66,6 +66,45 @@ func TestReplaysReferenceResponseToCandidate(t *testing.T) {
 		logRecords[matchRecord](t, harness.Logs, "Candidate request matched a reference request"))
 }
 
+func TestReplaysReferenceResponseToRedirectedCandidate(t *testing.T) {
+	upstream := newUpstream(t, func(writer http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(writer, `{"forecast":{}}`)
+	})
+	harness := newHarness(t, upstream)
+	harness.Start(t)
+
+	reference := send(t, harness.Reference, dependencyHost, london)
+	assert.Equal(t, reference, send(t, harness.Redirect, dependencyHost, london))
+}
+
+func TestQuarantinesRedirectedCandidateThatIsNotHTTP(t *testing.T) {
+	for name, test := range map[string]struct {
+		first  string
+		reason string
+	}{
+		"TLS":     {first: "\x16\x03\x01\x00\x05hello", reason: "TLS"},
+		"Binary":  {first: "\x00\x01binary", reason: "data other than HTTP"},
+		"Silence": {reason: "nothing"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			harness := newHarness(t, newUpstream(t, func(http.ResponseWriter, *http.Request) {}))
+			harness.Config.ReadHeaderTimeout = 50 * time.Millisecond
+			harness.Start(t)
+			conn, err := (&net.Dialer{}).DialContext(t.Context(), "tcp", harness.Redirect.Addr().String())
+			assert.NoError(t, err)
+			defer conn.Close()
+			if test.first != "" {
+				_, err = io.WriteString(conn, test.first)
+				assert.NoError(t, err)
+			}
+
+			expected := "candidate sent " + test.reason + " to " + harness.Redirect.Addr().String() + ", which egress cannot replay"
+			assert.Equal(t, expected, harness.QuarantineReason(t))
+			assert.Equal(t, http.StatusServiceUnavailable, send(t, harness.Candidate, dependencyHost, london).Status)
+		})
+	}
+}
+
 func TestReplaysRawJSONWithoutDescriptors(t *testing.T) {
 	upstream := newUpstream(t, func(writer http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(writer, "reference")
@@ -285,6 +324,18 @@ func TestEgressRejectsUnsafeConfiguration(t *testing.T) {
 			update:  func(config *httpserver.EgressConfig, _ *protocol.Config) { config.CandidateListen = "0.0.0.0:50061" },
 			message: "candidate listener must use a loopback IP address or a unix socket",
 		},
+		"RemoteRedirectListener": {
+			update: func(config *httpserver.EgressConfig, _ *protocol.Config) {
+				config.CandidateRedirectListen = "0.0.0.0:15001"
+			},
+			message: "candidate redirect listener must use a loopback IP address",
+		},
+		"UnixRedirectListener": {
+			update: func(config *httpserver.EgressConfig, _ *protocol.Config) {
+				config.CandidateRedirectListen = "unix:/tmp/redirect.sock"
+			},
+			message: "candidate redirect listener must use a loopback IP address",
+		},
 		"DestinationPort": {
 			update: func(config *httpserver.EgressConfig, _ *protocol.Config) {
 				config.Destinations = map[string]string{"weather.example:80": "http://127.0.0.1:9"}
@@ -367,6 +418,7 @@ type harness struct {
 	Engine    protocol.Config
 	Reference net.Listener
 	Candidate net.Listener
+	Redirect  net.Listener
 	Health    net.Listener
 	Logs      *syncBuffer
 }
@@ -375,10 +427,12 @@ func newHarness(t *testing.T, upstream string) *harness {
 	t.Helper()
 	reference := listen(t)
 	candidate := listen(t)
+	redirect := listen(t)
 	health := listen(t)
 	config := httpserver.NewEgressConfig()
 	config.ReferenceListen = reference.Addr().String()
 	config.CandidateListen = candidate.Addr().String()
+	config.CandidateRedirectListen = redirect.Addr().String()
 	config.HealthListen = health.Addr().String()
 	config.Destinations = map[string]string{dependencyHost: upstream}
 	_, config.Descriptors.DescriptorsDir = writeSchemaAndDescriptors(t)
@@ -387,6 +441,7 @@ func newHarness(t *testing.T, upstream string) *harness {
 		Engine:    newEgressEngineConfig(t),
 		Reference: reference,
 		Candidate: candidate,
+		Redirect:  redirect,
 		Health:    health,
 		Logs:      &syncBuffer{},
 	}
@@ -399,7 +454,7 @@ func (h *harness) Start(t *testing.T) (stop func() error) {
 	egressProxy, err := httpserver.NewEgress(ctx, h.Config, h.Engine, http.DefaultTransport)
 	assert.NoError(t, err)
 	done := make(chan error, 1)
-	go func() { done <- egressProxy.Serve(ctx, h.Reference, h.Candidate, h.Health) }()
+	go func() { done <- egressProxy.Serve(ctx, h.Reference, h.Candidate, h.Health, Some(h.Redirect)) }()
 	stop = sync.OnceValue(func() error {
 		cancel()
 		select {

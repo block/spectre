@@ -270,13 +270,14 @@ func (s *Supervisor) command(ctx context.Context, name string, arg ...string) *e
 // wiring connects the proxies to the services through the socket directory.
 func (s *Supervisor) wiring() proxies.Wiring {
 	return proxies.Wiring{
-		Listen:          s.config.Listen,
-		Reference:       backendURL(s.config.ReferenceProtocol, s.referenceSock),
-		Candidate:       backendURL(s.config.CandidateProtocol, s.candidateSock),
-		ReferenceEgress: unixListen(s.egressReference),
-		CandidateEgress: unixListen(s.egressCandidate),
-		EgressHealth:    unixListen(s.egressHealth),
-		Health:          None[string](),
+		Listen:            s.config.Listen,
+		Reference:         backendURL(s.config.ReferenceProtocol, s.referenceSock),
+		Candidate:         backendURL(s.config.CandidateProtocol, s.candidateSock),
+		ReferenceEgress:   unixListen(s.egressReference),
+		CandidateEgress:   unixListen(s.egressCandidate),
+		CandidateRedirect: None[string](),
+		EgressHealth:      unixListen(s.egressHealth),
+		Health:            None[string](),
 	}
 }
 

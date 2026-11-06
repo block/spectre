@@ -2,6 +2,7 @@ package netaddr_test
 
 import (
 	"context"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -226,4 +227,22 @@ func shortSocketDir(t *testing.T) string {
 	assert.NoError(t, err)
 	t.Cleanup(func() { assert.NoError(t, os.RemoveAll(dir)) })
 	return dir
+}
+
+func TestOriginalDestinationOfDirectConnection(t *testing.T) {
+	listener, err := netaddr.ParseListen("127.0.0.1:0").Listen(t.Context())
+	assert.NoError(t, err)
+	t.Cleanup(func() { assert.NoError(t, listener.Close()) })
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		conn, err := listener.Accept()
+		assert.NoError(t, err)
+		accepted <- conn
+	}()
+	client, err := (&net.Dialer{}).DialContext(t.Context(), "tcp", listener.Addr().String())
+	assert.NoError(t, err)
+	t.Cleanup(func() { assert.NoError(t, client.Close()) })
+	conn := <-accepted
+	t.Cleanup(func() { assert.NoError(t, conn.Close()) })
+	assert.Equal(t, listener.Addr().String(), netaddr.OriginalDestination(conn))
 }
