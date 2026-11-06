@@ -25,6 +25,9 @@ const (
 	hostLocalhost = "localhost"
 )
 
+// socketMode lets the owner and group connect to a unix socket file.
+const socketMode os.FileMode = 0o660
+
 // acceptPollInterval is how long AwaitAccepting waits between dials.
 const acceptPollInterval = 100 * time.Millisecond
 
@@ -131,7 +134,13 @@ func (e *Endpoint) Listen(ctx context.Context) (net.Listener, error) {
 		}
 	}
 	listener, err := (&net.ListenConfig{}).Listen(ctx, e.network, e.address)
-	return listener, errors.Wrap(err, "open listener")
+	if err != nil {
+		return nil, errors.Wrap(err, "open listener")
+	}
+	if err := shareSocket(e.network, e.address); err != nil {
+		return nil, errors.Join(err, listener.Close())
+	}
+	return listener, nil
 }
 
 // DialContext dials the endpoint's unix socket, ignoring the requested network
@@ -284,6 +293,15 @@ func (e *Endpoint) TargetsListener(listener *Endpoint) bool {
 		return listenAddress.IsUnspecified() || listenAddress.Unmap().IsLoopback()
 	}
 	return listenAddress.IsUnspecified() || listenAddress.Unmap() == target.Unmap()
+}
+
+// shareSocket lets the socket file's group connect, so a container running as
+// another user in the same pod reaches it through the pod's shared fsGroup.
+func shareSocket(network string, address string) error {
+	if network != networkUnix || strings.HasPrefix(address, "@") {
+		return nil
+	}
+	return errors.Wrap(os.Chmod(address, socketMode), "share unix socket")
 }
 
 // removeStaleSocket clears a leftover path socket so a restart can bind it.

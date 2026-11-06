@@ -1,0 +1,122 @@
+# A mirror whose reference and candidate run in their own containers, as when the
+# candidate comes from a different image. spectre-init rejects the candidate
+# user's IP traffic, so it reaches its dependency only through the egress proxy's
+# unix socket. scripts/mirror-pod.test.sh runs it in a kind cluster.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: spectre-mirror
+spec:
+  securityContext:
+    # Every container shares this group, which may connect to the sockets.
+    fsGroup: 2000
+    seccompProfile:
+      type: RuntimeDefault
+  volumes:
+    # The reference, its egress, and the dependency.
+    - name: sockets
+      emptyDir: {}
+    # The candidate and its egress, the only sockets the candidate sees.
+    - name: candidate-sockets
+      emptyDir: {}
+  initContainers:
+    - name: spectre-init
+      image: IMAGE
+      imagePullPolicy: Never
+      command: [spectre, contain, --uid=1002]
+      securityContext:
+        runAsUser: 0
+        runAsNonRoot: false
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+          add: [NET_ADMIN]
+  containers:
+    - name: server
+      image: IMAGE
+      imagePullPolicy: Never
+      command: [spectre, serve, --listen=127.0.0.1:50070]
+      securityContext: &nonroot
+        runAsUser: 1000
+        runAsNonRoot: true
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+    - name: forecasts
+      image: IMAGE
+      imagePullPolicy: Never
+      command:
+        - spectre-sample-forecasts
+        - --listen=unix:/sockets/forecasts.sock
+        - --weather=/spectre/testdata/weather.json
+        - --log-level=debug
+        - --log-json=DEFAULT
+      securityContext: *nonroot
+      volumeMounts:
+        - { name: sockets, mountPath: /sockets }
+    - name: proxy
+      image: IMAGE
+      imagePullPolicy: Never
+      command:
+        - spectre
+        - proxy
+        - --listen=0.0.0.0:50050
+        - --reference-url=h2c+unix:/sockets/reference.sock
+        - --candidate-url=h2c+unix:/candidate/candidate.sock
+        - --reference-egress-listen=unix:/sockets/egress-reference.sock
+        - --candidate-egress-listen=unix:/candidate/egress.sock
+        - --health-listen=0.0.0.0:50063
+        - --destination=forecasts.example=http+unix:/sockets/forecasts.sock
+        - --scripts-dir=/spectre/scripts
+        - --schema-dir=/spectre/schema
+        - --descriptors-dir=/spectre/descriptors
+        - --match-window=1s
+        - --server-url=http://127.0.0.1:50070
+        - --service=sample
+        - --environment=kind
+        - --revision=kind
+        - --log-level=debug
+        - --log-json=DEFAULT
+      ports:
+        - containerPort: 50050
+      securityContext: *nonroot
+      volumeMounts:
+        - { name: sockets, mountPath: /sockets }
+        - { name: candidate-sockets, mountPath: /candidate }
+      livenessProbe:
+        httpGet: { path: /livez, port: 50063 }
+      readinessProbe:
+        httpGet: { path: /readyz, port: 50063 }
+        periodSeconds: 2
+    - name: reference
+      image: IMAGE
+      imagePullPolicy: Never
+      command:
+        - spectre-sample
+        - --listen=unix:/sockets/reference.sock
+        - --forecasts=http+unix:/sockets/egress-reference.sock
+        - --data=/spectre/testdata/users.json
+        - --weather=/spectre/testdata/weather.json
+        - --log-level=debug
+        - --log-json=DEFAULT
+      securityContext:
+        <<: *nonroot
+        runAsUser: 1001
+      volumeMounts:
+        - { name: sockets, mountPath: /sockets }
+    - name: candidate
+      image: IMAGE
+      imagePullPolicy: Never
+      command:
+        - spectre-sample
+        - --listen=unix:/candidate/candidate.sock
+        - --forecasts=http+unix:/candidate/egress.sock
+        - --data=/spectre/testdata/users.json
+        - --weather=/spectre/testdata/weather.json
+        - --log-level=debug
+        - --log-json=DEFAULT
+      securityContext:
+        <<: *nonroot
+        runAsUser: 1002
+      volumeMounts:
+        - { name: candidate-sockets, mountPath: /candidate }
