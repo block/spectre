@@ -46,6 +46,7 @@ func TestStatusCommands(t *testing.T) {
 					{Path: "$.name", Change: model.ChangeChanged, Count: 1},
 					{Path: "$.emails[*]", Change: model.ChangeMissing, Count: 2},
 					{Path: "$.owner", Change: model.ChangeRetyped, Retype: Some(model.Retype{Reference: model.JSONObject, Candidate: model.JSONNull}), Count: 1},
+					{Path: "$status", Change: model.ChangeChanged, Statuses: Some(model.Statuses{Reference: "200", Candidate: "500"}), Count: 1},
 				},
 				Truncated: true,
 			}},
@@ -76,6 +77,7 @@ users def456 production spectre v1.2.3, up 1h30m0s
     ~ $.name
     - $.emails[*] ×2
     ! $.owner object → null
+    ~ $status 200 → 500
     … more
   quarantined 2026-10-01T12:01:00Z
     GET /v1/users: 1 call
@@ -103,7 +105,8 @@ users def456 staging spectre v1.2.3, up 12m0s
 		"differences": [
 			{"path": "$.name", "change": "CHANGE_CHANGED", "count": 1},
 			{"path": "$.emails[*]", "change": "CHANGE_MISSING", "count": 2},
-			{"path": "$.owner", "change": "CHANGE_RETYPED", "referenceType": "JSON_TYPE_OBJECT", "candidateType": "JSON_TYPE_NULL", "count": 1}
+			{"path": "$.owner", "change": "CHANGE_RETYPED", "referenceType": "JSON_TYPE_OBJECT", "candidateType": "JSON_TYPE_NULL", "count": 1},
+			{"path": "$status", "change": "CHANGE_CHANGED", "statuses": {"reference": "200", "candidate": "500"}, "count": 1}
 		],
 		"truncated": true
 	}`
@@ -139,6 +142,7 @@ users def456 staging spectre v1.2.3, up 12m0s
     ~ $.name
     - $.emails[*] ×2
     ! $.owner object → null
+    ~ $status 200 → 500
     … more
   quarantined 2026-10-01T12:01:00Z
     GET /v1/users: 1 call

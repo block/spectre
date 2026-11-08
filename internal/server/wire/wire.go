@@ -321,6 +321,9 @@ func differenceMessages(differences []model.Difference) []*pb.Difference {
 			message.ReferenceType = jsonTypeMessage(retype.Reference)
 			message.CandidateType = jsonTypeMessage(retype.Candidate)
 		}
+		if statuses, ok := difference.Statuses.Get(); ok {
+			message.Statuses = &pb.Statuses{Reference: statuses.Reference, Candidate: statuses.Candidate}
+		}
 		messages = append(messages, message)
 	}
 	return messages
@@ -346,6 +349,9 @@ func differencesFromMessages(messages []*pb.Difference) ([]model.Difference, err
 				return nil, err
 			}
 			difference.Retype = Some(model.Retype{Reference: reference, Candidate: candidate})
+		}
+		if statuses := message.GetStatuses(); statuses != nil {
+			difference.Statuses = Some(model.Statuses{Reference: statuses.GetReference(), Candidate: statuses.GetCandidate()})
 		}
 		differences = append(differences, difference)
 	}

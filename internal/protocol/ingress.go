@@ -43,9 +43,17 @@ func newDifferenceResult(truncated bool, differences ...model.Difference) compar
 	return comparisonResult{outcome: outcomeDivergent, differences: differences, truncated: truncated}
 }
 
-// rootDifference is a difference in a response's status or presence, which is not a payload path.
+// rootDifference is a difference in a response's presence, which is not a payload path.
 func rootDifference(path string, change model.Change) comparisonResult {
 	return newDifferenceResult(false, model.Difference{Path: path, Change: change, Count: 1})
+}
+
+// statusDifference reports the statuses the services returned, which hold no payload.
+func statusDifference(reference, candidate string) comparisonResult {
+	return newDifferenceResult(false, model.Difference{
+		Path: "$status", Change: model.ChangeChanged, Count: 1,
+		Statuses: Some(model.Statuses{Reference: reference, Candidate: candidate}),
+	})
 }
 
 // ingressPairs pairs each reference request with its mirrored candidate request
@@ -179,7 +187,7 @@ func (p *ingressPair) awaitReference(ctx context.Context) (ingressOutcome, error
 	return outcome, nil
 }
 
-// compareResponses classifies a finished pair without exposing response values. A
+// compareResponses classifies a finished pair without exposing payload values. A
 // response that fails to decode has no normaliser, so its raw status is compared first.
 func compareResponses(ctx context.Context, scripts *comparison.Scripts, outcome ingressOutcome, candidate Response) comparisonResult {
 	if failure, failed := outcome.failure.Get(); failed {
@@ -197,7 +205,7 @@ func compareResponses(ctx context.Context, scripts *comparison.Scripts, outcome 
 	candidateStatus, candidateKnown := candidateContent.Status.Get()
 	decoded := !referenceContent.Failure.Ok() && !candidateContent.Failure.Ok()
 	if referenceKnown && candidateKnown && referenceStatus != candidateStatus && (!decoded || referenceContent.Ignored.Ok() || candidateContent.Ignored.Ok()) {
-		return rootDifference("$status", model.ChangeChanged)
+		return statusDifference(referenceStatus, candidateStatus)
 	}
 	if failure, failed := referenceContent.Failure.Get(); failed {
 		return newComparisonResult(outcomeUnable, "reference: "+failure.Error())
@@ -219,8 +227,9 @@ func compareResponses(ctx context.Context, scripts *comparison.Scripts, outcome 
 	if err != nil {
 		return newComparisonResult(outcomeUnable, "candidate: "+err.Error())
 	}
+	// Normalisers may derive a status from the body, so report what the services returned.
 	if referenceContent.Status != candidateContent.Status {
-		return rootDifference("$status", model.ChangeChanged)
+		return statusDifference(referenceStatus, candidateStatus)
 	}
 	return compareMessages(ctx, scripts, referenceContent.Message, candidateContent.Message)
 }

@@ -395,14 +395,14 @@ func TestStatusDifferenceIsDivergentWhenCandidateBodyIsUndecodable(t *testing.T)
 
 	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequestWithContext(ctx, http.MethodGet, "http://proxy.example/compared/item", nil))
 
-	assert.Equal(t, quarantineRecord{Event: "quarantine", Reason: "response differences: ~ $status"},
+	assert.Equal(t, quarantineRecord{Event: "quarantine", Reason: "response differences: ~ $status 200 → 500"},
 		waitForRecords[quarantineRecord](t, logs, "Candidate quarantined", 1)[0])
 	assert.Equal(t, []comparisonRecord{{
 		Event:       "correlation",
 		Protocol:    "http",
 		Route:       "GET /compared/item",
 		Outcome:     "divergent",
-		Differences: []string{"~ $status"},
+		Differences: []string{"~ $status 200 → 500"},
 	}}, logRecords[comparisonRecord](t, logs, "Response comparison completed"))
 	assert.NoError(t, handler.Shutdown(t.Context()))
 }
@@ -415,7 +415,7 @@ func TestRulesCompareOnlyTheStatusOfServerErrors(t *testing.T) {
 		expected        comparisonRecord
 	}{
 		"SameStatus":      {candidateStatus: http.StatusInternalServerError, expected: comparisonRecord{Outcome: "equivalent"}},
-		"DifferentStatus": {candidateStatus: http.StatusBadGateway, expected: comparisonRecord{Outcome: "divergent", Differences: []string{"~ $status"}}},
+		"DifferentStatus": {candidateStatus: http.StatusBadGateway, expected: comparisonRecord{Outcome: "divergent", Differences: []string{"~ $status 500 → 502"}}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			transport := roundTripperFunc(func(request *http.Request) (*http.Response, error) {
