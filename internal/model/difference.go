@@ -66,14 +66,32 @@ func (r *Retype) UnmarshalJSON(data []byte) error {
 	return errors.WithStack(decoder.Decode((*plain)(r)))
 }
 
-// Difference is where and how a candidate's response differs from the
-// reference's. It names only schema fields and JSON types, never values.
+// Statuses are the response statuses of a status difference. A protocol's
+// status is a fixed code, such as "200" or "grpc-status 13", never payload.
+type Statuses struct {
+	Reference string `json:"reference"`
+	Candidate string `json:"candidate"`
+}
+
+// UnmarshalJSON rejects unknown fields. Option decodes with json.Unmarshal, so
+// a difference's statuses must enforce strict decoding itself.
+func (s *Statuses) UnmarshalJSON(data []byte) error {
+	type plain Statuses
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	return errors.WithStack(decoder.Decode((*plain)(s)))
+}
+
+// Difference is where and how a candidate's response differs from the reference's.
+// It names only schema fields, JSON types and statuses, never payload values.
 type Difference struct {
 	// Path names declared fields; payload keys and merged list indexes are [*].
 	Path   string `json:"path"`
 	Change Change `json:"change"`
 	// Retype is present only when Change is ChangeRetyped.
 	Retype Option[Retype] `json:"retype,omitzero"`
+	// Statuses are present only for a difference in the response status.
+	Statuses Option[Statuses] `json:"statuses,omitzero"`
 	// Count is how many keys or list elements the path stands for.
 	Count int `json:"count"`
 }
@@ -83,6 +101,9 @@ func (d Difference) String() string {
 	text := d.Change.mark() + " " + d.Path
 	if retype, ok := d.Retype.Get(); ok {
 		text += fmt.Sprintf(" %s → %s", retype.Reference, retype.Candidate)
+	}
+	if statuses, ok := d.Statuses.Get(); ok {
+		text += fmt.Sprintf(" %s → %s", statuses.Reference, statuses.Candidate)
 	}
 	if d.Count > 1 {
 		text += fmt.Sprintf(" ×%d", d.Count)

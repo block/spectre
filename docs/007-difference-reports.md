@@ -35,7 +35,13 @@ Each reported difference has a path, how the candidate differs there, and a coun
 
 A retyped difference also names both JSON types: null, boolean, number, string, object or list. A type doesn't reveal the value. JSON null is a type of its own, so a value replaced by null is retyped, not missing.
 
-A response with a body on one side only is missing or added at `$`. A different status is changed at `$status`. Status codes are not reported.
+A response with a body on one side only is missing or added at `$`. A different status is changed at `$status`, and names both statuses, such as `200 → 500` or `grpc-status 0 → grpc-status 13`.
+
+### Statuses
+
+A status comes from the protocol, not the payload: an HTTP status code, or a gRPC status code. It says far more about a `$status` divergence than the path alone, so it is reported. Every protocol must keep its status to such a fixed code, because the status leaves the mirror.
+
+A response rule may normalise statuses before they are compared, for example treating 201 as 200. A normaliser sees the body too, so a normalised status could be derived from payload. The report therefore names the statuses the services returned, not the normalised ones.
 
 ### Paths
 
@@ -65,14 +71,14 @@ Object keys are compared in sorted order, so a renamed field usually appears nex
 
 ## Consequences
 
-- What a report reveals stays small and fixed: declared field names, list indexes, JSON types, how many entries a path stands for, and whether the report was truncated.
+- What a report reveals stays small and fixed: declared field names, list indexes, JSON types, response statuses, how many entries a path stands for, and whether the report was truncated.
 - A changed boolean reveals that the candidate holds the opposite value. We accept this, because the reference's value is never reported and a boolean on its own is rarely personal data.
 - A count reveals how many map entries or list elements differ, which bounds the size of a map or list. It doesn't reveal any key or element.
 - The service protocol and the server's stored divergences change shape. Mirrors and the server must be upgraded together, and divergences recorded before the upgrade must be cleared, because the server rejects stored records it can't decode.
 
 ## Open questions
 
-- Should status codes be reported? They come from the protocol rather than the payload, and would say much more about a `$status` divergence.
+None.
 
 ## References
 

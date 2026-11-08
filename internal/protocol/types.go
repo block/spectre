@@ -87,7 +87,8 @@ type Response struct {
 // Content is a response's comparable content. Comparison skips it when Ignored,
 // then checks Status when both sides know it, then Failure, then Message.
 type Content struct {
-	// Status is absent only when Failure explains why.
+	// Status is a fixed code such as "200", never payload, because differences report
+	// it. It is absent only when Failure explains why.
 	Status  Option[string]
 	Message Option[Message]
 	Failure Option[error]

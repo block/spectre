@@ -117,8 +117,8 @@ message Quarantine {
   bool truncated = 9;
 }
 
-// Difference is where and how a candidate's response differs from the
-// reference's. It names only schema fields and JSON types, never values.
+// Difference is where and how a candidate's response differs from the reference's.
+// It names only schema fields, JSON types and statuses, never payload values.
 message Difference {
   // Change is how the candidate's value at the path differs.
   enum Change {
@@ -141,6 +141,15 @@ message Difference {
   JSONType candidate_type = 4;
   // Count is how many keys or list elements the path stands for.
   uint32 count = 5;
+  // Statuses are set only for a difference in the response status.
+  Statuses statuses = 6;
+}
+
+// Statuses are the response statuses of a status difference. A protocol's
+// status is a fixed code, such as "200" or "grpc-status 13", never payload.
+message Statuses {
+  string reference = 1;
+  string candidate = 2;
 }
 
 // JSONType is the type of a JSON value.
