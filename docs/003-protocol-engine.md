@@ -132,7 +132,7 @@ Only assembly differs:
 
 - Ingress: one listener sends each request to two points. The candidate is admitted first; if it is refused, the reference is proxied without the engine. The reference streams to the client, and the candidate runs in the background with a mirrored body and its own timeout. Descriptors come from reflection.
 - Ingress classifies each request when it arrives. Undeclared requests without a content type are compared only as Connect GET requests, and otherwise ignored.
-- Egress: two listeners, one point each. The reference selects its upstream by host. The candidate has no upstream, so even a wrong `Forward` cannot reach a dependency. The request decoder is built at startup, so a schema that cannot decode the declared endpoints fails startup.
+- Egress: two listeners, one point each. The reference selects its upstream by host. The candidate has no upstream, so even a wrong `Forward` cannot reach a dependency. The request decoder is built at startup, so a schema that cannot decode the declared endpoints fails startup. An undeclared request without a body or content type, such as a dependency health check, is identified by its route and query parameters.
 
 ## Consequences
 

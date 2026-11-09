@@ -172,6 +172,14 @@ func TestDecodesRequests(t *testing.T) {
 			request:  rpcRequest("Get", `{}`),
 			expected: protocol.Message{Type: Some[schema.TypeRef]("test.v1.Request"), Value: map[string]any{}},
 		},
+		"UndeclaredBodyless": {
+			request:  undeclared(forecastRequest("london", "b=2&a=1&a=3")),
+			expected: protocol.Message{Value: map[string]any{"query": map[string]any{"a": []any{"1", "3"}, "b": []any{"2"}}}},
+		},
+		"UndeclaredBodylessNoQuery": {
+			request:  undeclared(forecastRequest("london", "")),
+			expected: protocol.Message{Value: map[string]any{"query": map[string]any{}}},
+		},
 		"IngressEndpointIgnored": {
 			request:  rpcRequest("Rename", `{"name":"alice"}`),
 			expected: protocol.Message{Type: Some[schema.TypeRef]("test.v1.User"), Value: map[string]any{"name": "alice"}},
@@ -192,6 +200,8 @@ func TestRejectsUnidentifiableRequests(t *testing.T) {
 	overflow.Overflow = true
 	getWithBody := withContentType(forecastRequest("london", ""), "application/json")
 	getWithBody.Body = []byte(`{}`)
+	untypedBody := undeclared(searchRequest(`{}`))
+	untypedBody.Header = http.Header{}
 	for name, test := range map[string]struct {
 		request message.Request
 		message string
@@ -207,7 +217,8 @@ func TestRejectsUnidentifiableRequests(t *testing.T) {
 		"ProtoNameRejected":     {request: forecastRequest("london", "filter.minDays=2&filter.min_days=2"), message: `has no field "min_days"`},
 		"GetWithBody":           {request: getWithBody, message: "GET request has a body"},
 		"BodyNotJSON":           {request: withContentType(searchRequest(`{}`), "text/plain"), message: `body is not JSON: "text/plain"`},
-		"UnknownHost":           {request: withHost(forecastRequest("london", ""), "other.example"), message: "request content type is not supported"},
+		"UnknownHostWithBody":   {request: untypedBody, message: "request content type is not supported"},
+		"BodylessBadQuery":      {request: undeclared(forecastRequest("london", "days=%zz")), message: "query is not valid URL encoding"},
 		"UnknownMethod":         {request: rpcRequest("Missing", `{}`), message: `operation "test.v1.Service.Missing" is not declared`},
 		"Overflow":              {request: overflow, message: "request exceeds the comparison size limit"},
 	} {
@@ -450,8 +461,9 @@ func withContentType(request message.Request, contentType string) message.Reques
 	return request
 }
 
-func withHost(request message.Request, host string) message.Request {
-	request.Host = host
+// undeclared sends a request to a host no endpoint declares.
+func undeclared(request message.Request) message.Request {
+	request.Host = "other.example"
 	return request
 }
 

@@ -83,6 +83,9 @@ func (d *Decoder) Request(request Request) (protocol.Message, error) {
 		return protocol.Message{}, errors.New("request exceeds the comparison size limit")
 	}
 	endpoint, wildcards, declared := d.routes.Request(request.Method, request.Host, request.Path)
+	if !declared && len(request.Body) == 0 && request.Header.Get("Content-Type") == "" {
+		return bodylessRequest(request.RawQuery)
+	}
 	selected, err := requestWire(request.Header.Get("Content-Type"))
 	if declared && selected != wireGRPC && selected != wireProtobuf {
 		selected, err = wireHTTPJSON, nil
@@ -107,6 +110,25 @@ func (d *Decoder) Request(request Request) (protocol.Message, error) {
 		return protocol.Message{}, errors.Wrapf(err, "decode request as %s", root.Name)
 	}
 	return protocol.Message{Type: Some(root.Name), Value: payload}, nil
+}
+
+// bodylessRequest identifies an undeclared request without a body or content type,
+// such as a health check, by its query. Its route names the method, host, and path.
+func bodylessRequest(rawQuery string) (protocol.Message, error) {
+	query, err := url.ParseQuery(rawQuery)
+	if err != nil {
+		// The escape error quotes the query, which may carry values.
+		return protocol.Message{}, errors.New("query is not valid URL encoding")
+	}
+	parameters := make(map[string]any, len(query))
+	for name, values := range query {
+		listed := make([]any, len(values))
+		for i, value := range values {
+			listed[i] = value
+		}
+		parameters[name] = listed
+	}
+	return protocol.Message{Value: map[string]any{"query": parameters}}, nil
 }
 
 // Responses decides how ingress compares the responses to one request.

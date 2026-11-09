@@ -243,6 +243,40 @@ func TestPairsRequestsByDeclaredEndpointPattern(t *testing.T) {
 	}, waitForRecords[matchRecord](t, harness.Logs, "Candidate request matched a reference request", 2))
 }
 
+func TestPairsUndeclaredBodylessRequests(t *testing.T) {
+	var calls atomic.Int32
+	upstream := newUpstream(t, func(writer http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		_, _ = io.WriteString(writer, "ok")
+	})
+	harness := newHarness(t, upstream)
+	harness.Start(t)
+
+	reference := getPath(t, harness.Reference, "/_status?b=2&a=1")
+	candidate := getPath(t, harness.Candidate, "/_status?a=1&b=2")
+
+	assert.Equal(t, "ok", reference.Body)
+	assert.Equal(t, reference, candidate)
+	assert.Equal(t, int32(1), calls.Load())
+	assert.Equal(t, []matchRecord{{Event: "correlation", Protocol: "http", Route: "GET " + dependencyHost + "/_status"}},
+		logRecords[matchRecord](t, harness.Logs, "Candidate request matched a reference request"))
+}
+
+func TestQuarantinesBodylessCandidateWithDifferentQuery(t *testing.T) {
+	upstream := newUpstream(t, func(writer http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(writer, "ok")
+	})
+	harness := newHarness(t, upstream)
+	harness.Engine.MatchWindow = 50 * time.Millisecond
+	harness.Start(t)
+
+	getPath(t, harness.Reference, "/_status?verbose=1")
+	candidate := getPath(t, harness.Candidate, "/_status")
+
+	assert.Equal(t, http.StatusBadGateway, candidate.Status)
+	assert.Contains(t, harness.QuarantineReason(t), "no matching reference request within 50ms")
+}
+
 func TestServeShutsDownWhileCandidateWaits(t *testing.T) {
 	upstream := newUpstream(t, func(http.ResponseWriter, *http.Request) {})
 	harness := newHarness(t, upstream)
