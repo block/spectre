@@ -56,6 +56,12 @@ commit_change "feat!: replace comparison format"
 expect_version "v0.4.0"
 git -C "$testdir" tag v0.4.0
 
+# Releases also tag the TypeScript shim module, which must not count as a version.
+git -C "$testdir" tag internal/typescript/v0.4.0
+git -C "$testdir" tag internal/typescript/v9.0.0
+expect_version "v0.4.0"
+git -C "$testdir" tag -d internal/typescript/v9.0.0 > /dev/null
+
 commit_change "fix: correct output
 
 BREAKING CHANGE: output differs"

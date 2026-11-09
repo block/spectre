@@ -1,5 +1,10 @@
 version: 2
 
+# The shim module's tags share each release's commit; only v* tags are releases.
+git:
+  ignore_tags:
+    - "internal/typescript/*"
+
 builds:
   - main: ./cmd/spectre
     binary: spectre

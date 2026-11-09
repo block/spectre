@@ -17,17 +17,22 @@ jobs:
       should_release: ${{ steps.release.outputs.should_release }}
       version: ${{ steps.release.outputs.version }}
       tag_created: ${{ steps.release.outputs.tag_created }}
+      module_tag_created: ${{ steps.release.outputs.module_tag_created }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # ratchet:actions/checkout@v7
         with:
           fetch-depth: 0
       - uses: cashapp/activate-hermit@cea9af7913204a965fd488637a8d1811bba2e616 # ratchet:cashapp/activate-hermit@v1
-      - name: Create release tag
+      - name: Create release tags
         id: release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           tag_created=false
+          module_tag_created=false
+          tags=()
           version="$(git tag --points-at HEAD --list 'v*' | head -n 1)"
           if [[ -z "$version" ]]; then
             version="$(svu next)"
@@ -35,10 +40,8 @@ jobs:
               echo "should_release=false" >> "$GITHUB_OUTPUT"
               exit 0
             fi
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             git tag --annotate "$version" --message "Release $version"
-            git push origin "refs/tags/$version"
+            tags+=("refs/tags/$version")
             tag_created=true
           elif gh release view "$version" > /dev/null 2>&1; then
             # Releasing again could fail and make cleanup delete a finished release.
@@ -46,10 +49,23 @@ jobs:
             exit 0
           fi
 
+          # Modules that import spectre replace the TypeScript shim with this
+          # version, so tag the shim's nested module with it too.
+          module_tag="internal/typescript/$version"
+          if [[ -z "$(git tag --list "$module_tag")" ]]; then
+            git tag --annotate "$module_tag" --message "Release $version"
+            tags+=("refs/tags/$module_tag")
+            module_tag_created=true
+          fi
+          if (( ${#tags[@]} > 0 )); then
+            git push --atomic origin "${tags[@]}"
+          fi
+
           {
             echo "should_release=true"
             echo "version=$version"
             echo "tag_created=$tag_created"
+            echo "module_tag_created=$module_tag_created"
           } >> "$GITHUB_OUTPUT"
 
   containers:
@@ -140,8 +156,21 @@ jobs:
           DOCKER_HUB_USERNAME: blockossreleases
           DOCKER_HUB_TOKEN: ${{ secrets.DOCKER_HUB_PUSH_TOKEN }}
         run: container-images delete "$VERSION"
-      # Deleting the tag lets the next run release the same version again.
+      # Deleting the tags lets the next run release the same version again.
       # A tag pushed by hand is kept so the release can be retried.
-      - name: Delete release tag
-        if: always() && needs.tag.outputs.tag_created == 'true'
-        run: git push --delete origin "refs/tags/$VERSION"
+      - name: Delete release tags
+        if: always()
+        env:
+          TAG_CREATED: ${{ needs.tag.outputs.tag_created }}
+          MODULE_TAG_CREATED: ${{ needs.tag.outputs.module_tag_created }}
+        run: |
+          tags=()
+          if [[ "$TAG_CREATED" == "true" ]]; then
+            tags+=("refs/tags/$VERSION")
+          fi
+          if [[ "$MODULE_TAG_CREATED" == "true" ]]; then
+            tags+=("refs/tags/internal/typescript/$VERSION")
+          fi
+          if (( ${#tags[@]} > 0 )); then
+            git push --delete origin "${tags[@]}"
+          fi

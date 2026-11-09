@@ -63,6 +63,14 @@ egress sandbox.
 Releases are published for Linux AMD64 and ARM64 as `ghcr.io/block/spectre`
 and `docker.io/blockossreleases/spectre`.
 
+Each release also tags the TypeScript shim module as
+`internal/typescript/vX.Y.Z`. Go ignores the shim's local `replace` in
+dependencies, so a module that imports spectre replaces it with the same version:
+
+```
+replace github.com/microsoft/TypeScript/tsc/shim/typescript => github.com/block/spectre/internal/typescript vX.Y.Z
+```
+
 ## Proxies for services that run elsewhere
 
 `spectre proxy` runs the same proxies and server reporting as `spectre supervise`,
