@@ -23,6 +23,9 @@ type Memory struct {
 	divergences map[sourceKey]model.Divergence
 	// cleared maps each stateKey to when its divergences were last cleared.
 	cleared map[string]time.Time
+	// serviceCleared maps each service to when the divergences of all its
+	// environments were last cleared.
+	serviceCleared map[string]time.Time
 }
 
 // sourceKey identifies the proxy of one direction of a service environment's mirror.
@@ -35,7 +38,12 @@ var _ Store = (*Memory)(nil)
 
 // NewMemory returns an empty in-memory store.
 func NewMemory() *Memory {
-	return &Memory{states: map[string]received{}, divergences: map[sourceKey]model.Divergence{}, cleared: map[string]time.Time{}}
+	return &Memory{
+		states:         map[string]received{},
+		divergences:    map[sourceKey]model.Divergence{},
+		cleared:        map[string]time.Time{},
+		serviceCleared: map[string]time.Time{},
+	}
 }
 
 // Put replaces the state of a service environment's mirror.
@@ -70,24 +78,29 @@ func (m *Memory) Record(_ context.Context, divergence model.Divergence) error {
 	defer m.mu.Unlock()
 	stored, ok := m.divergences[key]
 	cleared, wasCleared := m.cleared[stateKey(divergence.Service, divergence.Environment)]
-	if ignored(From(stored.Quarantine, ok), From(cleared, wasCleared), divergence.Quarantine) {
+	serviceCleared, wasServiceCleared := m.serviceCleared[divergence.Service]
+	if ignored(From(stored.Quarantine, ok), divergence.Quarantine, From(cleared, wasCleared), From(serviceCleared, wasServiceCleared)) {
 		return nil
 	}
 	m.divergences[key] = divergence
 	return nil
 }
 
-// Clear removes the divergences of a service environment's mirror, and
-// ignores its quarantines that began before at.
-func (m *Memory) Clear(_ context.Context, service, environment string, at time.Time) error {
+// Clear removes the divergences of a service in environment, or in every
+// environment without one, and ignores their quarantines that began before at.
+func (m *Memory) Clear(_ context.Context, service string, environment Option[string], at time.Time) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for key := range m.divergences {
-		if key.service == service && key.environment == environment {
+		if key.service == service && environment.Default(key.environment) == key.environment {
 			delete(m.divergences, key)
 		}
 	}
-	m.cleared[stateKey(service, environment)] = at
+	if only, ok := environment.Get(); ok {
+		m.cleared[stateKey(service, only)] = at
+	} else {
+		m.serviceCleared[service] = at
+	}
 	return nil
 }
 

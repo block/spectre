@@ -66,8 +66,8 @@ type SpectreServiceClient interface {
 	// ListDivergences returns the state of each mirror the server still
 	// considers current, and the latest divergence each mirror reported.
 	ListDivergences(context.Context, *spectrepb.ListDivergencesRequest) (*spectrepb.ListDivergencesResponse, error)
-	// ClearDivergences removes the divergences of one service environment, and
-	// ignores quarantines that began before it.
+	// ClearDivergences removes the divergences of a service in one environment,
+	// or in every environment, and ignores quarantines that began before it.
 	ClearDivergences(context.Context, *spectrepb.ClearDivergencesRequest) (*spectrepb.ClearDivergencesResponse, error)
 }
 
@@ -114,8 +114,8 @@ type SpectreServiceHandler interface {
 	// ListDivergences returns the state of each mirror the server still
 	// considers current, and the latest divergence each mirror reported.
 	ListDivergences(context.Context, *spectrepb.ListDivergencesRequest) (*spectrepb.ListDivergencesResponse, error)
-	// ClearDivergences removes the divergences of one service environment, and
-	// ignores quarantines that began before it.
+	// ClearDivergences removes the divergences of a service in one environment,
+	// or in every environment, and ignores quarantines that began before it.
 	ClearDivergences(context.Context, *spectrepb.ClearDivergencesRequest) (*spectrepb.ClearDivergencesResponse, error)
 }
 

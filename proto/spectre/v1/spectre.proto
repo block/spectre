@@ -16,8 +16,8 @@ service SpectreService {
   // ListDivergences returns the state of each mirror the server still
   // considers current, and the latest divergence each mirror reported.
   rpc ListDivergences(ListDivergencesRequest) returns (ListDivergencesResponse);
-  // ClearDivergences removes the divergences of one service environment, and
-  // ignores quarantines that began before it.
+  // ClearDivergences removes the divergences of a service in one environment,
+  // or in every environment, and ignores quarantines that began before it.
   rpc ClearDivergences(ClearDivergencesRequest) returns (ClearDivergencesResponse);
 }
 
@@ -63,10 +63,12 @@ message ListDivergencesResponse {
   repeated Divergence divergences = 2;
 }
 
-// ClearDivergencesRequest names the service environment whose divergences to clear.
+// ClearDivergencesRequest names the service whose divergences to clear.
 message ClearDivergencesRequest {
   string service = 1;
-  string environment = 2;
+  // Environment limits the clear to one environment. Without it, the clear
+  // covers every environment, including ones that have not reported yet.
+  optional string environment = 2;
 }
 
 message ClearDivergencesResponse {}

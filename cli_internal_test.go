@@ -189,6 +189,14 @@ func TestStatusCommands(t *testing.T) {
 		assert.Equal(t, client.Config{URL: "http://server.example"}, command.Status.Client)
 		assert.Equal(t, server.ClearConfig{Service: "users", Environment: "production"}, command.Status.Clear.Clear)
 	}
+
+	// Without an environment, clear covers every environment of the service.
+	command = &cli.CommandLine{}
+	parser, err = newParser(command)
+	assert.NoError(t, err)
+	_, err = parser.Parse([]string{"status", "clear", "--server-url=http://server.example", "--service=users"})
+	assert.NoError(t, err)
+	assert.Equal(t, server.ClearConfig{Service: "users"}, command.Status.Clear.Clear)
 }
 
 func TestServeCommandEmbedsConfig(t *testing.T) {

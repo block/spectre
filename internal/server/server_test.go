@@ -144,7 +144,7 @@ func TestDivergencesOutliveRestartUntilCleared(t *testing.T) {
 	listed, _ := list(t, rpc, &pb.ListDivergencesRequest{})
 	assert.True(t, proto.Equal(expected, listed), "%v", listed)
 
-	_, err := rpc.ClearDivergences(t.Context(), &pb.ClearDivergencesRequest{Service: "users", Environment: "production"})
+	_, err := rpc.ClearDivergences(t.Context(), &pb.ClearDivergencesRequest{Service: "users", Environment: proto.String("production")})
 	assert.NoError(t, err)
 	// A mirror still running reports the cleared quarantine again.
 	assert.NoError(t, update(t, rpc, whole(state("production", time.Minute, quarantine))))
@@ -152,8 +152,32 @@ func TestDivergencesOutliveRestartUntilCleared(t *testing.T) {
 	listed, _ = list(t, rpc, &pb.ListDivergencesRequest{})
 	assert.True(t, proto.Equal(&pb.ListDivergencesResponse{States: []*pb.State{withoutUptime(redeployed)}}, listed), "%v", listed)
 
-	_, err = rpc.ClearDivergences(t.Context(), &pb.ClearDivergencesRequest{Service: "users"})
-	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+	for _, request := range []*pb.ClearDivergencesRequest{
+		{Environment: proto.String("production")},
+		{Service: "users", Environment: proto.String("")},
+	} {
+		_, err = rpc.ClearDivergences(t.Context(), request)
+		assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+	}
+}
+
+func TestClearDivergencesOfEveryEnvironment(t *testing.T) {
+	rpc := newRPC(t)
+	quarantine := &pb.Quarantine{Direction: pb.Direction_DIRECTION_EGRESS, Since: timestamppb.Now(), Kind: pb.Quarantine_KIND_UNMATCHED}
+	for _, environment := range []string{"production", "staging"} {
+		assert.NoError(t, update(t, rpc, whole(state(environment, time.Minute)), quarantined(quarantine)))
+	}
+	other := state("production", time.Minute)
+	other.Service = "orders"
+	assert.NoError(t, update(t, rpc, whole(other), quarantined(quarantine)))
+
+	_, err := rpc.ClearDivergences(t.Context(), &pb.ClearDivergencesRequest{Service: "users"})
+	assert.NoError(t, err)
+	listed, _ := list(t, rpc, &pb.ListDivergencesRequest{})
+	divergence := &pb.Divergence{Service: "orders", Environment: "production", Revision: "abc123", Quarantine: quarantine}
+	expected := &pb.ListDivergencesResponse{Divergences: []*pb.Divergence{divergence}}
+	actual := &pb.ListDivergencesResponse{Divergences: listed.GetDivergences()}
+	assert.True(t, proto.Equal(expected, actual), "%v", listed)
 }
 
 func TestUpdateRejectsInvalidStream(t *testing.T) {

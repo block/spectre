@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"net/url"
+	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -36,11 +38,11 @@ const clusterSuffix = "-cluster"
 const statesKey = "spectre:states"
 
 // divergencesKey is the Redis hash that maps each sourceField to its divergence
-// as JSON, and each clearedField to when its divergences were last cleared.
+// as JSON, and each clearedField and serviceClearedField to its last clear.
 const divergencesKey = "spectre:divergences"
 
-// clearedSuffix ends every clearedField. A quoted environment ends with a
-// quote, so no sourceField ends with it.
+// clearedSuffix ends every clearedField and serviceClearedField. A quoted
+// environment ends with a quote, so no sourceField ends with it.
 const clearedSuffix = `" cleared`
 
 // forgetIfUnchanged deletes a hash field only if it still holds the given value,
@@ -137,6 +139,7 @@ func (r *Redis) States(ctx context.Context, since time.Time) ([]model.State, err
 func (r *Redis) Record(ctx context.Context, divergence model.Divergence) error {
 	field := sourceField(divergence.Service, divergence.Environment, divergence.Direction)
 	cleared := clearedField(divergence.Service, divergence.Environment)
+	serviceCleared := serviceClearedField(divergence.Service)
 	value, err := json.Marshal(divergence)
 	if err != nil {
 		return errors.Wrap(err, "encode divergence")
@@ -145,7 +148,7 @@ func (r *Redis) Record(ctx context.Context, divergence model.Divergence) error {
 	// write lands between reading the stored values and replacing the divergence.
 	for {
 		err := r.client.Watch(ctx, func(tx *redis.Tx) error {
-			values, err := tx.HMGet(ctx, divergencesKey, field, cleared).Result()
+			values, err := tx.HMGet(ctx, divergencesKey, field, cleared, serviceCleared).Result()
 			if err != nil {
 				return errors.Wrap(err, "read divergence")
 			}
@@ -160,7 +163,11 @@ func (r *Redis) Record(ctx context.Context, divergence model.Divergence) error {
 			if err != nil {
 				return err
 			}
-			if ignored(stored, clearedAt, divergence.Quarantine) {
+			serviceClearedAt, err := decodeOptional(values[2], decodeCleared)
+			if err != nil {
+				return err
+			}
+			if ignored(stored, divergence.Quarantine, clearedAt, serviceClearedAt) {
 				return nil
 			}
 			_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
@@ -174,19 +181,45 @@ func (r *Redis) Record(ctx context.Context, divergence model.Divergence) error {
 	}
 }
 
-// Clear removes the divergences of a service environment's mirror, and
-// ignores its quarantines that began before at.
-func (r *Redis) Clear(ctx context.Context, service, environment string, at time.Time) error {
+// Clear removes the divergences of a service in environment, or in every
+// environment without one, and ignores their quarantines that began before at.
+func (r *Redis) Clear(ctx context.Context, service string, environment Option[string], at time.Time) error {
 	value, err := json.Marshal(at)
 	if err != nil {
 		return errors.Wrap(err, "encode clear time")
 	}
-	_, err = r.client.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
-		pipe.HDel(ctx, divergencesKey, sourceField(service, environment, model.Ingress), sourceField(service, environment, model.Egress))
-		pipe.HSet(ctx, divergencesKey, clearedField(service, environment), value)
-		return nil
-	})
-	return errors.Wrap(err, "clear divergences")
+	if only, ok := environment.Get(); ok {
+		_, err = r.client.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+			pipe.HDel(ctx, divergencesKey, sourceField(service, only, model.Ingress), sourceField(service, only, model.Egress))
+			pipe.HSet(ctx, divergencesKey, clearedField(service, only), value)
+			return nil
+		})
+		return errors.Wrap(err, "clear divergences")
+	}
+	// Watch the hash and retry, so a divergence recorded between listing the
+	// fields and deleting them is not left behind.
+	for {
+		err := r.client.Watch(ctx, func(tx *redis.Tx) error {
+			fields, err := tx.HKeys(ctx, divergencesKey).Result()
+			if err != nil {
+				return errors.Wrap(err, "list divergences")
+			}
+			sources := slices.DeleteFunc(fields, func(field string) bool {
+				return !strings.HasPrefix(field, serviceFieldPrefix(service)) || strings.HasSuffix(field, clearedSuffix)
+			})
+			_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+				if len(sources) > 0 {
+					pipe.HDel(ctx, divergencesKey, sources...)
+				}
+				pipe.HSet(ctx, divergencesKey, serviceClearedField(service), value)
+				return nil
+			})
+			return errors.WithStack(err)
+		}, divergencesKey)
+		if !errors.Is(err, redis.TxFailedErr) {
+			return errors.Wrap(err, "clear divergences")
+		}
+	}
 }
 
 // Divergences returns every stored divergence, in no particular order.
@@ -234,6 +267,17 @@ func sourceField(service, environment string, direction model.Direction) string 
 // clearedField holds when the divergences of a service environment were last cleared.
 func clearedField(service, environment string) string {
 	return stateKey(service, environment) + " cleared"
+}
+
+// serviceClearedField holds when the divergences of every environment of a
+// service were last cleared. A stateKey follows the quoted service with a quote.
+func serviceClearedField(service string) string {
+	return strconv.Quote(service) + " cleared"
+}
+
+// serviceFieldPrefix begins every sourceField and clearedField of a service.
+func serviceFieldPrefix(service string) string {
+	return strconv.Quote(service) + ` "`
 }
 
 // decodeOptional decodes a value HMGET returned, which is nil for a missing field.

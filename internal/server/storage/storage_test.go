@@ -36,6 +36,7 @@ func TestStores(t *testing.T) {
 		{name: "PutsConcurrently", test: testPutsConcurrently},
 		{name: "KeepsLatestQuarantine", test: testKeepsLatestQuarantine},
 		{name: "ClearsServiceEnvironment", test: testClearsServiceEnvironment},
+		{name: "ClearsEveryServiceEnvironment", test: testClearsEveryServiceEnvironment},
 		{name: "RecordsConcurrently", test: testRecordsConcurrently},
 	}
 	for _, backend := range backends {
@@ -285,7 +286,7 @@ func testClearsServiceEnvironment(t *testing.T, store storage.Store) {
 	} {
 		assert.NoError(t, store.Record(t.Context(), reported))
 	}
-	assert.NoError(t, store.Clear(t.Context(), "users", "production", since.Add(time.Minute)))
+	assert.NoError(t, store.Clear(t.Context(), "users", Some("production"), since.Add(time.Minute)))
 	assertRecorded(t, store, staging)
 
 	// A mirror still quarantined keeps sending the cleared quarantine.
@@ -294,6 +295,28 @@ func testClearsServiceEnvironment(t *testing.T, store storage.Store) {
 	later := divergence("production", model.Ingress, since.Add(2*time.Minute))
 	assert.NoError(t, store.Record(t.Context(), later))
 	assertRecorded(t, store, later, staging)
+}
+
+func testClearsEveryServiceEnvironment(t *testing.T, store storage.Store) {
+	since := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	other := divergence("production", model.Ingress, since)
+	other.Service = "users-admin"
+	for _, reported := range []model.Divergence{
+		divergence("production", model.Ingress, since),
+		divergence("staging", model.Egress, since),
+		other,
+	} {
+		assert.NoError(t, store.Record(t.Context(), reported))
+	}
+	assert.NoError(t, store.Clear(t.Context(), "users", None[string](), since.Add(time.Minute)))
+	assertRecorded(t, store, other)
+
+	// The clear also covers environments that had not reported yet.
+	assert.NoError(t, store.Record(t.Context(), divergence("canary", model.Ingress, since)))
+	assertRecorded(t, store, other)
+	later := divergence("canary", model.Ingress, since.Add(2*time.Minute))
+	assert.NoError(t, store.Record(t.Context(), later))
+	assertRecorded(t, store, later, other)
 }
 
 // testRecordsConcurrently checks that concurrent writes to different sources
@@ -328,7 +351,7 @@ func assertRecorded(t *testing.T, store storage.Store, expected ...model.Diverge
 	recorded, err := store.Divergences(t.Context())
 	assert.NoError(t, err)
 	bySource := func(a, b model.Divergence) int {
-		return cmp.Or(cmp.Compare(a.Environment, b.Environment), cmp.Compare(a.Direction, b.Direction))
+		return cmp.Or(cmp.Compare(a.Service, b.Service), cmp.Compare(a.Environment, b.Environment), cmp.Compare(a.Direction, b.Direction))
 	}
 	slices.SortFunc(recorded, bySource)
 	assert.Equal(t, slices.SortedFunc(slices.Values(expected), bySource), recorded)

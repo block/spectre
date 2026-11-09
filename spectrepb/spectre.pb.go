@@ -579,11 +579,13 @@ func (x *ListDivergencesResponse) GetDivergences() []*Divergence {
 	return nil
 }
 
-// ClearDivergencesRequest names the service environment whose divergences to clear.
+// ClearDivergencesRequest names the service whose divergences to clear.
 type ClearDivergencesRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Service       string                 `protobuf:"bytes,1,opt,name=service,proto3" json:"service,omitempty"`
-	Environment   string                 `protobuf:"bytes,2,opt,name=environment,proto3" json:"environment,omitempty"`
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	Service string                 `protobuf:"bytes,1,opt,name=service,proto3" json:"service,omitempty"`
+	// Environment limits the clear to one environment. Without it, the clear
+	// covers every environment, including ones that have not reported yet.
+	Environment   *string `protobuf:"bytes,2,opt,name=environment,proto3,oneof" json:"environment,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -626,8 +628,8 @@ func (x *ClearDivergencesRequest) GetService() string {
 }
 
 func (x *ClearDivergencesRequest) GetEnvironment() string {
-	if x != nil {
-		return x.Environment
+	if x != nil && x.Environment != nil {
+		return *x.Environment
 	}
 	return ""
 }
@@ -1234,10 +1236,11 @@ const file_spectre_v1_spectre_proto_rawDesc = "" +
 	"\x05_node\"~\n" +
 	"\x17ListDivergencesResponse\x12)\n" +
 	"\x06states\x18\x01 \x03(\v2\x11.spectre.v1.StateR\x06states\x128\n" +
-	"\vdivergences\x18\x02 \x03(\v2\x16.spectre.v1.DivergenceR\vdivergences\"U\n" +
+	"\vdivergences\x18\x02 \x03(\v2\x16.spectre.v1.DivergenceR\vdivergences\"j\n" +
 	"\x17ClearDivergencesRequest\x12\x18\n" +
-	"\aservice\x18\x01 \x01(\tR\aservice\x12 \n" +
-	"\venvironment\x18\x02 \x01(\tR\venvironment\"\x1a\n" +
+	"\aservice\x18\x01 \x01(\tR\aservice\x12%\n" +
+	"\venvironment\x18\x02 \x01(\tH\x00R\venvironment\x88\x01\x01B\x0e\n" +
+	"\f_environment\"\x1a\n" +
 	"\x18ClearDivergencesResponse\"\x9c\x01\n" +
 	"\n" +
 	"Divergence\x12\x18\n" +
@@ -1402,6 +1405,7 @@ func file_spectre_v1_spectre_proto_init() {
 		(*UpdateRequest_Calls)(nil),
 	}
 	file_spectre_v1_spectre_proto_msgTypes[3].OneofWrappers = []any{}
+	file_spectre_v1_spectre_proto_msgTypes[5].OneofWrappers = []any{}
 	file_spectre_v1_spectre_proto_msgTypes[8].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{

@@ -15,8 +15,9 @@ type ServeConfig struct {
 	StateTTL time.Duration  `default:"90s" help:"How long a mirror's state is listed after its last update. Keep it above the mirrors' keepalive interval."`
 }
 
-// ClearConfig names the service environment whose divergences to clear.
+// ClearConfig names the service whose divergences to clear, and optionally one
+// of its environments.
 type ClearConfig struct {
 	Service     string `required:"" help:"Service whose divergences to clear."`
-	Environment string `required:"" help:"Environment whose divergences to clear."`
+	Environment string `help:"Only clear the divergences in this environment. Without it, clear every environment of the service."`
 }

@@ -152,9 +152,11 @@ quarantined until it restarts.
 
 The server keeps the latest divergence of each direction of a service
 environment, through redeploys and stopped mirrors, until someone clears it with
-`spectre status clear --service=SERVICE --environment=ENVIRONMENT`. A
-clear also ignores the quarantines that mirrors still running report, so a
-cleared divergence only returns if the candidate quarantines again.
+`spectre status clear --service=SERVICE --environment=ENVIRONMENT`. Leave out
+`--environment` to clear every environment of the service, including ones that
+have not reported yet. A clear also ignores the quarantines that mirrors still
+running report, so a cleared divergence only returns if the candidate
+quarantines again.
 
 ## Egress proxy
 

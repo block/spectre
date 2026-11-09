@@ -24,7 +24,7 @@ import (
 type statusCommand struct { //nolint:singleusestruct // A Kong command group; folding it would flatten its subcommands.
 	Client client.Config      `embed:""`
 	List   statusListCommand  `cmd:"" default:"withargs" help:"List the reporting mirrors and the divergences mirrors reported. This is the default."`
-	Clear  statusClearCommand `cmd:"" help:"Clear the divergences of a service environment once they are dealt with."`
+	Clear  statusClearCommand `cmd:"" help:"Clear the divergences of a service, in one environment or all of them, once they are dealt with."`
 }
 
 // ProvideClient gives the subcommands a client of the server the group's flags
@@ -70,13 +70,15 @@ func (c *statusListCommand) Run(ctx context.Context, server *client.Client, out 
 	return nil
 }
 
-// statusClearCommand clears the divergences of a service environment.
+// statusClearCommand clears the divergences of a service in one environment, or
+// in all of them.
 type statusClearCommand struct {
 	Clear server.ClearConfig `embed:""`
 }
 
 func (c *statusClearCommand) Run(ctx context.Context, server *client.Client) error {
-	return errors.WithStack(server.ClearDivergences(ctx, c.Clear.Service, c.Clear.Environment))
+	// No environment is empty, so an empty flag clears every environment.
+	return errors.WithStack(server.ClearDivergences(ctx, c.Clear.Service, Zero(c.Clear.Environment)))
 }
 
 // mirror is what the server lists for one service environment: its state, if

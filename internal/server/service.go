@@ -114,11 +114,13 @@ func (s *Service) ListDivergences(ctx context.Context, request *pb.ListDivergenc
 	return wire.ListResponse(filterStates(states, filter), filterDivergences(divergences, filter)), nil
 }
 
-// ClearDivergences removes the divergences of one service environment.
+// ClearDivergences removes the divergences of a service in one environment, or
+// in every environment when the request names none.
 func (s *Service) ClearDivergences(ctx context.Context, request *pb.ClearDivergencesRequest) (*pb.ClearDivergencesResponse, error) {
-	service, environment := request.GetService(), request.GetEnvironment()
-	if service == "" || environment == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, "clearing divergences needs a service and environment")
+	// Getters hide whether an optional field is set, so presence is a nil check.
+	service, environment := request.GetService(), From(request.GetEnvironment(), request.Environment != nil)
+	if only, ok := environment.Get(); service == "" || (ok && only == "") {
+		return nil, connect.NewError(connect.CodeInvalidArgument, "clearing divergences needs a service, and a non-empty environment if any")
 	}
 	if err := s.store.Clear(ctx, service, environment, time.Now()); err != nil {
 		return nil, connect.NewError(connect.CodeUnavailable, err.Error()).WithCause(err)

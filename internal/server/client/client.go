@@ -9,6 +9,7 @@ import (
 	"connectrpc.com/connect/v2"
 	"connectrpc.com/connect/v2/connecthttp"
 	"github.com/alecthomas/errors"
+	. "github.com/alecthomas/types/optional"
 
 	"github.com/block/spectre/internal/model"
 	"github.com/block/spectre/internal/server/wire"
@@ -73,9 +74,10 @@ func (c *Client) ListDivergences(ctx context.Context, filter model.DivergenceFil
 	return states, divergences, errors.Wrap(err, "list divergences")
 }
 
-// ClearDivergences removes the divergences of one service environment.
-func (c *Client) ClearDivergences(ctx context.Context, service, environment string) error {
-	request := &pb.ClearDivergencesRequest{Service: service, Environment: environment}
+// ClearDivergences removes the divergences of a service in environment, or in
+// every environment without one.
+func (c *Client) ClearDivergences(ctx context.Context, service string, environment Option[string]) error {
+	request := &pb.ClearDivergencesRequest{Service: service, Environment: environment.Ptr()}
 	_, err := c.rpc.ClearDivergences(ctx, request)
 	return errors.Wrap(err, "clear divergences")
 }
