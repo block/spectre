@@ -28,6 +28,7 @@ exec spectre supervise \
   --reference="$service" \
   --candidate="$service" \
   --destination=forecasts.example="http+unix:$sockets/forecasts.sock" \
+  --fallback-destination="http+unix:$sockets/forecasts.sock" \
   --scripts-dir=/spectre/scripts \
   --schema-dir=/spectre/schema \
   --descriptors-dir=/spectre/descriptors \

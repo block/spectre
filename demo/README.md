@@ -74,7 +74,9 @@ environment variables to it:
 
 Declare each dependency with `--destination=HOST=URL`, mapping the request host
 your services use to the real upstream URL. Egress forwards only the reference's
-call to the upstream and replays the recorded response to the candidate.
+call to the upstream and replays the recorded response to the candidate. The
+required `--fallback-destination=URL` receives the reference's calls to any other
+host, so they still reach their dependency.
 
 A minimal invocation:
 
@@ -88,6 +90,7 @@ spectre supervise \
   --reference='my-service --listen=$SPECTRE_LISTEN --upstream=$SPECTRE_EGRESS' \
   --candidate='my-service-v2 --listen=$SPECTRE_LISTEN --upstream=$SPECTRE_EGRESS' \
   --destination=api.internal=https://api.internal \
+  --fallback-destination=http://egress-gateway.internal \
   --scripts-dir=/app/scripts \
   --schema-dir=/app/schema \
   --descriptors-dir=/app/descriptors

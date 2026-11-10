@@ -51,6 +51,7 @@ func TestSuperviseCommandEmbedsConfig(t *testing.T) {
 		"--candidate=run-candidate",
 		"--reference=run-reference",
 		"--destination=forecasts.example=http://127.0.0.1:50053",
+		"--fallback-destination=http+unix:@egress.sock",
 		"--match-window=2s",
 		"--scripts-dir=" + scripts,
 		"--schema-dir=" + schema,
@@ -62,6 +63,7 @@ func TestSuperviseCommandEmbedsConfig(t *testing.T) {
 	expected.Candidate = "run-candidate"
 	expected.Reference = "run-reference"
 	expected.Mirror.Destinations = map[string]string{"forecasts.example": "http://127.0.0.1:50053"}
+	expected.Mirror.FallbackDestination = "http+unix:@egress.sock"
 	expected.Mirror.MatchWindow = 2 * time.Second
 	expected.Mirror.ScriptsDir = scripts
 	expected.Mirror.SchemaDir = schema
@@ -76,6 +78,7 @@ func TestSuperviseCommandReadsFlagsFromEnvironment(t *testing.T) {
 	t.Setenv("SPECTRE_SERVICE", "invoices")
 	t.Setenv("SPECTRE_ENVIRONMENT", "production-us-west-2")
 	t.Setenv("SPECTRE_REVISION", "3f9c2a1")
+	t.Setenv("SPECTRE_FALLBACK_DESTINATION", "http+unix:@egress.sock")
 	command := &cli.CommandLine{}
 	parser, err := newParser(command)
 	assert.NoError(t, err)
@@ -115,6 +118,7 @@ func TestProxyCommandReadsFlagsFromEnvironment(t *testing.T) {
 		"SPECTRE_SERVICE":                   "invoices",
 		"SPECTRE_ENVIRONMENT":               "production-us-west-2",
 		"SPECTRE_REVISION":                  "3f9c2a1",
+		"SPECTRE_FALLBACK_DESTINATION":      "http+unix:@egress.sock",
 	} {
 		t.Setenv(name, value)
 	}
@@ -133,6 +137,7 @@ func TestProxyCommandReadsFlagsFromEnvironment(t *testing.T) {
 		HealthListen:          "0.0.0.0:8081",
 		Mirror:                proxies.NewConfig(),
 	}
+	expected.Mirror.FallbackDestination = "http+unix:@egress.sock"
 	expected.Mirror.CandidateStartupTimeout = 10 * time.Minute
 	expected.Mirror.ScriptsDir = scripts
 	expected.Mirror.SchemaDir = schema
@@ -244,6 +249,7 @@ match-window = "2s"
 scripts-dir = %q
 schema-dir = %q
 descriptors-dir = %q
+fallback-destination = "http+unix:@egress.sock"
 
 [destination]
 "forecasts.example" = "http://127.0.0.1:50053"
@@ -258,6 +264,7 @@ descriptors-dir = %q
 	expected.Candidate = "run-candidate"
 	expected.Reference = "run-reference"
 	expected.Mirror.Destinations = map[string]string{"forecasts.example": "http://127.0.0.1:50053"}
+	expected.Mirror.FallbackDestination = "http+unix:@egress.sock"
 	expected.Mirror.MatchWindow = 3 * time.Second
 	expected.Mirror.ScriptsDir = scripts
 	expected.Mirror.SchemaDir = schema

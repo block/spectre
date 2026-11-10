@@ -20,8 +20,8 @@ type Config struct {
 	Reflection bool `name:"reflection" negatable:"" default:"true" help:"Load backend descriptors with gRPC reflection and require them to match; disable to compare using only the static descriptors. Ingress is ready only once both backends accept."`
 	// Destinations maps each request host to its upstream URL for egress.
 	Destinations map[string]string `name:"destination" placeholder:"HOST=URL" help:"Upstream URL for requests to HOST, passed to the egress proxy. HOST may be a glob, such as *.example. Repeat for each dependency."`
-	// DefaultDestination receives reference requests to hosts no destination matches.
-	DefaultDestination string `placeholder:"URL" help:"Upstream URL for reference requests to hosts no destination matches, passed to the egress proxy. Without it, they go to the host as received over plaintext HTTP."`
+	// FallbackDestination receives reference requests to hosts no destination matches.
+	FallbackDestination string `required:"" placeholder:"URL" help:"Upstream URL for reference requests to hosts no destination matches, passed to the egress proxy. Use the route the reference takes without SPECTRE, such as its egress sidecar."`
 	// ScriptsDir holds the comparison scripts passed to both proxies.
 	ScriptsDir string `type:"existingdir" placeholder:"DIR" help:"Directory of comparison scripts passed to both proxies."`
 	// StateFile is the migration state that decides which routes ingress mirrors.
@@ -42,7 +42,7 @@ type Config struct {
 func NewConfig() Config {
 	// ApplyDefaults validates required fields, so seed them while applying tag defaults.
 	const placeholder = "placeholder"
-	config := Config{Server: reporter.Config{
+	config := Config{FallbackDestination: placeholder, Server: reporter.Config{
 		Client:      client.Config{URL: placeholder},
 		Service:     placeholder,
 		Environment: placeholder,
@@ -52,6 +52,7 @@ func NewConfig() Config {
 	if err := kong.ApplyDefaults(&config, kong.Vars{"server_url": ""}); err != nil {
 		panic(errors.Wrap(err, "apply mirror defaults"))
 	}
+	config.FallbackDestination = ""
 	config.Server.Client = client.Config{}
 	config.Server.Service = ""
 	config.Server.Environment = ""

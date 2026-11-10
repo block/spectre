@@ -120,24 +120,16 @@ func TestForwardsReferenceTrafficItCannotIdentify(t *testing.T) {
 		_, _ = io.WriteString(writer, "forwarded")
 	})
 	for name, test := range map[string]struct {
-		defaultDestination string
-		host               string
-		body               string
-		reason             string
+		host   string
+		body   string
+		reason string
 	}{
-		"UnconfiguredHost": {host: strings.TrimPrefix(upstream, "http://"), body: london, reason: "reference request to unconfigured host"},
-		"DefaultDestination": {
-			defaultDestination: upstream,
-			host:               "unresolvable.invalid",
-			body:               london,
-			reason:             "reference request to unconfigured host",
-		},
+		"UnconfiguredHost":   {host: "unresolvable.invalid", body: london, reason: "reference request to unconfigured host"},
 		"UndecodablePayload": {host: dependencyHost, body: `{"unknown":1}`, reason: "identify reference request"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			calls.Store(0)
 			harness := newHarness(t, upstream)
-			harness.Config.DefaultDestination = test.defaultDestination
 			harness.Start(t)
 
 			response := send(t, harness.Reference, test.host, test.body)
@@ -317,17 +309,21 @@ func TestEgressRejectsUnsafeConfiguration(t *testing.T) {
 			},
 			message: `parse destination "weather.example"`,
 		},
-		"DefaultDestinationLoop": {
-			update: func(config *httpserver.EgressConfig, _ *protocol.Config) {
-				config.DefaultDestination = "http://" + config.CandidateListen
-			},
-			message: "default destination must not target an egress listener",
+		"MissingFallbackDestination": {
+			update:  func(config *httpserver.EgressConfig, _ *protocol.Config) { config.FallbackDestination = "" },
+			message: "fallback destination is required",
 		},
-		"InvalidDefaultDestination": {
+		"FallbackDestinationLoop": {
 			update: func(config *httpserver.EgressConfig, _ *protocol.Config) {
-				config.DefaultDestination = "ftp://weather.example"
+				config.FallbackDestination = "http://" + config.CandidateListen
 			},
-			message: "parse default destination",
+			message: "fallback destination must not target an egress listener",
+		},
+		"InvalidFallbackDestination": {
+			update: func(config *httpserver.EgressConfig, _ *protocol.Config) {
+				config.FallbackDestination = "ftp://weather.example"
+			},
+			message: "parse fallback destination",
 		},
 		"MatchWindow": {
 			update:  func(_ *httpserver.EgressConfig, engineConfig *protocol.Config) { engineConfig.MatchWindow = 0 },
@@ -336,6 +332,7 @@ func TestEgressRejectsUnsafeConfiguration(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			config := httpserver.NewEgressConfig()
+			config.FallbackDestination = "http://127.0.0.1:9"
 			_, config.Descriptors.DescriptorsDir = writeSchemaAndDescriptors(t)
 			engineConfig := newEgressEngineConfig(t)
 			test.update(&config, &engineConfig)
@@ -401,6 +398,7 @@ func newHarness(t *testing.T, upstream string) *harness {
 	config.CandidateListen = candidate.Addr().String()
 	config.HealthListen = health.Addr().String()
 	config.Destinations = map[string]string{dependencyHost: upstream}
+	config.FallbackDestination = upstream
 	_, config.Descriptors.DescriptorsDir = writeSchemaAndDescriptors(t)
 	return &harness{
 		Config:    config,

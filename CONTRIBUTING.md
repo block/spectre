@@ -40,6 +40,7 @@ flag names without the leading dashes, and command-line flags take precedence:
 scripts-dir = "internal/sample/scripts"
 schema-dir = "internal/sample/schema"
 descriptors-dir = "dist/descriptors"
+fallback-destination = "http://127.0.0.1:50053"
 
 [destination]
 "forecasts.example" = "http://127.0.0.1:50053"
@@ -164,18 +165,19 @@ services automatically; map each dependency with a `--destination=HOST=URL` flag
 which sends requests for `HOST` to `URL`:
 
 ```sh
-spectre supervise ... --destination=forecasts.example=http://127.0.0.1:50053
+spectre supervise ... --destination=forecasts.example=http://127.0.0.1:50053 \
+  --fallback-destination=http://127.0.0.1:50053
 ```
 
 A `HOST` may be a glob, such as `--destination="*.example=http://127.0.0.1:50053"`,
 where `*` also matches dots. A host takes the first destination, in pattern order,
 that matches it.
 
-A reference call to a host no destination matches goes to the host as received over
-plaintext HTTP. When the reference reaches its dependencies through a socket that
-the egress proxy stands in for, such as an Envoy egress socket, pass
-`--default-destination=http+unix:@egress.sock` so those calls still reach the
-dependency. The candidate never receives a response for an unmatched host.
+The required `--fallback-destination=URL` receives reference calls to hosts no
+destination matches. Point it at the route the reference takes without SPECTRE,
+such as `http+unix:@egress.sock` for an Envoy egress socket, so a missing
+destination never breaks the reference. The candidate never receives a response
+for an unmatched host.
 
 Scripts declare dependency endpoints with `egress.http(pattern).match<Type>()`.
 Types come from `--schema-dir`; descriptors are only needed for protobuf traffic. A candidate call waits up to `--match-window` for an

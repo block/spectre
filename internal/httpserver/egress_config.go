@@ -18,25 +18,33 @@ type EgressConfig struct {
 	// Destinations maps each request host to its upstream URL, using the backend
 	// URL forms that ingress accepts.
 	Destinations map[string]string `name:"destination" placeholder:"HOST=URL" help:"Upstream URL for requests to HOST: http, https, h2c, http+unix:<socket>, or h2c+unix:<socket>. HOST may be a glob, such as *.example. Repeat for each dependency."`
-	// DefaultDestination receives reference requests to hosts no destination matches.
-	DefaultDestination string `placeholder:"URL" help:"Upstream URL for reference requests to hosts no destination matches, in any form --destination accepts. Without it, they go to the host as received over plaintext HTTP."`
+	// FallbackDestination receives reference requests to hosts no destination matches.
+	FallbackDestination string `placeholder:"URL" help:"Upstream URL for reference requests to hosts no destination matches, in any form --destination accepts."`
 	// RecordingBufferBytes limits recorded reference responses across all requests.
 	RecordingBufferBytes int `default:"33554432" help:"Maximum reference response bytes recorded across all requests."`
 	// Config holds the configuration shared with ingress.
 	Config `embed:""`
 }
 
+// requiredPlaceholder seeds required fields while ApplyDefaults validates a config.
+const requiredPlaceholder = "placeholder"
+
 // NewEgressConfig returns the default egress configuration.
 func NewEgressConfig() EgressConfig {
-	config := EgressConfig{}
+	// ApplyDefaults validates required fields, so seed them while applying tag defaults.
+	config := EgressConfig{FallbackDestination: requiredPlaceholder}
 	if err := kong.ApplyDefaults(&config); err != nil {
 		panic(errors.Wrap(err, "apply egress defaults"))
 	}
+	config.FallbackDestination = ""
 	return config
 }
 
-// Validate checks that the egress has usable resource limits.
+// Validate checks that the egress has a fallback destination and usable resource limits.
 func (c EgressConfig) Validate() error {
+	if c.FallbackDestination == "" {
+		return errors.New("fallback destination is required")
+	}
 	if err := requirePositive(limit[int]{name: "recording buffer size", value: c.RecordingBufferBytes}); err != nil {
 		return err
 	}

@@ -31,12 +31,10 @@ import (
 // requests never reach a dependency under any condition.
 type Egress struct {
 	config           Config
-	transport        http.RoundTripper
 	engine           *protocol.Engine
 	routes           *route.Matcher
 	destinations     []destination
-	fallback         Option[*httputil.ReverseProxy]
-	listeners        []*netaddr.Endpoint
+	fallback         *httputil.ReverseProxy
 	candidates       *proxy.Candidates
 	requests         chan struct{}
 	decoder          *message.Decoder
@@ -73,7 +71,7 @@ func NewEgress(
 	if err != nil {
 		return nil, err
 	}
-	fallback, err := defaultDestination(ctx, config.DefaultDestination, transport, listeners)
+	fallback, err := fallbackDestination(ctx, config.FallbackDestination, transport, listeners)
 	if err != nil {
 		return nil, err
 	}
@@ -96,12 +94,10 @@ func NewEgress(
 	recordingBudget := func() *proxy.Budget { return budget }
 	egress := &Egress{
 		config:         config.Config,
-		transport:      transport,
 		engine:         engine,
 		routes:         routes,
 		destinations:   destinations,
 		fallback:       fallback,
-		listeners:      listeners,
 		candidates:     candidates,
 		requests:       make(chan struct{}, config.MaxInFlightRequests),
 		decoder:        decoder,
@@ -156,25 +152,22 @@ func egressDestinations(ctx context.Context, upstreams map[string]string, transp
 	return destinations, nil
 }
 
-// defaultDestination returns the upstream of hosts no destination matches, if one is configured.
-func defaultDestination(ctx context.Context, upstream string, transport http.RoundTripper,
+// fallbackDestination returns the upstream of hosts no destination matches.
+func fallbackDestination(ctx context.Context, upstream string, transport http.RoundTripper,
 	listeners []*netaddr.Endpoint,
-) (Option[*httputil.ReverseProxy], error) {
-	if upstream == "" {
-		return None[*httputil.ReverseProxy](), nil
-	}
+) (*httputil.ReverseProxy, error) {
 	endpoint, err := netaddr.ParseBackend(upstream)
 	if err != nil {
-		return None[*httputil.ReverseProxy](), errors.Wrap(err, "parse default destination")
+		return nil, errors.Wrap(err, "parse fallback destination")
 	}
 	if targetsListener(endpoint, listeners) {
-		return None[*httputil.ReverseProxy](), errors.New("default destination must not target an egress listener")
+		return nil, errors.New("fallback destination must not target an egress listener")
 	}
 	proxy, err := NewReverseProxy(ctx, endpoint, transport, false)
 	if err != nil {
-		return None[*httputil.ReverseProxy](), errors.Wrap(err, "proxy default destination")
+		return nil, errors.Wrap(err, "proxy fallback destination")
 	}
-	return Some(proxy), nil
+	return proxy, nil
 }
 
 // Serve accepts reference, candidate, and health traffic until the context is
@@ -234,8 +227,6 @@ func (e *Egress) serveReference(writer http.ResponseWriter, request *http.Reques
 	captured := newRequestCapture(e.config.ComparisonMaxBodyBytes)
 	outbound := request.Clone(ctx)
 	switch {
-	case !upstream.Ok():
-		captured.closeWriter(errors.New("request has no usable destination"))
 	case request.Body == nil || request.Body == http.NoBody || request.ContentLength == 0:
 		// The reverse proxy drops empty bodies without closing them.
 		captured.closeWriter(io.EOF)
@@ -256,14 +247,10 @@ func (e *Egress) serveReference(writer http.ResponseWriter, request *http.Reques
 	decision, err := e.referencePoint.process(ctx, None[protocol.RequestID](), e.route(request), None[string](), payload)
 	if err != nil {
 		logger.FromContext(ctx).ErrorContext(ctx, "Reference request was not recorded", "error", err)
-		if destination, ok := upstream.Get(); ok {
-			destination.ServeHTTP(writer, outbound)
-			return
-		}
-		writer.WriteHeader(http.StatusBadGateway)
+		upstream.ServeHTTP(writer, outbound)
 		return
 	}
-	e.referencePoint.respond(writer, outbound, decision, upstream, noDecode)
+	e.referencePoint.respond(writer, outbound, decision, Some(upstream), noDecode)
 }
 
 // destination returns the upstream of the first destination that matches a host,
@@ -278,28 +265,12 @@ func (e *Egress) destination(host string) (proxy *httputil.ReverseProxy, configu
 	return nil, false
 }
 
-// upstream returns the destination for a request's host. Other hosts go to the default
-// destination, or else over plaintext HTTP as received unless they would loop back to egress.
-func (e *Egress) upstream(request *http.Request) Option[*httputil.ReverseProxy] {
+// upstream returns the destination for a request's host, or the fallback destination.
+func (e *Egress) upstream(request *http.Request) *httputil.ReverseProxy {
 	if destination, configured := e.destination(request.Host); configured {
-		return Some(destination)
+		return destination
 	}
-	if e.fallback.Ok() {
-		return e.fallback
-	}
-	endpoint, err := netaddr.ParseBackend("http://" + request.Host)
-	if err == nil && targetsListener(endpoint, e.listeners) {
-		err = errors.New("host targets an egress listener")
-	}
-	var destination *httputil.ReverseProxy
-	if err == nil {
-		destination, err = NewReverseProxy(request.Context(), endpoint, e.transport, false)
-	}
-	if err != nil {
-		logger.FromContext(request.Context()).ErrorContext(request.Context(), "Reference request has no usable destination", "host", request.Host, "error", err)
-		return None[*httputil.ReverseProxy]()
-	}
-	return Some(destination)
+	return e.fallback
 }
 
 // serveCandidate replays the matching reference response. The engine quarantines

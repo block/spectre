@@ -43,6 +43,7 @@ func TestProxyMirrorsServicesThatRunElsewhere(t *testing.T) {
 		Mirror:                proxies.NewConfig(),
 	}
 	config.Mirror.Reflection = false
+	config.Mirror.FallbackDestination = "http://127.0.0.1:9"
 	config.Mirror.ScriptsDir = t.TempDir()
 	config.Mirror.SchemaDir = t.TempDir()
 	proxy, err := proxies.NewProxy(t.Context(), config, testCatalog(t))

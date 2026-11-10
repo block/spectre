@@ -67,6 +67,7 @@ spec:
         - --candidate-egress-listen=unix:/candidate/egress.sock
         - --health-listen=0.0.0.0:50063
         - --destination=forecasts.example=http+unix:/sockets/forecasts.sock
+        - --fallback-destination=http+unix:/sockets/forecasts.sock
         - --scripts-dir=/spectre/scripts
         - --schema-dir=/spectre/schema
         - --descriptors-dir=/spectre/descriptors

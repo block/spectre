@@ -37,7 +37,7 @@ type IngressConfig struct {
 // NewIngressConfig returns the default ingress configuration.
 func NewIngressConfig() IngressConfig {
 	// ApplyDefaults validates required fields, so seed them while applying tag defaults.
-	config := IngressConfig{Reference: "placeholder", Candidate: "placeholder"}
+	config := IngressConfig{Reference: requiredPlaceholder, Candidate: requiredPlaceholder}
 	if err := kong.ApplyDefaults(&config); err != nil {
 		panic(errors.Wrap(err, "apply ingress defaults"))
 	}

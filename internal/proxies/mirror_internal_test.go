@@ -74,14 +74,14 @@ func TestLoadsMigrationState(t *testing.T) {
 func TestEgressConfig(t *testing.T) {
 	config := NewConfig()
 	config.Destinations = map[string]string{"b.example": "http://b", "a.example": "http://a"}
-	config.DefaultDestination = "http+unix:@egress.sock"
+	config.FallbackDestination = "http+unix:@egress.sock"
 	config.Descriptors.DescriptorsDir = "descriptors"
 	expected := httpserver.NewEgressConfig()
 	expected.ReferenceListen = testWiring.ReferenceEgress
 	expected.CandidateListen = testWiring.CandidateEgress
 	expected.HealthListen = testWiring.EgressHealth
 	expected.Destinations = config.Destinations
-	expected.DefaultDestination = config.DefaultDestination
+	expected.FallbackDestination = config.FallbackDestination
 	expected.Descriptors = config.Descriptors
 	assert.Equal(t, expected, testMirror(t, config).egressConfig())
 }

@@ -63,6 +63,7 @@ func NewConfig() Config {
 	// ApplyDefaults validates required fields, so seed them while applying tag defaults.
 	const placeholder = "placeholder"
 	config := Config{Candidate: placeholder, Reference: placeholder}
+	config.Mirror.FallbackDestination = placeholder
 	config.Mirror.Server = reporter.Config{
 		Client:      client.Config{URL: placeholder},
 		Service:     placeholder,
@@ -75,6 +76,7 @@ func NewConfig() Config {
 	}
 	config.Candidate = ""
 	config.Reference = ""
+	config.Mirror.FallbackDestination = ""
 	config.Mirror.Server.Client = client.Config{}
 	config.Mirror.Server.Service = ""
 	config.Mirror.Server.Environment = ""
