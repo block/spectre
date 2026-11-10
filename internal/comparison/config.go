@@ -15,6 +15,8 @@ type Config struct {
 	ScriptsDir string `required:"" type:"existingdir" help:"Directory of normaliser scripts. Every .ts file in it, including subdirectories, is loaded and type-checked against the schema."`
 	// Schema types every payload the scripts register for.
 	Schema schema.Config `embed:""`
+	// Variables are the values scripts read with the spectre variable function.
+	Variables map[string]string `name:"script-variable" placeholder:"NAME=VALUE" help:"Value scripts read with variable(NAME), such as an environment's host name. Repeat for each variable."`
 	// ComparisonTimeout limits one response comparison.
 	ComparisonTimeout time.Duration `default:"1s" help:"Maximum duration of one response comparison."`
 }

@@ -36,7 +36,7 @@ func New(ctx context.Context, config Config) (*Scripts, error) {
 		return nil, errors.Wrap(err, "open scripts directory")
 	}
 	defer root.Close() //nolint:errcheck // Module source is fully loaded before closing.
-	program, err := javascript.NewProgram(ctx, config.ComparisonTimeout, os.DirFS(config.Schema.SchemaDir), root.FS())
+	program, err := javascript.NewProgram(ctx, config.ComparisonTimeout, os.DirFS(config.Schema.SchemaDir), root.FS(), config.Variables)
 	if err != nil {
 		return nil, errors.Wrap(err, "compile comparison scripts")
 	}

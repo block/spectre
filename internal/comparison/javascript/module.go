@@ -90,8 +90,11 @@ type registrations struct {
 	messages  []schema.TypeRef
 }
 
-// spectreModule is a stateless module record shared safely across isolated runtimes.
-type spectreModule struct{}
+// spectreModule is an immutable module record shared safely across isolated runtimes.
+// Every runtime sees the same variables, so re-evaluation reproduces its registrations.
+type spectreModule struct {
+	variables map[string]string
+}
 
 var _ sobek.ModuleRecord = (*spectreModule)(nil)
 
@@ -100,14 +103,14 @@ func (m *spectreModule) Link() error {
 }
 
 func (m *spectreModule) GetExportedNames(callback func([]string), _ ...sobek.ModuleRecord) bool {
-	callback([]string{string(model.Ingress), string(model.Egress), string(targetField), string(targetMessage)})
+	callback([]string{string(model.Ingress), string(model.Egress), string(targetField), string(targetMessage), variableFunction})
 	return true
 }
 
 func (m *spectreModule) ResolveExport(name string, _ ...sobek.ResolveSetElement) (*sobek.ResolvedBinding, bool) {
 	kind := targetKind(name)
 	direction := model.Direction(name)
-	if direction != model.Ingress && direction != model.Egress && kind != targetField && kind != targetMessage {
+	if direction != model.Ingress && direction != model.Egress && kind != targetField && kind != targetMessage && name != variableFunction {
 		return nil, false
 	}
 	return &sobek.ResolvedBinding{Module: m, BindingName: name}, false
@@ -119,7 +122,7 @@ func (m *spectreModule) Evaluate(runtime *sobek.Runtime) *sobek.Promise {
 	// instance, so reuse it or earlier importers' registrations would be lost.
 	instance, ok := runtime.GetModuleInstance(m).(*callbackRegistry)
 	if !ok {
-		instance = newCallbackRegistry(runtime)
+		instance = newCallbackRegistry(runtime, m.variables)
 	}
 	if err := resolve(instance); err != nil {
 		panic(errors.Wrap(err, "resolve spectre module evaluation"))
@@ -149,7 +152,7 @@ type ruleCallbacks struct {
 	normalise       Option[sobek.Callable]
 }
 
-func newCallbackRegistry(runtime *sobek.Runtime) *callbackRegistry {
+func newCallbackRegistry(runtime *sobek.Runtime, variables map[string]string) *callbackRegistry {
 	registry := &callbackRegistry{
 		runtime:  runtime,
 		fields:   map[FieldTarget]sobek.Callable{},
@@ -164,8 +167,25 @@ func newCallbackRegistry(runtime *sobek.Runtime) *callbackRegistry {
 		string(model.Egress):  egress,
 		string(targetField):   runtime.ToValue(registry.registration(targetField)),
 		string(targetMessage): runtime.ToValue(registry.registration(targetMessage)),
+		variableFunction:      runtime.ToValue(registry.variable(variables)),
 	}
 	return registry
+}
+
+// variable returns the script function that reads a variable. An unset variable
+// throws, so a script that needs it fails to load instead of using a wrong value.
+func (r *callbackRegistry) variable(variables map[string]string) func(sobek.FunctionCall) sobek.Value {
+	return func(call sobek.FunctionCall) sobek.Value {
+		if len(call.Arguments) != 1 {
+			panic(r.runtime.NewTypeError("spectre.%s requires a name", variableFunction))
+		}
+		name := r.stringArgument(call, 0, variableFunction, "name")
+		value, ok := variables[name]
+		if !ok {
+			panic(r.runtime.NewTypeError("spectre.%s %q is not set", variableFunction, name))
+		}
+		return r.runtime.ToValue(value)
+	}
 }
 
 // matchMethod, ignoreMethod, statusMethod, and the header methods name the script API's methods
@@ -179,6 +199,8 @@ const (
 	responseHeaderMethod = "responseHeader"
 	// textTypeName is the type name compile inserts for the spectre Text type.
 	textTypeName = "spectre.Text"
+	// variableFunction reads a script variable and takes no type arguments.
+	variableFunction = "variable"
 )
 
 // defineMethod binds one object method, panicking if sobek rejects it.

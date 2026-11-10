@@ -115,8 +115,8 @@ func typeArguments(checker *ts.Checker, loaded *schema.Schema, call *ts.Node) (O
 		return None[insertion](), nil // Only spectre functions take type arguments at runtime.
 	}
 	function := declaration.Name().Text()
-	if function == ignoreMethod || function == statusMethod || function == requestHeaderMethod || function == responseHeaderMethod || function == string(model.ProtocolHTTP) {
-		return None[insertion](), nil // Selectors and ignore take no type arguments.
+	if function == ignoreMethod || function == statusMethod || function == requestHeaderMethod || function == responseHeaderMethod || function == string(model.ProtocolHTTP) || function == variableFunction {
+		return None[insertion](), nil // Selectors, ignore, and variable take no type arguments.
 	}
 	expected := 1
 	if function == string(targetField) {

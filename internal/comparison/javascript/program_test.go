@@ -404,8 +404,31 @@ func TestEvaluatesEachScriptOnce(t *testing.T) {
 	assert.Equal(t, Some[any]("alice"), normalised)
 }
 
+func TestReadsVariables(t *testing.T) {
+	files := fstest.MapFS{"test.ts": script(`
+		spectre.egress.http(` + "`GET forecasts.${spectre.variable(\"environment\")}.example/v1/forecast`" + `).match<v1.Response>();
+		spectre.message<v1.User>(() => ({ name: spectre.variable("environment") }));
+	`)}
+	program, err := javascript.NewProgram(t.Context(), time.Second, declarations(), files, map[string]string{"environment": "staging"})
+	assert.NoError(t, err)
+
+	assert.Equal(t, []endpoint{{"http", "GET forecasts.staging.example/v1/forecast", "test.v1.Response"}}, endpoints(program, model.Egress))
+	evaluator, err := program.NewEvaluator(t.Context())
+	assert.NoError(t, err)
+	defer evaluator.Close()
+	normalised, err := evaluator.NormaliseMessage("test.v1.User", Some[any](map[string]any{"name": "alice"}))
+	assert.NoError(t, err)
+	assert.Equal(t, Some[any](map[string]any{"name": "staging"}), normalised)
+}
+
+func TestRejectsUnsetVariable(t *testing.T) {
+	_, err := newProgram(t, `spectre.egress.http(`+"`GET forecasts.${spectre.variable(\"environment\")}.example/v1/forecast`"+`).match<v1.Response>();`)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), `spectre.variable "environment" is not set`)
+}
+
 func TestTimeoutBoundsOnlyEvaluation(t *testing.T) {
-	_, err := javascript.NewProgram(t.Context(), 10*time.Millisecond, declarations(), fstest.MapFS{"test.ts": script(`while (true) {}`)})
+	_, err := javascript.NewProgram(t.Context(), 10*time.Millisecond, declarations(), fstest.MapFS{"test.ts": script(`while (true) {}`)}, nil)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "evaluate comparison modules")
 }
@@ -654,7 +677,7 @@ func TestEvaluatorsUseStartupModuleGraph(t *testing.T) {
 		spectre.field<v1.Response, "value">(normalise);
 	`).Data, 0o600))
 	assert.NoError(t, os.WriteFile(helperPath, []byte(`export const normalise = (value: string) => value + "!";`), 0o600))
-	program, err := javascript.NewProgram(t.Context(), time.Second, declarations(), os.DirFS(directory))
+	program, err := javascript.NewProgram(t.Context(), time.Second, declarations(), os.DirFS(directory), nil)
 	assert.NoError(t, err)
 	assert.NoError(t, os.Remove(mainPath))
 	assert.NoError(t, os.WriteFile(helperPath, []byte(`throw new Error("new source");`), 0o600))
@@ -696,7 +719,7 @@ func TestRejectsScriptSymlinks(t *testing.T) {
 				assert.NoError(t, os.Symlink(outside, filepath.Join(scripts, "lib")))
 				assert.NoError(t, os.WriteFile(filepath.Join(scripts, "main.ts"), []byte(`import "./lib/outside";`), 0o600))
 			}
-			_, err := javascript.NewProgram(t.Context(), time.Second, declarations(), os.DirFS(scripts))
+			_, err := javascript.NewProgram(t.Context(), time.Second, declarations(), os.DirFS(scripts), nil)
 			assert.Error(t, err)
 			assert.Contains(t, err.Error(), "symbolic link")
 		})
@@ -785,7 +808,7 @@ func newProgram(t *testing.T, body string) (*javascript.Program, error) {
 
 func compile(t *testing.T, files fstest.MapFS) (*javascript.Program, error) {
 	t.Helper()
-	return javascript.NewProgram(t.Context(), time.Second, declarations(), files)
+	return javascript.NewProgram(t.Context(), time.Second, declarations(), files, nil)
 }
 
 func declarations() fstest.MapFS {

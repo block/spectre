@@ -95,7 +95,7 @@ declare module "test" {
 			source := `import { ingress, egress, field, message, type Text } from "spectre";
 import type { Address, Preference, Root } from "test";
 ` + test.body
-			_, err := javascript.NewProgram(t.Context(), time.Second, declarations, fstest.MapFS{"test.ts": {Data: []byte(source)}})
+			_, err := javascript.NewProgram(t.Context(), time.Second, declarations, fstest.MapFS{"test.ts": {Data: []byte(source)}}, nil)
 			if test.valid {
 				assert.NoError(t, err)
 				return

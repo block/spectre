@@ -240,6 +240,7 @@ func (m *Mirror) engineConfig() protocol.Config {
 	config := protocol.NewConfig()
 	config.Comparison.ScriptsDir = m.config.ScriptsDir
 	config.Comparison.Schema.SchemaDir = m.config.SchemaDir
+	config.Comparison.Variables = m.config.ScriptVariables
 	config.MatchWindow = m.config.MatchWindow
 	return config
 }

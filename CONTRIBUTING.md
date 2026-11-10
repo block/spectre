@@ -177,6 +177,17 @@ equivalent reference call and receives its recorded response. A candidate call
 without a match gets a `502` and stops all later candidate calls until the process
 restarts. Ingress then quarantines the candidate when its responses diverge.
 
+Hosts that differ between environments come from script variables. Pass each with
+`--script-variable=NAME=VALUE`, and read it with `variable(NAME)` from the `spectre`
+module. A script that reads an unset variable fails to load:
+
+```ts
+import { egress, variable } from "spectre";
+import type { FetchForecastRequest } from "forecasts";
+
+egress.http(`GET forecasts.${variable("environment")}.example/v1/forecasts/{location}`).match<FetchForecastRequest>();
+```
+
 ## Sample Connect service
 
 From the repository root with Hermit activated, build and run the sample:

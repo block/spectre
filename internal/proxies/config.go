@@ -22,6 +22,8 @@ type Config struct {
 	Destinations map[string]string `name:"destination" placeholder:"HOST=URL" help:"Upstream URL for requests to HOST, passed to the egress proxy. HOST may be a glob, such as *.example. Repeat for each dependency."`
 	// ScriptsDir holds the comparison scripts passed to both proxies.
 	ScriptsDir string `type:"existingdir" placeholder:"DIR" help:"Directory of comparison scripts passed to both proxies."`
+	// ScriptVariables are the values the comparison scripts read with variable.
+	ScriptVariables map[string]string `name:"script-variable" placeholder:"NAME=VALUE" help:"Value the comparison scripts read with variable(NAME), such as an environment's host name. Repeat for each variable."`
 	// StateFile is the migration state that decides which routes ingress mirrors.
 	StateFile string `type:"existingfile" placeholder:"FILE" help:"Migration state TOML file. Ingress mirrors only routes of migrated nodes, and quarantines the candidate on a route no node lists. Without it, every request is mirrored."`
 	// SchemaDir holds the TypeScript schema passed to both proxies.

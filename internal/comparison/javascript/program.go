@@ -40,9 +40,9 @@ type Program struct {
 	messages  []schema.TypeRef
 }
 
-// NewProgram type-checks every TypeScript script against the schema declarations, links
+// NewProgram type-checks scripts against the schema declarations with their variables, links
 // them, then evaluates them once within evaluationTimeout to collect their registrations.
-func NewProgram(ctx context.Context, evaluationTimeout time.Duration, declarations fs.FS, scripts fs.FS) (*Program, error) {
+func NewProgram(ctx context.Context, evaluationTimeout time.Duration, declarations fs.FS, scripts fs.FS, variables map[string]string) (*Program, error) {
 	declarationSources, err := schema.ReadSources(declarations)
 	if err != nil {
 		return nil, errors.Wrap(err, "read schema declarations")
@@ -55,7 +55,7 @@ func NewProgram(ctx context.Context, evaluationTimeout time.Duration, declaratio
 	if err != nil {
 		return nil, err
 	}
-	loader := newModuleLoader(checked.modules)
+	loader := newModuleLoader(checked.modules, maps.Clone(variables))
 	module, err := loader.loadAll()
 	if err != nil {
 		return nil, err
@@ -165,10 +165,10 @@ type moduleLoader struct {
 	names    map[sobek.ModuleRecord]string
 }
 
-func newModuleLoader(compiled map[string]string) *moduleLoader {
+func newModuleLoader(compiled map[string]string, variables map[string]string) *moduleLoader {
 	return &moduleLoader{
 		compiled: compiled,
-		spectre:  &spectreModule{},
+		spectre:  &spectreModule{variables: variables},
 		modules:  map[string]*sobek.SourceTextModuleRecord{},
 		names:    map[sobek.ModuleRecord]string{},
 	}
