@@ -18,6 +18,8 @@ type EgressConfig struct {
 	// Destinations maps each request host to its upstream URL, using the backend
 	// URL forms that ingress accepts.
 	Destinations map[string]string `name:"destination" placeholder:"HOST=URL" help:"Upstream URL for requests to HOST: http, https, h2c, http+unix:<socket>, or h2c+unix:<socket>. HOST may be a glob, such as *.example. Repeat for each dependency."`
+	// DefaultDestination receives reference requests to hosts no destination matches.
+	DefaultDestination string `placeholder:"URL" help:"Upstream URL for reference requests to hosts no destination matches, in any form --destination accepts. Without it, they go to the host as received over plaintext HTTP."`
 	// RecordingBufferBytes limits recorded reference responses across all requests.
 	RecordingBufferBytes int `default:"33554432" help:"Maximum reference response bytes recorded across all requests."`
 	// Config holds the configuration shared with ingress.

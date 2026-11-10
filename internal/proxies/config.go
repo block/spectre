@@ -20,6 +20,8 @@ type Config struct {
 	Reflection bool `name:"reflection" negatable:"" default:"true" help:"Load backend descriptors with gRPC reflection and require them to match; disable to compare using only the static descriptors. Ingress is ready only once both backends accept."`
 	// Destinations maps each request host to its upstream URL for egress.
 	Destinations map[string]string `name:"destination" placeholder:"HOST=URL" help:"Upstream URL for requests to HOST, passed to the egress proxy. HOST may be a glob, such as *.example. Repeat for each dependency."`
+	// DefaultDestination receives reference requests to hosts no destination matches.
+	DefaultDestination string `placeholder:"URL" help:"Upstream URL for reference requests to hosts no destination matches, passed to the egress proxy. Without it, they go to the host as received over plaintext HTTP."`
 	// ScriptsDir holds the comparison scripts passed to both proxies.
 	ScriptsDir string `type:"existingdir" placeholder:"DIR" help:"Directory of comparison scripts passed to both proxies."`
 	// StateFile is the migration state that decides which routes ingress mirrors.

@@ -251,6 +251,7 @@ func (m *Mirror) egressConfig() httpserver.EgressConfig {
 	config.CandidateListen = m.wiring.CandidateEgress
 	config.HealthListen = m.wiring.EgressHealth
 	config.Destinations = m.config.Destinations
+	config.DefaultDestination = m.config.DefaultDestination
 	config.Descriptors = m.config.Descriptors
 	return config
 }

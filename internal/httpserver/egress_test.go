@@ -120,16 +120,24 @@ func TestForwardsReferenceTrafficItCannotIdentify(t *testing.T) {
 		_, _ = io.WriteString(writer, "forwarded")
 	})
 	for name, test := range map[string]struct {
-		host   string
-		body   string
-		reason string
+		defaultDestination string
+		host               string
+		body               string
+		reason             string
 	}{
-		"UnconfiguredHost":   {host: strings.TrimPrefix(upstream, "http://"), body: london, reason: "reference request to unconfigured host"},
+		"UnconfiguredHost": {host: strings.TrimPrefix(upstream, "http://"), body: london, reason: "reference request to unconfigured host"},
+		"DefaultDestination": {
+			defaultDestination: upstream,
+			host:               "unresolvable.invalid",
+			body:               london,
+			reason:             "reference request to unconfigured host",
+		},
 		"UndecodablePayload": {host: dependencyHost, body: `{"unknown":1}`, reason: "identify reference request"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			calls.Store(0)
 			harness := newHarness(t, upstream)
+			harness.Config.DefaultDestination = test.defaultDestination
 			harness.Start(t)
 
 			response := send(t, harness.Reference, test.host, test.body)
@@ -308,6 +316,18 @@ func TestEgressRejectsUnsafeConfiguration(t *testing.T) {
 				config.Destinations = map[string]string{dependencyHost: "ftp://weather.example"}
 			},
 			message: `parse destination "weather.example"`,
+		},
+		"DefaultDestinationLoop": {
+			update: func(config *httpserver.EgressConfig, _ *protocol.Config) {
+				config.DefaultDestination = "http://" + config.CandidateListen
+			},
+			message: "default destination must not target an egress listener",
+		},
+		"InvalidDefaultDestination": {
+			update: func(config *httpserver.EgressConfig, _ *protocol.Config) {
+				config.DefaultDestination = "ftp://weather.example"
+			},
+			message: "parse default destination",
 		},
 		"MatchWindow": {
 			update:  func(_ *httpserver.EgressConfig, engineConfig *protocol.Config) { engineConfig.MatchWindow = 0 },
