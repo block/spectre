@@ -143,7 +143,10 @@ replaces the stream after `--server-stream-max-age` (10m by default, with
 jitter), so streams spread across server replicas.
 
 List the reporting mirrors and recorded divergences with
-`spectre status --server-url=URL`. Filter with `--service`,
+`spectre status --server-url=URL`. Repeat `--server-url` to list from several
+servers at once, such as staging and production; a custom binary sets its
+default servers with `spectre.WithStatusServerURLs`. When a server fails, status
+still lists what the others hold, then exits with an error. Filter with `--service`,
 `--environment`, `--revision`, or `--node`, and print JSON with `--json`. Each
 mirror lists its calls per route, which lag by up to the keepalive interval. A
 mirror stays listed until it sends nothing for the server's `--state-ttl`
@@ -152,7 +155,8 @@ quarantined until it restarts.
 
 The server keeps the latest divergence of each direction of a service
 environment, through redeploys and stopped mirrors, until someone clears it with
-`spectre status clear --service=SERVICE --environment=ENVIRONMENT`. A
+`spectre status clear --service=SERVICE --environment=ENVIRONMENT`, which
+clears it on every server status calls. A
 clear also ignores the quarantines that mirrors still running report, so a
 cleared divergence only returns if the candidate quarantines again.
 

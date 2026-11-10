@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/alecthomas/errors"
@@ -31,7 +32,9 @@ type Option func(registered *extensions)
 
 // extensions collects what the options register, before the parser is built.
 type extensions struct {
-	kongOptions []kong.Option
+	kongOptions      []kong.Option
+	serverURL        string
+	statusServerURLs []string
 }
 
 // WithCommand adds a top-level command. command must be a pointer to a struct,
@@ -54,7 +57,15 @@ func WithTemplateRepo(source string) Option {
 // such as spectre status and spectre supervise call.
 func WithServerURL(url string) Option {
 	return func(registered *extensions) {
-		registered.kongOptions = append(registered.kongOptions, kong.Vars{"server_url": url})
+		registered.serverURL = url
+	}
+}
+
+// WithStatusServerURLs sets the default base URLs of the SPECTRE servers that
+// spectre status lists from and clears on, instead of the WithServerURL one.
+func WithStatusServerURLs(urls ...string) Option {
+	return func(registered *extensions) {
+		registered.statusServerURLs = urls
 	}
 }
 
@@ -101,12 +112,21 @@ func newParser(command *cli.CommandLine, options ...Option) (*kong.Kong, error) 
 	for _, option := range options {
 		option(registered)
 	}
+	statusServerURLs := registered.statusServerURLs
+	if len(statusServerURLs) == 0 {
+		statusServerURLs = []string{registered.serverURL}
+	}
 	catalog, err := state.NewCatalog(httpserver.Supports()...)
 	if err != nil {
 		return nil, errors.Wrap(err, "collect supported IO")
 	}
 	kongOptions := append([]kong.Option{
-		kong.Vars{"version": internal.Version, "template_repo": "", "server_url": ""},
+		kong.Vars{
+			"version":            internal.Version,
+			"template_repo":      "",
+			"server_url":         registered.serverURL,
+			"status_server_urls": strings.Join(statusServerURLs, ","),
+		},
 		kong.Configuration(kongtoml.Loader),
 		kong.DefaultEnvars("SPECTRE"),
 		kong.Bind(catalog),

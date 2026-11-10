@@ -1,7 +1,6 @@
 package server
 
 import (
-	"cmp"
 	"slices"
 
 	"github.com/block/spectre/internal/model"
@@ -16,9 +15,7 @@ func filterStates(states []model.State, filter model.DivergenceFilter) []model.S
 			matching = append(matching, state)
 		}
 	}
-	slices.SortFunc(matching, func(a, b model.State) int {
-		return cmp.Or(cmp.Compare(a.Service, b.Service), cmp.Compare(a.Environment, b.Environment))
-	})
+	slices.SortFunc(matching, model.CompareStates)
 	return matching
 }
 
@@ -30,13 +27,6 @@ func filterDivergences(divergences []model.Divergence, filter model.DivergenceFi
 			matching = append(matching, divergence)
 		}
 	}
-	slices.SortFunc(matching, func(a, b model.Divergence) int {
-		return cmp.Or(
-			cmp.Compare(a.Service, b.Service),
-			cmp.Compare(a.Environment, b.Environment),
-			// Reversed, so ingress lists before egress.
-			cmp.Compare(b.Direction, a.Direction),
-		)
-	})
+	slices.SortFunc(matching, model.CompareDivergences)
 	return matching
 }

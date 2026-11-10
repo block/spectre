@@ -20,7 +20,7 @@ func TestStatusCommands(t *testing.T) {
 	store := storage.NewMemory()
 	httpServer := httptest.NewServer(server.NewService(store, time.Hour).Handler())
 	t.Cleanup(httpServer.Close)
-	spectre := client.New(client.Config{URL: httpServer.URL})
+	spectre := client.NewServers(client.ServersConfig{URLs: []string{httpServer.URL}})
 	first := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
 	unmatched := model.QuarantineReason{Kind: model.QuarantineUnmatched, Detail: "no matching reference call"}
 	// Divergences from mirror runs that have since stopped or restarted.
@@ -152,4 +152,55 @@ users def456 staging spectre v1.2.3, up 12m0s
 	list = statusListCommand{Service: "invoices"}
 	assert.NoError(t, list.Run(t.Context(), spectre, Output{Writer: &text}))
 	assert.Equal(t, "No mirrors or divergences.\n", text.String())
+}
+
+func TestStatusCallsEveryServer(t *testing.T) {
+	newServer := func(state model.State) (*storage.Memory, string) {
+		store := storage.NewMemory()
+		assert.NoError(t, store.Put(t.Context(), state, time.Now()))
+		httpServer := httptest.NewServer(server.NewService(store, time.Hour).Handler())
+		t.Cleanup(httpServer.Close)
+		return store, httpServer.URL
+	}
+	since := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	quarantine := model.Quarantine{Since: since, Reason: model.QuarantineReason{Kind: model.QuarantineUnmatched, Detail: "no matching reference call"}}
+	production := model.State{Service: "users", Environment: "production", Revision: "def456", SpectreVersion: "v1.2.3", Uptime: time.Minute}
+	staging := model.State{Service: "users", Environment: "staging", Revision: "def456", SpectreVersion: "v1.2.3", Uptime: time.Hour}
+	productionStore, productionURL := newServer(production)
+	stagingStore, stagingURL := newServer(staging)
+	assert.NoError(t, productionStore.Record(t.Context(), model.Divergence{Service: "users", Environment: "production", Revision: "abc123", Direction: model.Egress, Quarantine: quarantine}))
+	unreachable := httptest.NewServer(nil)
+	unreachable.Close()
+
+	// The production server comes first, but the output is ordered as if one
+	// server listed it all.
+	servers := client.NewServers(client.ServersConfig{URLs: []string{productionURL, stagingURL, productionURL}})
+	var text strings.Builder
+	list := statusListCommand{}
+	assert.NoError(t, list.Run(t.Context(), servers, Output{Writer: &text}))
+	expected := `users def456 production spectre v1.2.3, up 1m0s
+  healthy
+  egress: no matching reference call
+  quarantined 2026-10-01T12:00:00Z on abc123, in an earlier run
+users def456 staging spectre v1.2.3, up 1h0m0s
+  healthy
+`
+	assert.Equal(t, expected, text.String())
+
+	// A server that fails does not hide what the others list.
+	servers = client.NewServers(client.ServersConfig{URLs: []string{unreachable.URL, productionURL, stagingURL}})
+	text.Reset()
+	err := list.Run(t.Context(), servers, Output{Writer: &text})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), unreachable.URL+": list divergences")
+	assert.Equal(t, expected, text.String())
+
+	servers = client.NewServers(client.ServersConfig{URLs: []string{productionURL, stagingURL}})
+	clearCommand := statusClearCommand{Clear: server.ClearConfig{Service: "users", Environment: "production"}}
+	assert.NoError(t, clearCommand.Run(t.Context(), servers))
+	for _, store := range []*storage.Memory{productionStore, stagingStore} {
+		divergences, err := store.Divergences(t.Context())
+		assert.NoError(t, err)
+		assert.Equal(t, 0, len(divergences))
+	}
 }

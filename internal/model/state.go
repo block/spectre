@@ -1,6 +1,7 @@
 package model
 
 import (
+	"cmp"
 	"maps"
 	"time"
 )
@@ -22,6 +23,11 @@ type State struct {
 }
 
 func (State) update() {}
+
+// CompareStates orders states by service and environment.
+func CompareStates(a, b State) int { //nolint:narrowdeps // slices.SortFunc compares whole states.
+	return cmp.Or(cmp.Compare(a.Service, b.Service), cmp.Compare(a.Environment, b.Environment))
+}
 
 // Quarantined returns the state with the quarantine of the proxy in direction.
 func (s State) Quarantined(direction Direction, quarantine Quarantine) State {
