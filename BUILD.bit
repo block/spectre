@@ -1,7 +1,7 @@
 # Build file for github.com/alecthomas/bit
 
 # The TypeScript shim is a separate module, so Go tools skip it from the root.
-let go-module = [".", "internal/typescript"]
+let go-module = go.modules()
 
 # Files within a Go module that its checks depend on.
 let go-inputs = ["**/*.go", "go.mod", "go.sum"]
