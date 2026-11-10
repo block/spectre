@@ -104,8 +104,10 @@ func TestEngineConfig(t *testing.T) {
 	config.ScriptsDir = "scripts"
 	config.SchemaDir = "schema"
 	config.MatchWindow = 3 * time.Second
+	config.ScriptVariables = map[string]string{"environment": "staging"}
 	engine := testMirror(t, config).engineConfig()
 	assert.Equal(t, "scripts", engine.Comparison.ScriptsDir)
 	assert.Equal(t, "schema", engine.Comparison.Schema.SchemaDir)
 	assert.Equal(t, 3*time.Second, engine.MatchWindow)
+	assert.Equal(t, map[string]string{"environment": "staging"}, engine.Comparison.Variables)
 }

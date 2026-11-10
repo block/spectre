@@ -106,4 +106,6 @@ declare module "spectre" {
   export function field<T extends object, P extends FieldPath<T>>(normalise: Normaliser<FieldValue<T, P>>): void;
   /** Normalises every T; returning undefined removes it. */
   export function message<T extends object>(normalise: Normaliser<T | undefined>): void;
+  /** Returns the value of a script variable, such as an environment's host name. It throws if the variable is unset. */
+  export function variable(name: string): string;
 }
