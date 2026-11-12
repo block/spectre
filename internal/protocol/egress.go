@@ -133,8 +133,7 @@ func (q *egressQueue) intercept(ctx context.Context, protocol model.Protocol, ro
 ) (Decision, error) {
 	raw, kind, err := q.match(ctx, protocol, route, request)
 	if err != nil {
-		// The candidate giving up explains the failure.
-		if ctx.Err() == nil {
+		if blamesCandidate(ctx, kind) {
 			q.quarantine.Quarantine(ctx, egressReason(kind, protocol, route, err))
 		}
 		return nil, err
@@ -162,6 +161,15 @@ func (q *egressQueue) match(ctx context.Context, protocol model.Protocol, route 
 		return nil, model.QuarantineUnable, err
 	}
 	return raw, "", nil
+}
+
+// blamesCandidate reports whether a failed match quarantines the candidate. Giving up
+// explains a failure, except giving up unmatched; work the proxy stopped never does.
+func blamesCandidate(ctx context.Context, kind model.QuarantineKind) bool {
+	if ctx.Err() == nil {
+		return true
+	}
+	return kind == model.QuarantineUnmatched && !errors.Is(context.Cause(ctx), ErrCandidateStopped)
 }
 
 func egressReason(kind model.QuarantineKind, protocol model.Protocol, route model.Route, err error) model.QuarantineReason {
@@ -222,6 +230,7 @@ func (q *egressQueue) claim(ctx context.Context, hash comparison.Hash, waiter *e
 	q.waiting[hash] = insertByArrival(q.waiting[hash], waiter)
 	q.mu.Unlock()
 
+	started := time.Now()
 	timer := time.NewTimer(q.window)
 	defer timer.Stop()
 	var err error
@@ -231,7 +240,8 @@ func (q *egressQueue) claim(ctx context.Context, hash comparison.Hash, waiter *e
 	case <-timer.C:
 		err = errors.Errorf("no matching reference request within %s", q.window)
 	case <-ctx.Done():
-		err = errors.Wrap(ctx.Err(), "wait for matching reference request")
+		err = errors.Wrapf(ctx.Err(), "no matching reference request before the candidate gave up after %s",
+			time.Since(started).Round(time.Millisecond))
 	}
 	q.mu.Lock()
 	waiters := q.waiting[hash]

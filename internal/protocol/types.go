@@ -6,6 +6,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/alecthomas/errors"
 	. "github.com/alecthomas/types/optional"
 	"go.jetify.com/typeid"
 
@@ -56,6 +57,10 @@ func (DeclarationRule) declaration()    {}
 type Matcher interface {
 	Declare(declaration Declaration) error
 }
+
+// ErrCandidateStopped is the cancellation cause of candidate work the proxy
+// stops, as opposed to work the candidate abandons.
+var ErrCandidateStopped = errors.New("candidate work stopped by the proxy")
 
 // Quarantiner stops all candidate traffic.
 type Quarantiner interface {

@@ -115,6 +115,7 @@ Egress pairs in arrival order. Each request is numbered when it arrives, before 
 Divergence, `Unable`, an unidentifiable request, and an unmatched egress candidate are all reported to the `Quarantiner`. Servers pass the same `proxy.Candidates` they use for candidate admission, cancellation, and timeouts.
 
 - `Unable` with a cancelled context never quarantines, because the caller gave up. Nor does a comparison the candidate's context cut short.
+- An egress candidate that gives up while no reference request matches its own is quarantined as unmatched, because the reference made no such request. Work the proxy stops, cancelled with `ErrCandidateStopped`, never quarantines.
 - Ignored routes never quarantine, even when the candidate fails. Their candidate responses are reported as skipped without waiting for the reference.
 - Known statuses are compared first, so a status difference is divergent even if a body fails to decode. Otherwise a response one side cannot decode is reported as unable.
 
