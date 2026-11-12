@@ -273,11 +273,11 @@ func (e *Egress) upstream(request *http.Request) Option[*httputil.ReverseProxy] 
 }
 
 // serveCandidate replays the matching reference response. The engine quarantines
-// the candidate when no reference matches, unless the candidate itself gave up.
+// the candidate when no reference matches, unless the proxy stopped it.
 func (e *Egress) serveCandidate(writer http.ResponseWriter, request *http.Request) {
-	ctx, cancel := context.WithCancel(request.Context())
-	defer cancel()
-	run, admitted := e.candidates.Start(ctx, cancel).Get()
+	ctx, cancel := context.WithCancelCause(request.Context())
+	defer cancel(nil)
+	run, admitted := e.candidates.Start(ctx, func() { cancel(protocol.ErrCandidateStopped) }).Get()
 	if !admitted {
 		http.Error(writer, "candidate requests are refused", http.StatusServiceUnavailable)
 		return

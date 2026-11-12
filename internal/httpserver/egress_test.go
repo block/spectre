@@ -194,6 +194,24 @@ func TestQuarantinesUnmatchedCandidate(t *testing.T) {
 	}
 }
 
+func TestQuarantinesUnmatchedCandidateThatGivesUp(t *testing.T) {
+	upstream := newUpstream(t, func(http.ResponseWriter, *http.Request) {})
+	harness := newHarness(t, upstream)
+	harness.Engine.MatchWindow = time.Minute
+	harness.Start(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://"+harness.Candidate.Addr().String()+forecastPath, strings.NewReader(london))
+	assert.NoError(t, err)
+	request.Host = dependencyHost
+	request.Header.Set("Content-Type", "application/json")
+
+	_, err = (&http.Client{Transport: &http.Transport{DisableKeepAlives: true}}).Do(request)
+
+	assert.True(t, errors.Is(err, context.DeadlineExceeded))
+	assert.Contains(t, harness.QuarantineReason(t), "no matching reference request before the candidate gave up after")
+}
+
 func TestPairsDuplicateRequestsOneToOne(t *testing.T) {
 	var calls atomic.Int32
 	upstream := newUpstream(t, func(writer http.ResponseWriter, _ *http.Request) {
