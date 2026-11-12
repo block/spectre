@@ -173,10 +173,10 @@ func TestStatusCommands(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, "users", command.Status.List.Service)
 	assert.Equal(t, "abc123", command.Status.List.Revision)
-	assert.Equal(t, client.Config{URL: "http://server.example"}, command.Status.Client)
+	assert.Equal(t, client.ServersConfig{URLs: []string{"http://server.example"}}, command.Status.Servers)
 
-	// The server URL belongs to the group, so it applies to clear wherever it
-	// appears, not to the default list command.
+	// The server URLs belong to the group, so they apply to clear wherever they
+	// appear, not to the default list command.
 	for _, args := range [][]string{
 		{"status", "clear", "--server-url=http://server.example", "--service=users", "--environment=production"},
 		{"status", "--server-url=http://server.example", "clear", "--service=users", "--environment=production"},
@@ -186,7 +186,7 @@ func TestStatusCommands(t *testing.T) {
 		assert.NoError(t, err)
 		_, err = parser.Parse(args)
 		assert.NoError(t, err)
-		assert.Equal(t, client.Config{URL: "http://server.example"}, command.Status.Client)
+		assert.Equal(t, client.ServersConfig{URLs: []string{"http://server.example"}}, command.Status.Servers)
 		assert.Equal(t, server.ClearConfig{Service: "users", Environment: "production"}, command.Status.Clear.Clear)
 	}
 }

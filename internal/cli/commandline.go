@@ -33,7 +33,7 @@ type CommandLine struct {
 	Contain   containCommand   `cmd:"" help:"Reject a user's IPv4 and IPv6 traffic, such as a candidate's in its own container, so it reaches dependencies only through unix sockets. Needs Linux, root and NET_ADMIN."`
 	Serve     serveCommand     `cmd:"" help:"Run the SPECTRE server, which mirrors stream their states to."`
 	Gen       genCommand       `cmd:"" help:"Generate TypeScript schema declarations and the script API."`
-	Status    statusCommand    `cmd:"" help:"List the mirrors reporting to the SPECTRE server and the divergences they reported, or clear divergences."`
+	Status    statusCommand    `cmd:"" help:"List the mirrors reporting to the SPECTRE servers and the divergences they reported, or clear divergences."`
 	State     stateCommand     `cmd:"" help:"Describe a service's migration state."`
 
 	Init initCommand `cmd:"" help:"Set a service checkout up for a SPECTRE migration from a template."`

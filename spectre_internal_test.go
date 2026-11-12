@@ -77,24 +77,68 @@ func TestWithTemplateRepoSetsDefault(t *testing.T) {
 func TestWithServerURLSetsDefault(t *testing.T) {
 	tests := []struct {
 		name     string
+		options  []Option
+		env      string
 		args     []string
-		expected string
+		expected []string
 	}{
-		{name: "Default", args: []string{"status"}, expected: "http://default.example"},
-		{name: "Flag", args: []string{"status", "--server-url=http://flag.example"}, expected: "http://flag.example"},
+		{name: "Default", options: []Option{WithServerURL("http://default.example")}, args: []string{"status"}, expected: []string{"http://default.example"}},
+		{name: "Flag", options: []Option{WithServerURL("http://default.example")}, args: []string{"status", "--server-url=http://flag.example"}, expected: []string{"http://flag.example"}},
+		{
+			name:     "StatusServers",
+			options:  []Option{WithServerURL("http://default.example"), WithStatusServerURLs("http://staging.example", "http://production.example")},
+			args:     []string{"status"},
+			expected: []string{"http://staging.example", "http://production.example"},
+		},
+		{
+			name:     "RepeatedFlag",
+			options:  []Option{WithStatusServerURLs("http://staging.example", "http://production.example")},
+			args:     []string{"status", "--server-url=http://a.example", "--server-url=http://b.example"},
+			expected: []string{"http://a.example", "http://b.example"},
+		},
+		{
+			name:     "Environment",
+			options:  []Option{WithStatusServerURLs("http://staging.example")},
+			env:      "http://a.example,http://b.example",
+			args:     []string{"status"},
+			expected: []string{"http://a.example", "http://b.example"},
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			if test.env != "" {
+				t.Setenv("SPECTRE_SERVER_URL", test.env)
+			}
 			command := &cli.CommandLine{}
-			parser, err := newParser(command, WithServerURL("http://default.example"))
+			parser, err := newParser(command, test.options...)
 			assert.NoError(t, err)
 
 			_, err = parser.Parse(test.args)
 			assert.NoError(t, err)
 
-			assert.Equal(t, test.expected, command.Status.Client.URL)
+			assert.Equal(t, test.expected, command.Status.Servers.URLs)
 		})
 	}
+}
+
+func TestWithStatusServerURLsLeavesSupervise(t *testing.T) {
+	command := &cli.CommandLine{}
+	parser, err := newParser(command, WithServerURL("http://default.example"), WithStatusServerURLs("http://staging.example", "http://production.example"))
+	assert.NoError(t, err)
+
+	_, err = parser.Parse([]string{
+		"supervise",
+		"--candidate=run-candidate",
+		"--reference=run-reference",
+		"--scripts-dir=" + t.TempDir(),
+		"--schema-dir=" + writeSchemaDir(t),
+		"--service=users",
+		"--environment=production",
+		"--revision=abc123",
+	})
+	assert.NoError(t, err)
+
+	assert.Equal(t, "http://default.example", command.Supervise.Supervisor.Mirror.Server.Client.URL)
 }
 
 func TestServerURLRequiredWithoutDefault(t *testing.T) {

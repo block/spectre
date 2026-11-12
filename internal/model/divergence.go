@@ -1,6 +1,10 @@
 package model
 
-import . "github.com/alecthomas/types/optional"
+import (
+	"cmp"
+
+	. "github.com/alecthomas/types/optional"
+)
 
 // Divergence is the latest quarantine that the mirror of a service environment
 // reported for one of its directions. It outlives the mirror run.
@@ -12,6 +16,16 @@ type Divergence struct {
 	// Direction is the proxy that quarantined the candidate.
 	Direction  Direction  `json:"direction"`
 	Quarantine Quarantine `json:"quarantine"`
+}
+
+// CompareDivergences orders divergences by source: service, environment, then
+// ingress before egress.
+func CompareDivergences(a, b Divergence) int {
+	return cmp.Or(
+		cmp.Compare(a.Service, b.Service),
+		cmp.Compare(a.Environment, b.Environment),
+		cmp.Compare(b.Direction, a.Direction),
+	)
 }
 
 // DivergenceFilter selects mirror states and divergences. An absent field
