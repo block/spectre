@@ -84,8 +84,8 @@ type Response struct {
 	Raw Raw
 	// Latency is the time to the first response byte, or zero if unmeasured.
 	Latency time.Duration
-	// Decode is called only to compare, on the candidate's time rather than the
-	// reference's, and while the engine still holds Raw.
+	// Decode is called to compare, on the candidate's time rather than the reference's,
+	// or when a derivation's source response finishes. The engine still holds Raw.
 	Decode func(ctx context.Context) Content
 }
 
@@ -119,5 +119,10 @@ type DecisionForward struct {
 // server releases Raw once replay finishes.
 type DecisionIntercept struct{ Raw Raw }
 
+// DecisionAnswer answers the request with Message, which the server encodes as
+// a successful response, instead of sending it.
+type DecisionAnswer struct{ Message Message }
+
 func (DecisionForward) decision()   {}
 func (DecisionIntercept) decision() {}
+func (DecisionAnswer) decision()    {}

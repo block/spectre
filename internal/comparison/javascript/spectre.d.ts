@@ -96,6 +96,25 @@ declare module "spectre" {
   export interface EgressHTTPRule {
     /** Decodes the selected requests' bodies as T. */
     match<T extends object>(): void;
+    /**
+     * Decodes the selected requests' bodies as T and answers the candidate's with an R built from a
+     * reference response to another endpoint, instead of pairing them with the reference's own requests.
+     */
+    derive<T extends object, R extends object>(): EgressDerivation<T, R>;
+  }
+  /** Builds the responses to a derived endpoint from the reference's requests to a source endpoint. */
+  export interface EgressDerivation<T, R> {
+    /**
+     * Names the source endpoint, which must be declared with match<S>(), and decodes its responses as U.
+     * request maps a candidate request to the source request it pairs with, as match pairs requests;
+     * response builds the answer from the candidate request and the paired reference response. Pairing
+     * never claims the reference request, so it still pairs with a candidate request to the source.
+     */
+    from<S extends object, U extends object>(
+      pattern: string,
+      request: (request: T) => S,
+      response: (request: T, reference: U) => R,
+    ): void;
   }
   /** The service's outbound calls to its dependencies. */
   export const egress: {

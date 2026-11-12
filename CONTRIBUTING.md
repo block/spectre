@@ -177,6 +177,35 @@ equivalent reference call and receives its recorded response. A candidate call
 without a match gets a `502` and stops all later candidate calls until the process
 restarts. Ingress then quarantines the candidate when its responses diverge.
 
+When the candidate asks a dependency for data the reference read from another of
+its endpoints, `derive` answers the candidate from the reference's response
+instead. The source endpoint must be declared with `match`. `request` maps the
+candidate's request to the source request it pairs with, and `response` builds
+the answer from the paired reference response. Deriving never claims the source
+reference, so a candidate call to the source still pairs with it:
+
+```ts
+import { egress } from "spectre";
+import type { GetUserRequest, GetUserResponse, ListUsersRequest, ListUsersResponse } from "users";
+
+const list = "POST users.example/users.UserService/ListUsers";
+egress.http(list).match<ListUsersRequest>();
+egress
+  .http("POST users.example/users.UserService/GetUser")
+  .derive<GetUserRequest, GetUserResponse>()
+  .from<ListUsersRequest, ListUsersResponse>(
+    list,
+    (request) => ({ ids: [request.id] }),
+    (request, reference) => ({ user: reference.users.find((user) => user.id === request.id) }),
+  );
+```
+
+Every candidate call to a derived endpoint is answered this way, as bare
+protobuf or HTTP JSON in the request's format. One with no matching source
+reference within `--match-window` gets a `502` and quarantines the candidate, as
+does one whose source reference failed or did not succeed. Derive only from
+read-only endpoints, because the candidate's call is never sent.
+
 Hosts that differ between environments come from script variables. Pass each with
 `--script-variable=NAME=VALUE`, and read it with `variable(NAME)` from the `spectre`
 module. A script that reads an unset variable fails to load:

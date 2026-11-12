@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/alecthomas/errors"
@@ -107,6 +108,56 @@ func (d *Decoder) Request(request Request) (protocol.Message, error) {
 		return protocol.Message{}, errors.Wrapf(err, "decode request as %s", root.Name)
 	}
 	return protocol.Message{Type: Some(root.Name), Value: payload}, nil
+}
+
+// SourceResponse decodes a successful response to a dependency request with method and header as name,
+// for derivations to read. Any other response is a failure.
+func (d *Decoder) SourceResponse(method string, header http.Header, name schema.TypeRef, response Response) protocol.Content {
+	status := Some(strconv.Itoa(response.StatusCode))
+	if response.StatusCode != http.StatusOK {
+		return protocol.Content{Status: status, Failure: Some(errors.Errorf("response has status %d", response.StatusCode))}
+	}
+	requested, err := requestWire(header.Get("Content-Type"))
+	if err != nil {
+		requested = wireHTTPJSON
+	}
+	content := d.matched(javascript.ActionMatch{Type: Some(name)}, requested, method).decode(response)
+	if _, decoded := content.Message.Get(); decoded || content.Failure.Ok() {
+		return content
+	}
+	code, _ := content.Status.Get()
+	return protocol.Content{Status: content.Status, Failure: Some(errors.Errorf("response has status %q and no message", code))}
+}
+
+// Answer is a successful response that the server encodes itself.
+type Answer struct {
+	Header http.Header
+	Body   []byte
+}
+
+// Answer encodes message as the successful response to a dependency request with
+// header, in its wire format: bare protobuf, or HTTP JSON otherwise.
+func (d *Decoder) Answer(header http.Header, message protocol.Message) (Answer, error) {
+	name, typed := message.Type.Get()
+	if !typed {
+		return Answer{}, errors.New("answer has no type")
+	}
+	requested, err := requestWire(header.Get("Content-Type"))
+	switch {
+	case err == nil && requested == wireGRPC:
+		return Answer{}, errors.New("gRPC requests cannot be answered")
+	case err == nil && requested == wireProtobuf:
+		body, err := d.codec.Encode(name, message.Value)
+		if err != nil {
+			return Answer{}, errors.Wrapf(err, "encode answer as %s", name)
+		}
+		return Answer{Header: http.Header{"Content-Type": {header.Get("Content-Type")}}, Body: body}, nil
+	}
+	body, err := json.Marshal(message.Value)
+	if err != nil {
+		return Answer{}, errors.Wrapf(err, "encode answer as %s", name)
+	}
+	return Answer{Header: http.Header{"Content-Type": {jsonMediaType}}, Body: body}, nil
 }
 
 // Responses decides how ingress compares the responses to one request.
