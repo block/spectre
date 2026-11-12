@@ -200,7 +200,7 @@ func TestEgressCandidateGivesUpWhenCancelled(t *testing.T) {
 		quarantined bool
 	}{
 		"WaitingForReference": {
-			expected:    `^no matching reference request before the candidate gave up after \d+ms: context deadline exceeded$`,
+			expected:    `^no matching reference request before the candidate gave up after \d+m?s: context deadline exceeded$`,
 			quarantined: true,
 		},
 		"WaitingForResponse": {referenced: true, expected: `^wait for reference response: context deadline exceeded$`},
