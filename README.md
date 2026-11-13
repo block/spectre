@@ -8,7 +8,7 @@ Semantic differences are captured for analysis and can be fed back into an LLM-a
 
 SPECTRE is primarily intended for language and framework migrations, but the same approach can help validate dependency upgrades, service consolidation, and other behaviour-sensitive changes.
 
-See the [design document](docs/design.md) for the proposed architecture and safety model.
+See [USAGE.md](USAGE.md) for how to run and configure SPECTRE, and the [design document](docs/design.md) for the proposed architecture and safety model.
 
 ## Try it
 

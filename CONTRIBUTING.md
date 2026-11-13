@@ -1,221 +1,18 @@
 # Contributing
 
-The `spectre` binary supervises the whole comparison. `spectre supervise` starts a
-candidate and a reference service behind two embedded proxies. The ingress proxy
-mirrors HTTP requests to both services and returns the reference response without
-waiting for the candidate. The egress proxy sits between the services and their
-dependencies, forwarding reference calls and replaying the recorded responses to
-matching candidate calls. `spectre gen` generates the TypeScript schema
-declarations used for comparison.
+See [USAGE.md](USAGE.md) for how to run and configure SPECTRE.
 
-Logs default to info-level, colorized text on stderr. Use `--log-level=debug|info|warn|error`
-to change the minimum level.
+## Container images
 
-`--log-json` writes JSON logs shaped by a JSON template, so SPECTRE's own logs can look like
-the service it stands in for. `--log-json=DEFAULT` uses
-`{"time": "<time>", "level": "<level>", "msg": "<msg>"}`. Placeholders are `<msg>`,
-`<level>`, `<time>` and `<attrs>`; other values are written as given. Without `<attrs>`,
-attributes go at the top level:
-
-```sh
---log-json='{"ts": "<time:unixms>", "severity": "<level:debug=DEBUG,info=INFO,warn=WARNING,error=ERROR>", "message": "<msg>"}'
-```
-
-- `<level:LEVEL=NAME,...>` maps slog levels to the service's names. A level between two
-  names uses the lower one, and names that are all integers are written as numbers.
-- `<time:FORMAT>` takes a Go time layout or `rfc3339`, `rfc3339nano` (the default), `unix`,
-  `unixms` or `unixns`.
-
-The candidate's and reference's stdout passes through with a label added, and stderr
-passes through unchanged. A JSON object line gains a leading
-`"spectre.subsystem": "candidate"` or `"reference"` member and is otherwise left as
-written; any other line is prefixed with `candidate: ` or `reference: `. SPECTRE's own
-lines carry `spectre.subsystem` set to `supervisor`, `mirror`, `ingress`, `egress`
-or `health`.
-
-`spectre supervise` accepts `--config=FILE` to load flag values from a TOML file. Keys are
-flag names without the leading dashes, and command-line flags take precedence:
-
-```toml
-scripts-dir = "internal/sample/scripts"
-schema-dir = "internal/sample/schema"
-descriptors-dir = "dist/descriptors"
-
-[destination]
-"forecasts.example" = "http://127.0.0.1:50053"
-```
-
-Unknown keys are rejected.
-
-## Container image
-
-Build the local Alpine-based image with `bit container`. It contains the single
-`spectre` binary, with the proxies embedded, and its entry point is `spectre`, so
-the same image runs any command. Run `spectre supervise` with your candidate and
-reference commands to start the whole stack, or `spectre serve` to run the
-SPECTRE server. Both listen on localhost by default, so pass `--listen` with
-`0.0.0.0` inside a container.
+Build the local Alpine-based image with `bit container`.
 
 Build the [demo](demo/README.md) image with `bit demo`. It wraps a complete
 supervised example around the sample service, including the cgroup split and
 egress sandbox.
 
-Releases are published for Linux AMD64 and ARM64 as `ghcr.io/block/spectre`
-and `docker.io/blockossreleases/spectre`.
-
-## Proxies for services that run elsewhere
-
-`spectre proxy` runs the same proxies and server reporting as `spectre supervise`,
-but never starts the services, so the candidate and reference can run in other
-containers of the same pod. Pass where ingress reaches each service with
-`--reference-url` and `--candidate-url`, and give each service the matching
-egress address, `--reference-egress-listen` or `--candidate-egress-listen`, as
-its dependency proxy. Any address may be a unix socket in a shared volume:
-
-```sh
-spectre proxy \
-  --listen=0.0.0.0:8080 \
-  --reference-url=h2c+unix:/sockets/reference.sock \
-  --candidate-url=h2c+unix:/sockets/candidate.sock \
-  --reference-egress-listen=unix:/sockets/egress-reference.sock \
-  --candidate-egress-listen=unix:/sockets/egress-candidate.sock \
-  --health-listen=0.0.0.0:8081 \
-  --server-url=... --service=... --environment=... --revision=...
-```
-
-Ingress is ready once the reference accepts connections, and with
-`--reflection` once the candidate does too. It mirrors nothing until the
-candidate first accepts a connection, so a slow candidate start is not a
-divergence. A candidate that accepts nothing within
-`--candidate-startup-timeout` (5m by default) is quarantined.
-
-`--health-listen` serves `/livez`, and `/readyz` once both proxies are ready,
-over TCP so a kubelet's HTTP probes can reach them.
-
-A candidate in its own container must reach dependencies only through its
-egress socket. Run it as a user of its own, and run `spectre contain
---uid=<candidate uid>` in an init container with root and `NET_ADMIN`. It
-installs Linux packet filter rules that reject that user's IPv4 and IPv6
-traffic, including loopback and DNS, since the pod's containers share one
-network. Replies on connections other containers open to the candidate still
-pass, and unix sockets are unaffected. Running it again replaces the rules.
-
-SPECTRE creates unix socket files readable and writable by their group, so
-containers running as different users connect through the pod's shared
-`fsGroup`. A candidate that creates its own listening socket must allow the
-same. `demo/mirror-pod.yaml` lays out such a pod; `bit test-mirror-pod` runs it
-in a local kind cluster with Docker and checks that it mirrors, replays egress,
-and refuses the candidate's direct IP traffic.
-
-## SPECTRE server
-
-`spectre serve` collects the states that mirrors stream to it: each mirror's
-candidate revision, SPECTRE version, uptime, and quarantines. The server also records each quarantine as a
-divergence that outlives the mirror run. It listens on `127.0.0.1:50070` by
-default and keeps everything in memory, so a restart loses it. To keep them in Redis instead, pass a Redis URL to `--storage`, such as
-`--storage=redis://localhost:6379/0`. For a Redis Cluster, use the
-`redis-cluster` scheme, or `rediss-cluster` for TLS, and list further seed
-nodes with `addr`, such as
-`--storage=redis-cluster://localhost:7000?addr=localhost:7001`.
-
-Every mirror reports to a server, so `spectre supervise` and `spectre proxy`
-require its URL,
-`--server-url`, and the mirror's identity, `--service`, `--environment`, and
-`--revision`, the candidate's commit. Set them in a deployment with the
-matching `SPECTRE_SERVER_URL`, `SPECTRE_SERVICE`, `SPECTRE_ENVIRONMENT`, and
-`SPECTRE_REVISION` variables.
-Every flag can be set from a `SPECTRE_` variable named after it.
-
-Where the server is only reachable through a service mesh's unix egress socket,
-pass the socket as `--server-socket` and the server's mesh address as
-`--server-url`. Every call dials the socket, and the mesh routes it by the URL's
-host, such as `--server-url=http://spectre.mesh --server-socket=@egress.sock`.
-
-A mirror sends everything to the server over one stream, which begins with its
-whole state. It then sends each quarantine as it begins. Every
-`--server-keepalive-interval` (30s by default) when nothing else is sent, it
-sends the number of requests its ingress proxy has received on each route if
-those changed, or else a keepalive. It counts at most 100 routes, and counts
-requests to any further routes together. Keep the interval below the idle timeout of any proxy in front of the server;
-Caddy, for one, ends a request stream after 60s without data. When the stream
-fails, the mirror logs it and reconnects with backoff, from 1s up to 1m. It also
-replaces the stream after `--server-stream-max-age` (10m by default, with
-jitter), so streams spread across server replicas.
-
-List the reporting mirrors and recorded divergences with
-`spectre status --server-url=URL`. Filter with `--service`,
-`--environment`, `--revision`, or `--node`, and print JSON with `--json`. Each
-mirror lists its calls per route, which lag by up to the keepalive interval. A
-mirror stays listed until it sends nothing for the server's `--state-ttl`
-(90s by default), so keep that above the keepalive interval. A mirror stays
-quarantined until it restarts.
-
-The server keeps the latest divergence of each direction of a service
-environment, through redeploys and stopped mirrors, until someone clears it with
-`spectre status clear --service=SERVICE --environment=ENVIRONMENT`. A
-clear also ignores the quarantines that mirrors still running report, so a
-cleared divergence only returns if the candidate quarantines again.
-
-## Egress proxy
-
-The embedded egress proxy forwards each reference service's dependency calls to
-the real upstream and records the responses. `spectre supervise` wires it to the
-services automatically; map each dependency with a `--destination=HOST=URL` flag,
-which sends requests for `HOST` to `URL`:
-
-```sh
-spectre supervise ... --destination=forecasts.example=http://127.0.0.1:50053
-```
-
-A `HOST` may be a glob, such as `--destination="*.example=http://127.0.0.1:50053"`,
-where `*` also matches dots. A host takes the first destination, in pattern order,
-that matches it.
-
-Scripts declare dependency endpoints with `egress.http(pattern).match<Type>()`.
-Types come from `--schema-dir`; descriptors are only needed for protobuf traffic. A candidate call waits up to `--match-window` for an
-equivalent reference call and receives its recorded response. A candidate call
-without a match gets a `502` and stops all later candidate calls until the process
-restarts. Ingress then quarantines the candidate when its responses diverge.
-
-When the candidate asks a dependency for data the reference read from another of
-its endpoints, `derive` answers the candidate from the reference's response
-instead. The source endpoint must be declared with `match`. `request` maps the
-candidate's request to the source request it pairs with, and `response` builds
-the answer from the paired reference response. Deriving never claims the source
-reference, so a candidate call to the source still pairs with it:
-
-```ts
-import { egress } from "spectre";
-import type { GetUserRequest, GetUserResponse, ListUsersRequest, ListUsersResponse } from "users";
-
-const list = "POST users.example/users.UserService/ListUsers";
-egress.http(list).match<ListUsersRequest>();
-egress
-  .http("POST users.example/users.UserService/GetUser")
-  .derive<GetUserRequest, GetUserResponse>()
-  .from<ListUsersRequest, ListUsersResponse>(
-    list,
-    (request) => ({ ids: [request.id] }),
-    (request, reference) => ({ user: reference.users.find((user) => user.id === request.id) }),
-  );
-```
-
-Every candidate call to a derived endpoint is answered this way, as bare
-protobuf or HTTP JSON in the request's format. One with no matching source
-reference within `--match-window` gets a `502` and quarantines the candidate, as
-does one whose source reference failed or did not succeed. Derive only from
-read-only endpoints, because the candidate's call is never sent.
-
-Hosts that differ between environments come from script variables. Pass each with
-`--script-variable=NAME=VALUE`, and read it with `variable(NAME)` from the `spectre`
-module. A script that reads an unset variable fails to load:
-
-```ts
-import { egress, variable } from "spectre";
-import type { FetchForecastRequest } from "forecasts";
-
-egress.http(`GET forecasts.${variable("environment")}.example/v1/forecasts/{location}`).match<FetchForecastRequest>();
-```
+`bit test-mirror-pod` runs [`demo/mirror-pod.yaml`](demo/mirror-pod.yaml) in a
+local kind cluster with Docker and checks that it mirrors, replays egress, and
+refuses the candidate's direct IP traffic.
 
 ## Sample Connect service
 
@@ -245,16 +42,11 @@ spectre supervise \
   --no-limits
 ```
 
-Ingress listens on `127.0.0.1:50050` by default. It accepts HTTP/1 and unencrypted
-HTTP/2 so the sample can be called through it with `grpcurl`. The cgroup split and
-egress sandbox are Linux-only; pass `--no-limits` off Linux. If candidate buffering
-or concurrency reaches its limit, the candidate stops being mirrored until the run
-restarts.
-
 The sample serves Connect, gRPC, and gRPC-Web on `127.0.0.1:50051` with
 reflection enabled.
 Use `--listen=127.0.0.1:50052` to run a second instance and `--data=path/to/users.json`
-to load a different ProtoJSON `ListUsersResponse` at startup. With `grpcurl` installed:
+to load a different ProtoJSON `ListUsersResponse` at startup. With `grpcurl` installed,
+call it through ingress:
 
 ```sh
 grpcurl -plaintext -d '{}' localhost:50050 spectre.sample.v1.UserService/ListUsers
@@ -302,91 +94,7 @@ Edit the [protobuf definitions](internal/sample/proto/service.proto) and run
 `bit sample` to regenerate the Go and Connect bindings, descriptors, and TypeScript
 declarations. Generated declarations are checked in alongside the Go bindings.
 
-## TypeScript schemas and normalisers
-
-`--schema-dir` is required. Every `.ts` file in it, including subdirectories,
-contains only `declare module "name" { ... }` blocks. A type's name is its module
-name followed by its namespace path, such as `weather.GetForecastV2Response`, so
-separate services cannot collide. Modules share nothing unless one imports another.
-Use interfaces or object aliases, namespaces, optional members, scalar types, arrays,
-`Record<string, T>`, and string-literal unions. Unsupported constructs fail at
-startup. Raw JSON must match the declared shape; unknown keys, missing required
-members, and nulls are rejected.
-
-`--scripts-dir` loads every `.ts` script, including subdirectories. Scripts can
-import relative modules inside the directory, the virtual `spectre` module, and
-types from schema modules. At startup the host type-checks the scripts against the
-schema with the TypeScript 7 checker, and any error stops it.
-
-```ts
-import { field, ingress } from "spectre";
-import type { GetForecastV2Response } from "weather";
-
-ingress.http("GET /v2/forecast").match<GetForecastV2Response>();
-field<GetForecastV2Response, "alerts">((alerts) =>
-  alerts?.sort((a, b) => (a.id ?? "").localeCompare(b.id ?? "")),
-);
-```
-
-Type arguments are required, and they must name schema types. The host reads them
-from the checker, so aliases and namespace imports work. `field<T, "path">(callback)`
-uses JSON field names. Paths descend through objects with dots and through lists
-with `[]`, such as `users[].name`. `message<T>(callback)` applies wherever that
-object type occurs. Missing optional values arrive as `undefined`; returning
-`undefined` removes them.
-
-`ingress.http(select)` starts a rule for requests matching a ServeMux pattern, such
-as `GET /v2/forecast` or `/` for every request, or that a function accepts. The
-function receives the method, path, and headers by lower-case name.
-`.requestHeader(name, ...)` narrows it to requests whose header, with its values
-joined by `, `, equals a string, or that a function accepts; the function receives
-`undefined` for a missing header. `.status(...)` narrows it to responses with the
-given codes, or whose status a function accepts, and `.responseHeader(name, ...)`
-to responses by a header as `.requestHeader` does. A rule may name several
-headers, and must match all of them. Rules apply in declaration order, and the
-first that selects a response decides how it is compared. Both sides share the
-request, but each selects a rule by its own status and headers, and responses no
-rule selects are decoded by their content type. A rule with only a pattern and
-request header values that ignores a request skips it before either response
-arrives.
-
-`.match<T>(normalise?)` decodes the body as `T` and compares the responses after the
-normaliser, which returns a new `{ status, body }`; members it leaves out are not
-compared. `T` may be `Text` to compare the body as exact text. `.ignore()` skips
-comparison, so the responses never quarantine the candidate:
-
-```ts
-import { ingress, type Text } from "spectre";
-
-ingress.http("GET /_status").ignore();
-// Compare only the status of server errors, whose bodies differ between stacks.
-ingress.http("/").status((status) => status >= 500).match<Text>(({ status }) => ({ status }));
-ingress.http("GET /v2/forecast").match<GetForecastV2Response>();
-```
-
-`--state-file` passes the migration state described in
-[ADR 006](docs/006-migration-plan.md) to ingress. Ingress then mirrors only the routes
-of migrated nodes and sends routes of pending nodes to the reference only. A route
-that no node lists also goes to the reference only, and quarantines the candidate
-unless scripts ignore it or it is gRPC reflection. Check the file with
-`spectre state validate` first; an invalid state stops `spectre supervise` at startup.
-
-For protobuf traffic, generate declarations with
-`spectre gen proto --descriptors-dir=dist/descriptors --output=internal/sample/schema`.
-Wire descriptors must agree with those declarations. ProtoJSON defaults are emitted
-so required scalar, array, and map members are present. Oneofs become optional sibling
-members. Arbitrary JSON well-known types, including `google.protobuf.Any`, are unsupported.
-
-For JSON APIs described by JSON Schema, generate one module with
-`spectre gen json-schema --module=weather --output=schema/weather.d.ts weather.schema.json`.
-Each titled root schema and each `$defs` or `definitions` entry becomes a type, and inline
-objects become nested types named after their property. Properties outside `required` are
-optional. Null, type unions, `anyOf`, `oneOf`, `allOf`, `not`, tuples, and free-form objects are
-unsupported. Undeclared properties fail payload validation even when the schema allows them.
-Keywords that only narrow values within a type, such as `pattern`, `minimum`, or a numeric
-or boolean `enum`, are not enforced.
+## Editor configuration
 
 `tsconfig.json` gives editors the host's compiler options, so they report the errors
-the host would. Keep it in step with `internal/typescript/program.go`. For scripts
-outside this repository, write the `spectre` module declaration with
-`spectre gen module --output=spectre.d.ts`.
+the host would. Keep it in step with `internal/typescript/program.go`.
