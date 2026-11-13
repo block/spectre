@@ -17,7 +17,7 @@ require (
 	github.com/block/scaffolder v1.12.0
 	github.com/gobwas/glob v1.1.0
 	github.com/google/nftables v0.3.0
-	github.com/grafana/sobek v0.0.0-20260915160442-8a431c44cd7b
+	github.com/grafana/sobek v0.0.0-20261105103427-a5b602015248
 	github.com/lmittmann/tint v1.2.1
 	github.com/microsoft/TypeScript/tsc/shim/typescript v0.0.0
 	github.com/pelletier/go-toml/v2 v2.4.3
@@ -37,7 +37,7 @@ require (
 	github.com/block/getit v0.1.0 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/dlclark/regexp2 v1.11.4 // indirect
-	github.com/dlclark/regexp2/v2 v2.8.0 // indirect
+	github.com/dlclark/regexp2/v2 v2.11.0 // indirect
 	github.com/dop251/goja v0.0.0-20260311135729-065cd970411c // indirect
 	github.com/go-sourcemap/sourcemap v2.1.4+incompatible // indirect
 	github.com/gofrs/uuid/v5 v5.2.0 // indirect
