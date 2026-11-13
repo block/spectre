@@ -40,8 +40,16 @@ func NewEngine(
 	if err != nil {
 		return nil, errors.WithStack(err)
 	}
+	sources := map[model.Route]schema.TypeRef{}
+	for _, derivation := range scripts.Derivations() {
+		sources[derivation.Source()] = derivation.SourceResponse()
+	}
 	for _, endpoint := range scripts.Endpoints() {
-		if err := declare(matchers, endpoint.Protocol(), DeclarationRequest{Pattern: endpoint.Pattern(), Type: endpoint.Type()}); err != nil {
+		declaration := DeclarationRequest{Pattern: endpoint.Pattern(), Type: endpoint.Type(), Response: None[schema.TypeRef]()}
+		if response, ok := sources[endpoint.Route()]; ok {
+			declaration.Response = Some(response)
+		}
+		if err := declare(matchers, endpoint.Protocol(), declaration); err != nil {
 			return nil, err
 		}
 	}

@@ -100,6 +100,18 @@ The engine creates one acceptor per point, so servers never know whether they ca
 
 Egress pairs in arrival order. Each request is numbered when it arrives, before hashing, and both unused references and waiting candidates are kept in that order. A reference that is still being hashed is not waited for, so a candidate can claim a later reference of the same hash that finished hashing first.
 
+### Derived egress endpoints
+
+A script can let the candidate read the same data through a different endpoint than the reference: `egress.http(pattern).derive<T, R>().from<S, U>(source, request, response)`. The source must be declared with `match<S>()`, and is never itself derived.
+
+- The engine declares the source with its response type, and has the server decode its reference responses as `U`. It decodes each one in the background before any candidate can replay it.
+- A decoded response reserves as much memory again as its body from the recording budget. When the budget has no room, derivations from it are unable.
+- A candidate request to a derived endpoint is decoded as `T` and hashed as usual. A copy of `T` is mapped to an `S` by `request` and hashed as a request to the source. Normalising mutates payloads, so the request keeps its original `T` for `response`.
+- It uses exactly one reference. If an unused reference to the endpoint itself has its hash, it claims that one. Otherwise it uses the earliest source reference with the source hash. Otherwise it waits up to `MatchWindow` for whichever arrives first.
+- Deriving never claims a source reference. It stays offered to derivations for `MatchWindow` after it is hashed, and stays claimable by a candidate request to the source as usual. Its decoded response is released once it is no longer offered and no derivation is still reading it, even if its recording was already replayed and released.
+- `response` builds an `R` from the original `T` and the decoded `U`, and the result is validated as `R`. The server's encoder for the request answers with it, in the request's wire format: bare protobuf or HTTP JSON. The answer is intercepted like a replay, so the request never reaches a dependency.
+- No reference to either endpoint within the window, or before the candidate gives up, is unmatched. A mapping that throws or is not an `S` is unable at once. Once a source is chosen, a failed source response, a non-success status, an undecodable or over-budget response, a throwing function, an invalid `R`, and a failure to encode are unable. Work the proxy stops never quarantines.
+
 ### Pairing windows
 
 - An unused egress reference expires after `MatchWindow` (default 5s), releasing its `Raw`.

@@ -43,6 +43,9 @@ type Declaration interface{ declaration() }
 type DeclarationRequest struct {
 	Pattern string
 	Type    schema.TypeRef
+	// Response is set when other endpoints derive answers from this one's
+	// reference responses, which the server then decodes as Response.
+	Response Option[schema.TypeRef]
 }
 
 // DeclarationRule decides how ingress compares the responses the rule selects.
@@ -73,10 +76,15 @@ type Raw interface {
 	Release()
 }
 
+// Encoder answers a request with a message, encoded in the request's wire format.
+type Encoder func(ctx context.Context, answer Message) (Raw, error)
+
 // Message is a decoded payload. One without a Type is compared without normalisers.
 type Message struct {
 	Type  Option[schema.TypeRef]
 	Value any
+	// Encode answers the request the message was decoded from, where the server can.
+	Encode Option[Encoder]
 }
 
 // Response is what a server received for a forwarded request.
@@ -101,6 +109,8 @@ type Content struct {
 	Ignored Option[string]
 	// Rule is the rule that selected the response; its normaliser sees an HTTP Status.
 	Rule Option[javascript.Rule]
+	// Release frees memory reserved for Message while the engine keeps it. The engine calls it once.
+	Release Option[func()]
 }
 
 // Decision tells a server what to do with a request.
