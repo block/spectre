@@ -194,11 +194,6 @@ func (q *egressQueue) match(ctx context.Context, protocol model.Protocol, route 
 	if err != nil {
 		return nil, model.QuarantineUnable, errors.Wrap(err, "identify candidate request")
 	}
-	return q.replay(ctx, hash, waiter)
-}
-
-// replay returns the response of the reference that waiter claims for hash, or why there is none.
-func (q *egressQueue) replay(ctx context.Context, hash comparison.Hash, waiter *egressWaiter) (Raw, model.QuarantineKind, error) {
 	pending, err := q.claim(ctx, hash, waiter)
 	if err != nil {
 		return nil, model.QuarantineUnmatched, err
@@ -219,72 +214,65 @@ func blamesCandidate(ctx context.Context, kind model.QuarantineKind) bool {
 	return kind == model.QuarantineUnmatched && !errors.Is(context.Cause(ctx), ErrCandidateStopped)
 }
 
-// answered is the outcome of one way to answer a candidate request to a derived endpoint.
-type answered struct {
-	decision Decision
-	kind     model.QuarantineKind
-	err      error
-	// blamed reports whether the failure quarantines the candidate when it is the one reported.
-	blamed bool
-}
-
-// answer answers a candidate request to a derived endpoint from a reference request to it or
-// from a source reference, whichever responds first. It quarantines only when neither can.
+// answer answers a candidate request to a derived endpoint with an equivalent reference
+// request to the endpoint, or else with a response derived from a source reference.
 func (q *egressQueue) answer(ctx context.Context, protocol model.Protocol, route model.Route, derivation javascript.Derivation,
 	request func(ctx context.Context) (Message, error),
 ) (Decision, error) {
-	waiter := newEgressWaiter(q.arrive())
-	hash, value, err := q.identify(ctx, protocol, route, request)
+	decision, kind, err := q.respond(ctx, protocol, route, derivation, request)
 	if err != nil {
-		if blamesCandidate(ctx, model.QuarantineUnable) {
-			q.quarantine.Quarantine(ctx, egressReason(model.QuarantineUnable, protocol, route, err))
+		if blamesCandidate(ctx, kind) {
+			q.quarantine.Quarantine(ctx, egressReason(kind, protocol, route, err))
 		}
 		return nil, err
 	}
-	race, cancel := context.WithCancel(ctx)
-	defer cancel()
-	// Each way sends exactly one outcome, so neither blocks once answer returns.
-	outcomes := make(chan answered, 2)
-	go func() {
-		raw, kind, err := q.replay(race, hash, waiter)
-		outcomes <- answered{decision: DecisionIntercept{Raw: raw}, kind: kind, err: err, blamed: err != nil && blamesCandidate(ctx, kind)}
-	}()
-	go func() {
-		answer, kind, err := q.derive(race, protocol, derivation, value)
-		outcomes <- answered{decision: DecisionAnswer{Message: answer}, kind: kind, err: err, blamed: err != nil && blamesCandidate(ctx, kind)}
-	}()
-	first := <-outcomes
-	if first.err == nil {
-		go func() {
-			// A replay that lost the race is never sent, so it is released here.
-			if loser := <-outcomes; loser.err == nil {
-				if intercept, replayed := loser.decision.(DecisionIntercept); replayed {
-					intercept.Raw.Release()
-				}
-			}
-		}()
-		return q.answered(ctx, protocol, route, derivation.Source(), first.decision), nil
+	if _, intercepted := decision.(DecisionIntercept); intercepted {
+		logger.FromContext(ctx).InfoContext(ctx, "Candidate request matched a reference request",
+			"event", logger.EventCorrelation, "protocol", protocol, "route", route)
+		return decision, nil
 	}
-	second := <-outcomes
-	if second.err == nil {
-		return q.answered(ctx, protocol, route, derivation.Source(), second.decision), nil
+	logger.FromContext(ctx).InfoContext(ctx, "Candidate request was answered from a reference response",
+		"event", logger.EventCorrelation, "protocol", protocol, "route", route, "source", derivation.Source())
+	return decision, nil
+}
+
+// respond returns the decision for a candidate request to a derived endpoint, or why there is none.
+func (q *egressQueue) respond(ctx context.Context, protocol model.Protocol, route model.Route, derivation javascript.Derivation,
+	request func(ctx context.Context) (Message, error),
+) (Decision, model.QuarantineKind, error) {
+	waiter := newEgressWaiter(q.arrive())
+	hash, value, err := q.identify(ctx, protocol, route, request)
+	if err != nil {
+		return nil, model.QuarantineUnable, err
 	}
-	// An unable outcome explains more than an unmatched one.
-	failure := first
-	if failure.kind == model.QuarantineUnmatched && second.kind != model.QuarantineUnmatched {
-		failure = second
+	sourceRequest, err := q.scripts.DeriveRequest(ctx, derivation, value)
+	if err != nil {
+		return nil, model.QuarantineUnable, errors.Wrap(err, "map candidate request to a source request")
 	}
-	if failure.kind == model.QuarantineUnmatched {
-		replayed, derived := first, second
-		if _, intercepted := derived.decision.(DecisionIntercept); intercepted {
-			replayed, derived = second, first
+	sourceHash, err := q.scripts.Hash(ctx, string(protocol)+" "+derivation.Source(), Some(derivation.SourceRequest()), "candidate", sourceRequest)
+	if err != nil {
+		return nil, model.QuarantineUnable, errors.Wrap(err, "identify source request")
+	}
+	pending, direct, err := q.pick(ctx, hash, sourceHash, waiter)
+	if err != nil {
+		return nil, model.QuarantineUnmatched, err
+	}
+	if direct {
+		raw, err := pending.wait(ctx)
+		if err != nil {
+			return nil, model.QuarantineUnable, err
 		}
-		failure.err = errors.Errorf("%s, and %s", replayed.err, derived.err)
+		return DecisionIntercept{Raw: raw}, "", nil
 	}
-	if failure.blamed {
-		q.quarantine.Quarantine(ctx, egressReason(failure.kind, protocol, route, failure.err))
+	reference, err := pending.decoded(ctx)
+	if err != nil {
+		return nil, model.QuarantineUnable, err
 	}
-	return nil, failure.err
+	answer, err := q.scripts.DeriveResponse(ctx, derivation, value, reference)
+	if err != nil {
+		return nil, model.QuarantineUnable, errors.Wrap(err, "derive response")
+	}
+	return DecisionAnswer{Message: Message{Type: Some(derivation.Response()), Value: answer}}, "", nil
 }
 
 // identify hashes a candidate request to a derived endpoint, and returns a copy of its value to
@@ -311,45 +299,6 @@ func (q *egressQueue) identify(ctx context.Context, protocol model.Protocol, rou
 		return comparison.Hash{}, nil, errors.Wrap(err, "identify candidate request")
 	}
 	return hash, value, nil
-}
-
-// answered logs how a candidate request to a derived endpoint was answered.
-func (q *egressQueue) answered(ctx context.Context, protocol model.Protocol, route model.Route, source string, decision Decision) Decision {
-	if _, intercepted := decision.(DecisionIntercept); intercepted {
-		logger.FromContext(ctx).InfoContext(ctx, "Candidate request matched a reference request",
-			"event", logger.EventCorrelation, "protocol", protocol, "route", route)
-		return decision
-	}
-	logger.FromContext(ctx).InfoContext(ctx, "Candidate request was answered from a reference response",
-		"event", logger.EventCorrelation, "protocol", protocol, "route", route, "source", source)
-	return decision
-}
-
-// derive returns the answer to a candidate request, or why there is none.
-func (q *egressQueue) derive(ctx context.Context, protocol model.Protocol, derivation javascript.Derivation, request any,
-) (Message, model.QuarantineKind, error) {
-	sourceRequest, err := q.scripts.DeriveRequest(ctx, derivation, request)
-	if err != nil {
-		return Message{}, model.QuarantineUnable, errors.Wrap(err, "map candidate request to a source request")
-	}
-	identity := string(protocol) + " " + derivation.Source()
-	hash, err := q.scripts.Hash(ctx, identity, Some(derivation.SourceRequest()), "candidate", sourceRequest)
-	if err != nil {
-		return Message{}, model.QuarantineUnable, errors.Wrap(err, "identify source request")
-	}
-	pending, err := q.observe(ctx, hash)
-	if err != nil {
-		return Message{}, model.QuarantineUnmatched, err
-	}
-	reference, err := pending.decoded(ctx)
-	if err != nil {
-		return Message{}, model.QuarantineUnable, err
-	}
-	answer, err := q.scripts.DeriveResponse(ctx, derivation, request, reference)
-	if err != nil {
-		return Message{}, model.QuarantineUnable, errors.Wrap(err, "derive response")
-	}
-	return Message{Type: Some(derivation.Response()), Value: answer}, "", nil
 }
 
 func egressReason(kind model.QuarantineKind, protocol model.Protocol, route model.Route, err error) model.QuarantineReason {
@@ -422,51 +371,73 @@ func (q *egressQueue) forget(hash comparison.Hash, pending *egressExchange) {
 	q.sources[hash] = sources
 }
 
-// observe returns the earliest source reference for hash, waiting up to the
-// window for one to arrive. It never claims the reference.
-func (q *egressQueue) observe(ctx context.Context, hash comparison.Hash) (*egressExchange, error) {
+// pick waits up to the window for the earliest unused reference with hash, which it claims and
+// reports as direct, or else the earliest source reference with sourceHash, which it never claims.
+func (q *egressQueue) pick(ctx context.Context, hash, sourceHash comparison.Hash, waiter *egressWaiter) (*egressExchange, bool, error) {
 	q.mu.Lock()
-	if sources := q.sources[hash]; len(sources) > 0 {
+	if unused := q.unused[hash]; len(unused) > 0 {
+		q.setUnused(hash, unused[1:])
+		unused[0].stopExpiry()
+		q.mu.Unlock()
+		return unused[0], true, nil
+	}
+	if sources := q.sources[sourceHash]; len(sources) > 0 {
 		// forget edits the slice in place, so read it before unlocking.
 		source := sources[0]
 		q.mu.Unlock()
-		return source, nil
+		return source, false, nil
 	}
+	q.waiting[hash] = insertByArrival(q.waiting[hash], waiter)
 	// observer has one slot and receives at most one reference, so add never blocks.
 	observer := make(chan *egressExchange, 1)
-	q.observers[hash] = append(q.observers[hash], observer)
+	q.observers[sourceHash] = append(q.observers[sourceHash], observer)
 	q.mu.Unlock()
 
 	started := time.Now()
 	timer := time.NewTimer(q.window)
 	defer timer.Stop()
+	received, direct := None[*egressExchange](), false
 	var err error
 	select {
+	case pending := <-waiter.delivered():
+		received, direct = Some(pending), true
 	case pending := <-observer:
-		return pending, nil
+		received = Some(pending)
 	case <-timer.C:
-		err = errors.Errorf("no matching source reference request within %s", q.window)
+		err = errors.Errorf("no matching reference or source reference request within %s", q.window)
 	case <-ctx.Done():
-		err = errors.Wrapf(ctx.Err(), "no matching source reference request before the candidate gave up after %s",
+		err = errors.Wrapf(ctx.Err(), "no matching reference or source reference request before the candidate gave up after %s",
 			time.Since(started).Round(time.Millisecond))
 	}
 	q.mu.Lock()
-	observers := q.observers[hash]
-	index := slices.Index(observers, observer)
+	waiters := q.waiting[hash]
+	index := slices.Index(waiters, waiter)
 	if index >= 0 {
-		observers = slices.Delete(observers, index, index+1)
+		q.setWaiting(hash, slices.Delete(waiters, index, index+1))
+	}
+	observers := q.observers[sourceHash]
+	at := slices.Index(observers, observer)
+	if at >= 0 {
+		observers = slices.Delete(observers, at, at+1)
 		if len(observers) == 0 {
-			delete(q.observers, hash)
+			delete(q.observers, sourceHash)
 		} else {
-			q.observers[hash] = observers
+			q.observers[sourceHash] = observers
 		}
 	}
 	q.mu.Unlock()
-	if index < 0 {
-		// add removed this observer concurrently, so a reference is already on its way.
-		return <-observer, nil
+	if !direct && index < 0 {
+		// add claimed a reference for this waiter concurrently, so it answers instead.
+		return <-waiter.delivered(), true, nil
 	}
-	return nil, err
+	if _, ok := received.Get(); !ok && at < 0 {
+		// add offered a source reference to this observer concurrently.
+		received = Some(<-observer)
+	}
+	if pending, ok := received.Get(); ok {
+		return pending, direct, nil
+	}
+	return nil, false, err
 }
 
 // claim takes the earliest unused reference for hash, waiting up to the window
