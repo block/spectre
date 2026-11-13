@@ -315,6 +315,7 @@ func (q *egressQueue) add(hash comparison.Hash, pending *egressExchange) {
 
 // forget stops offering a source reference to observers.
 func (q *egressQueue) forget(hash comparison.Hash, pending *egressExchange) {
+	pending.forget()
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	sources := q.sources[hash]
@@ -333,8 +334,10 @@ func (q *egressQueue) forget(hash comparison.Hash, pending *egressExchange) {
 func (q *egressQueue) observe(ctx context.Context, hash comparison.Hash) (*egressExchange, error) {
 	q.mu.Lock()
 	if sources := q.sources[hash]; len(sources) > 0 {
+		// forget edits the slice in place, so read it before unlocking.
+		source := sources[0]
 		q.mu.Unlock()
-		return sources[0], nil
+		return source, nil
 	}
 	// observer has one slot and receives at most one reference, so add never blocks.
 	observer := make(chan *egressExchange, 1)
@@ -493,6 +496,8 @@ type egressExchange struct {
 
 	mu        sync.Mutex
 	abandoned bool
+	// forgotten reports that observers no longer find the source reference.
+	forgotten bool
 	expiry    Option[*time.Timer]
 }
 
@@ -532,14 +537,26 @@ func (e *egressExchange) finish(raw Option[Raw], failure Option[error], content 
 	if e.abandoned {
 		e.release()
 	}
+	if e.abandoned || e.forgotten {
+		e.releaseHold()
+	}
 }
 
-// abandon marks the exchange as one no candidate will replay.
+// abandon marks the exchange as one no candidate will replay or derive from.
 func (e *egressExchange) abandon() {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.abandoned = true
 	e.release()
+	e.releaseHold()
+}
+
+// forget marks the source reference as one observers no longer find.
+func (e *egressExchange) forget() {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.forgotten = true
+	e.releaseHold()
 }
 
 // release frees the recorded response, if there is one yet. Callers hold e.mu.
@@ -550,6 +567,20 @@ func (e *egressExchange) release() {
 	}
 	if raw, ok := outcome.raw.Get(); ok {
 		raw.Release()
+	}
+}
+
+// releaseHold frees the memory held for the decoded source response, if there is
+// one yet. Derivations already reading it keep it. Callers hold e.mu.
+func (e *egressExchange) releaseHold() {
+	outcome, finished := e.outcome.Get()
+	if !finished {
+		return
+	}
+	if content, ok := outcome.content.Get(); ok {
+		if hold, held := content.Hold.Get(); held {
+			hold.Release()
+		}
 	}
 }
 

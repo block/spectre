@@ -75,6 +75,26 @@ func TestQuarantinesUnanswerableDerivedRequest(t *testing.T) {
 	assert.Contains(t, harness.QuarantineReason(t), "decode source reference response: response has status 503")
 }
 
+func TestQuarantinesDerivedRequestWhenDecodedSourceExceedsBudget(t *testing.T) {
+	body, err := proto.Marshal(&samplepb.ListUsersResponse{Users: []*samplepb.User{{Id: "bob", Name: "Bob"}}, TotalCount: 1})
+	assert.NoError(t, err)
+	upstream := newUpstream(t, func(writer http.ResponseWriter, _ *http.Request) {
+		writer.Header().Set("Content-Type", "application/x-protobuf")
+		_, _ = writer.Write(body)
+	})
+	harness := newDerivingHarness(t, upstream)
+	// The recording fits, but a decoded copy of it does not.
+	harness.Config.RecordingBufferBytes = len(body)
+	harness.Start(t)
+
+	reference := sendProto(t, harness.Reference.Addr().String(), listUsers, &samplepb.ListUsersRequest{Ids: []string{"bob"}})
+	candidate := sendProto(t, harness.Candidate.Addr().String(), getUser, &samplepb.GetUserRequest{Id: "bob"})
+
+	assert.Equal(t, http.StatusOK, reference.Status)
+	assert.Equal(t, http.StatusBadGateway, candidate.Status)
+	assert.Contains(t, harness.QuarantineReason(t), "decoded response exceeds the")
+}
+
 // newDerivingHarness answers GetUser from ListUsers references.
 func newDerivingHarness(t *testing.T, upstream string) *harness {
 	t.Helper()

@@ -93,6 +93,33 @@ func (r *recording) dropBody() {
 	r.body = nil
 }
 
+// hold reserves as much memory again as the recorded body, for a decoded copy
+// of it that outlives the recording.
+func (r *recording) hold() (*reservation, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	size := len(r.body)
+	if !r.budget.Reserve(size) {
+		return nil, errors.Errorf("decoded response exceeds the %d byte recording budget", r.budget.Limit())
+	}
+	return newReservation(r.budget, size), nil
+}
+
+// reservation is memory reserved from a budget, which Release returns once.
+type reservation struct {
+	budget *proxy.Budget
+	size   int
+	once   sync.Once
+}
+
+func newReservation(budget *proxy.Budget, size int) *reservation {
+	return &reservation{budget: budget, size: size}
+}
+
+func (r *reservation) Release() {
+	r.once.Do(func() { r.budget.Release(r.size) })
+}
+
 // complete reports whether the finished recording holds the whole response body.
 func (r *recording) complete() error {
 	r.mu.Lock()

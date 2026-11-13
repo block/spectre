@@ -253,7 +253,14 @@ func (e *Egress) sourceDecode(request *http.Request, route model.Route) decodeFu
 		if err != nil {
 			return protocol.Content{Failure: Some(err)}
 		}
-		return e.decoder.SourceResponse(method, header, name, response)
+		// The decoded response outlives the recording, so it holds memory of its own.
+		hold, err := recorded.hold()
+		if err != nil {
+			return protocol.Content{Failure: Some(err)}
+		}
+		content := e.decoder.SourceResponse(method, header, name, response)
+		content.Hold = Some[protocol.Raw](hold)
+		return content
 	}
 }
 

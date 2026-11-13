@@ -101,6 +101,9 @@ type Content struct {
 	Ignored Option[string]
 	// Rule is the rule that selected the response; its normaliser sees an HTTP Status.
 	Rule Option[javascript.Rule]
+	// Hold is the memory reserved for Message while the engine keeps it after Raw
+	// is released. The engine releases it once it stops offering Message.
+	Hold Option[Raw]
 }
 
 // Decision tells a server what to do with a request.

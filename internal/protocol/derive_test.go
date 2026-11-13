@@ -38,7 +38,7 @@ func TestEgressAnswersDerivedRequestFromSourceReference(t *testing.T) {
 	h := newScriptHarness(t, deriveScript, time.Second)
 	raw := newRaw("list")
 	exchange := h.forwardHTTP(t, listRoute, query(queryType, "london", "reference"))
-	h.engine.EgressReference(model.ProtocolHTTP).ProcessResponse(h.ctx, exchange, listed(raw, "listed"))
+	h.engine.EgressReference(model.ProtocolHTTP).ProcessResponse(h.ctx, exchange, listed(raw))
 
 	derived, err := h.engine.EgressCandidate(model.ProtocolHTTP).ProcessRequest(h.ctx, None[protocol.RequestID](), getRoute, notIgnored, query(queryType, "london", "candidate"))
 	assert.NoError(t, err)
@@ -82,7 +82,7 @@ func TestEgressDerivedRequestWaitsForSourceReference(t *testing.T) {
 				exchange = h.forwardHTTP(t, listRoute, query(queryType, "london", ""))
 			}
 
-			h.engine.EgressReference(model.ProtocolHTTP).ProcessResponse(h.ctx, exchange, listed(newRaw("list"), "listed"))
+			h.engine.EgressReference(model.ProtocolHTTP).ProcessResponse(h.ctx, exchange, listed(newRaw("list")))
 
 			assert.Equal(t, candidateDecision{decision: protocol.DecisionAnswer{
 				Message: protocol.Message{Type: derivedType, Value: map[string]any{"value": "listed/london"}},
@@ -109,6 +109,42 @@ func TestEgressDerivedRequestIgnoresReferenceRequestsToItsOwnEndpoint(t *testing
 	}}, h.quarantine.Recorded())
 	// The unclaimed reference to the derived endpoint is released as usual.
 	awaitReleases(t, own, 1)
+}
+
+func TestEgressReleasesDecodedSourceResponseWhenForgotten(t *testing.T) {
+	for name, respondLate := range map[string]bool{
+		"Responded":      false,
+		"RespondedLater": true,
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newScriptHarness(t, deriveScript, 50*time.Millisecond)
+			raw, hold := newRaw("list"), newRaw("hold")
+			exchange := h.forwardHTTP(t, listRoute, query(queryType, "london", ""))
+			if respondLate {
+				time.Sleep(100 * time.Millisecond)
+			}
+			response := listed(raw)
+			decode := response.Decode
+			response.Decode = func(ctx context.Context) protocol.Content {
+				content := decode(ctx)
+				content.Hold = Some[protocol.Raw](hold)
+				return content
+			}
+			h.engine.EgressReference(model.ProtocolHTTP).ProcessResponse(h.ctx, exchange, response)
+			if !respondLate {
+				_, err := h.engine.EgressCandidate(model.ProtocolHTTP).ProcessRequest(h.ctx, None[protocol.RequestID](), getRoute, notIgnored, query(queryType, "london", ""))
+				assert.NoError(t, err)
+				assert.Equal(t, 0, hold.Releases())
+			}
+
+			// Raw.Release may run more than once, so only its first call matters.
+			deadline := time.Now().Add(time.Second)
+			for hold.Releases() == 0 && time.Now().Before(deadline) {
+				time.Sleep(time.Millisecond)
+			}
+			assert.NotEqual(t, 0, hold.Releases())
+		})
+	}
 }
 
 func TestEgressQuarantinesUnderivableRequests(t *testing.T) {
@@ -174,7 +210,7 @@ func TestEgressQuarantinesUnderivableRequests(t *testing.T) {
 				case responds:
 					h.engine.EgressReference(model.ProtocolHTTP).ProcessResponse(h.ctx, exchange, response(raw))
 				default:
-					h.engine.EgressReference(model.ProtocolHTTP).ProcessResponse(h.ctx, exchange, listed(newRaw("list"), "listed"))
+					h.engine.EgressReference(model.ProtocolHTTP).ProcessResponse(h.ctx, exchange, listed(newRaw("list")))
 				}
 			}
 			if test.expires {
@@ -251,9 +287,9 @@ func (h *harness) forwardHTTP(t *testing.T, route model.Route, request func(ctx 
 	return decision.(protocol.DecisionForward).Exchange
 }
 
-// listed is a source reference response that decodes to value.
-func listed(raw protocol.Raw, value string) protocol.Response {
+// listed is a source reference response that decodes to "listed".
+func listed(raw protocol.Raw) protocol.Response {
 	return protocol.Response{Raw: raw, Decode: func(context.Context) protocol.Content {
-		return protocol.Content{Status: Some("200"), Message: Some(protocol.Message{Type: derivedType, Value: map[string]any{"value": value}})}
+		return protocol.Content{Status: Some("200"), Message: Some(protocol.Message{Type: derivedType, Value: map[string]any{"value": "listed"}})}
 	}}
 }
