@@ -92,23 +92,32 @@ func TestEgressDerivedRequestWaitsForSourceReference(t *testing.T) {
 	}
 }
 
-func TestEgressDerivedRequestIgnoresReferenceRequestsToItsOwnEndpoint(t *testing.T) {
-	h := newScriptHarness(t, deriveScript, 50*time.Millisecond)
+func TestEgressDerivedRequestPairsWithReferenceRequestsToItsOwnEndpoint(t *testing.T) {
+	h := newScriptHarness(t, deriveScript, time.Second)
 	own := newRaw("get")
 	exchange := h.forwardHTTP(t, getRoute, query(queryType, "london", ""))
 	h.engine.EgressReference(model.ProtocolHTTP).ProcessResponse(h.ctx, exchange, protocol.Response{Raw: own})
 
 	decision, err := h.engine.EgressCandidate(model.ProtocolHTTP).ProcessRequest(h.ctx, None[protocol.RequestID](), getRoute, notIgnored, query(queryType, "london", ""))
 
-	assert.EqualError(t, err, "no matching source reference request within 50ms")
-	assert.Equal(t, nil, decision)
-	assert.Equal(t, []model.QuarantineReason{{
-		Kind:    model.QuarantineUnmatched,
-		Traffic: Some(model.Traffic{Direction: model.Egress, Protocol: model.ProtocolHTTP, Route: getRoute}),
-		Detail:  "no matching source reference request within 50ms",
-	}}, h.quarantine.Recorded())
-	// The unclaimed reference to the derived endpoint is released as usual.
-	awaitRelease(t, own)
+	assert.NoError(t, err)
+	assert.Equal(t, protocol.Decision(protocol.DecisionIntercept{Raw: own}), decision)
+	assert.Equal(t, nil, h.quarantine.Reasons())
+	assert.Equal(t, 1, len(h.records(t, "Candidate request matched a reference request")))
+}
+
+func TestEgressDerivedRequestTakesWhicheverReferenceRespondsFirst(t *testing.T) {
+	h := newScriptHarness(t, deriveScript, time.Second)
+	// The reference requested the endpoint itself but has not answered yet.
+	h.forwardHTTP(t, getRoute, query(queryType, "london", ""))
+	source := h.forwardHTTP(t, listRoute, query(queryType, "london", ""))
+	h.engine.EgressReference(model.ProtocolHTTP).ProcessResponse(h.ctx, source, listed(newRaw("list")))
+
+	decision, err := h.engine.EgressCandidate(model.ProtocolHTTP).ProcessRequest(h.ctx, None[protocol.RequestID](), getRoute, notIgnored, query(queryType, "london", ""))
+
+	assert.NoError(t, err)
+	assert.Equal(t, protocol.Decision(protocol.DecisionAnswer{Message: protocol.Message{Type: derivedType, Value: map[string]any{"value": "listed/london"}}}), decision)
+	assert.Equal(t, nil, h.quarantine.Reasons())
 }
 
 func TestEgressReleasesDecodedSourceResponseWhenForgotten(t *testing.T) {
@@ -277,7 +286,8 @@ func TestEgressQuarantinesDerivedRequestThatGivesUp(t *testing.T) {
 	decision, err := h.engine.EgressCandidate(model.ProtocolHTTP).ProcessRequest(ctx, None[protocol.RequestID](), getRoute, notIgnored, query(queryType, "london", ""))
 
 	assert.Error(t, err)
-	assert.True(t, regexp.MustCompile(`^no matching source reference request before the candidate gave up after \d+m?s: context deadline exceeded$`).MatchString(err.Error()), "error: %s", err)
+	assert.True(t, regexp.MustCompile(`^no matching reference request before the candidate gave up after \d+m?s: context deadline exceeded, `+
+		`and no matching source reference request before the candidate gave up after \d+m?s: context deadline exceeded$`).MatchString(err.Error()), "error: %s", err)
 	assert.Equal(t, nil, decision)
 	assert.Equal(t, []model.QuarantineReason{{
 		Kind:    model.QuarantineUnmatched,

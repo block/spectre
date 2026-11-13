@@ -1,8 +1,10 @@
 package protocol
 
 import (
+	"bytes"
 	"cmp"
 	"context"
+	"encoding/json"
 	"slices"
 	"sync"
 	"time"
@@ -192,6 +194,11 @@ func (q *egressQueue) match(ctx context.Context, protocol model.Protocol, route 
 	if err != nil {
 		return nil, model.QuarantineUnable, errors.Wrap(err, "identify candidate request")
 	}
+	return q.replay(ctx, hash, waiter)
+}
+
+// replay returns the response of the reference that waiter claims for hash, or why there is none.
+func (q *egressQueue) replay(ctx context.Context, hash comparison.Hash, waiter *egressWaiter) (Raw, model.QuarantineKind, error) {
 	pending, err := q.claim(ctx, hash, waiter)
 	if err != nil {
 		return nil, model.QuarantineUnmatched, err
@@ -212,31 +219,116 @@ func blamesCandidate(ctx context.Context, kind model.QuarantineKind) bool {
 	return kind == model.QuarantineUnmatched && !errors.Is(context.Cause(ctx), ErrCandidateStopped)
 }
 
-// answer answers a candidate request with a response derived from a source reference response.
+// answered is the outcome of one way to answer a candidate request to a derived endpoint.
+type answered struct {
+	decision Decision
+	kind     model.QuarantineKind
+	err      error
+	// blamed reports whether the failure quarantines the candidate when it is the one reported.
+	blamed bool
+}
+
+// answer answers a candidate request to a derived endpoint from a reference request to it or
+// from a source reference, whichever responds first. It quarantines only when neither can.
 func (q *egressQueue) answer(ctx context.Context, protocol model.Protocol, route model.Route, derivation javascript.Derivation,
 	request func(ctx context.Context) (Message, error),
 ) (Decision, error) {
-	message, kind, err := q.derive(ctx, protocol, derivation, request)
+	waiter := newEgressWaiter(q.arrive())
+	hash, value, err := q.identify(ctx, protocol, route, request)
 	if err != nil {
-		if blamesCandidate(ctx, kind) {
-			q.quarantine.Quarantine(ctx, egressReason(kind, protocol, route, err))
+		if blamesCandidate(ctx, model.QuarantineUnable) {
+			q.quarantine.Quarantine(ctx, egressReason(model.QuarantineUnable, protocol, route, err))
 		}
 		return nil, err
 	}
+	race, cancel := context.WithCancel(ctx)
+	defer cancel()
+	// Each way sends exactly one outcome, so neither blocks once answer returns.
+	outcomes := make(chan answered, 2)
+	go func() {
+		raw, kind, err := q.replay(race, hash, waiter)
+		outcomes <- answered{decision: DecisionIntercept{Raw: raw}, kind: kind, err: err, blamed: err != nil && blamesCandidate(ctx, kind)}
+	}()
+	go func() {
+		answer, kind, err := q.derive(race, protocol, derivation, value)
+		outcomes <- answered{decision: DecisionAnswer{Message: answer}, kind: kind, err: err, blamed: err != nil && blamesCandidate(ctx, kind)}
+	}()
+	first := <-outcomes
+	if first.err == nil {
+		go func() {
+			// A replay that lost the race is never sent, so it is released here.
+			if loser := <-outcomes; loser.err == nil {
+				if intercept, replayed := loser.decision.(DecisionIntercept); replayed {
+					intercept.Raw.Release()
+				}
+			}
+		}()
+		return q.answered(ctx, protocol, route, derivation.Source(), first.decision), nil
+	}
+	second := <-outcomes
+	if second.err == nil {
+		return q.answered(ctx, protocol, route, derivation.Source(), second.decision), nil
+	}
+	// An unable outcome explains more than an unmatched one.
+	failure := first
+	if failure.kind == model.QuarantineUnmatched && second.kind != model.QuarantineUnmatched {
+		failure = second
+	}
+	if failure.kind == model.QuarantineUnmatched {
+		replayed, derived := first, second
+		if _, intercepted := derived.decision.(DecisionIntercept); intercepted {
+			replayed, derived = second, first
+		}
+		failure.err = errors.Errorf("%s, and %s", replayed.err, derived.err)
+	}
+	if failure.blamed {
+		q.quarantine.Quarantine(ctx, egressReason(failure.kind, protocol, route, failure.err))
+	}
+	return nil, failure.err
+}
+
+// identify hashes a candidate request to a derived endpoint, and returns a copy of its value to
+// derive from. Hashing normalises the value in place, and derive functions see only its JSON.
+func (q *egressQueue) identify(ctx context.Context, protocol model.Protocol, route model.Route,
+	request func(ctx context.Context) (Message, error),
+) (comparison.Hash, any, error) {
+	message, err := request(ctx)
+	if err != nil {
+		return comparison.Hash{}, nil, errors.Wrap(err, "identify candidate request")
+	}
+	encoded, err := json.Marshal(message.Value)
+	if err != nil {
+		return comparison.Hash{}, nil, errors.Wrap(err, "copy candidate request")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(encoded))
+	decoder.UseNumber()
+	var value any
+	if err := decoder.Decode(&value); err != nil {
+		return comparison.Hash{}, nil, errors.Wrap(err, "copy candidate request")
+	}
+	hash, err := q.scripts.Hash(ctx, string(protocol)+" "+string(route), message.Type, "candidate", message.Value)
+	if err != nil {
+		return comparison.Hash{}, nil, errors.Wrap(err, "identify candidate request")
+	}
+	return hash, value, nil
+}
+
+// answered logs how a candidate request to a derived endpoint was answered.
+func (q *egressQueue) answered(ctx context.Context, protocol model.Protocol, route model.Route, source string, decision Decision) Decision {
+	if _, intercepted := decision.(DecisionIntercept); intercepted {
+		logger.FromContext(ctx).InfoContext(ctx, "Candidate request matched a reference request",
+			"event", logger.EventCorrelation, "protocol", protocol, "route", route)
+		return decision
+	}
 	logger.FromContext(ctx).InfoContext(ctx, "Candidate request was answered from a reference response",
-		"event", logger.EventCorrelation, "protocol", protocol, "route", route, "source", derivation.Source())
-	return DecisionAnswer{Message: message}, nil
+		"event", logger.EventCorrelation, "protocol", protocol, "route", route, "source", source)
+	return decision
 }
 
 // derive returns the answer to a candidate request, or why there is none.
-func (q *egressQueue) derive(ctx context.Context, protocol model.Protocol, derivation javascript.Derivation,
-	request func(ctx context.Context) (Message, error),
+func (q *egressQueue) derive(ctx context.Context, protocol model.Protocol, derivation javascript.Derivation, request any,
 ) (Message, model.QuarantineKind, error) {
-	message, err := request(ctx)
-	if err != nil {
-		return Message{}, model.QuarantineUnable, errors.Wrap(err, "identify candidate request")
-	}
-	sourceRequest, err := q.scripts.DeriveRequest(ctx, derivation, message.Value)
+	sourceRequest, err := q.scripts.DeriveRequest(ctx, derivation, request)
 	if err != nil {
 		return Message{}, model.QuarantineUnable, errors.Wrap(err, "map candidate request to a source request")
 	}
@@ -253,7 +345,7 @@ func (q *egressQueue) derive(ctx context.Context, protocol model.Protocol, deriv
 	if err != nil {
 		return Message{}, model.QuarantineUnable, err
 	}
-	answer, err := q.scripts.DeriveResponse(ctx, derivation, message.Value, reference)
+	answer, err := q.scripts.DeriveResponse(ctx, derivation, request, reference)
 	if err != nil {
 		return Message{}, model.QuarantineUnable, errors.Wrap(err, "derive response")
 	}

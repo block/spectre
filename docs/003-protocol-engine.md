@@ -96,21 +96,21 @@ The engine creates one acceptor per point, so servers never know whether they ca
 | Ingress reference | Assigns a RequestID; forwards. Never reads the payload. | Stored without blocking the reference. |
 | Ingress candidate | Requires the reference's RequestID, passed along by the server; forwards. | Paired by RequestID, normalised, and diffed. Ignored routes are not compared. |
 | Egress reference | Forwards immediately, then hashes route and normalised payload in the background. | Stored for candidates with the same hash. |
-| Egress candidate | Hashes, claims the earliest unused reference with the same hash, waits for its response, and intercepts with its `Raw`. A derived endpoint is answered from a source reference instead. | Never called. |
+| Egress candidate | Hashes, claims the earliest unused reference with the same hash, waits for its response, and intercepts with its `Raw`. A derived endpoint can also be answered from a source reference. | Never called. |
 
 Egress pairs in arrival order. Each request is numbered when it arrives, before hashing, and both unused references and waiting candidates are kept in that order. A reference that is still being hashed is not waited for, so a candidate can claim a later reference of the same hash that finished hashing first.
 
 ### Derived endpoints
 
-A script can declare that a candidate's requests to one egress endpoint are answered from the reference's responses to another, the source: `egress.http(pattern).derive<T, R>().from<S, U>(source, request, response)`. The source must be declared with `match<S>()`, and is never itself derived.
+A script can declare that a candidate's requests to one egress endpoint may also be answered from the reference's responses to another, the source: `egress.http(pattern).derive<T, R>().from<S, U>(source, request, response)`. The source must be declared with `match<S>()`, and is never itself derived.
 
 - The engine decodes the reference responses to a source as `U` when they finish, through the response's `Decode`. The server decodes only a successful response, and reports any other as a failure.
 - A candidate request to a derived endpoint is decoded as `T`, mapped to an `S` by `request`, and hashed as a request to the source. It waits up to `MatchWindow` for the earliest source reference with that hash, then for its response.
 - `response` builds an `R` from the candidate request and the decoded reference response. The engine answers with `DecisionAnswer`, and the server encodes the message as a successful response in the request's wire format.
 - Deriving never claims a source reference. It stays available to derivations for `MatchWindow` after it is hashed, and to a candidate request to the source as usual.
 - A decoded source response outlives its recording, so the server reserves memory for it from the recording budget as `Content.Hold`. The engine releases it once the source reference stops being offered. A decoded response the budget has no room for fails, which quarantines its derivations as unable.
-- Candidate requests to a derived endpoint never pair with reference requests to it, which expire unclaimed.
-- No source reference within the window, or before the candidate gives up, quarantines as unmatched. A failed or undecodable source response, a throwing function, or a result that is not its type quarantines as unable.
+- A candidate request to a derived endpoint also pairs with reference requests to the endpoint itself, as any other request does. Both run at once, and the first response wins: a replayed reference response, or a derived answer. The other is cancelled, and a reference it claimed is released.
+- It quarantines only when both fail. No reference to either endpoint within the window, or before the candidate gives up, quarantines as unmatched. A failed or undecodable source response, a throwing function, or a result that is not its type quarantines as unable, even if the other attempt is unmatched.
 
 ### Pairing windows
 
