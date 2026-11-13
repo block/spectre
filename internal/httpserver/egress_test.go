@@ -561,7 +561,7 @@ spectre.egress.http("POST weather.example/spectre.sample.v1.WeatherService/GetFo
 
 func writeSchemaAndDescriptors(t *testing.T) (schemaDir string, descriptorsDir string) {
 	t.Helper()
-	set := &descriptorpb.FileDescriptorSet{File: []*descriptorpb.FileDescriptorProto{{
+	return writeDescriptorSet(t, &descriptorpb.FileDescriptorSet{File: []*descriptorpb.FileDescriptorProto{{
 		Name: new("weather.proto"), Syntax: new("proto3"), Package: new("spectre.sample.v1"),
 		MessageType: []*descriptorpb.DescriptorProto{{
 			Name: new("GetForecastRequest"),
@@ -569,7 +569,12 @@ func writeSchemaAndDescriptors(t *testing.T) (schemaDir string, descriptorsDir s
 				Name: new("location"), Number: new(int32(1)), Type: descriptorpb.FieldDescriptorProto_TYPE_STRING.Enum(),
 			}},
 		}},
-	}}}
+	}}})
+}
+
+// writeDescriptorSet writes the schema declarations and the descriptors of set.
+func writeDescriptorSet(t *testing.T, set *descriptorpb.FileDescriptorSet) (schemaDir string, descriptorsDir string) {
+	t.Helper()
 	declarations, err := descriptors.Declarations(t.Context(), set)
 	assert.NoError(t, err)
 	schemaDir = t.TempDir()

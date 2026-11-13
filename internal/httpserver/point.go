@@ -66,6 +66,10 @@ func (p *point) respond(writer http.ResponseWriter, request *http.Request, decis
 		p.forward(writer, request, decision.Exchange, upstream, decode)
 	case protocol.DecisionIntercept:
 		p.replay(writer, request, decision.Raw)
+	case protocol.DecisionAnswer:
+		// Only egress candidates are answered, and they encode answers themselves.
+		logger.FromContext(request.Context()).ErrorContext(request.Context(), "Answer decision reached a point that cannot encode it")
+		writer.WriteHeader(http.StatusBadGateway)
 	}
 }
 

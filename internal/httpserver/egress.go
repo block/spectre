@@ -9,6 +9,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/alecthomas/errors"
@@ -226,7 +227,8 @@ func (e *Egress) serveReference(writer http.ResponseWriter, request *http.Reques
 		snapshot.Body, snapshot.Overflow = body, overflow
 		return errors.WithStack2(e.decoder.Request(snapshot))
 	}
-	decision, err := e.referencePoint.process(ctx, None[protocol.RequestID](), e.route(request), None[string](), payload)
+	route := e.route(request)
+	decision, err := e.referencePoint.process(ctx, None[protocol.RequestID](), route, None[string](), payload)
 	if err != nil {
 		logger.FromContext(ctx).ErrorContext(ctx, "Reference request was not recorded", "error", err)
 		if destination, ok := upstream.Get(); ok {
@@ -236,7 +238,30 @@ func (e *Egress) serveReference(writer http.ResponseWriter, request *http.Reques
 		writer.WriteHeader(http.StatusBadGateway)
 		return
 	}
-	e.referencePoint.respond(writer, outbound, decision, upstream, noDecode)
+	e.referencePoint.respond(writer, outbound, decision, upstream, e.sourceDecode(request, route))
+}
+
+// sourceDecode decodes the reference responses that derivations read, and no others.
+func (e *Egress) sourceDecode(request *http.Request, route model.Route) decodeFunc {
+	name, source := e.engine.EgressSourceResponse(model.ProtocolHTTP, route).Get()
+	if !source {
+		return noDecode
+	}
+	method, header := request.Method, request.Header.Clone()
+	return func(_ context.Context, recorded *recording) protocol.Content {
+		response, err := recorded.response()
+		if err != nil {
+			return protocol.Content{Failure: Some(err)}
+		}
+		// The decoded response outlives the recording, so it holds memory of its own.
+		hold, err := recorded.hold()
+		if err != nil {
+			return protocol.Content{Failure: Some(err)}
+		}
+		content := e.decoder.SourceResponse(method, header, name, response)
+		content.Hold = Some[protocol.Raw](hold)
+		return content
+	}
 }
 
 // destination returns the upstream of the first destination that matches a host,
@@ -296,12 +321,38 @@ func (e *Egress) serveCandidate(writer http.ResponseWriter, request *http.Reques
 		captured.Body, captured.Overflow = body[:min(len(body), limit)], len(body) > limit
 		return errors.WithStack2(e.decoder.Request(captured))
 	}
-	decision, err := e.candidatePoint.process(ctx, None[protocol.RequestID](), e.route(request), None[string](), payload)
+	route := e.route(request)
+	decision, err := e.candidatePoint.process(ctx, None[protocol.RequestID](), route, None[string](), payload)
 	if err != nil {
 		http.Error(writer, "no matching reference response", http.StatusBadGateway)
 		return
 	}
+	if answer, answered := decision.(protocol.DecisionAnswer); answered {
+		e.answer(writer, request, route, answer.Message)
+		return
+	}
 	e.candidatePoint.respond(writer, request, decision, None[*httputil.ReverseProxy](), noDecode)
+}
+
+// answer writes a derived response. One that cannot be encoded quarantines the
+// candidate, because the candidate would otherwise see a response the reference never could.
+func (e *Egress) answer(writer http.ResponseWriter, request *http.Request, route model.Route, answer protocol.Message) {
+	encoded, err := e.decoder.Answer(request.Header, answer)
+	if err != nil {
+		e.candidates.Quarantine(request.Context(), model.QuarantineReason{
+			Kind:    model.QuarantineUnable,
+			Traffic: Some(model.Traffic{Direction: model.Egress, Protocol: model.ProtocolHTTP, Route: route}),
+			Detail:  errors.Wrap(err, "encode derived response").Error(),
+		})
+		http.Error(writer, "derived response cannot be encoded", http.StatusBadGateway)
+		return
+	}
+	maps.Copy(writer.Header(), encoded.Header)
+	writer.Header().Set("Content-Length", strconv.Itoa(len(encoded.Body)))
+	writer.WriteHeader(http.StatusOK)
+	if _, err := writer.Write(encoded.Body); err != nil {
+		logger.FromContext(request.Context()).WarnContext(request.Context(), "Derived response was not written", "error", err)
+	}
 }
 
 // route names a request by the endpoint pattern it matches, so requests that

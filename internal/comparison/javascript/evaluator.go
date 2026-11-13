@@ -188,6 +188,45 @@ func (e *Evaluator) NormaliseResponse(rule Rule, response any) (Option[any], err
 	return e.normalise(callback, Some(response))
 }
 
+// DeriveRequest maps a request to a derived endpoint to the source request it pairs with.
+func (e *Evaluator) DeriveRequest(derivation Derivation, request any) (any, error) {
+	callbacks, ok := e.registry.deriver(derivation.Index())
+	if !ok {
+		return nil, errors.Errorf("JavaScript request function of %s is unavailable", derivation)
+	}
+	return e.derive(derivation, "request", callbacks.request, request)
+}
+
+// DeriveResponse builds the answer to a request to a derived endpoint from a
+// reference response to its source.
+func (e *Evaluator) DeriveResponse(derivation Derivation, request, reference any) (any, error) {
+	callbacks, ok := e.registry.deriver(derivation.Index())
+	if !ok {
+		return nil, errors.Errorf("JavaScript response function of %s is unavailable", derivation)
+	}
+	return e.derive(derivation, "response", callbacks.response, request, reference)
+}
+
+func (e *Evaluator) derive(derivation Derivation, function string, callback sobek.Callable, values ...any) (any, error) {
+	arguments := make([]sobek.Value, 0, len(values))
+	for _, value := range values {
+		argument, err := e.argument(Some(value))
+		if err != nil {
+			return nil, errors.Wrapf(err, "clone %s argument", function)
+		}
+		arguments = append(arguments, argument)
+	}
+	result, err := callback(sobek.Undefined(), arguments...)
+	if err != nil {
+		return nil, errors.Errorf("JavaScript %s function of %s threw an exception", function, derivation)
+	}
+	if sobek.IsUndefined(result) {
+		return nil, errors.Errorf("JavaScript %s function of %s returned undefined", function, derivation)
+	}
+	derived, err := e.result(result)
+	return derived, errors.Wrapf(err, "%s function of %s", function, derivation)
+}
+
 // normalise returns an undefined result as None so callers can remove the node.
 func (e *Evaluator) normalise(callback sobek.Callable, value Option[any]) (Option[any], error) {
 	argument, err := e.argument(value)

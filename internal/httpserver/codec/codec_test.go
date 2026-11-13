@@ -76,3 +76,37 @@ func TestWireFormatsShareDeclaredJSONShape(t *testing.T) {
 	_, err = wire.Decode("spectre.sample.v1.ListUsersResponse", codec.Protobuf, http.Header{}, unknown, 1<<20)
 	assert.EqualError(t, err, "protobuf payload contains unknown fields")
 }
+
+func TestEncodesDecodedValues(t *testing.T) {
+	set := &descriptorpb.FileDescriptorSet{File: []*descriptorpb.FileDescriptorProto{
+		protodesc.ToFileDescriptorProto(samplepb.File_service_proto),
+		protodesc.ToFileDescriptorProto(samplepb.File_users_proto),
+		protodesc.ToFileDescriptorProto(timestamppb.File_google_protobuf_timestamp_proto),
+	}}
+	sources, err := descriptors.Declarations(t.Context(), set)
+	assert.NoError(t, err)
+	loaded, err := schema.ParseSources(t.Context(), sources)
+	assert.NoError(t, err)
+	wire, err := codec.New(loaded, set)
+	assert.NoError(t, err)
+	message := &samplepb.ListUsersResponse{
+		Users:      []*samplepb.User{{Id: "one", Roles: []samplepb.Role{samplepb.Role_ROLE_ADMIN}, Revision: 9007199254740993}},
+		TotalCount: 9007199254740993,
+	}
+	body, err := proto.Marshal(message)
+	assert.NoError(t, err)
+	value, err := wire.Decode("spectre.sample.v1.ListUsersResponse", codec.Protobuf, http.Header{}, body, 1<<20)
+	assert.NoError(t, err)
+
+	encoded, err := wire.Encode("spectre.sample.v1.ListUsersResponse", value)
+	assert.NoError(t, err)
+	_, invalid := wire.Encode("spectre.sample.v1.ListUsersResponse", map[string]any{"users": "none"})
+	_, unknown := wire.Encode("spectre.sample.v1.Missing", map[string]any{})
+
+	decoded := &samplepb.ListUsersResponse{}
+	assert.NoError(t, proto.Unmarshal(encoded, decoded))
+	assert.True(t, proto.Equal(message, decoded))
+	assert.EqualError(t, invalid, "invalid ProtoJSON for spectre.sample.v1.ListUsersResponse")
+	assert.Error(t, unknown)
+	assert.Contains(t, unknown.Error(), "resolve wire type")
+}

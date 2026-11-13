@@ -27,6 +27,11 @@ Keep it out of `spectre/schema/`, which cannot redeclare the module.
 - Type each dependency call with `egress.http("<METHOD> <host>/<path>").match<Request>()`,
   so egress can pair the candidate's call with the reference's. Keep one script
   per dependency.
+- When the candidate reads, from one read-only endpoint, data that the reference
+  read from another, answer it with
+  `egress.http(pattern).derive<Request, Response>().from<SourceRequest, SourceResponse>(source, request, response)`.
+  `request` maps the candidate's request to the source request it pairs with, and
+  `response` builds the answer from the reference's source response.
 - Read hosts that differ between environments with `variable("NAME")` from
   `spectre`, such as `` `GET users.${variable("environment")}.example/v1/users` ``,
   and pass each value with `--script-variable=NAME=VALUE`.

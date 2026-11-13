@@ -1,8 +1,10 @@
 package protocol
 
 import (
+	"bytes"
 	"cmp"
 	"context"
+	"encoding/json"
 	"slices"
 	"sync"
 	"time"
@@ -11,10 +13,18 @@ import (
 	. "github.com/alecthomas/types/optional"
 
 	"github.com/block/spectre/internal/comparison"
+	"github.com/block/spectre/internal/comparison/javascript"
 	"github.com/block/spectre/internal/future"
 	"github.com/block/spectre/internal/logger"
 	"github.com/block/spectre/internal/model"
+	"github.com/block/spectre/internal/schema"
 )
+
+// endpoint identifies an egress endpoint by its declared pattern across protocols.
+type endpoint struct {
+	protocol model.Protocol
+	pattern  string
+}
 
 // egressQueue pairs candidate and reference requests of the same hash in arrival
 // order. Each reference is claimed once, so duplicates pair one-to-one.
@@ -22,6 +32,10 @@ type egressQueue struct {
 	scripts    *comparison.Scripts
 	window     time.Duration
 	quarantine Quarantiner
+	// derivations answers candidate requests to an endpoint by derivation alone,
+	// and sourceResponses types the reference responses derivations read.
+	derivations     map[endpoint]javascript.Derivation
+	sourceResponses map[endpoint]schema.TypeRef
 	// mu guards every map. A hash never has unused references and waiting
 	// candidates at the same time, because add hands over to a waiter first.
 	mu sync.Mutex
@@ -34,18 +48,41 @@ type egressQueue struct {
 	exchanges map[Exchange]*egressExchange
 	unused    map[comparison.Hash][]*egressExchange
 	waiting   map[comparison.Hash][]*egressWaiter
+	// sources keeps source references for the window whether or not a candidate
+	// claims them, and observers wait for one; neither claims a reference.
+	sources   map[comparison.Hash][]*egressExchange
+	observers map[comparison.Hash][]chan *egressExchange
 }
 
 func newEgressQueue(scripts *comparison.Scripts, window time.Duration, quarantine Quarantiner) *egressQueue {
-	return &egressQueue{
-		scripts:    scripts,
-		window:     window,
-		quarantine: quarantine,
-		exchanges:  map[Exchange]*egressExchange{},
-		unused:     map[comparison.Hash][]*egressExchange{},
-		waiting:    map[comparison.Hash][]*egressWaiter{},
-		idle:       closedChannel(),
+	derivations := map[endpoint]javascript.Derivation{}
+	sourceResponses := map[endpoint]schema.TypeRef{}
+	for _, derivation := range scripts.Derivations() {
+		derivations[endpoint{derivation.Protocol(), derivation.Pattern()}] = derivation
+		sourceResponses[endpoint{derivation.Protocol(), derivation.Source()}] = derivation.SourceResponse()
 	}
+	return &egressQueue{
+		scripts:         scripts,
+		window:          window,
+		quarantine:      quarantine,
+		derivations:     derivations,
+		sourceResponses: sourceResponses,
+		exchanges:       map[Exchange]*egressExchange{},
+		unused:          map[comparison.Hash][]*egressExchange{},
+		waiting:         map[comparison.Hash][]*egressWaiter{},
+		sources:         map[comparison.Hash][]*egressExchange{},
+		observers:       map[comparison.Hash][]chan *egressExchange{},
+		idle:            closedChannel(),
+	}
+}
+
+// sourceResponse returns the type a derivation reads an endpoint's reference responses as, if any does.
+func (q *egressQueue) sourceResponse(protocol model.Protocol, route model.Route) Option[schema.TypeRef] {
+	typeName, ok := q.sourceResponses[endpoint{protocol, string(route)}]
+	if !ok {
+		return None[schema.TypeRef]()
+	}
+	return Some(typeName)
 }
 
 func closedChannel() chan struct{} {
@@ -109,7 +146,8 @@ func (q *egressQueue) forward(ctx context.Context, protocol model.Protocol, rout
 	exchange := newExchange()
 	q.mu.Lock()
 	q.arrivals++
-	pending := newEgressExchange(q.arrivals)
+	_, source := q.sourceResponses[endpoint{protocol, string(route)}]
+	pending := newEgressExchange(q.arrivals, source)
 	q.exchanges[exchange] = pending
 	q.startHashing()
 	q.mu.Unlock()
@@ -119,6 +157,7 @@ func (q *egressQueue) forward(ctx context.Context, protocol model.Protocol, rout
 		hash, err := q.hash(background, protocol, route, "reference", request)
 		if err != nil {
 			pending.abandon()
+			pending.forget()
 			q.quarantine.Quarantine(background, egressReason(model.QuarantineUnable, protocol, route, errors.Wrap(err, "identify reference request")))
 			return
 		}
@@ -131,6 +170,9 @@ func (q *egressQueue) forward(ctx context.Context, protocol model.Protocol, rout
 func (q *egressQueue) intercept(ctx context.Context, protocol model.Protocol, route model.Route,
 	request func(ctx context.Context) (Message, error),
 ) (Decision, error) {
+	if derivation, derived := q.derivations[endpoint{protocol, string(route)}]; derived {
+		return q.answer(ctx, protocol, route, derivation, request)
+	}
 	raw, kind, err := q.match(ctx, protocol, route, request)
 	if err != nil {
 		if blamesCandidate(ctx, kind) {
@@ -172,6 +214,93 @@ func blamesCandidate(ctx context.Context, kind model.QuarantineKind) bool {
 	return kind == model.QuarantineUnmatched && !errors.Is(context.Cause(ctx), ErrCandidateStopped)
 }
 
+// answer answers a candidate request to a derived endpoint with an equivalent reference
+// request to the endpoint, or else with a response derived from a source reference.
+func (q *egressQueue) answer(ctx context.Context, protocol model.Protocol, route model.Route, derivation javascript.Derivation,
+	request func(ctx context.Context) (Message, error),
+) (Decision, error) {
+	decision, kind, err := q.respond(ctx, protocol, route, derivation, request)
+	if err != nil {
+		if blamesCandidate(ctx, kind) {
+			q.quarantine.Quarantine(ctx, egressReason(kind, protocol, route, err))
+		}
+		return nil, err
+	}
+	if _, intercepted := decision.(DecisionIntercept); intercepted {
+		logger.FromContext(ctx).InfoContext(ctx, "Candidate request matched a reference request",
+			"event", logger.EventCorrelation, "protocol", protocol, "route", route)
+		return decision, nil
+	}
+	logger.FromContext(ctx).InfoContext(ctx, "Candidate request was answered from a reference response",
+		"event", logger.EventCorrelation, "protocol", protocol, "route", route, "source", derivation.Source())
+	return decision, nil
+}
+
+// respond returns the decision for a candidate request to a derived endpoint, or why there is none.
+func (q *egressQueue) respond(ctx context.Context, protocol model.Protocol, route model.Route, derivation javascript.Derivation,
+	request func(ctx context.Context) (Message, error),
+) (Decision, model.QuarantineKind, error) {
+	waiter := newEgressWaiter(q.arrive())
+	hash, value, err := q.identify(ctx, protocol, route, request)
+	if err != nil {
+		return nil, model.QuarantineUnable, err
+	}
+	sourceRequest, err := q.scripts.DeriveRequest(ctx, derivation, value)
+	if err != nil {
+		return nil, model.QuarantineUnable, errors.Wrap(err, "map candidate request to a source request")
+	}
+	sourceHash, err := q.scripts.Hash(ctx, string(protocol)+" "+derivation.Source(), Some(derivation.SourceRequest()), "candidate", sourceRequest)
+	if err != nil {
+		return nil, model.QuarantineUnable, errors.Wrap(err, "identify source request")
+	}
+	pending, direct, err := q.pick(ctx, hash, sourceHash, waiter)
+	if err != nil {
+		return nil, model.QuarantineUnmatched, err
+	}
+	if direct {
+		raw, err := pending.wait(ctx)
+		if err != nil {
+			return nil, model.QuarantineUnable, err
+		}
+		return DecisionIntercept{Raw: raw}, "", nil
+	}
+	reference, err := pending.decoded(ctx)
+	if err != nil {
+		return nil, model.QuarantineUnable, err
+	}
+	answer, err := q.scripts.DeriveResponse(ctx, derivation, value, reference)
+	if err != nil {
+		return nil, model.QuarantineUnable, errors.Wrap(err, "derive response")
+	}
+	return DecisionAnswer{Message: Message{Type: Some(derivation.Response()), Value: answer}}, "", nil
+}
+
+// identify hashes a candidate request to a derived endpoint, and returns a copy of its value to
+// derive from. Hashing normalises the value in place, and derive functions see only its JSON.
+func (q *egressQueue) identify(ctx context.Context, protocol model.Protocol, route model.Route,
+	request func(ctx context.Context) (Message, error),
+) (comparison.Hash, any, error) {
+	message, err := request(ctx)
+	if err != nil {
+		return comparison.Hash{}, nil, errors.Wrap(err, "identify candidate request")
+	}
+	encoded, err := json.Marshal(message.Value)
+	if err != nil {
+		return comparison.Hash{}, nil, errors.Wrap(err, "copy candidate request")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(encoded))
+	decoder.UseNumber()
+	var value any
+	if err := decoder.Decode(&value); err != nil {
+		return comparison.Hash{}, nil, errors.Wrap(err, "copy candidate request")
+	}
+	hash, err := q.scripts.Hash(ctx, string(protocol)+" "+string(route), message.Type, "candidate", message.Value)
+	if err != nil {
+		return comparison.Hash{}, nil, errors.Wrap(err, "identify candidate request")
+	}
+	return hash, value, nil
+}
+
 func egressReason(kind model.QuarantineKind, protocol model.Protocol, route model.Route, err error) model.QuarantineReason {
 	return model.QuarantineReason{
 		Kind:    kind,
@@ -208,6 +337,15 @@ func (q *egressQueue) take(ctx context.Context, exchange Exchange) (*egressExcha
 func (q *egressQueue) add(hash comparison.Hash, pending *egressExchange) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
+	if pending.isSource() {
+		// Every observer receives a source reference, and later ones find it for the window.
+		for _, observer := range q.observers[hash] {
+			observer <- pending
+		}
+		delete(q.observers, hash)
+		q.sources[hash] = insertByArrival(q.sources[hash], pending)
+		time.AfterFunc(q.window, func() { q.forget(hash, pending) })
+	}
 	if waiters := q.waiting[hash]; len(waiters) > 0 {
 		q.setWaiting(hash, waiters[1:])
 		waiters[0].deliver(pending)
@@ -215,6 +353,91 @@ func (q *egressQueue) add(hash comparison.Hash, pending *egressExchange) {
 	}
 	q.unused[hash] = insertByArrival(q.unused[hash], pending)
 	pending.expireAfter(q.window, func() { q.expire(hash, pending) })
+}
+
+// forget stops offering a source reference to observers.
+func (q *egressQueue) forget(hash comparison.Hash, pending *egressExchange) {
+	pending.forget()
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	sources := q.sources[hash]
+	if index := slices.Index(sources, pending); index >= 0 {
+		sources = slices.Delete(sources, index, index+1)
+	}
+	if len(sources) == 0 {
+		delete(q.sources, hash)
+		return
+	}
+	q.sources[hash] = sources
+}
+
+// pick waits up to the window for the earliest unused reference with hash, which it claims and
+// reports as direct, or else the earliest source reference with sourceHash, which it never claims.
+func (q *egressQueue) pick(ctx context.Context, hash, sourceHash comparison.Hash, waiter *egressWaiter) (*egressExchange, bool, error) {
+	q.mu.Lock()
+	if unused := q.unused[hash]; len(unused) > 0 {
+		q.setUnused(hash, unused[1:])
+		unused[0].stopExpiry()
+		q.mu.Unlock()
+		return unused[0], true, nil
+	}
+	if sources := q.sources[sourceHash]; len(sources) > 0 {
+		// forget edits the slice in place, so read it before unlocking.
+		source := sources[0]
+		q.mu.Unlock()
+		return source, false, nil
+	}
+	q.waiting[hash] = insertByArrival(q.waiting[hash], waiter)
+	// observer has one slot and receives at most one reference, so add never blocks.
+	observer := make(chan *egressExchange, 1)
+	q.observers[sourceHash] = append(q.observers[sourceHash], observer)
+	q.mu.Unlock()
+
+	started := time.Now()
+	timer := time.NewTimer(q.window)
+	defer timer.Stop()
+	received, direct := None[*egressExchange](), false
+	var err error
+	select {
+	case pending := <-waiter.delivered():
+		received, direct = Some(pending), true
+	case pending := <-observer:
+		received = Some(pending)
+	case <-timer.C:
+		err = errors.Errorf("no matching reference or source reference request within %s", q.window)
+	case <-ctx.Done():
+		err = errors.Wrapf(ctx.Err(), "no matching reference or source reference request before the candidate gave up after %s",
+			time.Since(started).Round(time.Millisecond))
+	}
+	q.mu.Lock()
+	waiters := q.waiting[hash]
+	index := slices.Index(waiters, waiter)
+	if index >= 0 {
+		q.setWaiting(hash, slices.Delete(waiters, index, index+1))
+	}
+	observers := q.observers[sourceHash]
+	at := slices.Index(observers, observer)
+	if at >= 0 {
+		observers = slices.Delete(observers, at, at+1)
+		if len(observers) == 0 {
+			delete(q.observers, sourceHash)
+		} else {
+			q.observers[sourceHash] = observers
+		}
+	}
+	q.mu.Unlock()
+	if !direct && index < 0 {
+		// add claimed a reference for this waiter concurrently, so it answers instead.
+		return <-waiter.delivered(), true, nil
+	}
+	if _, ok := received.Get(); !ok && at < 0 {
+		// add offered a source reference to this observer concurrently.
+		received = Some(<-observer)
+	}
+	if pending, ok := received.Get(); ok {
+		return pending, direct, nil
+	}
+	return nil, false, err
 }
 
 // claim takes the earliest unused reference for hash, waiting up to the window
@@ -324,24 +547,35 @@ func (w *egressWaiter) delivered() <-chan *egressExchange {
 type egressOutcome struct {
 	raw     Option[Raw]
 	failure Option[error]
+	// content is the decoded response of a source reference.
+	content Option[Content]
 }
 
 // egressExchange is one forwarded reference request.
 type egressExchange struct {
 	arrival uint64
+	// source reports that derivations read the response, so it is decoded when it finishes.
+	source  bool
 	outcome *future.Future[egressOutcome]
 
 	mu        sync.Mutex
 	abandoned bool
+	// forgotten reports that observers no longer find the source reference.
+	forgotten bool
 	expiry    Option[*time.Timer]
 }
 
-func newEgressExchange(arrival uint64) *egressExchange {
-	return &egressExchange{arrival: arrival, outcome: future.New[egressOutcome]()}
+func newEgressExchange(arrival uint64, source bool) *egressExchange {
+	return &egressExchange{arrival: arrival, source: source, outcome: future.New[egressOutcome]()}
 }
 
 func (e *egressExchange) arrived() uint64 {
 	return e.arrival
+}
+
+// isSource reports whether derivations read the response.
+func (e *egressExchange) isSource() bool {
+	return e.source
 }
 
 // expireAfter calls expire once window passes, unless stopExpiry is called first.
@@ -360,12 +594,15 @@ func (e *egressExchange) stopExpiry() {
 }
 
 // finish records the reference outcome, releasing it at once if nobody can claim it.
-func (e *egressExchange) finish(raw Option[Raw], failure Option[error]) {
+func (e *egressExchange) finish(raw Option[Raw], failure Option[error], content Option[Content]) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	e.outcome.Set(egressOutcome{raw: raw, failure: failure})
+	e.outcome.Set(egressOutcome{raw: raw, failure: failure, content: content})
 	if e.abandoned {
 		e.release()
+	}
+	if e.forgotten {
+		e.releaseHold()
 	}
 }
 
@@ -377,6 +614,14 @@ func (e *egressExchange) abandon() {
 	e.release()
 }
 
+// forget marks the source reference as one derivations no longer find.
+func (e *egressExchange) forget() {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.forgotten = true
+	e.releaseHold()
+}
+
 // release frees the recorded response, if there is one yet. Callers hold e.mu.
 func (e *egressExchange) release() {
 	outcome, finished := e.outcome.Get()
@@ -385,6 +630,20 @@ func (e *egressExchange) release() {
 	}
 	if raw, ok := outcome.raw.Get(); ok {
 		raw.Release()
+	}
+}
+
+// releaseHold frees the memory held for the decoded source response, if there is
+// one yet. Derivations already reading it keep it. Callers hold e.mu.
+func (e *egressExchange) releaseHold() {
+	outcome, finished := e.outcome.Get()
+	if !finished {
+		return
+	}
+	if content, ok := outcome.content.Get(); ok {
+		if hold, held := content.Hold.Get(); held {
+			hold.Release()
+		}
 	}
 }
 
@@ -403,6 +662,30 @@ func (e *egressExchange) wait(ctx context.Context) (Raw, error) {
 		return nil, errors.New("reference response is missing")
 	}
 	return raw, nil
+}
+
+// decoded waits for a source reference response and returns its value. It
+// outlives the recorded response, so it never claims or releases it.
+func (e *egressExchange) decoded(ctx context.Context) (any, error) {
+	outcome, err := e.outcome.Wait(ctx)
+	if err != nil {
+		return nil, errors.Wrap(err, "wait for source reference response")
+	}
+	if failure, failed := outcome.failure.Get(); failed {
+		return nil, errors.Wrap(failure, "source reference response failed")
+	}
+	content, ok := outcome.content.Get()
+	if !ok {
+		return nil, errors.New("source reference response was not decoded")
+	}
+	if failure, failed := content.Failure.Get(); failed {
+		return nil, errors.Wrap(failure, "decode source reference response")
+	}
+	message, ok := content.Message.Get()
+	if !ok {
+		return nil, errors.New("source reference response has no message")
+	}
+	return message.Value, nil
 }
 
 // egressReference forwards every dependency request at once and hashes it in
@@ -428,12 +711,16 @@ func (r *egressReference) ProcessResponse(ctx context.Context, exchange Exchange
 		response.Raw.Release()
 		return
 	}
-	pending.finish(Some(response.Raw), None[error]())
+	content := None[Content]()
+	if pending.isSource() {
+		content = Some(response.Decode(ctx))
+	}
+	pending.finish(Some(response.Raw), None[error](), content)
 }
 
 func (r *egressReference) Unable(ctx context.Context, exchange Exchange, reason error) {
 	if pending, ok := r.queue.take(ctx, exchange); ok {
-		pending.finish(None[Raw](), Some(reason))
+		pending.finish(None[Raw](), Some(reason), None[Content]())
 	}
 }
 

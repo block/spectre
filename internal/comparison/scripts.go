@@ -56,6 +56,9 @@ func New(ctx context.Context, config Config) (*Scripts, error) {
 			}
 		}
 	}
+	if err := checkDerivations(scripts.program.Derivations(), scripts.Endpoints()); err != nil {
+		return nil, err
+	}
 	scripts.plan, err = comparisoninternal.NewPlan(loaded, program.Fields(), program.Messages())
 	if err != nil {
 		return nil, errors.Wrap(err, "prepare comparison plan")
@@ -76,6 +79,70 @@ func (s *Scripts) Endpoints() []javascript.Endpoint {
 // Rules returns the ingress rules in declaration order.
 func (s *Scripts) Rules() []javascript.Rule {
 	return s.program.Rules()
+}
+
+// Derivations returns the egress derivations in declaration order.
+func (s *Scripts) Derivations() []javascript.Derivation {
+	return s.program.Derivations()
+}
+
+// checkDerivations requires each source to be an endpoint that pairs its own
+// requests, and the derivations of one source to decode its responses alike.
+func checkDerivations(derivations []javascript.Derivation, endpoints []javascript.Endpoint) error {
+	responses := map[string]schema.TypeRef{}
+	for _, derivation := range derivations {
+		index := slices.IndexFunc(endpoints, func(endpoint javascript.Endpoint) bool {
+			return endpoint.Direction() == model.Egress && endpoint.Pattern() == derivation.Source()
+		})
+		if index < 0 {
+			return errors.Errorf("%s: source endpoint is not declared", derivation)
+		}
+		if slices.ContainsFunc(derivations, func(other javascript.Derivation) bool { return other.Pattern() == derivation.Source() }) {
+			return errors.Errorf("%s: source endpoint is itself derived", derivation)
+		}
+		if declared := endpoints[index].Type(); declared != derivation.SourceRequest() {
+			return errors.Errorf("%s: source requests are %s, not %s", derivation, declared, derivation.SourceRequest())
+		}
+		if response, seen := responses[derivation.Source()]; seen && response != derivation.SourceResponse() {
+			return errors.Errorf("%s: source responses are decoded as both %s and %s", derivation, response, derivation.SourceResponse())
+		}
+		responses[derivation.Source()] = derivation.SourceResponse()
+	}
+	return nil
+}
+
+// DeriveRequest maps a request to a derived endpoint to the source request it pairs with.
+func (s *Scripts) DeriveRequest(ctx context.Context, derivation javascript.Derivation, request any) (any, error) {
+	return s.derive(ctx, derivation.SourceRequest(), func(evaluator *javascript.Evaluator) (any, error) {
+		return errors.WithStack2(evaluator.DeriveRequest(derivation, request))
+	})
+}
+
+// DeriveResponse builds the answer to a request to a derived endpoint from a
+// reference response to its source.
+func (s *Scripts) DeriveResponse(ctx context.Context, derivation javascript.Derivation, request, reference any) (any, error) {
+	return s.derive(ctx, derivation.Response(), func(evaluator *javascript.Evaluator) (any, error) {
+		return errors.WithStack2(evaluator.DeriveResponse(derivation, request, reference))
+	})
+}
+
+// derive runs one derivation function in a fresh evaluator and validates its result as typeName.
+func (s *Scripts) derive(ctx context.Context, typeName schema.TypeRef, function func(*javascript.Evaluator) (any, error)) (any, error) {
+	ctx, cancel := context.WithTimeout(ctx, s.timeout)
+	defer cancel()
+	evaluator, err := s.program.NewEvaluator(ctx)
+	if err != nil {
+		return nil, errors.Wrap(err, "initialise JavaScript evaluator")
+	}
+	defer evaluator.Close()
+	derived, err := function(evaluator)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.plan.Schema().Validate(typeName, derived); err != nil {
+		return nil, errors.Wrapf(err, "validate derived %s", typeName)
+	}
+	return derived, nil
 }
 
 // SelectRule returns the first rule that selects a response. rules must be in

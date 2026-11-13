@@ -111,11 +111,16 @@ type harness struct {
 
 func newHarness(t *testing.T, window time.Duration) *harness {
 	t.Helper()
+	return newScriptHarness(t, fakeScript, window)
+}
+
+func newScriptHarness(t *testing.T, script string, window time.Duration) *harness {
+	t.Helper()
 	logs := &lockedBuffer{}
 	quarantine := &recordingQuarantiner{}
 	rules := &recordingMatcher{}
 	ctx := logger.WithLogger(t.Context(), slog.New(slog.NewJSONHandler(logs, &slog.HandlerOptions{Level: slog.LevelInfo})))
-	engine, err := protocol.NewEngine(ctx, newConfig(t, fakeScript, window),
+	engine, err := protocol.NewEngine(ctx, newConfig(t, script, window),
 		//nolint:exhaustive // the engine is tested with fake protocols, not real ones
 		map[model.Protocol]protocol.Matcher{fake: &recordingMatcher{}, model.ProtocolHTTP: rules}, quarantine)
 	assert.NoError(t, err)
@@ -216,14 +221,14 @@ func (r *countingRaw) Releases() int {
 	return int(r.released.Load())
 }
 
-// awaitReleases waits for raw to be released expected times, failing after a second.
-func awaitReleases(t *testing.T, raw *countingRaw, expected int) {
+// awaitRelease waits for raw to be released once, failing after a second.
+func awaitRelease(t *testing.T, raw *countingRaw) {
 	t.Helper()
 	deadline := time.Now().Add(time.Second)
-	for raw.Releases() != expected && time.Now().Before(deadline) {
+	for raw.Releases() == 0 && time.Now().Before(deadline) {
 		time.Sleep(time.Millisecond)
 	}
-	assert.Equal(t, expected, raw.Releases())
+	assert.Equal(t, 1, raw.Releases())
 }
 
 type lockedBuffer struct {
