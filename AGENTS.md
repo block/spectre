@@ -71,8 +71,15 @@
 # Documentation
 
 - Do not modify `README.md` unless the user explicitly requests it.
-- Put developer workflow documentation, such as building, testing, and running locally, in `CONTRIBUTING.md`.
-- Put design documents, implementation plans, and other documents that fit neither `README.md` nor `CONTRIBUTING.md` in `docs/`.
+- Put user documentation in `USAGE.md`: how to run, configure, deploy, and
+  operate SPECTRE, including its commands, flags, scripts, schemas, and
+  behaviour. Document user-visible changes there.
+- Put only documentation for people changing SPECTRE itself in
+  `CONTRIBUTING.md`: building, testing, linting, the sample services, and
+  repository tooling. Never document SPECTRE's commands, flags, or behaviour
+  there.
+- Put design documents, implementation plans, and other documents that fit
+  none of `README.md`, `USAGE.md`, or `CONTRIBUTING.md` in `docs/`.
 - Open a new ADR only when the user explicitly asks for one. Write ADRs to follow `docs/adr-template.md`:
   - Name it `docs/NNN-<slug>.md`, using the next unused three-digit number.
   - Never change or reuse a number, even when an ADR is renamed or superseded.
