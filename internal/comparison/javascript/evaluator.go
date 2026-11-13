@@ -53,9 +53,9 @@ func newEvaluator(
 	evaluator := &Evaluator{runtime: runtime, stop: Some(watchRuntime(ctx, runtime))}
 	fail := func(err error) (*Evaluator, registrations, error) {
 		evaluator.Close()
-		// An interrupted runtime reports cancellation as a script error, so report ctx's own.
+		// Module evaluation can hide cancellation, so preserve it alongside the setup error.
 		if ctx.Err() != nil {
-			return nil, registrations{}, errors.WithStack(ctx.Err())
+			return nil, registrations{}, errors.Join(err, ctx.Err())
 		}
 		return nil, registrations{}, err
 	}
