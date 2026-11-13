@@ -2,6 +2,7 @@ package comparison_test
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -482,10 +483,10 @@ func TestInterruptsRunawayNormaliser(t *testing.T) {
 	assert.NoError(t, err)
 
 	_, _, err = scripts.Compare(t.Context(), Some[schema.TypeRef]("test.v1.Response"), decode(t, `{"stable":"same"}`), decode(t, `{"stable":"same"}`))
-	assert.Error(t, err)
+	assert.IsError(t, err, context.DeadlineExceeded)
 
 	_, err = scripts.Hash(t.Context(), "identity", Some[schema.TypeRef]("test.v1.Response"), "reference", decode(t, `{"stable":"same"}`))
-	assert.Error(t, err)
+	assert.IsError(t, err, context.DeadlineExceeded)
 }
 
 func TestLogsIndividualNormaliserResults(t *testing.T) {
