@@ -51,10 +51,17 @@ func newEvaluator(
 	runtime := sobek.New()
 	runtime.SetMaxCallStackSize(1024)
 	evaluator := &Evaluator{runtime: runtime, stop: Some(watchRuntime(ctx, runtime))}
+	fail := func(err error) (*Evaluator, registrations, error) {
+		evaluator.Close()
+		// An interrupted runtime reports cancellation as a script error, so report ctx's own.
+		if ctx.Err() != nil {
+			return nil, registrations{}, errors.WithStack(ctx.Err())
+		}
+		return nil, registrations{}, err
+	}
 	helpers, err := runtime.RunString(jsonHelpers)
 	if err != nil {
-		evaluator.Close()
-		return nil, registrations{}, errors.Wrap(err, "create JavaScript JSON helpers")
+		return fail(errors.Wrap(err, "create JavaScript JSON helpers"))
 	}
 	helperObject := helpers.ToObject(runtime)
 	evaluator.parse, _ = sobek.AssertFunction(helperObject.Get("parse"))
@@ -65,8 +72,7 @@ func newEvaluator(
 	}
 	registry, err := loadSpectreModule(runtime, entry, spectre)
 	if err != nil {
-		evaluator.Close()
-		return nil, registrations{}, err
+		return fail(err)
 	}
 	evaluator.registry = registry
 	return evaluator, registry.registrations(), nil
@@ -162,7 +168,7 @@ func (e *Evaluator) selectsHeader(rule Rule, callbacks map[string]sobek.Callable
 func (e *Evaluator) selects(rule Rule, callback sobek.Callable, argument sobek.Value) (bool, error) {
 	result, err := callback(sobek.Undefined(), argument)
 	if err != nil {
-		return false, errors.Errorf("JavaScript selector of rule %s threw an exception", rule)
+		return false, scriptError(err, "JavaScript selector of rule "+rule.String()+" threw an exception")
 	}
 	selected, ok := result.Export().(bool)
 	if !ok {
@@ -190,7 +196,7 @@ func (e *Evaluator) normalise(callback sobek.Callable, value Option[any]) (Optio
 	}
 	result, err := callback(sobek.Undefined(), argument)
 	if err != nil {
-		return None[any](), errors.New("JavaScript normaliser threw an exception")
+		return None[any](), scriptError(err, "JavaScript normaliser threw an exception")
 	}
 	if sobek.IsUndefined(result) {
 		return None[any](), nil
@@ -231,6 +237,14 @@ func (e *Evaluator) result(value sobek.Value) (any, error) {
 		return nil, errors.Wrap(err, "decode normalised value")
 	}
 	return normalised, nil
+}
+
+// scriptError hides the exception but keeps an interruption so callers can see cancellation.
+func scriptError(err error, message string) error {
+	if interrupted, ok := errors.AsType[*sobek.InterruptedError](err); ok {
+		return errors.Wrap(interrupted, message)
+	}
+	return errors.New(message)
 }
 
 func watchRuntime(ctx context.Context, runtime *sobek.Runtime) func() {
