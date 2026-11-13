@@ -105,7 +105,7 @@ Egress pairs in arrival order. Each request is numbered when it arrives, before 
 A script can let the candidate read the same data through a different endpoint than the reference: `egress.http(pattern).derive<T, R>().from<S, U>(source, request, response)`. The source must be declared with `match<S>()`, and is never itself derived.
 
 - The engine declares the source with its response type, and has the server decode its reference responses as `U`. It decodes each one in the background before any candidate can replay it.
-- A decoded response reserves as much memory again as its body from the recording budget. When the budget has no room, derivations from it are unable.
+- A decoded response reserves as much memory again as its decompressed body from the recording budget. When the budget has no room, derivations from it are unable.
 - A candidate request to a derived endpoint is decoded as `T` and hashed as usual. A copy of `T` is mapped to an `S` by `request` and hashed as a request to the source. Normalising mutates payloads, so the request keeps its original `T` for `response`.
 - It uses exactly one reference. If an unused reference to the endpoint itself has its hash, it claims that one. Otherwise it uses the earliest source reference with the source hash. Otherwise it waits up to `MatchWindow` for whichever arrives first.
 - Deriving never claims a source reference. It stays offered to derivations for `MatchWindow` after it is hashed, and stays claimable by a candidate request to the source as usual. Its decoded response is released once it is no longer offered and no derivation is still reading it, even if its recording was already replayed and released.

@@ -2,11 +2,13 @@ package httpserver_test
 
 import (
 	"bytes"
+	"compress/gzip"
 	"encoding/binary"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -70,7 +72,7 @@ func TestDerivesCandidateResponseFromAnotherEndpoint(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			calls := &upstreamCalls{}
-			harness := newPeopleHarness(t, calls.handler(test.contentType, test.listed))
+			harness := newPeopleHarness(t, calls.handler(test.contentType, "", test.listed))
 			harness.Start(t)
 
 			listed := post(t, harness.Reference, employmentsPath, test.contentType, test.listRequest)
@@ -91,28 +93,43 @@ func TestDerivesCandidateResponseFromAnotherEndpoint(t *testing.T) {
 func TestQuarantinesUnusableDerivedResponse(t *testing.T) {
 	listed := protoMessages(2, append(protoStrings(1, "employment-1"), protoStrings(2, "unit-1")...))
 	unitRequest := append(protoStrings(1, "person-1"), protoStrings(2, "employment-1")...)
+	expanded := protoMessages(2, append(protoStrings(1, "employment-1"), protoStrings(2, slices.Repeat([]string{"unit-1"}, 10000)...)...))
+	compressed := gzipped(t, expanded)
 	for name, test := range map[string]struct {
 		contentType string
 		unitRequest []byte
+		encoding    string
+		listed      []byte
 		budget      int
 		reason      string
 	}{
 		"GRPC": {
 			contentType: "application/grpc",
 			unitRequest: grpcFrame(unitRequest),
+			listed:      listed,
 			reason:      "encode derived response: gRPC requests cannot be answered",
 		},
 		// The recording fits, but the decoded response must reserve as much again.
 		"OverBudget": {
 			contentType: "application/x-protobuf",
 			unitRequest: unitRequest,
+			listed:      listed,
 			budget:      len(listed) + 1,
 			reason:      "decoded response exceeds the " + strconv.Itoa(len(listed)+1) + " byte recording budget",
+		},
+		// The decoded response reserves its decompressed size, not its recorded size.
+		"CompressedOverBudget": {
+			contentType: "application/x-protobuf",
+			unitRequest: unitRequest,
+			encoding:    "gzip",
+			listed:      compressed,
+			budget:      2 * len(compressed),
+			reason:      "decoded response exceeds the " + strconv.Itoa(2*len(compressed)) + " byte recording budget",
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			calls := &upstreamCalls{}
-			harness := newPeopleHarness(t, calls.handler("application/x-protobuf", listed))
+			harness := newPeopleHarness(t, calls.handler("application/x-protobuf", test.encoding, test.listed))
 			if test.budget > 0 {
 				harness.Config.RecordingBufferBytes = test.budget
 			}
@@ -146,12 +163,15 @@ type upstreamCalls struct {
 	called []string
 }
 
-func (c *upstreamCalls) handler(contentType string, body []byte) http.HandlerFunc {
+func (c *upstreamCalls) handler(contentType, encoding string, body []byte) http.HandlerFunc {
 	return func(writer http.ResponseWriter, request *http.Request) {
 		c.mu.Lock()
 		c.called = append(c.called, request.URL.Path)
 		c.mu.Unlock()
 		writer.Header().Set("Content-Type", contentType)
+		if encoding != "" {
+			writer.Header().Set("Content-Encoding", encoding)
+		}
 		_, _ = writer.Write(body)
 	}
 }
@@ -188,6 +208,16 @@ func protoMessages(number protowire.Number, messages ...[]byte) []byte {
 		encoded = protowire.AppendBytes(encoded, message)
 	}
 	return encoded
+}
+
+func gzipped(t *testing.T, data []byte) []byte {
+	t.Helper()
+	var compressed bytes.Buffer
+	writer := gzip.NewWriter(&compressed)
+	_, err := writer.Write(data)
+	assert.NoError(t, err)
+	assert.NoError(t, writer.Close())
+	return compressed.Bytes()
 }
 
 func grpcFrame(message []byte) []byte {

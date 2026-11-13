@@ -7,6 +7,7 @@ import (
 	"mime"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/alecthomas/errors"
@@ -119,9 +120,9 @@ func declaredWire(header http.Header) wire {
 	return selected
 }
 
-// SourceResponse decodes a reference response to an endpoint that others derive
-// answers from, as its declared response type.
-func (d *Decoder) SourceResponse(request Request, response Response) protocol.Content {
+// SourceResponse decodes a reference response that others derive answers from as
+// its declared type, once reserve accepts its decompressed size.
+func (d *Decoder) SourceResponse(request Request, response Response, reserve func(size int) error) protocol.Content {
 	endpoint, _, declared := d.routes.Request(request.Method, request.Host, request.Path)
 	name, source := endpoint.Response.Get()
 	if !declared || !source {
@@ -131,6 +132,17 @@ func (d *Decoder) SourceResponse(request Request, response Response) protocol.Co
 	if err != nil {
 		return protocol.Content{Failure: Some(errors.Wrap(err, "endpoint response type is unusable"))}
 	}
+	status := Some(strconv.Itoa(response.StatusCode))
+	body, err := d.decompress(response.Header, response.Body)
+	if err != nil {
+		return protocol.Content{Status: status, Failure: Some(err)}
+	}
+	if err := reserve(len(body)); err != nil {
+		return protocol.Content{Status: status, Failure: Some(err)}
+	}
+	response.Header = response.Header.Clone()
+	response.Header.Del("Content-Encoding")
+	response.Body = body
 	return newDecoding(d, root, declaredWire(request.Header), request.Method).decode(response)
 }
 

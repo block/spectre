@@ -9,7 +9,6 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"slices"
-	"strconv"
 	"strings"
 
 	"github.com/alecthomas/errors"
@@ -244,8 +243,8 @@ func (e *Egress) serveReference(writer http.ResponseWriter, request *http.Reques
 	e.referencePoint.respond(writer, outbound, decision, upstream, decode)
 }
 
-// responseDecoder decodes the reference responses that derivations read. A
-// decoded response reserves as much budget again as its body, until the engine releases it.
+// responseDecoder decodes the reference responses that derivations read. A decoded
+// response reserves its decompressed size from the budget, until the engine releases it.
 func (e *Egress) responseDecoder(request message.Request) decodeFunc {
 	endpoint, _, declared := e.routes.Request(request.Method, request.Host, request.Path)
 	if !declared || !endpoint.Response.Ok() {
@@ -256,15 +255,18 @@ func (e *Egress) responseDecoder(request message.Request) decodeFunc {
 		if err != nil {
 			return protocol.Content{Failure: Some(err)}
 		}
-		hold, reserved := newBudgetHold(e.budget, len(response.Body))
-		if !reserved {
-			return protocol.Content{
-				Status:  Some(strconv.Itoa(response.StatusCode)),
-				Failure: Some(errors.Errorf("decoded response exceeds the %d byte recording budget", e.budget.Limit())),
+		held := None[*budgetHold]()
+		content := e.decoder.SourceResponse(request, response, func(size int) error {
+			hold, reserved := newBudgetHold(e.budget, size)
+			if !reserved {
+				return errors.Errorf("decoded response exceeds the %d byte recording budget", e.budget.Limit())
 			}
+			held = Some(hold)
+			return nil
+		})
+		if hold, reserved := held.Get(); reserved {
+			content.Release = Some(hold.Release)
 		}
-		content := e.decoder.SourceResponse(request, response)
-		content.Release = Some(hold.Release)
 		return content
 	}
 }
