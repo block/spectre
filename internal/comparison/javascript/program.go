@@ -31,13 +31,14 @@ const (
 // Program is one immutable set of scripts, shared by all payload normalisations.
 // It retains no runtime-local callback state.
 type Program struct {
-	schema    *schema.Schema
-	entry     *sobek.SourceTextModuleRecord
-	spectre   *spectreModule
-	endpoints []Endpoint
-	rules     []Rule
-	fields    []FieldTarget
-	messages  []schema.TypeRef
+	schema      *schema.Schema
+	entry       *sobek.SourceTextModuleRecord
+	spectre     *spectreModule
+	endpoints   []Endpoint
+	derivations []Derivation
+	rules       []Rule
+	fields      []FieldTarget
+	messages    []schema.TypeRef
 }
 
 // NewProgram type-checks scripts against the schema declarations with their variables, links
@@ -70,15 +71,47 @@ func NewProgram(ctx context.Context, evaluationTimeout time.Duration, declaratio
 		return nil, errors.Wrap(err, "evaluate comparison modules")
 	}
 	defer evaluator.Close()
+	if err := checkDerivations(registered.endpoints, registered.derivations); err != nil {
+		return nil, errors.Wrap(err, "evaluate comparison modules")
+	}
 	return &Program{
-		schema:    checked.schema,
-		entry:     module,
-		spectre:   loader.spectreModule(),
-		endpoints: registered.endpoints,
-		rules:     registered.rules,
-		fields:    registered.fields,
-		messages:  registered.messages,
+		schema:      checked.schema,
+		entry:       module,
+		spectre:     loader.spectreModule(),
+		endpoints:   registered.endpoints,
+		derivations: registered.derivations,
+		rules:       registered.rules,
+		fields:      registered.fields,
+		messages:    registered.messages,
 	}, nil
+}
+
+// checkDerivations requires each source to be a matched egress endpoint of its
+// request type, and every derivation from one source to decode it as one type.
+func checkDerivations(endpoints []Endpoint, derivations []Derivation) error {
+	derived := map[model.Route]bool{}
+	for _, derivation := range derivations {
+		derived[derivation.Endpoint().Route()] = true
+	}
+	responses := map[model.Route]schema.TypeRef{}
+	for _, derivation := range derivations {
+		index := slices.IndexFunc(endpoints, func(endpoint Endpoint) bool {
+			return endpoint.Direction() == model.Egress && endpoint.Route() == derivation.Source()
+		})
+		switch {
+		case index < 0:
+			return errors.Errorf("%s: source is not a declared egress endpoint", derivation)
+		case derived[derivation.Source()]:
+			return errors.Errorf("%s: source is itself derived", derivation)
+		case endpoints[index].Type() != derivation.SourceRequest():
+			return errors.Errorf("%s: source requests are %s, not %s", derivation, endpoints[index].Type(), derivation.SourceRequest())
+		}
+		if previous, seen := responses[derivation.Source()]; seen && previous != derivation.SourceResponse() {
+			return errors.Errorf("%s: source responses are decoded as both %s and %s", derivation, previous, derivation.SourceResponse())
+		}
+		responses[derivation.Source()] = derivation.SourceResponse()
+	}
+	return nil
 }
 
 // readScripts reads TypeScript sources and declarations. Symlinks are rejected
@@ -124,6 +157,11 @@ func (p *Program) Endpoints(direction model.Direction) []Endpoint {
 	return endpoints
 }
 
+// Derivations returns the derived egress endpoints in declaration order.
+func (p *Program) Derivations() []Derivation {
+	return slices.Clone(p.derivations)
+}
+
 // Rules returns the ingress rules in declaration order.
 func (p *Program) Rules() []Rule {
 	return slices.Clone(p.rules)
@@ -147,6 +185,7 @@ func (p *Program) NewEvaluator(ctx context.Context) (*Evaluator, error) {
 		return nil, err
 	}
 	if !slices.Equal(registered.endpoints, p.endpoints) ||
+		!slices.Equal(registered.derivations, p.derivations) ||
 		!reflect.DeepEqual(registered.rules, p.rules) ||
 		!slices.Equal(registered.fields, p.fields) ||
 		!slices.Equal(registered.messages, p.messages) {

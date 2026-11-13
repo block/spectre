@@ -119,7 +119,7 @@ func typeArguments(checker *ts.Checker, loaded *schema.Schema, call *ts.Node) (O
 		return None[insertion](), nil // Selectors, ignore, and variable take no type arguments.
 	}
 	expected := 1
-	if function == string(targetField) {
+	if function == string(targetField) || function == deriveMethod || function == fromMethod {
 		expected = 2
 	}
 	// display names the call the way a script writes it, e.g. "IngressHTTPRule.match".
@@ -140,6 +140,17 @@ func typeArguments(checker *ts.Checker, loaded *schema.Schema, call *ts.Node) (O
 		return None[insertion](), errors.Errorf("%s: spectre.%s type argument: %v", ts.Location(types[0]), display, err)
 	}
 	values := []string{string(name)}
+	if function == deriveMethod || function == fromMethod {
+		second := checker.GetTypeFromTypeNode(types[1])
+		secondName, err := bodyTypeName(second, false)
+		if err != nil {
+			return None[insertion](), errors.Errorf("%s: spectre.%s type argument %s: %v", ts.Location(types[1]), display, checker.TypeToString(second), err)
+		}
+		if _, err := loaded.Type(secondName); err != nil {
+			return None[insertion](), errors.Errorf("%s: spectre.%s type argument: %v", ts.Location(types[1]), display, err)
+		}
+		values = append(values, string(secondName))
+	}
 	if function == string(targetField) {
 		path, ok := ts.StringLiteral(checker.GetTypeFromTypeNode(types[1]))
 		if !ok {

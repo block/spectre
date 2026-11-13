@@ -43,7 +43,7 @@ func TestProgramOwnsDeclarations(t *testing.T) {
 
 	typed := javascript.ActionMatch{Type: Some[schema.TypeRef]("test.v1.Response")}
 	assert.Equal(t, []rule{{`http("GET /v1/forecast")`, typed}, {`http("GET /v2/forecast")`, typed}}, rules(program))
-	assert.Equal(t, []endpoint{{"http", "GET weather.example/v1/forecast", "test.v1.Response"}}, endpoints(program, model.Egress))
+	assert.Equal(t, []endpoint{{"http", "GET weather.example/v1/forecast", "test.v1.Response"}}, endpoints(program))
 	assert.Equal(t, []javascript.FieldTarget{javascript.NewFieldTarget("test.v1.Response", "value")}, program.Fields())
 	assert.Equal(t, []schema.TypeRef{"test.v1.User"}, program.Messages())
 	operation, err := program.Schema().Operation("test.v1.UserService.GetUser")
@@ -151,7 +151,7 @@ func TestLoadsEmptyScriptsDirectory(t *testing.T) {
 	assert.NoError(t, err)
 
 	assert.Equal(t, []rule{}, rules(program))
-	assert.Equal(t, []endpoint{}, endpoints(program, model.Egress))
+	assert.Equal(t, []endpoint{}, endpoints(program))
 	assert.Equal(t, []javascript.FieldTarget{}, program.Fields())
 	assert.Equal(t, 0, len(program.Messages()))
 	evaluator, err := program.NewEvaluator(t.Context())
@@ -303,6 +303,126 @@ func TestRejectsInvalidEndpointDeclarations(t *testing.T) {
 	}
 }
 
+const derivedUsers = `
+	const users = "GET users.example/v1/users";
+	spectre.egress.http(users).match<v1.User>();
+	spectre.egress
+		.http("GET users.example/v1/user")
+		.derive<v1.User, v1.Response>()
+		.from<v1.User, v1.Response>(
+			users,
+			(request) => ({ name: request.name.toUpperCase() }),
+			(request, reference) => {
+				reference.value = "changed";
+				return { value: request.name, values: reference.values };
+			},
+		);
+`
+
+func TestRegistersDerivations(t *testing.T) {
+	program, err := newProgram(t, derivedUsers)
+	assert.NoError(t, err)
+
+	assert.Equal(t, []endpoint{
+		{"http", "GET users.example/v1/users", "test.v1.User"},
+		{"http", "GET users.example/v1/user", "test.v1.User"},
+	}, endpoints(program))
+	assert.Equal(t, []derivation{{
+		declared: `egress.http("GET users.example/v1/user").derive().from("GET users.example/v1/users")`,
+		endpoint: endpoint{"http", "GET users.example/v1/user", "test.v1.User"},
+		response: "test.v1.Response", sourceRequest: "test.v1.User", sourceResponse: "test.v1.Response",
+	}}, derivations(program))
+}
+
+func TestEvaluatesDerivationFunctions(t *testing.T) {
+	program, err := newProgram(t, derivedUsers)
+	assert.NoError(t, err)
+	evaluator, err := program.NewEvaluator(t.Context())
+	assert.NoError(t, err)
+	defer evaluator.Close()
+	declared := program.Derivations()[0]
+	request := map[string]any{"name": "ada"}
+	reference := map[string]any{"value": "original", "values": []any{"one"}}
+
+	mapped, mapErr := evaluator.DeriveRequest(declared, request)
+	answer, answerErr := evaluator.DeriveResponse(declared, request, reference)
+
+	assert.NoError(t, mapErr)
+	assert.NoError(t, answerErr)
+	assert.Equal(t, any(map[string]any{"name": "ADA"}), mapped)
+	assert.Equal(t, any(map[string]any{"value": "ada", "values": []any{"one"}}), answer)
+	assert.Equal(t, map[string]any{"name": "ada"}, request)
+	assert.Equal(t, map[string]any{"value": "original", "values": []any{"one"}}, reference)
+}
+
+func TestRejectsInvalidDerivations(t *testing.T) {
+	const derive = `spectre.egress.http("GET users.example/v1/user").derive<v1.User, v1.Response>()`
+	for name, test := range map[string]struct {
+		body    string
+		message string
+	}{
+		"UndeclaredSource": {
+			body:    derive + `.from<v1.User, v1.Response>("GET users.example/v1/users", (r) => r, () => ({ value: "", values: [] }));`,
+			message: `egress.http("GET users.example/v1/user").derive().from("GET users.example/v1/users"): source is not a declared egress endpoint`,
+		},
+		"DerivedSource": {
+			body: `spectre.egress.http("GET users.example/v1/users").match<v1.User>();
+				spectre.egress.http("GET users.example/v1/team").derive<v1.User, v1.Response>()
+					.from<v1.User, v1.Response>("GET users.example/v1/users", (r) => r, () => ({ value: "", values: [] }));
+				` + derive + `.from<v1.User, v1.Response>("GET users.example/v1/team", (r) => r, () => ({ value: "", values: [] }));`,
+			message: `.from("GET users.example/v1/team"): source is itself derived`,
+		},
+		"SourceRequestType": {
+			body: `spectre.egress.http("GET users.example/v1/users").match<v1.Response>();
+				` + derive + `.from<v1.User, v1.Response>("GET users.example/v1/users", (r) => r, () => ({ value: "", values: [] }));`,
+			message: "source requests are test.v1.Response, not test.v1.User",
+		},
+		"ConflictingSourceResponses": {
+			body: `spectre.egress.http("GET users.example/v1/users").match<v1.User>();
+				spectre.egress.http("GET users.example/v1/team").derive<v1.User, v1.Response>()
+					.from<v1.User, v1.User>("GET users.example/v1/users", (r) => r, () => ({ value: "", values: [] }));
+				` + derive + `.from<v1.User, v1.Response>("GET users.example/v1/users", (r) => r, () => ({ value: "", values: [] }));`,
+			message: "source responses are decoded as both test.v1.User and test.v1.Response",
+		},
+		"WithoutFrom": {
+			body:    derive + ";",
+			message: `spectre.egress.http("GET users.example/v1/user").derive() needs from()`,
+		},
+		"AlsoMatched": {
+			body: `spectre.egress.http("GET users.example/v1/users").match<v1.User>();
+				spectre.egress.http("GET users.example/v1/user").match<v1.User>();
+				` + derive + `.from<v1.User, v1.Response>("GET users.example/v1/users", (r) => r, () => ({ value: "", values: [] }));`,
+			message: `duplicate endpoint "GET users.example/v1/user"`,
+		},
+		"FromTwice": {
+			body: `spectre.egress.http("GET users.example/v1/users").match<v1.User>();
+				const derived = ` + derive + `;
+				derived.from<v1.User, v1.Response>("GET users.example/v1/users", (r) => r, () => ({ value: "", values: [] }));
+				derived.from<v1.User, v1.Response>("GET users.example/v1/users", (r) => r, () => ({ value: "", values: [] }));`,
+			message: `spectre.EgressDerivation.from is already called for "GET users.example/v1/user"`,
+		},
+		"FromNotFunctions": {
+			body: untyped + `egress.http("GET users.example/v1/user").derive("test.v1.User", "test.v1.Response")
+				.from("test.v1.User", "test.v1.Response", "GET users.example/v1/users", 1, 2);`,
+			message: "spectre.EgressDerivation.from request and response must be functions",
+		},
+		"DeriveOneType": {
+			body:    untyped + `egress.http("GET users.example/v1/user").derive("test.v1.User");`,
+			message: "spectre.EgressHTTPRule.derive requires a request and a response type name",
+		},
+		"MissingTypeArguments": {
+			body:    `spectre.egress.http("GET users.example/v1/user").derive();`,
+			message: "spectre.EgressHTTPRule.derive needs 2 explicit type argument(s)",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := newProgram(t, test.body)
+			assert.Error(t, err)
+			assert.Contains(t, err.Error(), test.message)
+		})
+	}
+}
+
 func TestRejectsInvalidRules(t *testing.T) {
 	for name, test := range map[string]struct {
 		body    string
@@ -412,7 +532,7 @@ func TestReadsVariables(t *testing.T) {
 	program, err := javascript.NewProgram(t.Context(), time.Second, declarations(), files, map[string]string{"environment": "staging"})
 	assert.NoError(t, err)
 
-	assert.Equal(t, []endpoint{{"http", "GET forecasts.staging.example/v1/forecast", "test.v1.Response"}}, endpoints(program, model.Egress))
+	assert.Equal(t, []endpoint{{"http", "GET forecasts.staging.example/v1/forecast", "test.v1.Response"}}, endpoints(program))
 	evaluator, err := program.NewEvaluator(t.Context())
 	assert.NoError(t, err)
 	defer evaluator.Close()
@@ -769,10 +889,31 @@ type endpoint struct {
 	typeName schema.TypeRef
 }
 
-func endpoints(program *javascript.Program, direction model.Direction) []endpoint {
+func endpoints(program *javascript.Program) []endpoint {
 	declared := []endpoint{}
-	for _, value := range program.Endpoints(direction) {
+	for _, value := range program.Endpoints(model.Egress) {
 		declared = append(declared, endpoint{value.Protocol(), value.Pattern(), value.Type()})
+	}
+	return declared
+}
+
+type derivation struct {
+	declared                                string
+	endpoint                                endpoint
+	response, sourceRequest, sourceResponse schema.TypeRef
+}
+
+func derivations(program *javascript.Program) []derivation {
+	declared := []derivation{}
+	for _, value := range program.Derivations() {
+		target := value.Endpoint()
+		declared = append(declared, derivation{
+			declared:       value.String(),
+			endpoint:       endpoint{target.Protocol(), target.Pattern(), target.Type()},
+			response:       value.Response(),
+			sourceRequest:  value.SourceRequest(),
+			sourceResponse: value.SourceResponse(),
+		})
 	}
 	return declared
 }

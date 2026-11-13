@@ -73,6 +73,44 @@ func (s *Scripts) Endpoints() []javascript.Endpoint {
 	return append(s.program.Endpoints(model.Ingress), s.program.Endpoints(model.Egress)...)
 }
 
+// Derivations returns the derived egress endpoints in declaration order.
+func (s *Scripts) Derivations() []javascript.Derivation {
+	return s.program.Derivations()
+}
+
+// DeriveRequest maps a request to a derived endpoint to a valid request to its source.
+func (s *Scripts) DeriveRequest(ctx context.Context, derivation javascript.Derivation, request any) (any, error) {
+	return s.derive(ctx, derivation.SourceRequest(), func(evaluator *javascript.Evaluator) (any, error) {
+		return errors.WithStack2(evaluator.DeriveRequest(derivation, request))
+	})
+}
+
+// DeriveResponse builds a valid answer to a derived request from the source reference's response.
+func (s *Scripts) DeriveResponse(ctx context.Context, derivation javascript.Derivation, request, reference any) (any, error) {
+	return s.derive(ctx, derivation.Response(), func(evaluator *javascript.Evaluator) (any, error) {
+		return errors.WithStack2(evaluator.DeriveResponse(derivation, request, reference))
+	})
+}
+
+// derive runs one derivation function in a fresh evaluator and validates its result as typeName.
+func (s *Scripts) derive(ctx context.Context, typeName schema.TypeRef, function func(evaluator *javascript.Evaluator) (any, error)) (any, error) {
+	ctx, cancel := context.WithTimeout(ctx, s.timeout)
+	defer cancel()
+	evaluator, err := s.program.NewEvaluator(ctx)
+	if err != nil {
+		return nil, errors.Wrap(err, "initialise JavaScript evaluator")
+	}
+	defer evaluator.Close()
+	derived, err := function(evaluator)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.program.Schema().Validate(typeName, derived); err != nil {
+		return nil, errors.Wrapf(err, "derived value is not a valid %s", typeName)
+	}
+	return derived, nil
+}
+
 // Rules returns the ingress rules in declaration order.
 func (s *Scripts) Rules() []javascript.Rule {
 	return s.program.Rules()

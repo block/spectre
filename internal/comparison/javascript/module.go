@@ -2,6 +2,7 @@ package javascript
 
 import (
 	"cmp"
+	"fmt"
 	"maps"
 	"net/http"
 	"slices"
@@ -50,9 +51,67 @@ func (e Endpoint) Pattern() string {
 	return e.pattern
 }
 
+// Route names the endpoint's requests by its pattern.
+func (e Endpoint) Route() model.Route {
+	return model.Route(e.pattern)
+}
+
 // Type returns the fully qualified name of the endpoint's payload type.
 func (e Endpoint) Type() schema.TypeRef {
 	return e.typeName
+}
+
+// Derivation answers requests to an egress endpoint from the reference's
+// responses to another endpoint, its source.
+type Derivation struct {
+	index          int
+	endpoint       Endpoint
+	response       schema.TypeRef
+	source         model.Route
+	sourceRequest  schema.TypeRef
+	sourceResponse schema.TypeRef
+}
+
+func newDerivation(index int, endpoint Endpoint, response schema.TypeRef, source model.Route, sourceRequest, sourceResponse schema.TypeRef) Derivation {
+	return Derivation{
+		index: index, endpoint: endpoint, response: response,
+		source: source, sourceRequest: sourceRequest, sourceResponse: sourceResponse,
+	}
+}
+
+// Index returns the derivation's position in declaration order.
+func (d Derivation) Index() int {
+	return d.index
+}
+
+// Endpoint returns the derived endpoint and its request type.
+func (d Derivation) Endpoint() Endpoint {
+	return d.endpoint
+}
+
+// Response returns the type of the answers.
+func (d Derivation) Response() schema.TypeRef {
+	return d.response
+}
+
+// Source returns the pattern of the endpoint whose responses answer requests.
+func (d Derivation) Source() model.Route {
+	return d.source
+}
+
+// SourceRequest returns the type requests are mapped to before pairing with the source.
+func (d Derivation) SourceRequest() schema.TypeRef {
+	return d.sourceRequest
+}
+
+// SourceResponse returns the type the source's reference responses are decoded as.
+func (d Derivation) SourceResponse() schema.TypeRef {
+	return d.sourceResponse
+}
+
+// String names the derivation the way a script declares it.
+func (d Derivation) String() string {
+	return fmt.Sprintf("egress.http(%q).derive().from(%q)", d.endpoint.Pattern(), d.source)
 }
 
 // FieldTarget identifies a JSON field path relative to an explicitly named type.
@@ -84,10 +143,11 @@ func (t FieldTarget) String() string {
 
 // registrations are the declarations one evaluation of a program produced.
 type registrations struct {
-	endpoints []Endpoint
-	rules     []Rule
-	fields    []FieldTarget
-	messages  []schema.TypeRef
+	endpoints   []Endpoint
+	derivations []Derivation
+	rules       []Rule
+	fields      []FieldTarget
+	messages    []schema.TypeRef
 }
 
 // spectreModule is an immutable module record shared safely across isolated runtimes.
@@ -140,6 +200,18 @@ type callbackRegistry struct {
 	callbacks []ruleCallbacks
 	fields    map[FieldTarget]sobek.Callable
 	messages  map[schema.TypeRef]sobek.Callable
+	// derivations and their callbacks share indexes. unfinished holds the
+	// patterns of derive() calls whose from() has not been called.
+	derivations         []Derivation
+	derivationCallbacks []derivationCallbacks
+	unfinished          map[int]string
+	derives             int
+}
+
+// derivationCallbacks are the script functions of one derivation.
+type derivationCallbacks struct {
+	request  sobek.Callable
+	response sobek.Callable
 }
 
 // ruleCallbacks are the script functions of one rule, indexed like the rules.
@@ -154,9 +226,10 @@ type ruleCallbacks struct {
 
 func newCallbackRegistry(runtime *sobek.Runtime, variables map[string]string) *callbackRegistry {
 	registry := &callbackRegistry{
-		runtime:  runtime,
-		fields:   map[FieldTarget]sobek.Callable{},
-		messages: map[schema.TypeRef]sobek.Callable{},
+		runtime:    runtime,
+		fields:     map[FieldTarget]sobek.Callable{},
+		messages:   map[schema.TypeRef]sobek.Callable{},
+		unfinished: map[int]string{},
 	}
 	ingress := runtime.NewObject()
 	registry.defineMethod(ingress, "ingress."+string(model.ProtocolHTTP), string(model.ProtocolHTTP), registry.httpRule)
@@ -193,6 +266,9 @@ func (r *callbackRegistry) variable(variables map[string]string) func(sobek.Func
 const (
 	matchMethod  = "match"
 	ignoreMethod = "ignore"
+	// deriveMethod and fromMethod declare a derived egress endpoint. Each takes two type arguments.
+	deriveMethod = "derive"
+	fromMethod   = "from"
 	statusMethod = "status"
 	// requestHeaderMethod and responseHeaderMethod select by a header's value.
 	requestHeaderMethod  = "requestHeader"
@@ -225,6 +301,9 @@ func (r *callbackRegistry) egressRule(call sobek.FunctionCall) sobek.Value {
 		r.matchEndpoint(pattern, call)
 		return sobek.Undefined()
 	})
+	r.defineMethod(object, "EgressHTTPRule."+deriveMethod, deriveMethod, func(call sobek.FunctionCall) sobek.Value {
+		return r.derivationObject(pattern, call)
+	})
 	return object
 }
 
@@ -234,11 +313,60 @@ func (r *callbackRegistry) matchEndpoint(pattern string, call sobek.FunctionCall
 	if len(call.Arguments) != 1 {
 		panic(r.runtime.NewTypeError("spectre.%s requires a type name", qualified))
 	}
-	typeName := schema.TypeRef(r.stringArgument(call, 0, qualified, "type name"))
+	r.addEndpoint(pattern, schema.TypeRef(r.stringArgument(call, 0, qualified, "type name")))
+}
+
+func (r *callbackRegistry) addEndpoint(pattern string, typeName schema.TypeRef) Endpoint {
 	if slices.ContainsFunc(r.endpoints, func(endpoint Endpoint) bool { return endpoint.Pattern() == pattern }) {
 		panic(r.runtime.NewTypeError("duplicate endpoint %q", pattern))
 	}
-	r.endpoints = append(r.endpoints, newEndpoint(model.Egress, model.ProtocolHTTP, pattern, typeName))
+	endpoint := newEndpoint(model.Egress, model.ProtocolHTTP, pattern, typeName)
+	r.endpoints = append(r.endpoints, endpoint)
+	return endpoint
+}
+
+// derivationObject receives the request and answer type names compile inserts.
+// Its from method declares the endpoint, so a derive() without from() fails loading.
+func (r *callbackRegistry) derivationObject(pattern string, call sobek.FunctionCall) sobek.Value {
+	const qualified = "EgressHTTPRule.derive"
+	if len(call.Arguments) != 2 {
+		panic(r.runtime.NewTypeError("spectre.%s requires a request and a response type name", qualified))
+	}
+	request := schema.TypeRef(r.stringArgument(call, 0, qualified, "request type name"))
+	response := schema.TypeRef(r.stringArgument(call, 1, qualified, "response type name"))
+	pending := r.derives
+	r.derives++
+	r.unfinished[pending] = pattern
+	object := r.runtime.NewObject()
+	r.defineMethod(object, "EgressDerivation."+fromMethod, fromMethod, func(call sobek.FunctionCall) sobek.Value {
+		if _, unfinished := r.unfinished[pending]; !unfinished {
+			panic(r.runtime.NewTypeError("spectre.EgressDerivation.from is already called for %q", pattern))
+		}
+		r.addDerivation(r.addEndpoint(pattern, request), response, call)
+		delete(r.unfinished, pending)
+		return sobek.Undefined()
+	})
+	return object
+}
+
+// addDerivation receives the source type names compile inserts, then the source
+// pattern and the request and response functions.
+func (r *callbackRegistry) addDerivation(endpoint Endpoint, response schema.TypeRef, call sobek.FunctionCall) {
+	const qualified = "EgressDerivation.from"
+	if len(call.Arguments) != 5 {
+		panic(r.runtime.NewTypeError("spectre.%s requires a source pattern, a request function, and a response function", qualified))
+	}
+	derivation := newDerivation(len(r.derivations), endpoint, response,
+		model.Route(r.stringArgument(call, 2, qualified, "source pattern")),
+		schema.TypeRef(r.stringArgument(call, 0, qualified, "source request type name")),
+		schema.TypeRef(r.stringArgument(call, 1, qualified, "source response type name")))
+	request, requestOK := sobek.AssertFunction(call.Argument(3))
+	answer, answerOK := sobek.AssertFunction(call.Argument(4))
+	if !requestOK || !answerOK {
+		panic(r.runtime.NewTypeError("spectre.%s request and response must be functions", qualified))
+	}
+	r.derivations = append(r.derivations, derivation)
+	r.derivationCallbacks = append(r.derivationCallbacks, derivationCallbacks{request: request, response: answer})
 }
 
 // ruleBuilder is a rule whose selectors are chosen but whose action is not yet.
@@ -464,6 +592,14 @@ func (r *callbackRegistry) message(typeName schema.TypeRef) (sobek.Callable, boo
 	return callback, ok
 }
 
+// derivation returns the callbacks of the derivation at index.
+func (r *callbackRegistry) derivation(index int) (derivationCallbacks, bool) {
+	if index < 0 || index >= len(r.derivationCallbacks) {
+		return derivationCallbacks{}, false
+	}
+	return r.derivationCallbacks[index], true
+}
+
 // rule returns the callbacks of the rule at index, or none for an unknown rule.
 func (r *callbackRegistry) rule(index int) ruleCallbacks {
 	if index < 0 || index >= len(r.callbacks) {
@@ -484,7 +620,13 @@ func (r *callbackRegistry) registrations() registrations {
 		return cmp.Compare(left.Path(), right.Path())
 	})
 	messages := slices.Sorted(maps.Keys(r.messages))
-	return registrations{endpoints: slices.Clone(r.endpoints), rules: slices.Clone(r.rules), fields: fields, messages: messages}
+	return registrations{
+		endpoints:   slices.Clone(r.endpoints),
+		derivations: slices.Clone(r.derivations),
+		rules:       slices.Clone(r.rules),
+		fields:      fields,
+		messages:    messages,
+	}
 }
 
 // loadSpectreModule requires synchronous evaluation so registration is complete at return.
@@ -506,6 +648,10 @@ func loadSpectreModule(
 	registry, ok := runtime.GetModuleInstance(spectre).(*callbackRegistry)
 	if !ok {
 		return nil, errors.New("spectre module instance is unavailable")
+	}
+	if len(registry.unfinished) > 0 {
+		first := slices.Min(slices.Collect(maps.Keys(registry.unfinished)))
+		return nil, errors.Errorf("spectre.egress.http(%q).derive() needs from()", registry.unfinished[first])
 	}
 	return registry, nil
 }
