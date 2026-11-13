@@ -4,6 +4,7 @@ package message
 import (
 	"context"
 	"encoding/json"
+	"mime"
 	"net/http"
 	"net/url"
 	"strings"
@@ -84,8 +85,8 @@ func (d *Decoder) Request(request Request) (protocol.Message, error) {
 	}
 	endpoint, wildcards, declared := d.routes.Request(request.Method, request.Host, request.Path)
 	selected, err := requestWire(request.Header.Get("Content-Type"))
-	if declared && selected != wireGRPC && selected != wireProtobuf {
-		selected, err = wireHTTPJSON, nil
+	if declared {
+		selected, err = declaredWire(request.Header), nil
 	}
 	if err != nil {
 		return protocol.Message{}, err
@@ -107,6 +108,58 @@ func (d *Decoder) Request(request Request) (protocol.Message, error) {
 		return protocol.Message{}, errors.Wrapf(err, "decode request as %s", root.Name)
 	}
 	return protocol.Message{Type: Some(root.Name), Value: payload}, nil
+}
+
+// declaredWire is the wire of a request to a declared endpoint: gRPC, protobuf, or else HTTP JSON.
+func declaredWire(header http.Header) wire {
+	selected, err := requestWire(header.Get("Content-Type"))
+	if err != nil || (selected != wireGRPC && selected != wireProtobuf) {
+		return wireHTTPJSON
+	}
+	return selected
+}
+
+// SourceResponse decodes a reference response to an endpoint that others derive
+// answers from, as its declared response type.
+func (d *Decoder) SourceResponse(request Request, response Response) protocol.Content {
+	endpoint, _, declared := d.routes.Request(request.Method, request.Host, request.Path)
+	name, source := endpoint.Response.Get()
+	if !declared || !source {
+		return protocol.Content{Failure: Some(errors.New("no endpoint derives answers from the request's responses"))}
+	}
+	root, err := d.schema.Type(name)
+	if err != nil {
+		return protocol.Content{Failure: Some(errors.Wrap(err, "endpoint response type is unusable"))}
+	}
+	return newDecoding(d, root, declaredWire(request.Header), request.Method).decode(response)
+}
+
+// Answer encodes a successful response to a request to a declared endpoint, in
+// the request's wire format. gRPC requests cannot be answered.
+func (d *Decoder) Answer(header http.Header, answer protocol.Message) (Response, error) {
+	name, typed := answer.Type.Get()
+	if !typed {
+		return Response{}, errors.New("answer has no type")
+	}
+	var contentType string
+	var body []byte
+	var err error
+	switch selected := declaredWire(header); selected {
+	case wireProtobuf:
+		contentType, _, _ = mime.ParseMediaType(header.Get("Content-Type")) //nolint:errcheck // declaredWire parsed it.
+		body, err = d.codec.Encode(name, answer.Value)
+	case wireHTTPJSON, wireConnectJSON:
+		contentType = jsonMediaType
+		body, err = json.Marshal(answer.Value)
+	case wireGRPC:
+		return Response{}, errors.New("gRPC requests cannot be answered")
+	default:
+		return Response{}, errors.Errorf("unknown wire protocol: %d", selected)
+	}
+	if err != nil {
+		return Response{}, errors.Wrapf(err, "encode answer as %s", name)
+	}
+	return Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {contentType}}, Body: body}, nil
 }
 
 // Responses decides how ingress compares the responses to one request.

@@ -23,6 +23,8 @@ type Matcher struct {
 type Request struct {
 	Pattern string
 	Type    schema.TypeRef
+	// Response is the type of reference responses that other endpoints derive answers from.
+	Response Option[schema.TypeRef]
 }
 
 // declaredRule is an ingress rule, with its pattern if it selects requests by one.
@@ -42,7 +44,7 @@ func NewMatcher() *Matcher {
 func (m *Matcher) Declare(declaration protocol.Declaration) error {
 	switch declared := declaration.(type) {
 	case protocol.DeclarationRequest:
-		request := Request{Pattern: declared.Pattern, Type: declared.Type}
+		request := Request{Pattern: declared.Pattern, Type: declared.Type, Response: declared.Response}
 		if err := m.requests.Add(declared.Pattern, request); err != nil {
 			return err
 		}

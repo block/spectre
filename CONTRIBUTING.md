@@ -188,6 +188,33 @@ import type { FetchForecastRequest } from "forecasts";
 egress.http(`GET forecasts.${variable("environment")}.example/v1/forecasts/{location}`).match<FetchForecastRequest>();
 ```
 
+When the candidate reads the same data through a different endpoint than the
+reference, declare its endpoint with `derive<T, R>().from<S, U>(source, request, response)`.
+`source` must be declared with `match<S>()`. `request` maps the candidate's call to a
+call to the source. `response` builds the answer from that reference call's response:
+
+```ts
+const employments = "POST people.example/people.v1.People/ListEmployments";
+egress.http(employments).match<ListEmploymentsRequest>();
+egress
+  .http("POST people.example/people.v1.People/GetUnits")
+  .derive<GetUnitsRequest, GetUnitsResponse>()
+  .from<ListEmploymentsRequest, ListEmploymentsResponse>(
+    employments,
+    (request) => ({ person: request.person }),
+    (request, reference) => ({
+      units: reference.employments.find((employment) => employment.token === request.employment)?.units ?? [],
+    }),
+  );
+```
+
+A call to the derived endpoint uses a reference call to that endpoint if the
+reference made one. Otherwise it uses the earliest matching call to the source.
+Within `--match-window`, it takes whichever arrives first. Derived calls are never
+sent to a dependency, so derive only from read-only endpoints. Only successful
+source responses are used, and answers are encoded as protobuf or JSON to match
+the request. gRPC calls cannot be answered.
+
 ## Sample Connect service
 
 From the repository root with Hermit activated, build and run the sample:

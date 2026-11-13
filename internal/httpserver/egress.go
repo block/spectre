@@ -9,6 +9,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/alecthomas/errors"
@@ -30,15 +31,17 @@ import (
 // Egress serves reference and candidate traffic on separate listeners. Candidate
 // requests never reach a dependency under any condition.
 type Egress struct {
-	config           Config
-	transport        http.RoundTripper
-	engine           *protocol.Engine
-	routes           *route.Matcher
-	destinations     []destination
-	listeners        []*netaddr.Endpoint
-	candidates       *proxy.Candidates
-	requests         chan struct{}
-	decoder          *message.Decoder
+	config       Config
+	transport    http.RoundTripper
+	engine       *protocol.Engine
+	routes       *route.Matcher
+	destinations []destination
+	listeners    []*netaddr.Endpoint
+	candidates   *proxy.Candidates
+	requests     chan struct{}
+	decoder      *message.Decoder
+	// budget bounds recordings and the decoded source responses derivations read.
+	budget           *proxy.Budget
 	referencePoint   *point
 	candidatePoint   *point
 	referenceHandler http.Handler
@@ -99,6 +102,7 @@ func NewEgress(
 		candidates:     candidates,
 		requests:       make(chan struct{}, config.MaxInFlightRequests),
 		decoder:        decoder,
+		budget:         budget,
 		referencePoint: newPoint(engine.EgressReference(model.ProtocolHTTP), recordingBudget, false, true),
 		candidatePoint: newPoint(engine.EgressCandidate(model.ProtocolHTTP), recordingBudget, false, true),
 		health:         health.New(http.NotFoundHandler()),
@@ -204,6 +208,7 @@ func (e *Egress) serveReference(writer http.ResponseWriter, request *http.Reques
 	upstream := e.upstream(request)
 	// Snapshot the request now, because the engine may decode it after the handler returns.
 	snapshot := newMessageRequest(request)
+	decode := e.responseDecoder(newMessageRequest(request))
 	captured := newRequestCapture(e.config.ComparisonMaxBodyBytes)
 	outbound := request.Clone(ctx)
 	switch {
@@ -236,7 +241,32 @@ func (e *Egress) serveReference(writer http.ResponseWriter, request *http.Reques
 		writer.WriteHeader(http.StatusBadGateway)
 		return
 	}
-	e.referencePoint.respond(writer, outbound, decision, upstream, noDecode)
+	e.referencePoint.respond(writer, outbound, decision, upstream, decode)
+}
+
+// responseDecoder decodes the reference responses that derivations read. A
+// decoded response reserves as much budget again as its body, until the engine releases it.
+func (e *Egress) responseDecoder(request message.Request) decodeFunc {
+	endpoint, _, declared := e.routes.Request(request.Method, request.Host, request.Path)
+	if !declared || !endpoint.Response.Ok() {
+		return noDecode
+	}
+	return func(_ context.Context, recorded *recording) protocol.Content {
+		response, err := recorded.response()
+		if err != nil {
+			return protocol.Content{Failure: Some(err)}
+		}
+		hold, reserved := newBudgetHold(e.budget, len(response.Body))
+		if !reserved {
+			return protocol.Content{
+				Status:  Some(strconv.Itoa(response.StatusCode)),
+				Failure: Some(errors.Errorf("decoded response exceeds the %d byte recording budget", e.budget.Limit())),
+			}
+		}
+		content := e.decoder.SourceResponse(request, response)
+		content.Release = Some(hold.Release)
+		return content
+	}
 }
 
 // destination returns the upstream of the first destination that matches a host,
@@ -294,7 +324,12 @@ func (e *Egress) serveCandidate(writer http.ResponseWriter, request *http.Reques
 		}
 		captured := newMessageRequest(request)
 		captured.Body, captured.Overflow = body[:min(len(body), limit)], len(body) > limit
-		return errors.WithStack2(e.decoder.Request(captured))
+		decoded, err := e.decoder.Request(captured)
+		if err != nil {
+			return protocol.Message{}, errors.WithStack(err)
+		}
+		decoded.Encode = Some[protocol.Encoder](e.answerer(captured.Header))
+		return decoded, nil
 	}
 	decision, err := e.candidatePoint.process(ctx, None[protocol.RequestID](), e.route(request), None[string](), payload)
 	if err != nil {
@@ -302,6 +337,18 @@ func (e *Egress) serveCandidate(writer http.ResponseWriter, request *http.Reques
 		return
 	}
 	e.candidatePoint.respond(writer, request, decision, None[*httputil.ReverseProxy](), noDecode)
+}
+
+// answerer answers a candidate request with a derived message. The answer is
+// built here, so it never reaches a dependency.
+func (e *Egress) answerer(header http.Header) protocol.Encoder {
+	return func(_ context.Context, answer protocol.Message) (protocol.Raw, error) {
+		response, err := e.decoder.Answer(header, answer)
+		if err != nil {
+			return nil, errors.WithStack(err)
+		}
+		return newAnswer(response), nil
+	}
 }
 
 // route names a request by the endpoint pattern it matches, so requests that

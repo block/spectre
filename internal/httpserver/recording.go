@@ -40,6 +40,21 @@ func newRecording(budget *proxy.Budget) *recording {
 	return &recording{budget: budget, started: time.Now()}
 }
 
+// newAnswer records a response that egress builds itself, outside any budget.
+func newAnswer(response message.Response) *recording {
+	now := time.Now()
+	return &recording{
+		budget:        proxy.NewBudget(0),
+		started:       now,
+		finished:      true,
+		firstByte:     now,
+		status:        response.StatusCode,
+		header:        response.Header,
+		contentLength: int64(len(response.Body)),
+		body:          response.Body,
+	}
+}
+
 // start records the response head once the upstream has answered.
 func (r *recording) start(response *http.Response) {
 	r.mu.Lock()
@@ -208,4 +223,24 @@ func (s recordingSink) closeWriter(err error) {
 		return
 	}
 	s.recording.finish(nil, err)
+}
+
+// budgetHold keeps bytes reserved from a budget until it is released.
+type budgetHold struct {
+	budget *proxy.Budget
+	size   int
+	once   sync.Once
+}
+
+// newBudgetHold reserves size bytes, and reports whether they fit.
+func newBudgetHold(budget *proxy.Budget, size int) (*budgetHold, bool) {
+	if !budget.Reserve(size) {
+		return nil, false
+	}
+	return &budgetHold{budget: budget, size: size}, true
+}
+
+// Release returns the reserved bytes. Only the first call has any effect.
+func (h *budgetHold) Release() {
+	h.once.Do(func() { h.budget.Release(h.size) })
 }

@@ -1,4 +1,5 @@
-// Package codec decodes gRPC, Connect, and bare protobuf payloads to JSON.
+// Package codec decodes gRPC, Connect, and bare protobuf payloads to JSON, and
+// encodes JSON as bare protobuf.
 package codec
 
 import (
@@ -86,6 +87,24 @@ func (c *Codec) Decode(name schema.TypeRef, format Format, header http.Header, b
 		return nil, errors.Errorf("unknown wire format: %d", format)
 	}
 	return payloadValue(c.registry.Types(), message, maxBodyBytes)
+}
+
+// Encode converts a value in the ProtoJSON shape of its declared type to a bare protobuf message.
+func (c *Codec) Encode(name schema.TypeRef, value any) ([]byte, error) {
+	descriptor, err := c.registry.Message(protoreflect.FullName(name))
+	if err != nil {
+		return nil, errors.Wrap(err, "resolve wire type")
+	}
+	data, err := json.Marshal(value)
+	if err != nil {
+		return nil, errors.Wrap(err, "encode ProtoJSON")
+	}
+	message := dynamicpb.NewMessage(descriptor)
+	if err := unmarshalProtoJSON(c.registry.Types(), data, message); err != nil {
+		return nil, err
+	}
+	encoded, err := (proto.MarshalOptions{Deterministic: true}).Marshal(message)
+	return encoded, errors.Wrap(err, "encode protobuf")
 }
 
 func grpcPayload(header http.Header, body []byte, maxBodyBytes int) ([]byte, error) {
