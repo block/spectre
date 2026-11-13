@@ -1,6 +1,7 @@
 package javascript_test
 
 import (
+	"context"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -429,8 +430,9 @@ func TestRejectsUnsetVariable(t *testing.T) {
 
 func TestTimeoutBoundsOnlyEvaluation(t *testing.T) {
 	_, err := javascript.NewProgram(t.Context(), 10*time.Millisecond, declarations(), fstest.MapFS{"test.ts": script(`while (true) {}`)}, nil)
-	assert.Error(t, err)
+	assert.IsError(t, err, context.DeadlineExceeded)
 	assert.Contains(t, err.Error(), "evaluate comparison modules")
+	assert.Contains(t, err.Error(), "module evaluation")
 }
 
 func TestRejectsDuplicateTargetsAcrossScripts(t *testing.T) {
