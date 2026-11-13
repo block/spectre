@@ -288,7 +288,7 @@ func (r *callbackRegistry) deriveFrom(pattern string, request, response schema.T
 		panic(r.runtime.NewTypeError("duplicate endpoint %q", pattern))
 	}
 	r.endpoints = append(r.endpoints, newEndpoint(model.Egress, model.ProtocolHTTP, pattern, request))
-	r.derivations = append(r.derivations, newDerivation(len(r.derivations), pattern, request, response, source, sourceRequest, sourceResponse))
+	r.derivations = append(r.derivations, newDerivation(len(r.derivations), pattern, response, source, sourceRequest, sourceResponse))
 	r.derivers = append(r.derivers, deriverCallbacks{request: requestFunction, response: responseFunction})
 }
 

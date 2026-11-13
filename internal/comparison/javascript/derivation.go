@@ -13,7 +13,6 @@ type Derivation struct {
 	index          int
 	protocol       model.Protocol
 	pattern        string
-	request        schema.TypeRef
 	response       schema.TypeRef
 	source         string
 	sourceRequest  schema.TypeRef
@@ -21,9 +20,9 @@ type Derivation struct {
 }
 
 // newDerivation creates the derivation at index of pattern's requests from source's responses.
-func newDerivation(index int, pattern string, request, response schema.TypeRef, source string, sourceRequest, sourceResponse schema.TypeRef) Derivation {
+func newDerivation(index int, pattern string, response schema.TypeRef, source string, sourceRequest, sourceResponse schema.TypeRef) Derivation {
 	return Derivation{
-		index: index, protocol: model.ProtocolHTTP, pattern: pattern, request: request, response: response,
+		index: index, protocol: model.ProtocolHTTP, pattern: pattern, response: response,
 		source: source, sourceRequest: sourceRequest, sourceResponse: sourceResponse,
 	}
 }
@@ -41,11 +40,6 @@ func (d Derivation) Protocol() model.Protocol {
 // Pattern returns the pattern of the endpoint whose requests are answered.
 func (d Derivation) Pattern() string {
 	return d.pattern
-}
-
-// Request returns the type the answered requests decode as.
-func (d Derivation) Request() schema.TypeRef {
-	return d.request
 }
 
 // Response returns the type of the answers.

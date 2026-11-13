@@ -34,8 +34,8 @@ func TestRegistersDerivations(t *testing.T) {
 	assert.Equal(t, model.ProtocolHTTP, derivation.Protocol())
 	assert.Equal(t, "POST users.example/v1/user", derivation.Pattern())
 	assert.Equal(t, "POST users.example/v1/users", derivation.Source())
-	assert.Equal(t, []schema.TypeRef{"test.v1.User", "test.v1.Response", "test.v1.User", "test.v1.Response"},
-		[]schema.TypeRef{derivation.Request(), derivation.Response(), derivation.SourceRequest(), derivation.SourceResponse()})
+	assert.Equal(t, []schema.TypeRef{"test.v1.Response", "test.v1.User", "test.v1.Response"},
+		[]schema.TypeRef{derivation.Response(), derivation.SourceRequest(), derivation.SourceResponse()})
 }
 
 func TestEvaluatesDerivationFunctions(t *testing.T) {
