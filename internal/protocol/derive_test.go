@@ -108,7 +108,7 @@ func TestEgressDerivedRequestIgnoresReferenceRequestsToItsOwnEndpoint(t *testing
 		Detail:  "no matching source reference request within 50ms",
 	}}, h.quarantine.Recorded())
 	// The unclaimed reference to the derived endpoint is released as usual.
-	awaitReleases(t, own, 1)
+	awaitRelease(t, own)
 }
 
 func TestEgressReleasesDecodedSourceResponseWhenForgotten(t *testing.T) {
@@ -137,14 +137,53 @@ func TestEgressReleasesDecodedSourceResponseWhenForgotten(t *testing.T) {
 				assert.Equal(t, 0, hold.Releases())
 			}
 
-			// Raw.Release may run more than once, so only its first call matters.
-			deadline := time.Now().Add(time.Second)
-			for hold.Releases() == 0 && time.Now().Before(deadline) {
-				time.Sleep(time.Millisecond)
-			}
-			assert.NotEqual(t, 0, hold.Releases())
+			awaitRelease(t, hold)
 		})
 	}
+}
+
+func TestEgressKeepsDecodedSourceResponseWhenReplayIsCancelled(t *testing.T) {
+	h := newScriptHarness(t, deriveScript, 200*time.Millisecond)
+	exchange := h.forwardHTTP(t, listRoute, query(queryType, "london", ""))
+	ctx, cancel := context.WithTimeout(h.ctx, 20*time.Millisecond)
+	defer cancel()
+	_, err := h.engine.EgressCandidate(model.ProtocolHTTP).ProcessRequest(ctx, None[protocol.RequestID](), listRoute, notIgnored, query(queryType, "london", ""))
+	assert.Error(t, err)
+
+	raw, hold := newRaw("list"), newRaw("hold")
+	response := listed(raw)
+	decode := response.Decode
+	response.Decode = func(ctx context.Context) protocol.Content {
+		content := decode(ctx)
+		content.Hold = Some[protocol.Raw](hold)
+		return content
+	}
+	h.engine.EgressReference(model.ProtocolHTTP).ProcessResponse(h.ctx, exchange, response)
+	derived, err := h.engine.EgressCandidate(model.ProtocolHTTP).ProcessRequest(h.ctx, None[protocol.RequestID](), getRoute, notIgnored, query(queryType, "london", ""))
+	assert.NoError(t, err)
+
+	assert.Equal(t, protocol.Decision(protocol.DecisionAnswer{Message: protocol.Message{Type: derivedType, Value: map[string]any{"value": "listed/london"}}}), derived)
+	assert.Equal(t, 1, raw.Releases())
+	assert.Equal(t, 0, hold.Releases(), "the decoded response is still offered to derivations")
+	awaitRelease(t, hold)
+}
+
+func TestEgressReleasesDecodedSourceResponseThatWasNeverOffered(t *testing.T) {
+	h := newScriptHarness(t, deriveScript, time.Second)
+	truncated := func(context.Context) (protocol.Message, error) { return protocol.Message{}, errors.New("truncated") }
+	exchange := h.forwardHTTP(t, listRoute, truncated)
+
+	hold := newRaw("hold")
+	response := listed(newRaw("list"))
+	decode := response.Decode
+	response.Decode = func(ctx context.Context) protocol.Content {
+		content := decode(ctx)
+		content.Hold = Some[protocol.Raw](hold)
+		return content
+	}
+	h.engine.EgressReference(model.ProtocolHTTP).ProcessResponse(h.ctx, exchange, response)
+
+	assert.Equal(t, 1, hold.Releases())
 }
 
 func TestEgressQuarantinesUnderivableRequests(t *testing.T) {

@@ -76,7 +76,7 @@ func TestEgressCandidatePairsWithEquivalentReference(t *testing.T) {
 				Traffic: Some(model.Traffic{Direction: model.Egress, Protocol: fake, Route: test.candidateRoute}),
 				Detail:  "no matching reference request within 200ms",
 			}}, h.quarantine.Recorded())
-			awaitReleases(t, raw, 1)
+			awaitRelease(t, raw)
 		})
 	}
 }
@@ -308,7 +308,7 @@ func TestEgressReleasesUnclaimedReferenceAfterWindow(t *testing.T) {
 	raw := newRaw("reference")
 	h.reference(t, "query", query(queryType, "london", ""), raw)
 
-	awaitReleases(t, raw, 1)
+	awaitRelease(t, raw)
 
 	_, err := h.engine.EgressCandidate(fake).ProcessRequest(h.ctx, None[protocol.RequestID](), "query", notIgnored, query(queryType, "london", ""))
 	assert.EqualError(t, err, "no matching reference request within 20ms")

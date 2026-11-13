@@ -155,6 +155,7 @@ func (q *egressQueue) forward(ctx context.Context, protocol model.Protocol, rout
 		hash, err := q.hash(background, protocol, route, "reference", request)
 		if err != nil {
 			pending.abandon()
+			pending.forget()
 			q.quarantine.Quarantine(background, egressReason(model.QuarantineUnable, protocol, route, errors.Wrap(err, "identify reference request")))
 			return
 		}
@@ -537,21 +538,20 @@ func (e *egressExchange) finish(raw Option[Raw], failure Option[error], content 
 	if e.abandoned {
 		e.release()
 	}
-	if e.abandoned || e.forgotten {
+	if e.forgotten {
 		e.releaseHold()
 	}
 }
 
-// abandon marks the exchange as one no candidate will replay or derive from.
+// abandon marks the exchange as one no candidate will replay.
 func (e *egressExchange) abandon() {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.abandoned = true
 	e.release()
-	e.releaseHold()
 }
 
-// forget marks the source reference as one observers no longer find.
+// forget marks the source reference as one derivations no longer find.
 func (e *egressExchange) forget() {
 	e.mu.Lock()
 	defer e.mu.Unlock()

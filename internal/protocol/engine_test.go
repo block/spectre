@@ -221,14 +221,14 @@ func (r *countingRaw) Releases() int {
 	return int(r.released.Load())
 }
 
-// awaitReleases waits for raw to be released expected times, failing after a second.
-func awaitReleases(t *testing.T, raw *countingRaw, expected int) {
+// awaitRelease waits for raw to be released once, failing after a second.
+func awaitRelease(t *testing.T, raw *countingRaw) {
 	t.Helper()
 	deadline := time.Now().Add(time.Second)
-	for raw.Releases() != expected && time.Now().Before(deadline) {
+	for raw.Releases() == 0 && time.Now().Before(deadline) {
 		time.Sleep(time.Millisecond)
 	}
-	assert.Equal(t, expected, raw.Releases())
+	assert.Equal(t, 1, raw.Releases())
 }
 
 type lockedBuffer struct {
