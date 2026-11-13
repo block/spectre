@@ -62,6 +62,14 @@ func TestRejectsInvalidDerivationSources(t *testing.T) {
 			script:  derive + `.from<v1.Query, v1.Response>("POST users.example/v1/users", ` + functions + `);`,
 			message: `http("POST users.example/v1/user").derive().from("POST users.example/v1/users"): source endpoint is not declared`,
 		},
+		"SourceWithoutHost": {
+			script:  derive + `.from<v1.Query, v1.Response>("POST /v1/users", ` + functions + `);`,
+			message: "source endpoint is not declared",
+		},
+		"SourceIsItself": {
+			script:  derive + `.from<v1.User, v1.User>("POST users.example/v1/user", (request) => request, (_, reference) => reference);`,
+			message: "source endpoint is itself derived",
+		},
 		"OtherRequestType": {
 			script:  `spectre.egress.http("POST users.example/v1/users").match<v1.Request>();` + derive + `.from<v1.Query, v1.Response>("POST users.example/v1/users", ` + functions + `);`,
 			message: "source requests are test.v1.Request, not test.v1.Query",

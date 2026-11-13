@@ -129,14 +129,6 @@ func TestRejectsInvalidDerivations(t *testing.T) {
 			body:    `egress.http("POST users.example/v1/user").derive("test.v1.User", "test.v1.Response").from("test.v1.User", "test.v1.Response", "POST users.example/v1/users");`,
 			message: "spectre.EgressDerivation.from requires a source pattern, a request function, and a response function",
 		},
-		"SourceWithoutHost": {
-			body:    `egress.http("POST users.example/v1/user").derive("test.v1.User", "test.v1.Response").from("test.v1.User", "test.v1.Response", "POST /v1/users", () => ({}), () => ({}));`,
-			message: `spectre.EgressDerivation.from pattern "POST /v1/users" must have the form "<METHOD> <host>/<path>"`,
-		},
-		"SourceIsItself": {
-			body:    `egress.http("POST users.example/v1/user").derive("test.v1.User", "test.v1.Response").from("test.v1.User", "test.v1.Response", "POST users.example/v1/user", () => ({}), () => ({}));`,
-			message: `spectre.EgressDerivation.from pattern "POST users.example/v1/user" must name another endpoint`,
-		},
 		"RequestNotFunction": {
 			body:    `egress.http("POST users.example/v1/user").derive("test.v1.User", "test.v1.Response").from("test.v1.User", "test.v1.Response", "POST users.example/v1/users", 1, () => ({}));`,
 			message: "spectre.EgressDerivation.from request must be a function",

@@ -270,12 +270,6 @@ func (r *callbackRegistry) deriveFrom(pattern string, request, response schema.T
 	sourceRequest := schema.TypeRef(r.stringArgument(call, 0, qualified, "source request type name"))
 	sourceResponse := schema.TypeRef(r.stringArgument(call, 1, qualified, "source response type name"))
 	source := r.stringArgument(call, 2, qualified, "pattern")
-	if !hasForm(source, true) {
-		panic(r.runtime.NewTypeError("spectre.%s pattern %q must have the form \"<METHOD> <host>/<path>\"", qualified, source))
-	}
-	if source == pattern {
-		panic(r.runtime.NewTypeError("spectre.%s pattern %q must name another endpoint", qualified, source))
-	}
 	requestFunction, ok := sobek.AssertFunction(call.Argument(3))
 	if !ok {
 		panic(r.runtime.NewTypeError("spectre.%s request must be a function", qualified))
