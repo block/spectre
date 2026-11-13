@@ -109,7 +109,7 @@ A script can declare that a candidate's requests to one egress endpoint are answ
 - `response` builds an `R` from the candidate request and the decoded reference response. The engine answers with `DecisionAnswer`, and the server encodes the message as a successful response in the request's wire format.
 - Deriving never claims a source reference. It stays available to derivations for `MatchWindow` after it is hashed, and to a candidate request to the source as usual.
 - Candidate requests to a derived endpoint never pair with reference requests to it, which expire unclaimed.
-- No source reference within the window quarantines as unmatched. A failed or undecodable source response, a throwing function, or a result that is not its type quarantines as unable.
+- No source reference within the window, or before the candidate gives up, quarantines as unmatched. A failed or undecodable source response, a throwing function, or a result that is not its type quarantines as unable.
 
 ### Pairing windows
 

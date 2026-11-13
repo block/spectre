@@ -217,8 +217,7 @@ func (q *egressQueue) answer(ctx context.Context, protocol model.Protocol, route
 ) (Decision, error) {
 	message, kind, err := q.derive(ctx, protocol, derivation, request)
 	if err != nil {
-		// The candidate giving up explains the failure.
-		if ctx.Err() == nil {
+		if blamesCandidate(ctx, kind) {
 			q.quarantine.Quarantine(ctx, egressReason(kind, protocol, route, err))
 		}
 		return nil, err
@@ -342,6 +341,7 @@ func (q *egressQueue) observe(ctx context.Context, hash comparison.Hash) (*egres
 	q.observers[hash] = append(q.observers[hash], observer)
 	q.mu.Unlock()
 
+	started := time.Now()
 	timer := time.NewTimer(q.window)
 	defer timer.Stop()
 	var err error
@@ -351,7 +351,8 @@ func (q *egressQueue) observe(ctx context.Context, hash comparison.Hash) (*egres
 	case <-timer.C:
 		err = errors.Errorf("no matching source reference request within %s", q.window)
 	case <-ctx.Done():
-		err = errors.Wrap(ctx.Err(), "wait for matching source reference request")
+		err = errors.Wrapf(ctx.Err(), "no matching source reference request before the candidate gave up after %s",
+			time.Since(started).Round(time.Millisecond))
 	}
 	q.mu.Lock()
 	observers := q.observers[hash]

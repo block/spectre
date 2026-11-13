@@ -2,6 +2,7 @@ package protocol_test
 
 import (
 	"context"
+	"regexp"
 	"testing"
 	"time"
 
@@ -193,15 +194,43 @@ func TestEgressQuarantinesUnderivableRequests(t *testing.T) {
 	}
 }
 
-func TestEgressDerivedRequestGivesUpWhenCancelled(t *testing.T) {
+func TestEgressQuarantinesDerivedRequestThatGivesUp(t *testing.T) {
 	h := newScriptHarness(t, deriveScript, time.Second)
 	ctx, cancel := context.WithTimeout(h.ctx, 20*time.Millisecond)
 	defer cancel()
 
 	decision, err := h.engine.EgressCandidate(model.ProtocolHTTP).ProcessRequest(ctx, None[protocol.RequestID](), getRoute, notIgnored, query(queryType, "london", ""))
 
-	assert.EqualError(t, err, "wait for matching source reference request: context deadline exceeded")
+	assert.Error(t, err)
+	assert.True(t, regexp.MustCompile(`^no matching source reference request before the candidate gave up after \d+m?s: context deadline exceeded$`).MatchString(err.Error()), "error: %s", err)
 	assert.Equal(t, nil, decision)
+	assert.Equal(t, []model.QuarantineReason{{
+		Kind:    model.QuarantineUnmatched,
+		Traffic: Some(model.Traffic{Direction: model.Egress, Protocol: model.ProtocolHTTP, Route: getRoute}),
+		Detail:  err.Error(),
+	}}, h.quarantine.Recorded())
+}
+
+func TestEgressDerivedRequestStoppedByProxyIsNotQuarantined(t *testing.T) {
+	h := newScriptHarness(t, deriveScript, time.Second)
+	ctx, cancel := context.WithCancelCause(h.ctx)
+	cancel(protocol.ErrCandidateStopped)
+
+	_, err := h.engine.EgressCandidate(model.ProtocolHTTP).ProcessRequest(ctx, None[protocol.RequestID](), getRoute, notIgnored, query(queryType, "london", ""))
+
+	assert.True(t, errors.Is(err, context.Canceled))
+	assert.Equal(t, nil, h.quarantine.Reasons())
+}
+
+func TestEgressDerivedRequestGivesUpOnSourceResponse(t *testing.T) {
+	h := newScriptHarness(t, deriveScript, time.Second)
+	h.forwardHTTP(t, listRoute, query(queryType, "london", "reference"))
+	ctx, cancel := context.WithTimeout(h.ctx, 20*time.Millisecond)
+	defer cancel()
+
+	_, err := h.engine.EgressCandidate(model.ProtocolHTTP).ProcessRequest(ctx, None[protocol.RequestID](), getRoute, notIgnored, query(queryType, "london", ""))
+
+	assert.True(t, errors.Is(err, context.DeadlineExceeded))
 	assert.Equal(t, nil, h.quarantine.Reasons())
 }
 
