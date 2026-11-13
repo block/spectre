@@ -371,17 +371,20 @@ func (q *egressQueue) add(hash comparison.Hash, pending *egressExchange) {
 // own hash, else the earliest offered source, else whichever arrives first within the window.
 func (q *egressQueue) choose(ctx context.Context, hash comparison.Hash, source Option[comparison.Hash], waiter *egressWaiter) (egressChoice, error) {
 	q.mu.Lock()
+	// Queues are edited in place, so read their entries only under q.mu.
 	if unused := q.unused[hash]; len(unused) > 0 {
+		claimed := unused[0]
 		q.setUnused(hash, unused[1:])
-		unused[0].stopExpiry()
+		claimed.stopExpiry()
 		q.mu.Unlock()
-		return egressChoice{pending: unused[0]}, nil
+		return egressChoice{pending: claimed}, nil
 	}
 	if sourceHash, derived := source.Get(); derived {
 		if offered := q.offered[sourceHash]; len(offered) > 0 {
-			offered[0].hold()
+			observed := offered[0]
+			observed.hold()
 			q.mu.Unlock()
-			return egressChoice{pending: offered[0], derived: true}, nil
+			return egressChoice{pending: observed, derived: true}, nil
 		}
 		q.deriving[sourceHash] = insertByArrival(q.deriving[sourceHash], waiter)
 	}
