@@ -3,6 +3,7 @@ package client_test
 import (
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -41,4 +42,20 @@ func TestClientReachesServerThroughSocket(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, 0, len(states)+len(divergences))
 	assert.Equal(t, "spectre.mesh.invalid", <-hosts)
+}
+
+func TestServersFailWhenAnyServerFails(t *testing.T) {
+	reachable := httptest.NewServer(server.NewService(storage.NewMemory(), time.Minute).Handler())
+	t.Cleanup(reachable.Close)
+	unreachable := httptest.NewServer(http.NotFoundHandler())
+	unreachable.Close()
+	servers := client.NewServers(client.ServersConfig{URLs: []string{reachable.URL, unreachable.URL}})
+
+	_, _, err := servers.ListDivergences(t.Context(), model.DivergenceFilter{})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), unreachable.URL)
+
+	err = servers.ClearDivergences(t.Context(), "users", "production")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), unreachable.URL)
 }
