@@ -8,14 +8,14 @@ You need to be in a root directory of the service being migrated, and have `spec
 # Migrate the next node
 
 - If there is no state.toml yet, Plan the migration with the `spectre-plan` skill.
-- Pick a node that is `pending` and whose `depends_on` are all `migrated`.
-  Prefer libraries and egress clients, which other nodes need first.
-- Implement the node in the candidate so it behaves exactly like the reference,
-  including errors and the dependency calls it makes. Match behaviour, not code.
-- Add or update the comparison scripts for its routes and dependency calls with
+- Run `spectre next --json` for the nodes of the next step, dependencies first.
+  Migrate exactly those nodes, so the step stays small and verifiable.
+- Implement the nodes in the candidate so they behave exactly like the reference,
+  including errors and the dependency calls they make. Match behaviour, not code.
+- Add or update the comparison scripts for their routes and dependency calls with
   the `spectre-schema` skill.
-- Run `spectre done <node>` with the ID of the node you migrated. It marks it
-  migrated in `spectre/state.toml` and checks the state is still valid.
+- Run `spectre done <node>...` with the IDs of the nodes you migrated. It marks
+  them migrated in `spectre/state.toml` and checks the state is still valid.
 - Commit the candidate change and the state change together, so the mirror only
   compares routes the candidate implements.
 

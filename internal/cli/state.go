@@ -48,15 +48,9 @@ type stateValidateCommand struct {
 
 func (c *stateValidateCommand) Run(out Output, catalog *state.Catalog) error {
 	path := c.State.StateFile
-	loaded, err := state.Load(path, catalog)
-	if invalid, ok := errors.AsType[*state.InvalidError](err); ok {
-		for _, problem := range invalid.Problems {
-			writeProblem(out, path, out.Palette.Red("error"), problem)
-		}
-		return errors.Errorf("%s is invalid", path)
-	}
+	loaded, err := loadValid(out, path, catalog)
 	if err != nil {
-		return errors.WithStack(err)
+		return err
 	}
 	for _, warning := range loaded.Unreached() {
 		writeProblem(out, path, out.Palette.Yellow("warning"), warning)
@@ -69,6 +63,56 @@ func (c *stateValidateCommand) Run(out Output, catalog *state.Catalog) error {
 	}
 	_, err = fmt.Fprintf(out.Writer, "%s is valid: %d nodes, %d migrated\n", path, len(loaded.Nodes), migrated)
 	return errors.Wrap(err, "write validation result")
+}
+
+// nextCommand lists the next migration step for the agent doing the migration.
+type nextCommand struct {
+	State state.Config `embed:""`
+	JSON  bool         `help:"Print JSON instead of text."`
+}
+
+func (c *nextCommand) Run(out Output, catalog *state.Catalog) error {
+	path := c.State.StateFile
+	loaded, err := loadValid(out, path, catalog)
+	if err != nil {
+		return err
+	}
+	step := loaded.Next()
+	if pending := loaded.Pending(); len(step) == 0 && len(pending) > 0 {
+		ids := make([]string, len(pending))
+		for i, node := range pending {
+			ids[i] = node.ID
+		}
+		return errors.Errorf("no ingress node reaches the pending nodes, so SPECTRE cannot verify them: %s", strings.Join(ids, ", "))
+	}
+	if c.JSON {
+		encoder := json.NewEncoder(out.Writer)
+		encoder.SetIndent("", "  ")
+		encoder.SetEscapeHTML(false)
+		return errors.Wrap(encoder.Encode(append([]state.Node{}, step...)), "write next nodes")
+	}
+	if len(step) == 0 {
+		_, err = fmt.Fprintln(out.Writer, "Every node is migrated.")
+		return errors.Wrap(err, "write next nodes")
+	}
+	for _, node := range step {
+		if _, err := fmt.Fprintf(out.Writer, "%s %s\n", out.Palette.Bold(node.ID), out.Palette.Dim(strings.Join(node.Types(), ", "))); err != nil {
+			return errors.Wrap(err, "write next nodes")
+		}
+	}
+	return nil
+}
+
+// loadValid loads the state at path, writing each problem when it is invalid.
+func loadValid(out Output, path string, catalog *state.Catalog) (state.State, error) {
+	loaded, err := state.Load(path, catalog)
+	if invalid, ok := errors.AsType[*state.InvalidError](err); ok {
+		for _, problem := range invalid.Problems {
+			writeProblem(out, path, out.Palette.Red("error"), problem)
+		}
+		return state.State{}, errors.Errorf("%s is invalid", path)
+	}
+	return loaded, errors.WithStack(err)
 }
 
 // doneCommand marks nodes migrated after the agent adds them to the candidate.

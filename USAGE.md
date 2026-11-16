@@ -31,6 +31,7 @@ restarts, and reports why to the server.
 | `spectre serve` | Run the SPECTRE server. |
 | `spectre status` | List mirrors and divergences, or clear divergences. |
 | `spectre state` | Describe and validate a migration state file. |
+| `spectre next` | List the nodes to migrate next. |
 | `spectre done` | Mark nodes migrated in the migration state. |
 | `spectre gen` | Generate TypeScript schema declarations and the script API declaration. |
 
@@ -503,6 +504,14 @@ agent writing the file. `--json` prints JSON.
 `--state-file`. It fails on errors and warns about nodes that no ingress node
 reaches, which are dead code or run from something SPECTRE does not mirror. An
 invalid state also stops `spectre supervise` and `spectre proxy` at startup.
+
+`spectre next` lists the nodes to migrate next, dependencies first, so that
+ingress traffic can verify them as soon as they are migrated. Each step holds one
+pending ingress node and the pending nodes it depends on. It picks the step with
+the fewest nodes that have IO, then the fewest nodes, then the lowest ingress
+node ID. `--json` prints each node as JSON, with the settings of each kind of
+IO it has. It prints that every node is migrated when none is pending, and
+fails when no ingress node reaches the pending nodes left.
 
 `spectre done <node>...` marks nodes migrated after they are added to the
 candidate. It rewrites the file in a canonical layout, with keys sorted and

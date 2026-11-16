@@ -1,6 +1,7 @@
 package state
 
 import (
+	"cmp"
 	"fmt"
 	"maps"
 	"os"
@@ -34,13 +35,13 @@ type State struct {
 
 // Node is one module of the service.
 type Node struct {
-	ID        string
-	DependsOn []string
-	Status    Status
+	ID        string   `json:"id"`
+	DependsOn []string `json:"depends_on,omitzero"`
+	Status    Status   `json:"status"`
 	// IO holds the settings of each IO kind the node has. A library has none.
-	IO map[model.IOKind]map[string]any
+	IO map[model.IOKind]map[string]any `json:"io,omitzero"`
 	// Line is where the node's table starts in the file, or 0 when unknown.
-	Line int
+	Line int `json:"-"`
 }
 
 // Problem is one thing wrong with a migration state.
@@ -191,6 +192,92 @@ func (s State) Unreached() []Problem {
 		}
 	}
 	return warnings
+}
+
+// Next returns the smallest set of pending nodes whose migration ingress traffic
+// can verify: one ingress node and the pending nodes it depends on.
+func (s State) Next() []Node {
+	nodes := make(map[string]Node, len(s.Nodes))
+	for _, node := range s.Nodes {
+		nodes[node.ID] = node
+	}
+	var next []Node
+	nextIO := 0
+	for _, node := range s.Nodes {
+		if node.Status != Pending || !node.hasIngress() {
+			continue
+		}
+		step := pendingStep(nodes, node.ID)
+		io := 0
+		for _, member := range step {
+			if len(member.IO) > 0 {
+				io++
+			}
+		}
+		// Fewer nodes with IO first, so a step holds one where it can.
+		if len(next) == 0 || io < nextIO || (io == nextIO && len(step) < len(next)) {
+			next, nextIO = step, io
+		}
+	}
+	return next
+}
+
+// Pending returns the nodes that are not migrated yet.
+func (s State) Pending() []Node {
+	var pending []Node
+	for _, node := range s.Nodes {
+		if node.Status == Pending {
+			pending = append(pending, node)
+		}
+	}
+	return pending
+}
+
+// pendingStep returns id and the pending nodes it depends on, directly or not,
+// dependencies first and otherwise by ID.
+func pendingStep(nodes map[string]Node, id string) []Node {
+	members := map[string]bool{}
+	queue := []string{id}
+	for len(queue) > 0 {
+		current := queue[0]
+		queue = queue[1:]
+		if members[current] || nodes[current].Status != Pending {
+			continue
+		}
+		members[current] = true
+		queue = append(queue, nodes[current].DependsOn...)
+	}
+	ids := slices.Sorted(maps.Keys(members))
+	step := make([]Node, 0, len(ids))
+	placed := map[string]bool{}
+	for len(step) < len(ids) {
+		for _, member := range ids {
+			ready := !placed[member] && !slices.ContainsFunc(nodes[member].DependsOn, func(dependency string) bool {
+				return members[dependency] && !placed[dependency]
+			})
+			if ready {
+				placed[member] = true
+				step = append(step, nodes[member])
+				break
+			}
+		}
+	}
+	return step
+}
+
+// Types returns the node's types: library, or each of its IO kinds.
+func (n Node) Types() []string {
+	if len(n.IO) == 0 {
+		return []string{Library}
+	}
+	kinds := slices.SortedFunc(maps.Keys(n.IO), func(a, b model.IOKind) int {
+		return cmp.Or(cmp.Compare(a.Protocol, b.Protocol), directionOrder(a.Direction)-directionOrder(b.Direction))
+	})
+	types := make([]string, len(kinds))
+	for i, kind := range kinds {
+		types[i] = kind.String()
+	}
+	return types
 }
 
 func (n Node) hasIngress() bool {
