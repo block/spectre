@@ -175,6 +175,86 @@ func replacePath(text, path string) string {
 	return string(bytes.ReplaceAll([]byte(text), []byte("STATE"), []byte(path)))
 }
 
+func TestNextCommand(t *testing.T) {
+	const twoSteps = "[nodes.api]\ndepends_on = [\"money\"]\n[nodes.api.ingress.rpc.methods]\n\n[nodes.money]\n\n" +
+		"[nodes.other.ingress.rpc.methods]\nGet = {}\n[nodes.other]\ndepends_on = [\"api\"]\n"
+	for name, test := range map[string]struct {
+		toml     string
+		command  nextCommand
+		palette  terminal.Palette
+		expected string
+		err      string
+	}{
+		"Text": {
+			toml:     twoSteps,
+			expected: "money library\napi ingress[rpc]\n",
+		},
+		"Color": {
+			toml:     twoSteps,
+			palette:  terminal.NewPalette(true),
+			expected: "\033[1mmoney\033[0m \033[2mlibrary\033[0m\n\033[1mapi\033[0m \033[2mingress[rpc]\033[0m\n",
+		},
+		"JSON": {
+			toml:    twoSteps,
+			command: nextCommand{JSON: true},
+			expected: `[
+  {
+    "id": "money",
+    "status": "pending",
+    "io": {}
+  },
+  {
+    "id": "api",
+    "depends_on": [
+      "money"
+    ],
+    "status": "pending",
+    "io": {
+      "ingress[rpc]": {
+        "methods": {}
+      }
+    }
+  }
+]
+`,
+		},
+		"AllMigrated": {
+			toml:     "[nodes.api]\nstatus = \"migrated\"\n[nodes.api.ingress.rpc.methods]\n",
+			expected: "Every node is migrated.\n",
+		},
+		"AllMigratedJSON": {
+			toml:     "[nodes.api]\nstatus = \"migrated\"\n[nodes.api.ingress.rpc.methods]\n",
+			command:  nextCommand{JSON: true},
+			expected: "[]\n",
+		},
+		"Unreached": {
+			toml: "[nodes.job]\n[nodes.cron]\n",
+			err:  "no ingress node reaches the pending nodes, so SPECTRE cannot verify them: cron, job",
+		},
+		"Invalid": {
+			toml:     "[nodes.a]\nstatus = \"done\"\n",
+			expected: "STATE:2: error: nodes.a.status: must be \"pending\" or \"migrated\"\n",
+			err:      "STATE is invalid",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "state.toml")
+			assert.NoError(t, os.WriteFile(path, []byte(test.toml), 0o600))
+			test.command.State = state.Config{StateFile: path}
+			var out bytes.Buffer
+
+			err := test.command.Run(Output{Writer: &out, Palette: test.palette}, testCatalog(t))
+
+			if test.err != "" {
+				assert.EqualError(t, err, replacePath(test.err, path))
+			} else {
+				assert.NoError(t, err)
+			}
+			assert.Equal(t, replacePath(test.expected, path), out.String())
+		})
+	}
+}
+
 func TestDoneCommand(t *testing.T) {
 	for name, test := range map[string]struct {
 		toml     string

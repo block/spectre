@@ -188,6 +188,143 @@ depends_on = ["money"]
 	assert.Equal(t, []state.Problem{{Line: 12, Message: "nodes.job: no ingress node reaches it, so SPECTRE cannot verify it"}}, parsed.Unreached())
 }
 
+func TestNext(t *testing.T) {
+	for name, test := range map[string]struct {
+		toml     string
+		expected []string
+	}{
+		"AllMigrated": {
+			toml: "[nodes.api]\nstatus = \"migrated\"\n[nodes.api.ingress.rpc.methods]\n",
+		},
+		"FewestNodesWithIO": {
+			toml: `
+[nodes.money]
+
+[nodes.ledger-client]
+depends_on = ["money"]
+[nodes.ledger-client.egress.rpc]
+
+[nodes.invoices-api]
+depends_on = ["money", "ledger-client"]
+[nodes.invoices-api.ingress.rpc.methods]
+
+[nodes.reports-api]
+depends_on = ["money"]
+[nodes.reports-api.ingress.rpc.methods]
+`,
+			expected: []string{"money", "reports-api"},
+		},
+		"FewerNodesWithIOBeforeFewerNodes": {
+			toml: `
+[nodes.a-api]
+depends_on = ["client"]
+[nodes.a-api.ingress.rpc.methods]
+
+[nodes.client.egress.rpc]
+
+[nodes.b-api]
+depends_on = ["one", "two"]
+[nodes.b-api.ingress.rpc.methods]
+
+[nodes.one]
+[nodes.two]
+`,
+			expected: []string{"one", "two", "b-api"},
+		},
+		"FewestNodes": {
+			toml: `
+[nodes.a-api]
+depends_on = ["one", "two"]
+[nodes.a-api.ingress.rpc.methods]
+
+[nodes.b-api]
+depends_on = ["one"]
+[nodes.b-api.ingress.rpc.methods]
+
+[nodes.one]
+[nodes.two]
+`,
+			expected: []string{"one", "b-api"},
+		},
+		"LowestIDOnTie": {
+			toml: `
+[nodes.b-api.ingress.rpc.methods]
+[nodes.a-api.ingress.rpc.methods]
+`,
+			expected: []string{"a-api"},
+		},
+		"IngressDependency": {
+			toml: `
+[nodes.api]
+depends_on = ["auth"]
+[nodes.api.ingress.rpc.methods]
+
+[nodes.auth.ingress.rpc.methods]
+`,
+			expected: []string{"auth"},
+		},
+		"DependenciesFirst": {
+			toml: `
+[nodes.api]
+depends_on = ["b", "a"]
+[nodes.api.ingress.rpc.methods]
+
+[nodes.a]
+depends_on = ["c"]
+
+[nodes.b]
+
+[nodes.c]
+status = "migrated"
+`,
+			expected: []string{"a", "b", "api"},
+		},
+		"OnlyUnreachedPending": {
+			toml: `
+[nodes.api]
+status = "migrated"
+[nodes.api.ingress.rpc.methods]
+
+[nodes.job]
+`,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			parsed, err := state.Parse([]byte(test.toml), testCatalog(t))
+			assert.NoError(t, err)
+			var expected []state.Node
+			for _, id := range test.expected {
+				expected = append(expected, node(t, parsed, id))
+			}
+			assert.Equal(t, expected, parsed.Next())
+		})
+	}
+}
+
+func TestPending(t *testing.T) {
+	parsed, err := state.Parse([]byte("[nodes.a]\n[nodes.b]\nstatus = \"migrated\"\n[nodes.c]\n"), testCatalog(t))
+	assert.NoError(t, err)
+	assert.Equal(t, []state.Node{node(t, parsed, "a"), node(t, parsed, "c")}, parsed.Pending())
+}
+
+func TestTypes(t *testing.T) {
+	parsed, err := state.Parse([]byte("[nodes.api.egress.rpc]\n[nodes.api.ingress.rpc.methods]\n[nodes.money]\n"), testCatalog(t))
+	assert.NoError(t, err)
+	assert.Equal(t, []string{"ingress[rpc]", "egress[rpc]"}, node(t, parsed, "api").Types())
+	assert.Equal(t, []string{state.Library}, node(t, parsed, "money").Types())
+}
+
+func node(t *testing.T, parsed state.State, id string) state.Node {
+	t.Helper()
+	for _, node := range parsed.Nodes {
+		if node.ID == id {
+			return node
+		}
+	}
+	t.Fatalf("no node %q", id)
+	return state.Node{}
+}
+
 func TestMarkMigrated(t *testing.T) {
 	for name, test := range map[string]struct {
 		toml     string

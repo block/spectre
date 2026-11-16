@@ -42,6 +42,11 @@ func (k IOKind) String() string {
 	return fmt.Sprintf("%s[%s]", k.Direction, k.Protocol)
 }
 
+// MarshalText writes the kind as String does, so it can key a JSON object.
+func (k IOKind) MarshalText() ([]byte, error) {
+	return []byte(k.String()), nil
+}
+
 // Traffic identifies one request route of a kind of IO.
 type Traffic struct {
 	Direction Direction `json:"direction"`
