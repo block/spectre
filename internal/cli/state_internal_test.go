@@ -187,7 +187,8 @@ func TestDoneCommand(t *testing.T) {
 			toml:     "[nodes.api]\ndepends_on = [\"money\"]\n[nodes.api.ingress.rpc.methods]\n\n[nodes.money]\nstatus = \"pending\"\n",
 			nodes:    []string{"money", "api"},
 			expected: "STATE: marked money, api migrated\n",
-			file:     "[nodes.api]\nstatus = \"migrated\"\ndepends_on = [\"money\"]\n[nodes.api.ingress.rpc.methods]\n\n[nodes.money]\nstatus = \"migrated\"\n",
+			file: "[nodes]\n[nodes.api]\ndepends_on = ['money']\nstatus = 'migrated'\n\n" +
+				"[nodes.api.ingress]\n[nodes.api.ingress.rpc]\n[nodes.api.ingress.rpc.methods]\n[nodes.money]\nstatus = 'migrated'\n",
 		},
 		"AlreadyMigrated": {
 			toml:     "[nodes.money]\nstatus = \"migrated\"\n",
@@ -198,7 +199,7 @@ func TestDoneCommand(t *testing.T) {
 		"WouldBeInvalid": {
 			toml:     "[nodes.api]\ndepends_on = [\"money\"]\n\n[nodes.money]\n",
 			nodes:    []string{"api"},
-			expected: "STATE:2: error: nodes.api.status: migrated, but depends on pending node \"money\"\n",
+			expected: "STATE: error: nodes.api.status: migrated, but depends on pending node \"money\"\n",
 			file:     "[nodes.api]\ndepends_on = [\"money\"]\n\n[nodes.money]\n",
 			err:      "STATE would be invalid, so it is unchanged",
 		},

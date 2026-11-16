@@ -505,10 +505,11 @@ reaches, which are dead code or run from something SPECTRE does not mirror. An
 invalid state also stops `spectre supervise` and `spectre proxy` at startup.
 
 `spectre done <node>...` marks nodes migrated after they are added to the
-candidate. It changes only their status lines, or adds them, so comments and
-formatting stay as written. It writes nothing when a node is unknown or the
-state would be invalid, for example because a node depends on one still
-pending, and nothing when every node is already migrated. It does not commit.
+candidate. It rewrites the file in a canonical layout, with keys sorted and
+comments dropped, so after the first rewrite each change is only status lines.
+It writes nothing when a node is unknown or the state would be invalid, for
+example because a node depends on one still pending, and nothing when every
+node is already migrated. It does not commit.
 
 ## SPECTRE server
 
