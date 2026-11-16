@@ -41,7 +41,7 @@ func NewProgram(ctx context.Context, files map[string]string) (*Program, error) 
 	root := tspath.RootedDirectoryPathFromAbsolute("/")
 	fileSystem := bundled.WrapFS(iovfs.From(tree, tspath.CaseSensitive))
 	host := compiler.NewCompilerHost(fileSystem, bundled.LibPath(), nil, nil, nil)
-	program := compiler.NewProgram(compiler.ProgramOptions{
+	program, err := compiler.NewProgram(ctx, compiler.ProgramOptions{
 		Config: tsoptions.NewParsedCommandLine(
 			&core.CompilerOptions{
 				Target:                     core.ScriptTargetES2020,
@@ -64,6 +64,9 @@ func NewProgram(ctx context.Context, files map[string]string) (*Program, error) 
 		SingleThreaded: core.TSTrue,
 		Host:           host,
 	})
+	if err != nil {
+		return nil, errors.WithStack(err)
+	}
 	diagnostics, err := programDiagnostics(ctx, program)
 	if err != nil {
 		return nil, err
