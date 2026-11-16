@@ -20,13 +20,13 @@ import (
 const (
 	// requiredHost serves the same forecasts as forecastsHost, on an endpoint that is not optional.
 	requiredHost = "required.example"
-	// optionalWindow is the match window of the optional mirror.
-	optionalWindow = 250 * time.Millisecond
+	// ownForecastsWindow is the match window of the mirror whose candidate keeps its own forecasts.
+	ownForecastsWindow = 250 * time.Millisecond
 )
 
 func TestCandidateMayLeaveOutOptionalEgressCalls(t *testing.T) {
 	t.Parallel()
-	m := startOptionalMirror(t)
+	m := startOwnForecastsMirror(t, "testdata/optional")
 
 	// The reference fetches london's forecast, which the candidate reads from its own data.
 	status, _ := m.get(t, m.ingressURL+"/v2/forecast?location=london")
@@ -48,9 +48,24 @@ func TestCandidateMayLeaveOutOptionalEgressCalls(t *testing.T) {
 	}, m.waitForQuarantine(t, model.Egress))
 }
 
+func TestCandidateLeavingOutEgressCallIsQuarantined(t *testing.T) {
+	t.Parallel()
+	// The sample's scripts declare the forecast endpoint without optional.
+	m := startOwnForecastsMirror(t, "../sample/scripts")
+
+	status, _ := m.get(t, m.ingressURL+"/v2/forecast?location=london")
+	assert.Equal(t, http.StatusOK, status)
+	assert.Equal(t, model.QuarantineReason{
+		Kind:    model.QuarantineUnmatched,
+		Traffic: Some(model.Traffic{Direction: model.Egress, Protocol: model.ProtocolHTTP, Route: "GET forecasts.example/v1/forecasts/{location}"}),
+		Detail:  "no matching candidate request within 250ms",
+	}, m.waitForQuarantine(t, model.Egress))
+	assert.Equal(t, 1, m.forecasts.count("/v1/forecasts/london"))
+}
+
 func TestUnmatchedCandidateCallToOptionalEndpointQuarantines(t *testing.T) {
 	t.Parallel()
-	m := startOptionalMirror(t)
+	m := startOwnForecastsMirror(t, "testdata/optional")
 
 	// Optional only lets the candidate make fewer calls, not calls the reference never made.
 	request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, m.candidateEgressURL+"/v1/forecasts/paris", nil)
@@ -66,9 +81,9 @@ func TestUnmatchedCandidateCallToOptionalEndpointQuarantines(t *testing.T) {
 	assert.Equal(t, 0, m.forecasts.count("/v1/forecasts/paris"))
 }
 
-// startOptionalMirror mirrors the weather sample to a candidate that serves forecasts
-// from its own data, under scripts that make the forecast endpoint optional.
-func startOptionalMirror(t *testing.T) sampleMirror {
+// startOwnForecastsMirror mirrors the weather sample, under the scripts in scriptsDir, to a
+// candidate that serves forecasts from its own data instead of fetching them.
+func startOwnForecastsMirror(t *testing.T, scriptsDir string) sampleMirror {
 	t.Helper()
 	weather := testdata(t, "weather.json")
 	provider, err := sample.NewForecastProvider(weather)
@@ -84,10 +99,10 @@ func startOptionalMirror(t *testing.T) sampleMirror {
 			return m.candidate.wrap(weatherService(t, weather, None[*sample.ForecastClient]()))
 		},
 		dependencies:   map[string]http.Handler{forecastsHost: m.forecasts.wrap(forecasts), requiredHost: forecasts},
-		scriptsDir:     "testdata/optional",
+		scriptsDir:     scriptsDir,
 		schemaDir:      "../sample/schema",
 		descriptorsDir: "../../dist/descriptors",
-		matchWindow:    optionalWindow,
+		matchWindow:    ownForecastsWindow,
 	})
 	return m
 }
