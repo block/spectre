@@ -6,6 +6,15 @@ let go-module = go.modules()
 # Files within a Go module that its checks depend on.
 let go-inputs = ["**/*.go", "go.mod", "go.sum"]
 
+# CI sets this to pass its restored Hermit and Go build caches to the image
+# builds. Elsewhere they would only be copied in for nothing: a macOS host's
+# caches hold Darwin builds that a Linux image cannot use.
+param host-caches = false
+let image-host-caches = if host-caches then {
+  host-hermit-cache = env("HERMIT_STATE_DIR", env("XDG_CACHE_HOME", env("HOME") + "/.cache") + "/hermit"),
+  host-go-build-cache = exec("go env GOCACHE") | trim,
+} else {}
+
 let tsk-inputs = [".tsk/config.toml", ".tsk/lock.toml", ".tsk/**/*.ts", "bin/tsk"]
 
 sample-proto = buf.generate { input = "internal/sample/proto" }
@@ -154,11 +163,13 @@ explicit spectre-bin = go.exe {
 explicit local-image(version = "dev") = docker.image {
   tag = "spectre:#{version}"
   build_args = { VERSION = version }
+  build_contexts = image-host-caches
 }
 # The demo image carries the sample descriptors, so generate them first.
 explicit demo-image = docker.image {
   tag = "spectre-demo"
   dockerfile = "demo/Dockerfile"
+  build_contexts = image-host-caches
   depends_on = [sample-descriptors]
 }
 explicit publish-release-image(registry : string, image-tag : string, version : string) = docker.image {
@@ -168,22 +179,22 @@ explicit publish-release-image(registry : string, image-tag : string, version : 
 }
 
 # Generate the sample descriptors and build its servers.
-target sample = [sample-bin, sample-forecasts-bin]
+group sample = [sample-bin, sample-forecasts-bin]
 
 # Build the spectre container image.
-target container = [local-image]
+group container = [local-image]
 
 # Build the demo container image.
-target demo = [demo-image]
+group demo = [demo-image]
 
 # Publish the spectre container image.
-target publish-container(registry : string, image-tag : string, version : string) = [publish-release-image(registry = registry, image-tag = image-tag, version = version)]
+group publish-container(registry : string, image-tag : string, version : string) = [publish-release-image(registry = registry, image-tag = image-tag, version = version)]
 
 # Run all tests
-target test = [test-go, test-launcher, test-integration, test-release-version, test-container-images, test-tsk]
+group test = [test-go, test-launcher, test-integration, test-release-version, test-container-images, test-tsk]
 
 # Lint everything
-target lint = [lint-go-modules, lint-tsk, lint-proto, lint-actions, lint-action-pins, lint-dockerfile, lint-release, lint-scripts, fmt-check-go]
+group lint = [lint-go-modules, lint-tsk, lint-proto, lint-actions, lint-action-pins, lint-dockerfile, lint-release, lint-scripts, fmt-check-go]
 
 # Format everything
-target fmt = [fmt-go, fmt-action-pins, fmt-toml, fmt-tsk]
+group fmt = [fmt-go, fmt-action-pins, fmt-toml, fmt-tsk]
