@@ -177,10 +177,11 @@ func (e *Egress) markReady(context.Context) {
 	e.health.SetReady(true)
 }
 
-// stop cancels waiting candidates before servers shut down, because their
-// handlers would otherwise hold shutdown for up to the match window.
+// stop cancels waiting candidates before servers shut down, because their handlers would
+// otherwise hold shutdown for up to the match window. References they leave out never quarantine.
 func (e *Egress) stop() {
 	e.health.SetReady(false)
+	e.engine.Close()
 	e.candidates.Close()
 }
 

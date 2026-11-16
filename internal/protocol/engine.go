@@ -112,6 +112,12 @@ func (e *Engine) EgressCandidate(protocol model.Protocol) Acceptor {
 	return newEgressCandidate(e.egress, protocol)
 }
 
+// Close stops quarantining the candidate for reference requests it leaves out,
+// because the server is stopping candidate work. Call it before stopping candidates.
+func (e *Engine) Close() {
+	e.egress.close()
+}
+
 // Shutdown waits for background work on requests that have already been forwarded.
 func (e *Engine) Shutdown(ctx context.Context) error {
 	return errors.WithStack(e.egress.shutdown(ctx))

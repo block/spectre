@@ -107,14 +107,14 @@ A script can declare that a candidate's requests to one egress endpoint replace 
 - The engine decodes the reference responses to a source as `U` when they finish, through the response's `Decode`. The server decodes only a successful response, and reports any other as a failure.
 - A candidate request to a replacing endpoint is decoded as `T`, mapped to an `S` by `request`, and hashed as a request to the source. It uses the earliest source reference with that hash, then waits for its response.
 - `response` builds an `R` from the candidate request and the decoded reference response. The engine answers with `DecisionAnswer`, and the server encodes the message as a successful response in the request's wire format.
-- Replacing never claims a source reference. It stays available to replacements for `MatchWindow` after it is hashed, and to a candidate request to the source as usual.
+- Replacing never claims a source reference. It stays available to replacements for `MatchWindow` after it is hashed, and to a candidate request to the source as usual. A source reference a replacement used still counts as matched when it expires.
 - A decoded source response outlives its recording, so the server reserves memory for it from the recording budget as `Content.Hold`. The engine releases it once the source reference stops being offered. A decoded response the budget has no room for fails, which quarantines its replacements as unable.
 - A candidate request to a replacing endpoint pairs with a reference request to the endpoint itself when it can. It claims the earliest unused one with the same hash, or else uses the earliest source reference, waiting up to `MatchWindow` for whichever arrives first. Only the chosen reference is used, so a source reference is never claimed and a reference to the endpoint is never claimed unless it answers.
 - No reference to either endpoint within the window, or before the candidate gives up, quarantines as unmatched. A failed or undecodable source response, a throwing function, or a result that is not its type quarantines as unable.
 
 ### Pairing windows
 
-- An unused egress reference expires after `MatchWindow` (default 5s), releasing its `Raw`.
+- An unused egress reference expires after `MatchWindow` (default 5s), releasing its `Raw`. Unless a replacement used it, the candidate left it out.
 - An egress candidate waits up to `MatchWindow` for a matching reference.
 - The server must call the ingress candidate's `ProcessRequest` before forwarding the reference. A reference that ends with no candidate joined is dropped at once.
 - An ingress candidate's response waits for the reference, bounded by the candidate's context, which the server limits with `CandidateTimeout`. If the reference was cancelled, or the proxy stopped the candidate, the engine logs that comparison did not finish.
@@ -125,13 +125,15 @@ A script can declare that a candidate's requests to one egress endpoint replace 
 
 ### Quarantine
 
-Divergence, `Unable`, an unidentifiable request, and an unmatched egress candidate are all reported to the `Quarantiner`. Servers pass the same `proxy.Candidates` they use for candidate admission, cancellation, and timeouts.
+Divergence, `Unable`, an unidentifiable request, an unmatched egress candidate, and an egress reference the candidate left out are all reported to the `Quarantiner`. Servers pass the same `proxy.Candidates` they use for candidate admission, cancellation, and timeouts.
 
 - At ingress, `Unable` with a cancelled context never quarantines, because the caller gave up. Nor does a comparison that cancellation cut short.
 - The candidate timeout is SPECTRE's own limit, so it quarantines as unable when it ends the candidate's context. The reason says whether the candidate had not responded, the reference had not responded, or the comparison had not finished. The engine tells the timeout apart from other cancellation by the context's cause.
 - An egress reference that ends `Unable` with a cancelled context gave up on the request, most likely because its own ingress request was cancelled. A candidate request matching it, or answered from it as a source reference, is refused without quarantine. A failed reference otherwise quarantines a candidate that matches it.
 - An egress candidate that gives up before it is answered is quarantined, because the reference's call was not mirrored. Giving up while no reference request matches its own is unmatched, because the reference made no such request. Giving up at any later step, such as waiting for the reference response, is unable.
 - Egress work the proxy stops, cancelled with `ErrCandidateStopped`, never quarantines. The proxy stops candidate work only when it shuts down or quarantines the candidate.
+- An egress reference that expires unclaimed and unused by any replacement is quarantined as unmatched, because the candidate left that request out. This holds for every protocol, and for reference requests that no mirrored ingress request caused.
+- A server tells the engine when it starts stopping candidate work, so references that expire during shutdown never quarantine. One that expires after quarantine changes nothing, because only the first reason is kept.
 - Ignored routes never quarantine, even when the candidate fails. Their candidate responses are reported as skipped without waiting for the reference.
 - Streaming RPCs cannot be compared yet, so ingress quarantines the candidate as unable when one arrives, before sending it to the candidate. Rules that match a streaming RPC do not change this; only rules that ignore it do.
 - Known statuses are compared first, so a status difference is divergent even if a body fails to decode. Otherwise a response one side cannot decode is reported as unable.
@@ -155,7 +157,7 @@ Only assembly differs:
 
 ## Consequences
 
-- Until RequestIDs are [propagated](002-context-propagation.md), egress pairs on hashes alone.
+- Until RequestIDs are [propagated](002-context-propagation.md), egress pairs on hashes alone. Egress therefore also quarantines for reference requests made while the candidate is starting, after ingress quarantined it, or for ingress routes it does not mirror, such as those of pending migration state nodes.
 
 ### Packages
 

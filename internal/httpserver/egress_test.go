@@ -194,6 +194,20 @@ func TestQuarantinesUnmatchedCandidate(t *testing.T) {
 	}
 }
 
+func TestQuarantinesReferenceRequestTheCandidateLeftOut(t *testing.T) {
+	upstream := newUpstream(t, func(writer http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(writer, "reference")
+	})
+	harness := newHarness(t, upstream)
+	harness.Engine.MatchWindow = 50 * time.Millisecond
+	harness.Start(t)
+
+	send(t, harness.Reference, dependencyHost, london)
+
+	assert.Contains(t, harness.QuarantineReason(t), "no matching candidate request within 50ms")
+	assert.Equal(t, http.StatusServiceUnavailable, send(t, harness.Candidate, dependencyHost, london).Status)
+}
+
 func TestQuarantinesUnmatchedCandidateThatGivesUp(t *testing.T) {
 	upstream := newUpstream(t, func(http.ResponseWriter, *http.Request) {})
 	harness := newHarness(t, upstream)
@@ -273,6 +287,22 @@ func TestServeShutsDownWhileCandidateWaits(t *testing.T) {
 
 	assert.NoError(t, stop())
 	assert.Equal(t, http.StatusBadGateway, (<-candidate).Status)
+	assert.False(t, strings.Contains(harness.Logs.String(), "Candidate quarantined"))
+}
+
+func TestServeShutsDownWithoutQuarantiningUnclaimedReference(t *testing.T) {
+	upstream := newUpstream(t, func(writer http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(writer, "reference")
+	})
+	harness := newHarness(t, upstream)
+	harness.Engine.MatchWindow = 100 * time.Millisecond
+	stop := harness.Start(t)
+	send(t, harness.Reference, dependencyHost, london)
+
+	assert.NoError(t, stop())
+
+	// Let the reference expire after shutdown began.
+	time.Sleep(300 * time.Millisecond)
 	assert.False(t, strings.Contains(harness.Logs.String(), "Candidate quarantined"))
 }
 

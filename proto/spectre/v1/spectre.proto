@@ -91,7 +91,7 @@ message Quarantine {
     KIND_DIVERGENT = 1;
     // The mirror could not compare or replay traffic.
     KIND_UNABLE = 2;
-    // The candidate made a dependency request the reference did not.
+    // The candidate or reference made a dependency request the other did not.
     KIND_UNMATCHED = 3;
     // An ingress route is in no node of the migration state.
     KIND_UNLISTED = 4;
