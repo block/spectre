@@ -52,7 +52,8 @@ type Ingress struct {
 	static            *descriptorpb.FileDescriptorSet
 	candidates        *proxy.Candidates
 	calls             *proxy.CallCounter
-	quarantiner       *nodeQuarantiner
+	// quarantiner is the only way ingress quarantines, so every reason names its route's node.
+	quarantiner *nodeQuarantiner
 	// migration maps each route in the migration state to its node.
 	migration Option[*route.Map[stateRoute]]
 	// mu guards decoder, which is set once descriptors are configured.
@@ -282,7 +283,7 @@ func (i *Ingress) serveProxy(writer http.ResponseWriter, request *http.Request) 
 	if reason, ok := unsupported.Get(); ok {
 		cancel()
 		i.candidates.Finish(run)
-		i.candidates.Quarantine(request.Context(), i.reason(model.QuarantineUnable, request, reason))
+		i.quarantiner.Quarantine(request.Context(), i.reason(model.QuarantineUnable, request, reason))
 		i.referenceProxy.ServeHTTP(writer, referenceRequest)
 		return
 	}
@@ -333,7 +334,7 @@ func (i *Ingress) mirrors(request *http.Request) bool {
 	if _, ignored := i.routes.Responses(request.Method, path, request.Header); ignored.Ok() || strings.HasPrefix(path, "/grpc.reflection.") {
 		return false
 	}
-	i.candidates.Quarantine(request.Context(), i.reason(model.QuarantineUnlisted, request,
+	i.quarantiner.Quarantine(request.Context(), i.reason(model.QuarantineUnlisted, request,
 		"route "+request.Method+" "+path+" is in no node of the migration state"))
 	return false
 }
@@ -433,7 +434,7 @@ func (i *Ingress) awaitCandidate(ctx context.Context) (started bool) {
 	case ctx.Err() != nil:
 		return false
 	case err != nil:
-		i.candidates.Quarantine(ctx, model.QuarantineReason{
+		i.quarantiner.Quarantine(ctx, model.QuarantineReason{
 			Kind:   model.QuarantineUnable,
 			Detail: "candidate did not accept a connection within " + i.config.CandidateStartupTimeout.String(),
 		})
