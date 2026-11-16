@@ -12,7 +12,6 @@ import (
 	. "github.com/alecthomas/types/optional"
 	ts "github.com/microsoft/TypeScript/tsc/shim/typescript"
 
-	"github.com/block/spectre/internal/model"
 	"github.com/block/spectre/internal/schema"
 )
 
@@ -114,14 +113,11 @@ func typeArguments(checker *ts.Checker, loaded *schema.Schema, call *ts.Node) (O
 	if ts.SourceFileOf(declaration).FileName() != moduleDeclarationFile || declaration.Name() == nil {
 		return None[insertion](), nil // Only spectre functions take type arguments at runtime.
 	}
+	expected := len(declaration.TypeParameters())
+	if expected == 0 {
+		return None[insertion](), nil // Only generic spectre functions take type arguments at runtime.
+	}
 	function := declaration.Name().Text()
-	if function == ignoreMethod || function == statusMethod || function == optionalMethod || function == requestHeaderMethod || function == responseHeaderMethod || function == string(model.ProtocolHTTP) || function == variableFunction {
-		return None[insertion](), nil // Selectors, ignore, optional, and variable take no type arguments.
-	}
-	expected := 1
-	if function == string(targetField) || function == replacesMethod || function == usingMethod {
-		expected = 2
-	}
 	// display names the call the way a script writes it, e.g. "IngressHTTPRule.match".
 	display := function
 	if owner := ts.MemberOwnerName(declaration); owner != "" {
@@ -131,32 +127,25 @@ func typeArguments(checker *ts.Checker, loaded *schema.Schema, call *ts.Node) (O
 	if len(types) != expected {
 		return None[insertion](), errors.Errorf("%s: spectre.%s needs %d explicit type argument(s)", ts.Location(call), display, expected)
 	}
-	resolved := checker.GetTypeFromTypeNode(types[0])
-	name, err := bodyTypeName(resolved, display == "IngressHTTPRule."+matchMethod)
-	if err != nil {
-		return None[insertion](), errors.Errorf("%s: spectre.%s type argument %s: %v", ts.Location(types[0]), display, checker.TypeToString(resolved), err)
-	}
-	if _, err := loaded.Type(name); name != textTypeName && err != nil {
-		return None[insertion](), errors.Errorf("%s: spectre.%s type argument: %v", ts.Location(types[0]), display, err)
-	}
-	values := []string{string(name)}
-	switch function {
-	case string(targetField):
-		path, ok := ts.StringLiteral(checker.GetTypeFromTypeNode(types[1]))
-		if !ok {
-			return None[insertion](), errors.Errorf("%s: spectre.field path must be one string literal type", ts.Location(types[1]))
+	values := make([]string, 0, len(types))
+	for index, node := range types {
+		resolved := checker.GetTypeFromTypeNode(node)
+		if function == string(targetField) && index == 1 {
+			path, ok := ts.StringLiteral(resolved)
+			if !ok {
+				return None[insertion](), errors.Errorf("%s: spectre.field path must be one string literal type", ts.Location(node))
+			}
+			values = append(values, path)
+			continue
 		}
-		values = append(values, path)
-	case replacesMethod, usingMethod:
-		second := checker.GetTypeFromTypeNode(types[1])
-		other, err := bodyTypeName(second, false)
-		if err == nil {
-			_, err = loaded.Type(other)
+		name, err := bodyTypeName(resolved, index == 0 && display == "IngressHTTPRule."+matchMethod)
+		if err == nil && name != textTypeName {
+			_, err = loaded.Type(name)
 		}
 		if err != nil {
-			return None[insertion](), errors.Errorf("%s: spectre.%s type argument %s: %v", ts.Location(types[1]), display, checker.TypeToString(second), err)
+			return None[insertion](), errors.Errorf("%s: spectre.%s type argument %s: %v", ts.Location(node), display, checker.TypeToString(resolved), err)
 		}
-		values = append(values, string(other))
+		values = append(values, string(name))
 	}
 	encoded := make([]string, 0, len(values)+1)
 	for _, value := range values {
