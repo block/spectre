@@ -13,7 +13,7 @@ import (
 // ServersConfig locates the SPECTRE servers a command lists, such as the
 // servers of every deployment.
 type ServersConfig struct {
-	URLs   []string `name:"server-url" default:"${status_servers}" placeholder:"URL" help:"Base URL of a SPECTRE server. Repeat it to list and clear the mirrors of several servers."`
+	URLs   []string `name:"server-url" default:"${collector_servers}" placeholder:"URL" help:"Base URL of a SPECTRE server. Repeat it to list and clear the mirrors of several servers."`
 	Socket string   `name:"server-socket" placeholder:"PATH" help:"Unix socket to reach the SPECTRE servers through, such as a service mesh's egress socket: an absolute path or an @ abstract name. The mesh routes by each --server-url host."`
 }
 

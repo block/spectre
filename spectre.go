@@ -27,8 +27,8 @@ type Command interface {
 	Run(ctx context.Context, log *slog.Logger) error
 }
 
-// statusServersVar names the Kong variable holding spectre status's default servers.
-const statusServersVar = "status_servers"
+// collectorServersVar names the Kong variable holding the default collector servers.
+const collectorServersVar = "collector_servers"
 
 // Option registers an extension with Main.
 type Option func(registered *extensions)
@@ -58,15 +58,15 @@ func WithTemplateRepo(source string) Option {
 // such as spectre status and spectre supervise call.
 func WithServerURL(url string) Option {
 	return func(registered *extensions) {
-		registered.kongOptions = append(registered.kongOptions, kong.Vars{"server_url": url, statusServersVar: url})
+		registered.kongOptions = append(registered.kongOptions, kong.Vars{"server_url": url, collectorServersVar: url})
 	}
 }
 
-// WithStatusServers sets the SPECTRE servers spectre status lists and clears by
-// default. Pass it after WithServerURL, which also sets them.
-func WithStatusServers(urls ...string) Option {
+// WithCollectorServers sets the collector servers that spectre status lists and
+// clears by default. Pass it after WithServerURL, which also sets them.
+func WithCollectorServers(urls ...string) Option {
 	return func(registered *extensions) {
-		registered.kongOptions = append(registered.kongOptions, kong.Vars{statusServersVar: strings.Join(urls, ",")})
+		registered.kongOptions = append(registered.kongOptions, kong.Vars{collectorServersVar: strings.Join(urls, ",")})
 	}
 }
 
@@ -118,7 +118,7 @@ func newParser(command *cli.CommandLine, options ...Option) (*kong.Kong, error) 
 		return nil, errors.Wrap(err, "collect supported IO")
 	}
 	kongOptions := append([]kong.Option{
-		kong.Vars{"version": internal.Version, "template_repo": "", "server_url": "", statusServersVar: ""},
+		kong.Vars{"version": internal.Version, "template_repo": "", "server_url": "", collectorServersVar: ""},
 		kong.Configuration(kongtoml.Loader),
 		kong.DefaultEnvars("SPECTRE"),
 		kong.Bind(catalog),

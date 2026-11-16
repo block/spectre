@@ -84,8 +84,8 @@ func TestWithServerURLSetsDefault(t *testing.T) {
 		{name: "Default", args: []string{"status"}, expected: []string{"http://default.example"}},
 		{name: "Flag", args: []string{"status", "--server-url=http://flag.example"}, expected: []string{"http://flag.example"}},
 		{name: "Flags", args: []string{"status", "--server-url=http://a.example", "--server-url=http://b.example"}, expected: []string{"http://a.example", "http://b.example"}},
-		{name: "StatusServers", options: []Option{WithStatusServers("http://staging.example", "http://production.example")}, args: []string{"status"}, expected: []string{"http://staging.example", "http://production.example"}},
-		{name: "FlagOverridesStatusServers", options: []Option{WithStatusServers("http://staging.example", "http://production.example")}, args: []string{"status", "--server-url=http://flag.example"}, expected: []string{"http://flag.example"}},
+		{name: "CollectorServers", options: []Option{WithCollectorServers("http://staging.example", "http://production.example")}, args: []string{"status"}, expected: []string{"http://staging.example", "http://production.example"}},
+		{name: "FlagOverridesCollectorServers", options: []Option{WithCollectorServers("http://staging.example", "http://production.example")}, args: []string{"status", "--server-url=http://flag.example"}, expected: []string{"http://flag.example"}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
