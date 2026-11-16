@@ -254,7 +254,9 @@ func TestEgressQuarantinesUnreplayableRequests(t *testing.T) {
 	for name, test := range map[string]struct {
 		referenceRequest func(ctx context.Context) (protocol.Message, error)
 		referenceFails   bool
-		candidateRequest Option[func(ctx context.Context) (protocol.Message, error)]
+		// referenceCancelled reports the failure after the reference gave up on the request.
+		referenceCancelled bool
+		candidateRequest   Option[func(ctx context.Context) (protocol.Message, error)]
 		// candidateError is empty when only the reference is quarantined.
 		candidateError string
 		quarantined    []string
@@ -279,13 +281,25 @@ func TestEgressQuarantinesUnreplayableRequests(t *testing.T) {
 			candidateError:   "reference response cannot be replayed: connection reset",
 			quarantined:      []string{"reference response cannot be replayed: connection reset"},
 		},
+		"ReferenceCancelled": {
+			referenceRequest:   query(queryType, "london", ""),
+			referenceFails:     true,
+			referenceCancelled: true,
+			candidateRequest:   Some(query(queryType, "london", "")),
+			candidateError:     "reference request was cancelled: connection reset",
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			h := newHarness(t, time.Second)
 			raw := newRaw("reference")
 			exchange := h.forward(t, "query", test.referenceRequest)
 			if test.referenceFails {
-				h.engine.EgressReference(fake).Unable(h.ctx, exchange, errors.New("connection reset"))
+				ctx, cancel := context.WithCancel(h.ctx)
+				if test.referenceCancelled {
+					cancel()
+				}
+				h.engine.EgressReference(fake).Unable(ctx, exchange, errors.New("connection reset"))
+				cancel()
 			} else {
 				h.engine.EgressReference(fake).ProcessResponse(h.ctx, exchange, protocol.Response{Raw: raw})
 			}

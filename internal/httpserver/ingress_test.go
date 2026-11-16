@@ -1111,6 +1111,81 @@ func TestReferenceEarlyCloseAbortsCandidateWithoutQuarantine(t *testing.T) {
 	assert.NoError(t, handler.Shutdown(t.Context()))
 }
 
+func TestCancelledReferenceCancelsCandidateWithoutQuarantine(t *testing.T) {
+	candidateAddress := acceptingAddress(t)
+	for name, test := range map[string]struct {
+		// reference answers the reference request once the candidate request has started.
+		reference    func(request *http.Request) (*http.Response, error)
+		cancelClient bool
+		panicked     any
+	}{
+		"ClientCancelled": {
+			reference: func(request *http.Request) (*http.Response, error) {
+				<-request.Context().Done()
+				return nil, errors.WithStack(request.Context().Err())
+			},
+			cancelClient: true,
+		},
+		"ReferenceAborted": {
+			reference: func(request *http.Request) (*http.Response, error) {
+				response := noContentResponse(request)
+				response.StatusCode = http.StatusOK
+				response.Body = io.NopCloser(iotest.ErrReader(errors.New("stream reset")))
+				return response, nil
+			},
+			panicked: http.ErrAbortHandler,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			candidateStarted, candidateCancelled := make(chan struct{}), make(chan struct{})
+			transport := roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+				if request.URL.Path != "/compared/cancelled" {
+					return noContentResponse(request), nil
+				}
+				if request.URL.Host != candidateAddress {
+					<-candidateStarted
+					return test.reference(request)
+				}
+				close(candidateStarted)
+				select {
+				case <-request.Context().Done():
+					close(candidateCancelled)
+					return nil, errors.WithStack(request.Context().Err())
+				case <-time.After(5 * time.Second):
+					return noContentResponse(request), nil
+				}
+			})
+			logs := &syncBuffer{}
+			ctx := withLogs(t, logs)
+			handler := newTestHandlerWithFakeBackends(t, candidateAddress, transport)
+			serveIngress(ctx, t, handler)
+			// ReverseProxy only panics to abort a copy when the request comes from an HTTP server.
+			clientContext, cancelClient := context.WithCancel(context.WithValue(ctx, http.ServerContextKey, &http.Server{}))
+			defer cancelClient()
+			request := httptest.NewRequestWithContext(clientContext, http.MethodGet, "http://proxy.example/compared/cancelled", nil)
+			served := make(chan any, 1)
+			go func() {
+				defer func() { served <- recover() }()
+				handler.ServeHTTP(httptest.NewRecorder(), request)
+			}()
+			if test.cancelClient {
+				<-candidateStarted
+				cancelClient()
+			}
+
+			select {
+			case <-candidateCancelled:
+			case <-time.After(time.Second):
+				t.Fatal("candidate request was not cancelled with the reference")
+			}
+			assert.Equal(t, test.panicked, <-served)
+			assert.NoError(t, handler.Shutdown(t.Context()))
+			assert.Equal(t, []comparisonRecord{}, logRecords[comparisonRecord](t, logs, "Response comparison completed"))
+			assert.Equal(t, []quarantineRecord{}, logRecords[quarantineRecord](t, logs, "Candidate quarantined"))
+		})
+	}
+}
+
 func TestAbortedCandidateResponseQuarantinesCandidate(t *testing.T) {
 	candidateAddress := acceptingAddress(t)
 	for name, test := range map[string]struct {

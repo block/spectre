@@ -314,6 +314,20 @@ func TestEgressQuarantinesUnanswerableReplacingRequests(t *testing.T) {
 	}
 }
 
+func TestEgressRefusesReplacingRequestWhoseSourceWasCancelled(t *testing.T) {
+	h := newScriptHarness(t, replacementScript, time.Second)
+	exchange := h.forwardHTTP(t, listRoute, query(queryType, "london", ""))
+	cancelled, cancel := context.WithCancel(h.ctx)
+	cancel()
+	h.engine.EgressReference(model.ProtocolHTTP).Unable(cancelled, exchange, errors.New("connection reset"))
+
+	decision, err := h.engine.EgressCandidate(model.ProtocolHTTP).ProcessRequest(h.ctx, None[protocol.RequestID](), getRoute, notIgnored, query(queryType, "london", ""))
+
+	assert.EqualError(t, err, "source reference request was cancelled: connection reset")
+	assert.Equal(t, nil, decision)
+	assert.Equal(t, nil, h.quarantine.Reasons())
+}
+
 func TestEgressQuarantinesReplacingRequestThatGivesUp(t *testing.T) {
 	h := newScriptHarness(t, replacementScript, time.Second)
 	ctx, cancel := context.WithTimeout(h.ctx, 20*time.Millisecond)

@@ -274,7 +274,8 @@ func (i *Ingress) serveProxy(writer http.ResponseWriter, request *http.Request) 
 		i.referenceProxy.ServeHTTP(writer, referenceRequest)
 		return
 	}
-	// Candidate work may outlive reference delivery, but its own timeout bounds its lifetime.
+	// Candidate work may outlive reference delivery, but its own timeout bounds its
+	// lifetime, and a cancelled reference ends it.
 	candidateContext := context.WithoutCancel(request.Context())
 	candidateContext, cancel := context.WithTimeout(candidateContext, i.config.CandidateTimeout)
 	run, admitted := i.candidates.Start(candidateContext, cancel).Get()
@@ -318,7 +319,15 @@ func (i *Ingress) serveProxy(writer http.ResponseWriter, request *http.Request) 
 			i.serveCandidate(candidateRequest, candidate, decode)
 		}()
 	}
-	i.reference.respond(writer, referenceRequest, reference, Some(i.referenceProxy), decode)
+	// A cancelled reference has no response to compare, so the candidate's run is
+	// discarded too. An aborted response panics, and the engine counts it as cancelled.
+	referenceCancelled := true
+	defer func() {
+		if referenceCancelled {
+			cancel()
+		}
+	}()
+	referenceCancelled = i.reference.respond(writer, referenceRequest, reference, Some(i.referenceProxy), decode)
 }
 
 // mirrors reports whether the migration state lets a request reach the candidate.

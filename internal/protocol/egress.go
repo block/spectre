@@ -175,9 +175,7 @@ func (q *egressQueue) intercept(ctx context.Context, protocol model.Protocol, ro
 	}
 	raw, kind, err := q.match(ctx, protocol, route, request)
 	if err != nil {
-		if blamesCandidate(ctx) {
-			q.quarantine.Quarantine(ctx, egressReason(kind, protocol, route, err))
-		}
+		q.refuse(ctx, kind, protocol, route, err)
 		return nil, err
 	}
 	logger.FromContext(ctx).InfoContext(ctx, "Candidate request matched a reference request",
@@ -205,6 +203,18 @@ func (q *egressQueue) match(ctx context.Context, protocol model.Protocol, route 
 	return raw, "", nil
 }
 
+// refuse quarantines the candidate for a request that cannot be answered, unless
+// the reference cancelled the request it matched or the candidate is not to blame.
+func (q *egressQueue) refuse(ctx context.Context, kind model.QuarantineKind, protocol model.Protocol, route model.Route, err error) {
+	switch {
+	case errors.Is(err, errReferenceCancelled):
+		logger.FromContext(ctx).InfoContext(ctx, "Candidate request matched a cancelled reference request",
+			"event", logger.EventCorrelation, "protocol", protocol, "route", route)
+	case blamesCandidate(ctx):
+		q.quarantine.Quarantine(ctx, egressReason(kind, protocol, route, err))
+	}
+}
+
 // blamesCandidate reports whether a failed match quarantines the candidate. A candidate that
 // gives up was never answered as the reference was, so only work the proxy stopped is excused.
 func blamesCandidate(ctx context.Context) bool {
@@ -218,9 +228,7 @@ func (q *egressQueue) answer(ctx context.Context, protocol model.Protocol, route
 ) (Decision, error) {
 	decision, kind, err := q.respond(ctx, protocol, route, replacement, request)
 	if err != nil {
-		if blamesCandidate(ctx) {
-			q.quarantine.Quarantine(ctx, egressReason(kind, protocol, route, err))
-		}
+		q.refuse(ctx, kind, protocol, route, err)
 		return nil, err
 	}
 	if _, intercepted := decision.(DecisionIntercept); intercepted {
@@ -540,10 +548,17 @@ func (w *egressWaiter) delivered() <-chan *egressExchange {
 	return w.ready
 }
 
+// errReferenceCancelled refuses a candidate whose matching reference request was
+// cancelled. Its ingress request was most likely cancelled too, so neither is compared.
+var errReferenceCancelled = errors.New("reference request was cancelled")
+
 // egressOutcome is how a reference request finished.
 type egressOutcome struct {
 	raw     Option[Raw]
 	failure Option[error]
+	// cancelled means the reference gave up on the request, so its failure says
+	// nothing about the dependency.
+	cancelled bool
 	// content is the decoded response of a source reference.
 	content Option[Content]
 }
@@ -591,10 +606,10 @@ func (e *egressExchange) stopExpiry() {
 }
 
 // finish records the reference outcome, releasing it at once if nobody can claim it.
-func (e *egressExchange) finish(raw Option[Raw], failure Option[error], content Option[Content]) {
+func (e *egressExchange) finish(outcome egressOutcome) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	e.outcome.Set(egressOutcome{raw: raw, failure: failure, content: content})
+	e.outcome.Set(outcome)
 	if e.abandoned {
 		e.release()
 	}
@@ -652,6 +667,9 @@ func (e *egressExchange) wait(ctx context.Context) (Raw, error) {
 		return nil, errors.Wrap(err, "wait for reference response")
 	}
 	if failure, failed := outcome.failure.Get(); failed {
+		if outcome.cancelled {
+			return nil, errors.Errorf("%w: %w", errReferenceCancelled, failure)
+		}
 		return nil, errors.Wrap(failure, "reference response cannot be replayed")
 	}
 	raw, ok := outcome.raw.Get()
@@ -669,6 +687,9 @@ func (e *egressExchange) decoded(ctx context.Context) (any, error) {
 		return nil, errors.Wrap(err, "wait for source reference response")
 	}
 	if failure, failed := outcome.failure.Get(); failed {
+		if outcome.cancelled {
+			return nil, errors.Errorf("source %w: %w", errReferenceCancelled, failure)
+		}
 		return nil, errors.Wrap(failure, "source reference response failed")
 	}
 	content, ok := outcome.content.Get()
@@ -712,12 +733,14 @@ func (r *egressReference) ProcessResponse(ctx context.Context, exchange Exchange
 	if pending.isSource() {
 		content = Some(response.Decode(ctx))
 	}
-	pending.finish(Some(response.Raw), None[error](), content)
+	pending.finish(egressOutcome{raw: Some(response.Raw), content: content})
 }
 
+// Unable with a cancelled context means the reference gave up on the request,
+// not that the dependency failed.
 func (r *egressReference) Unable(ctx context.Context, exchange Exchange, reason error) {
 	if pending, ok := r.queue.take(ctx, exchange); ok {
-		pending.finish(None[Raw](), Some(reason), None[Content]())
+		pending.finish(egressOutcome{failure: Some(reason), cancelled: ctx.Err() != nil})
 	}
 }
 
