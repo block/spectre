@@ -118,6 +118,7 @@ A script can declare that a candidate's requests to one egress endpoint replace 
 - An egress candidate waits up to `MatchWindow` for a matching reference.
 - The server must call the ingress candidate's `ProcessRequest` before forwarding the reference. A reference that ends with no candidate joined is dropped at once.
 - An ingress candidate's response waits for the reference, bounded by the candidate's context, which the server limits with `CandidateTimeout`. If the reference was cancelled, or the proxy stopped the candidate, the engine logs that comparison did not finish.
+- A cancelled ingress reference has nothing to compare, so the server cancels the candidate's run as well. The reference is cancelled when it ends `Unable` with a cancelled context, as when the client disconnects or the response is aborted. Neither side quarantines.
 - There is no separate expiry for abandoned ingress exchanges.
 
 `MatchWindow` is part of `protocol.Config`, which both servers embed, so it is also an ingress flag.
@@ -128,6 +129,7 @@ Divergence, `Unable`, an unidentifiable request, and an unmatched egress candida
 
 - At ingress, `Unable` with a cancelled context never quarantines, because the caller gave up. Nor does a comparison that cancellation cut short.
 - The candidate timeout is SPECTRE's own limit, so it quarantines as unable when it ends the candidate's context. The reason says whether the candidate had not responded, the reference had not responded, or the comparison had not finished. The engine tells the timeout apart from other cancellation by the context's cause.
+- An egress reference that ends `Unable` with a cancelled context gave up on the request, most likely because its own ingress request was cancelled. A candidate request matching it, or answered from it as a source reference, is refused without quarantine. A failed reference otherwise quarantines a candidate that matches it.
 - An egress candidate that gives up before it is answered is quarantined, because the reference's call was not mirrored. Giving up while no reference request matches its own is unmatched, because the reference made no such request. Giving up at any later step, such as waiting for the reference response, is unable.
 - Egress work the proxy stops, cancelled with `ErrCandidateStopped`, never quarantines. The proxy stops candidate work only when it shuts down or quarantines the candidate.
 - Ignored routes never quarantine, even when the candidate fails. Their candidate responses are reported as skipped without waiting for the reference.

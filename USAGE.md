@@ -327,6 +327,12 @@ was too slow, or whether the comparison did not finish.
 A quarantined candidate gets no more traffic until the mirror restarts. The
 reference and its clients are unaffected.
 
+A cancelled reference request never quarantines the candidate. When a client
+cancels a request, or the reference's response is aborted, ingress stops the
+candidate's copy and compares neither response. A candidate dependency call that
+pairs with a reference call the reference gave up on gets a `502` without
+quarantine.
+
 A divergence report lists the paths where the responses differ and how. It
 never includes values, because production payloads can hold personal data:
 

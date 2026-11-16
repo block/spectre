@@ -60,10 +60,10 @@ func (p *point) process(ctx context.Context, requestID Option[protocol.RequestID
 // reported; with no upstream, the request ends without being sent.
 func (p *point) respond(writer http.ResponseWriter, request *http.Request, decision protocol.Decision,
 	upstream Option[*httputil.ReverseProxy], decode decodeFunc,
-) {
+) (cancelled bool) {
 	switch decision := decision.(type) {
 	case protocol.DecisionForward:
-		p.forward(writer, request, decision.Exchange, upstream, decode)
+		return p.forward(writer, request, decision.Exchange, upstream, decode)
 	case protocol.DecisionIntercept:
 		p.replay(writer, request, decision.Raw)
 	case protocol.DecisionAnswer:
@@ -71,17 +71,21 @@ func (p *point) respond(writer http.ResponseWriter, request *http.Request, decis
 		logger.FromContext(request.Context()).ErrorContext(request.Context(), "Answer decision reached a point that cannot encode it")
 		writer.WriteHeader(http.StatusBadGateway)
 	}
+	return false
 }
 
+// forward reports whether the request ended cancelled. An aborted response panics
+// instead of returning, after reporting it.
 func (p *point) forward(writer http.ResponseWriter, request *http.Request, exchange protocol.Exchange,
 	upstream Option[*httputil.ReverseProxy], decode decodeFunc,
-) {
+) (cancelled bool) {
 	ctx := request.Context()
 	destination, ok := upstream.Get()
 	if !ok {
+		cancelled = ctx.Err() != nil
 		p.acceptor.Unable(ctx, exchange, errors.New("request has no usable destination"))
 		writer.WriteHeader(http.StatusBadGateway)
-		return
+		return cancelled
 	}
 	recorded := newRecording(p.budget())
 	reported := false
@@ -103,26 +107,28 @@ func (p *point) forward(writer http.ResponseWriter, request *http.Request, excha
 	// The transport may never run, so the handler guarantees the recording completes.
 	recorded.finish(nil, errors.New("request ended without a response"))
 	reported = true
-	p.report(ctx, exchange, recorded, decode)
+	return p.report(ctx, exchange, recorded, decode)
 }
 
-// report ends the exchange with the response, or as unable. The response is
-// decoded only if the engine compares it.
-func (p *point) report(ctx context.Context, exchange protocol.Exchange, recorded *recording, decode decodeFunc) {
+// report ends the exchange with the response, or as unable, and reports whether
+// it ended cancelled. The response is decoded only if the engine compares it.
+func (p *point) report(ctx context.Context, exchange protocol.Exchange, recorded *recording, decode decodeFunc) (cancelled bool) {
 	err := recorded.complete()
 	if err == nil && !p.replaysFailures {
 		err = recorded.failure()
 	}
 	if err != nil {
+		cancelled = ctx.Err() != nil
 		recorded.Release()
 		p.acceptor.Unable(ctx, exchange, err)
-		return
+		return cancelled
 	}
 	p.acceptor.ProcessResponse(ctx, exchange, protocol.Response{
 		Raw:     recorded,
 		Latency: recorded.latency(),
 		Decode:  func(ctx context.Context) protocol.Content { return decode(ctx, recorded) },
 	})
+	return false
 }
 
 // replay answers a request from another point's recording, then releases it.
