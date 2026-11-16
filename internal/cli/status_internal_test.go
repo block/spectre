@@ -17,10 +17,13 @@ import (
 )
 
 func TestStatusCommands(t *testing.T) {
-	store := storage.NewMemory()
+	// Production and staging mirrors report to servers of their own.
+	store, stagingStore := storage.NewMemory(), storage.NewMemory()
 	httpServer := httptest.NewServer(server.NewService(store, time.Hour).Handler())
 	t.Cleanup(httpServer.Close)
-	spectre := client.New(client.Config{URL: httpServer.URL})
+	stagingServer := httptest.NewServer(server.NewService(stagingStore, time.Hour).Handler())
+	t.Cleanup(stagingServer.Close)
+	spectre := client.NewServers(client.ServersConfig{URLs: []string{httpServer.URL, stagingServer.URL}})
 	first := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
 	unmatched := model.QuarantineReason{Kind: model.QuarantineUnmatched, Detail: "no matching reference call"}
 	// Divergences from mirror runs that have since stopped or restarted.
@@ -61,9 +64,8 @@ func TestStatusCommands(t *testing.T) {
 		Uptime:         12*time.Minute + 300*time.Millisecond,
 		Calls:          model.Calls{Routes: map[model.Route]uint64{"POST /v1/users": 66, "GET /v1/users": 22}, Other: 3},
 	}
-	for _, state := range []model.State{quarantined, healthy} {
-		assert.NoError(t, store.Put(t.Context(), state, time.Now()))
-	}
+	assert.NoError(t, store.Put(t.Context(), quarantined, time.Now()))
+	assert.NoError(t, stagingStore.Put(t.Context(), healthy, time.Now()))
 	assert.NoError(t, store.Record(t.Context(), model.Divergence{Service: "users", Environment: "production", Revision: "def456", Direction: model.Ingress, Quarantine: quarantined.Quarantines[model.Ingress]}))
 
 	var text strings.Builder

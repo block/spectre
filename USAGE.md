@@ -540,7 +540,9 @@ jitter), so streams spread across server replicas.
 ### Status
 
 List the reporting mirrors and recorded divergences with
-`spectre status --server-url=URL`. Filter with `--service`,
+`spectre status --server-url=URL`. Repeat `--server-url` to list the mirrors of
+several servers together, such as one per deployment; `status` fails if any of
+them does, so no server's mirrors go missing. Filter with `--service`,
 `--environment`, `--revision`, or `--node`, and print JSON with `--json`. Each
 mirror lists its calls per route, which lag by up to the keepalive interval. A
 mirror stays listed until it sends nothing for the server's `--state-ttl`
@@ -560,7 +562,8 @@ feeplans-fe cc009bd staging-green-us-west-2 spectre v0.52.0, up 4h25m33s
 
 The server keeps the latest divergence of each direction of a service
 environment, through redeploys and stopped mirrors, until someone clears it with
-`spectre status clear --service=SERVICE --environment=ENVIRONMENT`. A
+`spectre status clear --service=SERVICE --environment=ENVIRONMENT`, which
+clears it on every server `status` calls. A
 clear also ignores the quarantines that mirrors still running report, so a
 cleared divergence only returns if the candidate quarantines again.
 
@@ -588,5 +591,8 @@ func main() {
   including environment variables and the config file.
 - `WithTemplateRepo` sets the default template repository for `spectre init`.
 - `WithServerURL` sets the default `--server-url`.
+- `WithCollectorServers` sets the collector servers `spectre status` calls by
+  default, such as every deployment's server. Pass it after `WithServerURL`, which also sets
+  them.
 - `WithKongOptions` passes options to the command-line parser, such as
   `kong.Vars{"version": ...}` to set the `--version` string.
