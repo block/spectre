@@ -129,6 +129,7 @@ Divergence, `Unable`, an unidentifiable request, and an unmatched egress candida
 - `Unable` with a cancelled context never quarantines, because the caller gave up. Nor does a comparison the candidate's context cut short.
 - An egress candidate that gives up while no reference request matches its own is quarantined as unmatched, because the reference made no such request. Work the proxy stops, cancelled with `ErrCandidateStopped`, never quarantines.
 - Ignored routes never quarantine, even when the candidate fails. Their candidate responses are reported as skipped without waiting for the reference.
+- Streaming RPCs cannot be compared yet, so ingress quarantines the candidate as unable when one arrives, before sending it to the candidate. Rules that match a streaming RPC do not change this; only rules that ignore it do.
 - Known statuses are compared first, so a status difference is divergent even if a body fails to decode. Otherwise a response one side cannot decode is reported as unable.
 
 The engine releases `Raw` values that are abandoned or expire unused. After an intercept, the server releases the `Raw` once replay finishes.

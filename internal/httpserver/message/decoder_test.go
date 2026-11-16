@@ -46,6 +46,7 @@ func TestClassifiesResponses(t *testing.T) {
 		rawQuery    string
 		contentType string
 		ignored     Option[string]
+		unsupported Option[string]
 	}{
 		"RPCPath":              {method: http.MethodPost, path: "/test.v1.Service/Get", contentType: "application/json", ignored: compared},
 		"DeclaredHTTPEndpoint": {method: http.MethodGet, path: "/v1/forecast", ignored: compared},
@@ -56,7 +57,7 @@ func TestClassifiesResponses(t *testing.T) {
 		},
 		"Streaming": {
 			method: http.MethodPost, path: "/test.v1.Service/Watch", contentType: "application/grpc",
-			ignored: Some("streaming RPC comparison is not supported: test.v1.Service.Watch"),
+			unsupported: Some("streaming RPC comparison is not supported: test.v1.Service.Watch"),
 		},
 		"GRPCWeb": {
 			method: http.MethodPost, path: "/test.v1.Service/Get", contentType: "application/grpc-web+proto",
@@ -87,6 +88,35 @@ func TestClassifiesResponses(t *testing.T) {
 			plan := decoder.Responses(test.method, test.path, test.rawQuery, header)
 
 			assert.Equal(t, test.ignored, plan.Ignored())
+			assert.Equal(t, test.unsupported, plan.Unsupported())
+		})
+	}
+}
+
+func TestOnlyIgnoreRulesExemptStreamingRPCs(t *testing.T) {
+	unsupported := "streaming RPC comparison is not supported: test.v1.Service.Watch"
+	for name, test := range map[string]struct {
+		script      string
+		ignored     Option[string]
+		unsupported Option[string]
+	}{
+		"MatchRule": {
+			script:      `spectre.ingress.http("POST /test.v1.Service/Watch").match<v1.Response>();`,
+			unsupported: Some(unsupported),
+		},
+		"IgnoreRule": {
+			script:  `spectre.ingress.http("POST /test.v1.Service/Watch").ignore();`,
+			ignored: Some(`rule http("POST /test.v1.Service/Watch") ignores the request`),
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			decoder := newDecoder(t, test.script)
+			header := http.Header{"Content-Type": {"application/grpc"}}
+
+			plan := decoder.Responses(http.MethodPost, "/test.v1.Service/Watch", "", header)
+
+			assert.Equal(t, test.ignored, plan.Ignored())
+			assert.Equal(t, test.unsupported, plan.Unsupported())
 		})
 	}
 }

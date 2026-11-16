@@ -280,10 +280,9 @@ func TestDeclaredEndpointsSelectWireByContentType(t *testing.T) {
 		response    message.Response
 		status      string
 	}{
-		"GRPC":            {path: "/v1/forecast", contentType: "application/grpc", response: grpcResponse(t, responseProto("first", "", nil), false), status: "grpc-status 0"},
-		"Protobuf":        {path: "/v1/forecast", contentType: "application/x-protobuf", response: protobufResponse(responseProto("first", "", nil)), status: "200"},
-		"StreamingMethod": {path: "/test.v1.Service/Watch", contentType: "application/grpc", response: grpcResponse(t, responseProto("first", "", nil), false), status: "grpc-status 0"},
-		"MissingMethod":   {path: "/test.v1.Service/Missing", contentType: "application/grpc", response: grpcResponse(t, responseProto("first", "", nil), false), status: "grpc-status 0"},
+		"GRPC":          {path: "/v1/forecast", contentType: "application/grpc", response: grpcResponse(t, responseProto("first", "", nil), false), status: "grpc-status 0"},
+		"Protobuf":      {path: "/v1/forecast", contentType: "application/x-protobuf", response: protobufResponse(responseProto("first", "", nil)), status: "200"},
+		"MissingMethod": {path: "/test.v1.Service/Missing", contentType: "application/grpc", response: grpcResponse(t, responseProto("first", "", nil), false), status: "grpc-status 0"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			decoder := newDecoder(t, `spectre.ingress.http("POST `+test.path+`").match<v1.Response>();`)

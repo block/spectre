@@ -491,6 +491,35 @@ func TestClassifiesResponsesForComparison(t *testing.T) {
 		})
 	}
 }
+func TestStreamingRPCQuarantinesCandidate(t *testing.T) {
+	candidateAddress := acceptingAddress(t)
+	candidatePaths := make(chan string, 1)
+	transport := roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+		if request.URL.Host == candidateAddress {
+			candidatePaths <- request.URL.Path
+		}
+		return noContentResponse(request), nil
+	})
+	handler := newTestHandlerWithFakeBackends(t, candidateAddress, transport)
+	serveIngress(t.Context(), t, handler)
+	request := httptest.NewRequest(http.MethodPost, "http://proxy.example/test.Echo/Watch", nil)
+	request.Header.Set("Content-Type", "application/grpc")
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	assert.Equal(t, http.StatusNoContent, response.Code)
+	status, quarantined := handler.Candidates().QuarantineStatus().Get()
+	assert.True(t, quarantined)
+	assert.Equal(t, model.QuarantineReason{
+		Kind:    model.QuarantineUnable,
+		Traffic: Some(model.Traffic{Direction: model.Ingress, Protocol: model.ProtocolHTTP, Route: "POST /test.Echo/Watch"}),
+		Detail:  "streaming RPC comparison is not supported: test.Echo.Watch",
+	}, status.Reason)
+	assert.NoError(t, handler.Shutdown(t.Context()))
+	assert.Equal(t, 0, len(candidatePaths))
+}
+
 func TestServeStopsAfterContextCancellation(t *testing.T) {
 	reference := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 		writer.WriteHeader(http.StatusNoContent)
@@ -1256,14 +1285,26 @@ func TestQuarantineNamesNodeOfRoute(t *testing.T) {
 	})
 	catalog, err := state.NewCatalog(httpserver.Supports()...)
 	assert.NoError(t, err)
+	divergent := model.QuarantineReason{
+		Kind: model.QuarantineDivergent, Differences: []model.Difference{{Path: "$.value", Change: model.ChangeChanged, Count: 1}},
+	}
 	tests := []struct {
-		name    string
-		pattern string
-		url     string
+		name        string
+		pattern     string
+		method      string
+		url         string
+		contentType string
+		// reason is the expected quarantine without its traffic and node.
+		reason model.QuarantineReason
 	}{
-		{name: "AnyHost", pattern: "GET /compared/{name}", url: "http://proxy.example/compared/a"},
+		{name: "AnyHost", pattern: "GET /compared/{name}", method: http.MethodGet, url: "http://proxy.example/compared/a", reason: divergent},
 		// A pattern with a host must keep it when the quarantine names the node.
-		{name: "Host", pattern: "GET api.example/compared/{name}", url: "http://api.example/compared/a"},
+		{name: "Host", pattern: "GET api.example/compared/{name}", method: http.MethodGet, url: "http://api.example/compared/a", reason: divergent},
+		{
+			name: "StreamingRPC", pattern: "POST /test.Echo/Watch", method: http.MethodPost, url: "http://proxy.example/test.Echo/Watch",
+			contentType: "application/grpc",
+			reason:      model.QuarantineReason{Kind: model.QuarantineUnable, Detail: "streaming RPC comparison is not supported: test.Echo.Watch"},
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -1279,20 +1320,22 @@ status = "migrated"
 			assert.NoError(t, err)
 			serveIngress(t.Context(), t, handler)
 
-			handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, test.url, nil))
+			request := httptest.NewRequest(test.method, test.url, nil)
+			if test.contentType != "" {
+				request.Header.Set("Content-Type", test.contentType)
+			}
+			handler.ServeHTTP(httptest.NewRecorder(), request)
 			select {
 			case <-handler.Candidates().Quarantined():
 			case <-time.After(time.Second):
-				t.Fatal("divergence did not quarantine the candidate")
+				t.Fatal("request did not quarantine the candidate")
 			}
 
 			status, _ := handler.Candidates().QuarantineStatus().Get()
-			assert.Equal(t, model.QuarantineReason{
-				Kind:        model.QuarantineDivergent,
-				Traffic:     Some(model.Traffic{Direction: model.Ingress, Protocol: model.ProtocolHTTP, Route: model.Route(test.pattern)}),
-				Node:        Some("forecasts"),
-				Differences: []model.Difference{{Path: "$.value", Change: model.ChangeChanged, Count: 1}},
-			}, status.Reason)
+			expected := test.reason
+			expected.Traffic = Some(model.Traffic{Direction: model.Ingress, Protocol: model.ProtocolHTTP, Route: model.Route(test.pattern)})
+			expected.Node = Some("forecasts")
+			assert.Equal(t, expected, status.Reason)
 			assert.NoError(t, handler.Shutdown(t.Context()))
 		})
 	}
@@ -1667,6 +1710,8 @@ func matchingDescriptorLoader() descriptorLoaderFunc {
 				Name: new("Echo"),
 				Method: []*descriptorpb.MethodDescriptorProto{{
 					Name: new("Get"), InputType: new(".test.Payload"), OutputType: new(".test.Payload"),
+				}, {
+					Name: new("Watch"), InputType: new(".test.Payload"), OutputType: new(".test.Payload"), ServerStreaming: new(true),
 				}},
 			}},
 		}}}, nil

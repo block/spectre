@@ -243,6 +243,10 @@ Clients always receive the reference's response. Each pair of responses is
 compared as the [comparison scripts](#comparison-scripts) describe. Without a
 script rule, a response is decoded by its content type.
 
+SPECTRE cannot yet compare streaming RPCs. The first streaming RPC request that
+no script rule ignores quarantines the candidate as `unable`, and only the
+reference receives it.
+
 ### Egress
 
 The egress proxy forwards each reference service's dependency calls to

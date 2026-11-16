@@ -170,6 +170,10 @@ func (d *Decoder) Responses(method, path, rawQuery string, header http.Header) R
 	if reason, ok := ignored.Get(); ok {
 		return ignoredResponsePlan(d, request, reason)
 	}
+	// Rules would compare a stream as one message, so they cannot make it comparable.
+	if operation, streaming := d.streamingMethod(path); streaming {
+		return unsupportedResponsePlan(d, request, "streaming RPC comparison is not supported: "+operation)
+	}
 	requested, err := requestWire(header.Get("Content-Type"))
 	if err != nil {
 		requested = wireHTTPJSON
@@ -194,9 +198,6 @@ func (d *Decoder) unruled(method, path, rawQuery string, header http.Header) dec
 		selected = wireConnectJSON
 	case err != nil:
 		return ignoredDecoding(err.Error())
-	}
-	if operation, streaming := d.streamingMethod(path); streaming {
-		return ignoredDecoding("streaming RPC comparison is not supported: " + operation)
 	}
 	operation, err := d.conventionalMethod(path)
 	if err != nil {
