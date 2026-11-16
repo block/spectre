@@ -1,5 +1,5 @@
-// Command spectre runs the supervisor with its embedded proxies and generates
-// the TypeScript schema declarations used for comparison.
+// Command spectre runs the SPECTRE proxies and server, and generates the
+// TypeScript schema declarations used for comparison.
 package main
 
 import "github.com/block/spectre"

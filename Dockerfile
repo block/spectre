@@ -31,8 +31,8 @@ COPY --from=build /out/spectre /usr/local/bin/
 
 # Run as Alpine's nobody user without requiring name resolution.
 USER 65534:65534
-# The default ports of "spectre supervise" and "spectre serve".
+# The default ports of "spectre proxy" and "spectre serve".
 EXPOSE 50050 50070
-# Run any spectre command, such as "spectre supervise" for a mirror or
+# Run any spectre command, such as "spectre proxy" for a mirror or
 # "spectre serve" for the SPECTRE server.
 ENTRYPOINT ["spectre"]

@@ -1,9 +1,6 @@
 package proxies
 
-import (
-	"github.com/alecthomas/errors"
-	. "github.com/alecthomas/types/optional"
-)
+import "github.com/alecthomas/errors"
 
 // ProxyConfig contains the command-line configuration of a mirror whose services
 // run elsewhere, such as in other containers of the same pod.
@@ -29,17 +26,4 @@ type ProxyConfig struct {
 // Validate checks that the mirror configuration is usable.
 func (c ProxyConfig) Validate() error {
 	return errors.WithStack(c.Mirror.Validate())
-}
-
-// wiring connects the proxies to the addresses on the command line.
-func (c ProxyConfig) wiring() Wiring {
-	return Wiring{
-		Listen:          c.Listen,
-		Reference:       c.ReferenceURL,
-		Candidate:       c.CandidateURL,
-		ReferenceEgress: c.ReferenceEgressListen,
-		CandidateEgress: c.CandidateEgressListen,
-		EgressHealth:    c.EgressHealthListen,
-		Health:          Some(c.HealthListen),
-	}
 }

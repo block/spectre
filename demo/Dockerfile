@@ -1,8 +1,7 @@
 # syntax=docker/dockerfile:1
 
-# Demo image: the SPECTRE supervisor running a sample reference and candidate
-# behind both proxies, with the candidate's egress sandboxed and host resources
-# split between the services. See demo/README.md.
+# Demo image: the spectre binary, the sample services and their comparison
+# config, for the containers of demo/mirror-pod.yaml. See demo/README.md.
 
 FROM golang:1.27.3-alpine3.24 AS build
 
@@ -34,7 +33,3 @@ COPY internal/sample/scripts ./scripts
 COPY internal/sample/schema ./schema
 COPY internal/sample/testdata ./testdata
 COPY dist/descriptors ./descriptors
-COPY demo/entrypoint.sh /usr/local/bin/spectre-demo
-
-EXPOSE 50050
-ENTRYPOINT ["spectre-demo"]

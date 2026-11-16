@@ -14,19 +14,23 @@ import (
 	"github.com/block/spectre/internal/state"
 )
 
-var testWiring = Wiring{
-	Listen:          "127.0.0.1:50050",
-	Reference:       "h2c+unix:/sockets/reference.sock",
-	Candidate:       "http+unix:/sockets/candidate.sock",
-	ReferenceEgress: "unix:/sockets/egress-reference.sock",
-	CandidateEgress: "unix:/sockets/egress-candidate.sock",
-	EgressHealth:    "unix:/sockets/egress-health.sock",
-	Health:          None[string](),
+// testProxyConfig wires the proxies to sockets, with mirror as their configuration.
+func testProxyConfig(mirror Config) ProxyConfig {
+	return ProxyConfig{
+		Listen:                "127.0.0.1:50050",
+		ReferenceURL:          "h2c+unix:/sockets/reference.sock",
+		CandidateURL:          "http+unix:/sockets/candidate.sock",
+		ReferenceEgressListen: "unix:/sockets/egress-reference.sock",
+		CandidateEgressListen: "unix:/sockets/egress-candidate.sock",
+		EgressHealthListen:    "unix:/sockets/egress-health.sock",
+		HealthListen:          "unix:/sockets/health.sock",
+		Mirror:                mirror,
+	}
 }
 
 func testMirror(t *testing.T, config Config) *Mirror {
 	t.Helper()
-	m, err := New(t.Context(), config, testWiring, testCatalog(t))
+	m, err := New(t.Context(), testProxyConfig(config), testCatalog(t))
 	assert.NoError(t, err)
 	return m
 }
@@ -60,7 +64,7 @@ func TestLoadsMigrationState(t *testing.T) {
 				config.StateFile = filepath.Join(t.TempDir(), "state.toml")
 				assert.NoError(t, os.WriteFile(config.StateFile, []byte(test.state), 0o600))
 			}
-			m, err := New(t.Context(), config, testWiring, testCatalog(t))
+			m, err := New(t.Context(), testProxyConfig(config), testCatalog(t))
 			if test.err != "" {
 				assert.EqualError(t, err, "load migration state "+config.StateFile+": "+test.err)
 				return
@@ -76,9 +80,9 @@ func TestEgressConfig(t *testing.T) {
 	config.Destinations = map[string]string{"b.example": "http://b", "a.example": "http://a"}
 	config.Descriptors.DescriptorsDir = "descriptors"
 	expected := httpserver.NewEgressConfig()
-	expected.ReferenceListen = testWiring.ReferenceEgress
-	expected.CandidateListen = testWiring.CandidateEgress
-	expected.HealthListen = testWiring.EgressHealth
+	expected.ReferenceListen = "unix:/sockets/egress-reference.sock"
+	expected.CandidateListen = "unix:/sockets/egress-candidate.sock"
+	expected.HealthListen = "unix:/sockets/egress-health.sock"
 	expected.Destinations = config.Destinations
 	expected.Descriptors = config.Descriptors
 	assert.Equal(t, expected, testMirror(t, config).egressConfig())
@@ -90,9 +94,9 @@ func TestIngressConfig(t *testing.T) {
 	config.CandidateStartupTimeout = time.Minute
 	config.Descriptors.DescriptorsDir = "descriptors"
 	expected := httpserver.NewIngressConfig()
-	expected.Listen = testWiring.Listen
-	expected.Reference = testWiring.Reference
-	expected.Candidate = testWiring.Candidate
+	expected.Listen = "127.0.0.1:50050"
+	expected.Reference = "h2c+unix:/sockets/reference.sock"
+	expected.Candidate = "http+unix:/sockets/candidate.sock"
 	expected.Reflection = false
 	expected.CandidateStartupTimeout = time.Minute
 	expected.Descriptors = config.Descriptors

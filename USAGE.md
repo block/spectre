@@ -12,7 +12,7 @@ compares what they do.
   responses. It answers each matching candidate call with the recorded response,
   so the candidate never reaches a dependency or makes a real write.
 - A **mirror** is one running pair of proxies with their reference and
-  candidate. `spectre supervise` and `spectre proxy` each run one.
+  candidate. `spectre proxy` runs one.
 - The **SPECTRE server** collects the state of every mirror and the divergences
   they find. `spectre status` reads it.
 
@@ -25,7 +25,6 @@ restarts, and reports why to the server.
 | Command | Purpose |
 | --- | --- |
 | `spectre init` | Set a service checkout up for a migration from a template. |
-| `spectre supervise` | Start a reference and a candidate behind the proxies. |
 | `spectre proxy` | Run the proxies in front of services that run elsewhere. |
 | `spectre contain` | Block a candidate container's IP traffic. |
 | `spectre serve` | Run the SPECTRE server. |
@@ -105,8 +104,8 @@ attributes go at the top level:
 - `<time:FORMAT>` takes a Go time layout or `rfc3339`, `rfc3339nano` (the default), `unix`,
   `unixms` or `unixns`.
 
-SPECTRE's own lines carry `spectre.subsystem` set to `supervisor`, `mirror`,
-`ingress`, `egress` or `health`.
+SPECTRE's own lines carry `spectre.subsystem` set to `mirror`, `ingress`,
+`egress` or `health`.
 
 ## Setting a service up
 
@@ -124,72 +123,11 @@ directory or a git source, such as `git+ssh://github.com/org/repo`, passed with
 A template may check its variables before anything is written, and stop with an
 error.
 
-## Running a mirror with `spectre supervise`
-
-`spectre supervise` starts both services, wires them to the proxies over unix
-sockets, and stops everything when any of them exits:
-
-```sh
-spectre supervise \
-  --reference='./reference-service --listen=$SPECTRE_LISTEN' \
-  --candidate='./candidate-service --listen=$SPECTRE_LISTEN' \
-  --scripts-dir=spectre/scripts \
-  --schema-dir=spectre/schema \
-  --destination=payments.example=https://payments.internal \
-  --server-url=http://spectre.internal:50070 \
-  --service=invoices --environment=staging --revision="$(git rev-parse HEAD)"
-```
-
-`--reference` and `--candidate` are shell commands. Each service gets two
-environment variables:
-
-- `SPECTRE_LISTEN` is the address to serve on, as `unix:<path>`.
-- `SPECTRE_EGRESS` is the egress proxy's URL, as `http+unix:<path>`. Send every
-  dependency call there, with the dependency's host name in the `Host` header.
-  See [Egress](#egress).
-
-Ingress listens on `--listen`, `127.0.0.1:50050` by default. It accepts HTTP/1
-and unencrypted HTTP/2. It reaches each service over unencrypted HTTP/2 unless
-`--reference-protocol` or `--candidate-protocol` is `http`. The sockets wiring
-the proxies to the services go in `--socket-dir`, `dist/sockets` by default.
-
-The supervisor starts the reference, then the candidate. Each must accept
-connections within `--startup-timeout` (30s by default). On a termination signal,
-the services get `--shutdown-timeout` (10s by default) to exit before they are
-killed.
-
-### Isolation and resources
-
-On Linux, the supervisor keeps the candidate from affecting the outside world or
-starving the reference:
-
-- **Egress sandbox.** A seccomp filter stops the candidate opening IPv4 and IPv6
-  sockets, so it can only reach dependencies through the egress socket. Turn it
-  off with `--no-seccomp-egress`.
-- **Resource split.** The services run in cgroup v2 groups under the
-  supervisor's own cgroup, or under `--cgroup-parent`.
-  - `--memory-max` is the memory budget in bytes. The default, 0, uses the
-    system memory.
-  - `--candidate-memory-share` and `--reference-memory-share` split the budget.
-    Both default to 1, an even split.
-  - `--candidate-cpu-weight` and `--reference-cpu-weight` split CPU when both
-    services are busy. Both default to 100.
-
-The supervisor fails to start without cgroup v2. Pass `--no-limits` to run
-without the split, which is required off Linux.
-
-### Service output
-
-The candidate's and reference's stdout passes through with a label added, and stderr
-passes through unchanged. A JSON object line gains a leading
-`"spectre.subsystem": "candidate"` or `"reference"` member and is otherwise left as
-written; any other line is prefixed with `candidate: ` or `reference: `.
-
 ## Running a mirror with `spectre proxy`
 
-`spectre proxy` runs the same proxies and server reporting as `spectre supervise`,
-but never starts the services, so the candidate and reference can run in other
-containers of the same pod. Pass where ingress reaches each service with
+`spectre proxy` runs the ingress and egress proxies and reports the mirror to the
+SPECTRE server. It never starts the services, so the candidate and reference run
+on their own, such as in other containers of the same pod. Pass where ingress reaches each service with
 `--reference-url` and `--candidate-url`, and give each service the matching
 egress address, `--reference-egress-listen` or `--candidate-egress-listen`, as
 its dependency proxy. Any address may be a unix socket in a shared volume:
@@ -206,6 +144,9 @@ spectre proxy \
 ```
 
 The candidate's URL and egress address must be a loopback IP or a unix socket.
+
+Ingress listens on `--listen`, `127.0.0.1:50050` by default, and accepts HTTP/1
+and unencrypted HTTP/2.
 
 `--health-listen` serves `/livez`, and `/readyz` once both proxies are ready,
 over TCP so a kubelet's HTTP probes can reach them. The egress proxy also serves
@@ -259,7 +200,7 @@ egress address with the dependency's host name in the `Host` header. Map each
 dependency host to its real URL with a `--destination=HOST=URL` flag:
 
 ```sh
-spectre supervise ... --destination=forecasts.example=http://127.0.0.1:50053
+spectre proxy ... --destination=forecasts.example=http://127.0.0.1:50053
 ```
 
 A `HOST` may be a glob, such as `--destination="*.example=http://127.0.0.1:50053"`,
@@ -536,7 +477,7 @@ agent writing the file. `--json` prints JSON.
 `spectre state validate` checks the file, `spectre/state.toml` by default or
 `--state-file`. It fails on errors and warns about nodes that no ingress node
 reaches, which are dead code or run from something SPECTRE does not mirror. An
-invalid state also stops `spectre supervise` and `spectre proxy` at startup.
+invalid state also stops `spectre proxy` at startup.
 
 `spectre next` lists the nodes to migrate next, dependencies first, so that
 ingress traffic can verify them as soon as they are migrated. Each step holds one
@@ -564,8 +505,7 @@ default and keeps everything in memory, so a restart loses it. To keep them in R
 nodes with `addr`, such as
 `--storage=redis-cluster://localhost:7000?addr=localhost:7001`.
 
-Every mirror reports to a server, so `spectre supervise` and `spectre proxy`
-require its URL,
+Every mirror reports to a server, so `spectre proxy` requires its URL,
 `--server-url`, and the mirror's identity, `--service`, `--environment`, and
 `--revision`, the candidate's commit. Set them in a deployment with the
 matching `SPECTRE_SERVER_URL`, `SPECTRE_SERVICE`, `SPECTRE_ENVIRONMENT`, and

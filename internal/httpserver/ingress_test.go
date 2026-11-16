@@ -1702,7 +1702,7 @@ func newTestHandlerWithFakeBackends(t *testing.T, candidateAddress string, trans
 	return handler
 }
 
-// newIngress builds an ingress as the supervisor does.
+// newIngress builds an ingress as the mirror does.
 func newIngress(
 	t *testing.T,
 	config httpserver.IngressConfig,
