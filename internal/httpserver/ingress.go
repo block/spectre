@@ -38,20 +38,21 @@ type Ingress struct {
 	// referenceBackend and candidateBackend are dialed until each first accepts.
 	referenceBackend *netaddr.Endpoint
 	candidateBackend *netaddr.Endpoint
-	// awaitingCandidate holds mirroring from Serve's start until the candidate accepts.
-	awaitingCandidate atomic.Bool
-	reference         *point
-	candidate         *point
-	config            IngressConfig
-	engine            *protocol.Engine
-	routes            *route.Matcher
-	buffer            *proxy.Budget
-	requests          chan struct{}
-	health            *health.Handler
-	descriptors       Option[DescriptorLoader]
-	static            *descriptorpb.FileDescriptorSet
-	candidates        *proxy.Candidates
-	calls             *proxy.CallCounter
+	// serving admits requests once startup completes. Shutdown never clears it,
+	// so requests that arrive while servers drain still reach the reference.
+	serving     atomic.Bool
+	reference   *point
+	candidate   *point
+	config      IngressConfig
+	engine      *protocol.Engine
+	routes      *route.Matcher
+	buffer      *proxy.Budget
+	requests    chan struct{}
+	health      *health.Handler
+	descriptors Option[DescriptorLoader]
+	static      *descriptorpb.FileDescriptorSet
+	candidates  *proxy.Candidates
+	calls       *proxy.CallCounter
 	// quarantiner is the only way ingress quarantines, so every reason names its route's node.
 	quarantiner *nodeQuarantiner
 	// migration maps each route in the migration state to its node.
@@ -254,6 +255,10 @@ func (i *Ingress) Calls() model.Calls {
 }
 
 func (i *Ingress) serveProxy(writer http.ResponseWriter, request *http.Request) {
+	if !i.serving.Load() {
+		http.Error(writer, "ingress is not ready", http.StatusServiceUnavailable)
+		return
+	}
 	route := i.route(request)
 	i.calls.Count(route)
 	select {
@@ -319,9 +324,6 @@ func (i *Ingress) serveProxy(writer http.ResponseWriter, request *http.Request) 
 // mirrors reports whether the migration state lets a request reach the candidate.
 // A route no node lists quarantines the candidate, unless ingress never compares it.
 func (i *Ingress) mirrors(request *http.Request) bool {
-	if i.awaitingCandidate.Load() {
-		return false
-	}
 	routes, ok := i.migration.Get()
 	if !ok {
 		return true
@@ -396,7 +398,7 @@ func (i *Ingress) Shutdown(ctx context.Context) error {
 }
 
 // Serve accepts ingress traffic until the context is cancelled or the server fails.
-// Readiness remains false until the reference accepts and the schema is configured.
+// It rejects requests until both backends accept and the schema is configured.
 func (i *Ingress) Serve(ctx context.Context, listener net.Listener) error {
 	bindings := []Binding{NewBinding(listener, i)}
 	lifecycle := NewLifecycle(i.start, i.markUnready, i.Shutdown)
@@ -405,26 +407,33 @@ func (i *Ingress) Serve(ctx context.Context, listener net.Listener) error {
 
 // start waits for the backends in the background, so Serve can still stop.
 func (i *Ingress) start(ctx context.Context) {
-	i.awaitingCandidate.Store(true)
 	go i.awaitBackends(ctx)
 }
 
-// awaitBackends readies ingress once the reference accepts, and mirrors once the
-// candidate does. Reflection reads both, so it also waits for the candidate.
+// awaitBackends serves and readies ingress once both backends accept and share a
+// schema. A candidate that fails startup is quarantined, and ingress stays unready.
 func (i *Ingress) awaitBackends(ctx context.Context) {
 	if err := i.referenceBackend.AwaitAccepting(ctx); err != nil {
 		return
 	}
 	logger.FromContext(ctx).InfoContext(ctx, "Reference accepts connections")
-	if !i.config.Reflection {
-		i.configureSchema(ctx)
+	if !i.awaitCandidate(ctx) {
+		return
 	}
-	if i.awaitCandidate(ctx) && i.config.Reflection {
-		i.configureSchema(ctx)
+	err := i.configureSchema(ctx)
+	switch {
+	case ctx.Err() != nil:
+		return
+	case err != nil:
+		i.quarantiner.Quarantine(ctx, model.QuarantineReason{Kind: model.QuarantineUnable, Detail: err.Error()})
+		return
 	}
+	i.serving.Store(true)
+	i.health.SetReady(true)
+	logger.FromContext(ctx).InfoContext(ctx, "Ingress is ready; mirroring starts")
 }
 
-// awaitCandidate starts mirroring once the candidate accepts a connection, and
+// awaitCandidate reports whether the candidate accepts a connection, and
 // quarantines it when it does not within the startup timeout.
 func (i *Ingress) awaitCandidate(ctx context.Context) (started bool) {
 	startup, cancel := context.WithTimeout(ctx, i.config.CandidateStartupTimeout)
@@ -440,8 +449,7 @@ func (i *Ingress) awaitCandidate(ctx context.Context) (started bool) {
 		})
 		return false
 	}
-	i.awaitingCandidate.Store(false)
-	logger.FromContext(ctx).InfoContext(ctx, "Candidate accepts connections; mirroring starts")
+	logger.FromContext(ctx).InfoContext(ctx, "Candidate accepts connections")
 	return true
 }
 
@@ -449,39 +457,33 @@ func (i *Ingress) markUnready() {
 	i.health.SetReady(false)
 }
 
-// configureSchema makes readiness contingent on one schema shared by both backends.
+// configureSchema builds the decoder from one schema shared by both backends.
 // Static descriptors are identical for both, so only reflected ones are compared.
-func (i *Ingress) configureSchema(ctx context.Context) {
+func (i *Ingress) configureSchema(ctx context.Context) error {
 	reflectionContext, cancel := context.WithTimeout(ctx, i.config.ReflectionTimeout)
 	defer cancel()
 	set := i.static
 	if i.config.Reflection {
 		reference, candidate, err := i.loadDescriptors(reflectionContext)
 		if err != nil {
-			logger.FromContext(ctx).ErrorContext(ctx, "Backend descriptor loading failed", "error", err)
-			return
+			return err
 		}
 		if !proto.Equal(reference, candidate) {
-			logger.FromContext(ctx).ErrorContext(ctx, "Backend descriptors differ")
-			return
+			return errors.New("reference and candidate descriptors differ")
 		}
 		set, err = descriptors.Merge(reference, i.static)
 		if err != nil {
-			logger.FromContext(ctx).ErrorContext(ctx, "Backend descriptors conflict with static descriptors", "error", err)
-			return
+			return errors.Wrap(err, "merge backend and static descriptors")
 		}
 	}
 	decoder, err := message.New(i.engine.Schema(), set, i.routes, i.engine, i.config.ComparisonMaxBodyBytes)
 	if err != nil {
-		logger.FromContext(ctx).ErrorContext(ctx, "Response comparison setup failed", "error", err)
-		return
+		return errors.Wrap(err, "configure response decoding")
 	}
 	i.mu.Lock()
 	i.decoder = Some(decoder)
 	i.mu.Unlock()
-	if ctx.Err() == nil {
-		i.health.SetReady(true)
-	}
+	return nil
 }
 
 func (i *Ingress) loadDescriptors(ctx context.Context) (*descriptorpb.FileDescriptorSet, *descriptorpb.FileDescriptorSet, error) {
