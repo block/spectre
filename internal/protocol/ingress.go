@@ -384,6 +384,12 @@ func (p *ingressPairs) finishCandidate(pair *ingressPair) {
 	delete(p.requests, pair.id())
 }
 
+// timedOut reports whether ctx ended because the server's candidate timeout
+// fired. The proxy and the client end it by cancelling it instead.
+func timedOut(ctx context.Context) bool {
+	return errors.Is(context.Cause(ctx), context.DeadlineExceeded)
+}
+
 // candidateResponse waits for the reference response, bounded by ctx, so
 // waiting and decoding run on the candidate's time.
 func (p *ingressPairs) candidateResponse(ctx context.Context, exchange Exchange, response Response) {
@@ -398,15 +404,22 @@ func (p *ingressPairs) candidateResponse(ctx context.Context, exchange Exchange,
 		return
 	}
 	reference, err := pair.awaitReference(ctx)
-	if err != nil {
+	switch {
+	case err != nil && timedOut(ctx):
+		p.report(ctx, pair, newComparisonResult(outcomeUnable, "reference did not respond within the candidate timeout"), response.Latency)
+		return
+	case err != nil:
 		p.unfinished(ctx, pair.describe(), err)
 		return
 	}
 	result := compareResponses(ctx, p.scripts, reference, response)
-	// A comparison cut short by the candidate's own deadline says nothing about it.
+	// A comparison the proxy or client cut short says nothing about the candidate.
 	if result.outcome == outcomeUnable && ctx.Err() != nil {
-		p.unfinished(ctx, pair.describe(), errors.Errorf("%s: %s", ctx.Err(), result.reason))
-		return
+		if !timedOut(ctx) {
+			p.unfinished(ctx, pair.describe(), errors.Errorf("%s: %s", ctx.Err(), result.reason))
+			return
+		}
+		result = newComparisonResult(outcomeUnable, "comparison did not finish within the candidate timeout")
 	}
 	p.report(ctx, pair, result, response.Latency)
 }
@@ -415,16 +428,22 @@ func (p *ingressPairs) unfinished(ctx context.Context, attributes []any, err err
 	logger.FromContext(ctx).WarnContext(context.WithoutCancel(ctx), "Response comparison did not finish", append(attributes, "error", err)...)
 }
 
+// candidateUnable reports a candidate that did not respond. Cancelled work never
+// quarantines, but work the candidate timeout ended did not respond in time.
 func (p *ingressPairs) candidateUnable(ctx context.Context, exchange Exchange, reason error) {
 	pair, ok := p.take(ctx, exchange)
 	if !ok {
 		return
 	}
 	defer p.finishCandidate(pair)
-	if ctx.Err() != nil {
+	timeout := timedOut(ctx)
+	if ctx.Err() != nil && !timeout {
 		return
 	}
 	result := newComparisonResult(outcomeUnable, "candidate: "+reason.Error())
+	if timeout {
+		result = newComparisonResult(outcomeUnable, "candidate did not respond within the candidate timeout")
+	}
 	if ignoredReason, ignored := pair.ignored().Get(); ignored {
 		result = newComparisonResult(outcomeSkipped, ignoredReason)
 	}
