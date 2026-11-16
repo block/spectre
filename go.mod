@@ -48,7 +48,7 @@ require (
 	github.com/klauspost/cpuid/v2 v2.4.0 // indirect
 	github.com/mdlayher/netlink v1.7.3-0.20250113171957-fbb4dce95f42 // indirect
 	github.com/mdlayher/socket v0.5.0 // indirect
-	github.com/microsoft/TypeScript/tsc v0.0.0-20261106223502-f7973164a5f0 // indirect
+	github.com/microsoft/TypeScript/tsc v0.0.0-20261114002809-6bdcb54d23f4 // indirect
 	github.com/pelletier/go-toml v1.9.5 // indirect
 	github.com/yuin/gopher-lua v1.1.1 // indirect
 	github.com/zeebo/xxh3 v1.1.0 // indirect
