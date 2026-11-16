@@ -65,6 +65,7 @@ type mirror struct {
 // base URLs of its listeners.
 type running struct {
 	ingressURL         string
+	referenceEgressURL string
 	candidateEgressURL string
 	// client speaks HTTP/2 without TLS, as gRPC needs.
 	client *http.Client
@@ -88,12 +89,13 @@ func start(t *testing.T, m mirror) *running {
 	listeners := proxies.Listeners{Ingress: listen(t), ReferenceEgress: listen(t), CandidateEgress: listen(t), EgressHealth: listen(t), Health: listen(t)}
 	r := &running{
 		ingressURL:         baseURL(listeners.Ingress),
+		referenceEgressURL: baseURL(listeners.ReferenceEgress),
 		candidateEgressURL: baseURL(listeners.CandidateEgress),
 		client:             newClient(t),
 		server:             client.New(client.Config{URL: serverURL}),
 		watch:              watch,
 	}
-	serve(t, reference, m.reference(newEgress(t, baseURL(listeners.ReferenceEgress))))
+	serve(t, reference, m.reference(newEgress(t, r.referenceEgressURL)))
 	serve(t, candidate, m.candidate(newEgress(t, r.candidateEgressURL)))
 	destinations := map[string]string{}
 	for host, handler := range m.dependencies {
