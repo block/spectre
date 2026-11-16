@@ -35,6 +35,7 @@ type CommandLine struct {
 	Gen       genCommand       `cmd:"" help:"Generate TypeScript schema declarations and the script API."`
 	Status    statusCommand    `cmd:"" help:"List the mirrors reporting to the SPECTRE server and the divergences they reported, or clear divergences."`
 	State     stateCommand     `cmd:"" help:"Describe a service's migration state."`
+	Done      doneCommand      `cmd:"" help:"Mark migrated nodes in the migration state, which must stay valid."`
 
 	Init initCommand `cmd:"" help:"Set a service checkout up for a SPECTRE migration from a template."`
 }

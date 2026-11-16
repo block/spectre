@@ -174,3 +174,66 @@ func TestStateValidateCommandMissingFile(t *testing.T) {
 func replacePath(text, path string) string {
 	return string(bytes.ReplaceAll([]byte(text), []byte("STATE"), []byte(path)))
 }
+
+func TestDoneCommand(t *testing.T) {
+	for name, test := range map[string]struct {
+		toml     string
+		nodes    []string
+		expected string
+		file     string
+		err      string
+	}{
+		"Marks": {
+			toml:     "[nodes.api]\ndepends_on = [\"money\"]\n[nodes.api.ingress.rpc.methods]\n\n[nodes.money]\nstatus = \"pending\"\n",
+			nodes:    []string{"money", "api"},
+			expected: "STATE: marked money, api migrated\n",
+			file: "[nodes]\n[nodes.api]\ndepends_on = ['money']\nstatus = 'migrated'\n\n" +
+				"[nodes.api.ingress]\n[nodes.api.ingress.rpc]\n[nodes.api.ingress.rpc.methods]\n[nodes.money]\nstatus = 'migrated'\n",
+		},
+		"AlreadyMigrated": {
+			toml:     "[nodes.money]\nstatus = \"migrated\"\n",
+			nodes:    []string{"money"},
+			expected: "STATE is unchanged: every node is already migrated\n",
+			file:     "[nodes.money]\nstatus = \"migrated\"\n",
+		},
+		"WouldBeInvalid": {
+			toml:     "[nodes.api]\ndepends_on = [\"money\"]\n\n[nodes.money]\n",
+			nodes:    []string{"api"},
+			expected: "STATE: error: nodes.api.status: migrated, but depends on pending node \"money\"\n",
+			file:     "[nodes.api]\ndepends_on = [\"money\"]\n\n[nodes.money]\n",
+			err:      "STATE would be invalid, so it is unchanged",
+		},
+		"UnknownNode": {
+			toml:  "[nodes.money]\n",
+			nodes: []string{"api"},
+			file:  "[nodes.money]\n",
+			err:   "not a node: api",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "state.toml")
+			assert.NoError(t, os.WriteFile(path, []byte(test.toml), 0o600))
+			command := doneCommand{State: state.Config{StateFile: path}, Nodes: test.nodes}
+			var out bytes.Buffer
+
+			err := command.Run(Output{Writer: &out}, testCatalog(t))
+
+			if test.err != "" {
+				assert.EqualError(t, err, replacePath(test.err, path))
+			} else {
+				assert.NoError(t, err)
+			}
+			assert.Equal(t, replacePath(test.expected, path), out.String())
+			file, err := os.ReadFile(path)
+			assert.NoError(t, err)
+			assert.Equal(t, test.file, string(file))
+		})
+	}
+}
+
+func TestDoneCommandMissingFile(t *testing.T) {
+	command := doneCommand{State: state.Config{StateFile: filepath.Join(t.TempDir(), "state.toml")}, Nodes: []string{"a"}}
+	err := command.Run(Output{Writer: &bytes.Buffer{}}, testCatalog(t))
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "read migration state")
+}

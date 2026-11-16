@@ -31,6 +31,7 @@ restarts, and reports why to the server.
 | `spectre serve` | Run the SPECTRE server. |
 | `spectre status` | List mirrors and divergences, or clear divergences. |
 | `spectre state` | Describe and validate a migration state file. |
+| `spectre done` | Mark nodes migrated in the migration state. |
 | `spectre gen` | Generate TypeScript schema declarations and the script API declaration. |
 
 Run `spectre <command> --help` for every flag of a command, with its default.
@@ -502,6 +503,13 @@ agent writing the file. `--json` prints JSON.
 `--state-file`. It fails on errors and warns about nodes that no ingress node
 reaches, which are dead code or run from something SPECTRE does not mirror. An
 invalid state also stops `spectre supervise` and `spectre proxy` at startup.
+
+`spectre done <node>...` marks nodes migrated after they are added to the
+candidate. It rewrites the file in a canonical layout, with keys sorted and
+comments dropped, so after the first rewrite each change is only status lines.
+It writes nothing when a node is unknown or the state would be invalid, for
+example because a node depends on one still pending, and nothing when every
+node is already migrated. It does not commit.
 
 ## SPECTRE server
 
