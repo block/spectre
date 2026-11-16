@@ -119,7 +119,7 @@ func typeArguments(checker *ts.Checker, loaded *schema.Schema, call *ts.Node) (O
 		return None[insertion](), nil // Selectors, ignore, and variable take no type arguments.
 	}
 	expected := 1
-	if function == string(targetField) || function == deriveMethod || function == fromMethod {
+	if function == string(targetField) || function == replacesMethod || function == usingMethod {
 		expected = 2
 	}
 	// display names the call the way a script writes it, e.g. "IngressHTTPRule.match".
@@ -147,7 +147,7 @@ func typeArguments(checker *ts.Checker, loaded *schema.Schema, call *ts.Node) (O
 			return None[insertion](), errors.Errorf("%s: spectre.field path must be one string literal type", ts.Location(types[1]))
 		}
 		values = append(values, path)
-	case deriveMethod, fromMethod:
+	case replacesMethod, usingMethod:
 		second := checker.GetTypeFromTypeNode(types[1])
 		other, err := bodyTypeName(second, false)
 		if err == nil {

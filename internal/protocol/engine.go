@@ -87,7 +87,7 @@ func (e *Engine) Schema() *schema.Schema {
 }
 
 // EgressSourceResponse returns the type to decode an egress endpoint's reference
-// responses as, when derivations read them. Other egress responses are only replayed.
+// responses as, when replacements read them. Other egress responses are only replayed.
 func (e *Engine) EgressSourceResponse(protocol model.Protocol, route model.Route) Option[schema.TypeRef] {
 	return e.egress.sourceResponse(protocol, route)
 }

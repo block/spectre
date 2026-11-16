@@ -32,9 +32,9 @@ type egressQueue struct {
 	scripts    *comparison.Scripts
 	window     time.Duration
 	quarantine Quarantiner
-	// derivations answers candidate requests to an endpoint by derivation alone,
-	// and sourceResponses types the reference responses derivations read.
-	derivations     map[endpoint]javascript.Derivation
+	// replacements answers candidate requests to an endpoint from the source it replaces,
+	// and sourceResponses types the reference responses replacements read.
+	replacements    map[endpoint]javascript.Replacement
 	sourceResponses map[endpoint]schema.TypeRef
 	// mu guards every map. A hash never has unused references and waiting
 	// candidates at the same time, because add hands over to a waiter first.
@@ -55,17 +55,17 @@ type egressQueue struct {
 }
 
 func newEgressQueue(scripts *comparison.Scripts, window time.Duration, quarantine Quarantiner) *egressQueue {
-	derivations := map[endpoint]javascript.Derivation{}
+	replacements := map[endpoint]javascript.Replacement{}
 	sourceResponses := map[endpoint]schema.TypeRef{}
-	for _, derivation := range scripts.Derivations() {
-		derivations[endpoint{derivation.Protocol(), derivation.Pattern()}] = derivation
-		sourceResponses[endpoint{derivation.Protocol(), derivation.Source()}] = derivation.SourceResponse()
+	for _, replacement := range scripts.Replacements() {
+		replacements[endpoint{replacement.Protocol(), replacement.Pattern()}] = replacement
+		sourceResponses[endpoint{replacement.Protocol(), replacement.Source()}] = replacement.SourceResponse()
 	}
 	return &egressQueue{
 		scripts:         scripts,
 		window:          window,
 		quarantine:      quarantine,
-		derivations:     derivations,
+		replacements:    replacements,
 		sourceResponses: sourceResponses,
 		exchanges:       map[Exchange]*egressExchange{},
 		unused:          map[comparison.Hash][]*egressExchange{},
@@ -76,7 +76,7 @@ func newEgressQueue(scripts *comparison.Scripts, window time.Duration, quarantin
 	}
 }
 
-// sourceResponse returns the type a derivation reads an endpoint's reference responses as, if any does.
+// sourceResponse returns the type a replacement reads an endpoint's reference responses as, if any does.
 func (q *egressQueue) sourceResponse(protocol model.Protocol, route model.Route) Option[schema.TypeRef] {
 	typeName, ok := q.sourceResponses[endpoint{protocol, string(route)}]
 	if !ok {
@@ -170,8 +170,8 @@ func (q *egressQueue) forward(ctx context.Context, protocol model.Protocol, rout
 func (q *egressQueue) intercept(ctx context.Context, protocol model.Protocol, route model.Route,
 	request func(ctx context.Context) (Message, error),
 ) (Decision, error) {
-	if derivation, derived := q.derivations[endpoint{protocol, string(route)}]; derived {
-		return q.answer(ctx, protocol, route, derivation, request)
+	if replacement, replaces := q.replacements[endpoint{protocol, string(route)}]; replaces {
+		return q.answer(ctx, protocol, route, replacement, request)
 	}
 	raw, kind, err := q.match(ctx, protocol, route, request)
 	if err != nil {
@@ -214,12 +214,12 @@ func blamesCandidate(ctx context.Context, kind model.QuarantineKind) bool {
 	return kind == model.QuarantineUnmatched && !errors.Is(context.Cause(ctx), ErrCandidateStopped)
 }
 
-// answer answers a candidate request to a derived endpoint with an equivalent reference
-// request to the endpoint, or else with a response derived from a source reference.
-func (q *egressQueue) answer(ctx context.Context, protocol model.Protocol, route model.Route, derivation javascript.Derivation,
+// answer answers a candidate request to a replacing endpoint with an equivalent reference
+// request to the endpoint, or else with a response translated from a source reference.
+func (q *egressQueue) answer(ctx context.Context, protocol model.Protocol, route model.Route, replacement javascript.Replacement,
 	request func(ctx context.Context) (Message, error),
 ) (Decision, error) {
-	decision, kind, err := q.respond(ctx, protocol, route, derivation, request)
+	decision, kind, err := q.respond(ctx, protocol, route, replacement, request)
 	if err != nil {
 		if blamesCandidate(ctx, kind) {
 			q.quarantine.Quarantine(ctx, egressReason(kind, protocol, route, err))
@@ -232,12 +232,12 @@ func (q *egressQueue) answer(ctx context.Context, protocol model.Protocol, route
 		return decision, nil
 	}
 	logger.FromContext(ctx).InfoContext(ctx, "Candidate request was answered from a reference response",
-		"event", logger.EventCorrelation, "protocol", protocol, "route", route, "source", derivation.Source())
+		"event", logger.EventCorrelation, "protocol", protocol, "route", route, "source", replacement.Source())
 	return decision, nil
 }
 
-// respond returns the decision for a candidate request to a derived endpoint, or why there is none.
-func (q *egressQueue) respond(ctx context.Context, protocol model.Protocol, route model.Route, derivation javascript.Derivation,
+// respond returns the decision for a candidate request to a replacing endpoint, or why there is none.
+func (q *egressQueue) respond(ctx context.Context, protocol model.Protocol, route model.Route, replacement javascript.Replacement,
 	request func(ctx context.Context) (Message, error),
 ) (Decision, model.QuarantineKind, error) {
 	waiter := newEgressWaiter(q.arrive())
@@ -245,11 +245,11 @@ func (q *egressQueue) respond(ctx context.Context, protocol model.Protocol, rout
 	if err != nil {
 		return nil, model.QuarantineUnable, err
 	}
-	sourceRequest, err := q.scripts.DeriveRequest(ctx, derivation, value)
+	sourceRequest, err := q.scripts.ReplaceRequest(ctx, replacement, value)
 	if err != nil {
 		return nil, model.QuarantineUnable, errors.Wrap(err, "map candidate request to a source request")
 	}
-	sourceHash, err := q.scripts.Hash(ctx, string(protocol)+" "+derivation.Source(), Some(derivation.SourceRequest()), "candidate", sourceRequest)
+	sourceHash, err := q.scripts.Hash(ctx, string(protocol)+" "+replacement.Source(), Some(replacement.SourceRequest()), "candidate", sourceRequest)
 	if err != nil {
 		return nil, model.QuarantineUnable, errors.Wrap(err, "identify source request")
 	}
@@ -268,15 +268,15 @@ func (q *egressQueue) respond(ctx context.Context, protocol model.Protocol, rout
 	if err != nil {
 		return nil, model.QuarantineUnable, err
 	}
-	answer, err := q.scripts.DeriveResponse(ctx, derivation, value, reference)
+	answer, err := q.scripts.ReplaceResponse(ctx, replacement, value, reference)
 	if err != nil {
-		return nil, model.QuarantineUnable, errors.Wrap(err, "derive response")
+		return nil, model.QuarantineUnable, errors.Wrap(err, "translate response")
 	}
-	return DecisionAnswer{Message: Message{Type: Some(derivation.Response()), Value: answer}}, "", nil
+	return DecisionAnswer{Message: Message{Type: Some(replacement.Response()), Value: answer}}, "", nil
 }
 
-// identify hashes a candidate request to a derived endpoint, and returns a copy of its value to
-// derive from. Hashing normalises the value in place, and derive functions see only its JSON.
+// identify hashes a candidate request to a replacing endpoint, and returns a copy of its value to
+// translate. Hashing normalises the value in place, and replacement functions see only its JSON.
 func (q *egressQueue) identify(ctx context.Context, protocol model.Protocol, route model.Route,
 	request func(ctx context.Context) (Message, error),
 ) (comparison.Hash, any, error) {
@@ -554,7 +554,7 @@ type egressOutcome struct {
 // egressExchange is one forwarded reference request.
 type egressExchange struct {
 	arrival uint64
-	// source reports that derivations read the response, so it is decoded when it finishes.
+	// source reports that replacements read the response, so it is decoded when it finishes.
 	source  bool
 	outcome *future.Future[egressOutcome]
 
@@ -573,7 +573,7 @@ func (e *egressExchange) arrived() uint64 {
 	return e.arrival
 }
 
-// isSource reports whether derivations read the response.
+// isSource reports whether replacements read the response.
 func (e *egressExchange) isSource() bool {
 	return e.source
 }
@@ -614,7 +614,7 @@ func (e *egressExchange) abandon() {
 	e.release()
 }
 
-// forget marks the source reference as one derivations no longer find.
+// forget marks the source reference as one replacements no longer find.
 func (e *egressExchange) forget() {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -634,7 +634,7 @@ func (e *egressExchange) release() {
 }
 
 // releaseHold frees the memory held for the decoded source response, if there is
-// one yet. Derivations already reading it keep it. Callers hold e.mu.
+// one yet. Replacements already reading it keep it. Callers hold e.mu.
 func (e *egressExchange) releaseHold() {
 	outcome, finished := e.outcome.Get()
 	if !finished {

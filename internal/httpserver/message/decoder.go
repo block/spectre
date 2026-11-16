@@ -111,7 +111,7 @@ func (d *Decoder) Request(request Request) (protocol.Message, error) {
 }
 
 // SourceResponse decodes a successful response to a dependency request with method and header as name,
-// for derivations to read. Any other response is a failure.
+// for replacements to read. Any other response is a failure.
 func (d *Decoder) SourceResponse(method string, header http.Header, name schema.TypeRef, response Response) protocol.Content {
 	status := Some(strconv.Itoa(response.StatusCode))
 	if response.StatusCode != http.StatusOK {

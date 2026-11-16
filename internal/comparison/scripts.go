@@ -56,7 +56,7 @@ func New(ctx context.Context, config Config) (*Scripts, error) {
 			}
 		}
 	}
-	if err := checkDerivations(scripts.program.Derivations(), scripts.Endpoints()); err != nil {
+	if err := checkReplacements(scripts.program.Replacements(), scripts.Endpoints()); err != nil {
 		return nil, err
 	}
 	scripts.plan, err = comparisoninternal.NewPlan(loaded, program.Fields(), program.Messages())
@@ -81,53 +81,53 @@ func (s *Scripts) Rules() []javascript.Rule {
 	return s.program.Rules()
 }
 
-// Derivations returns the egress derivations in declaration order.
-func (s *Scripts) Derivations() []javascript.Derivation {
-	return s.program.Derivations()
+// Replacements returns the egress replacements in declaration order.
+func (s *Scripts) Replacements() []javascript.Replacement {
+	return s.program.Replacements()
 }
 
-// checkDerivations requires each source to be an endpoint that pairs its own
-// requests, and the derivations of one source to decode its responses alike.
-func checkDerivations(derivations []javascript.Derivation, endpoints []javascript.Endpoint) error {
+// checkReplacements requires each source to be an endpoint that pairs its own
+// requests, and the replacements of one source to decode its responses alike.
+func checkReplacements(replacements []javascript.Replacement, endpoints []javascript.Endpoint) error {
 	responses := map[string]schema.TypeRef{}
-	for _, derivation := range derivations {
+	for _, replacement := range replacements {
 		index := slices.IndexFunc(endpoints, func(endpoint javascript.Endpoint) bool {
-			return endpoint.Direction() == model.Egress && endpoint.Pattern() == derivation.Source()
+			return endpoint.Direction() == model.Egress && endpoint.Pattern() == replacement.Source()
 		})
 		if index < 0 {
-			return errors.Errorf("%s: source endpoint is not declared", derivation)
+			return errors.Errorf("%s: source endpoint is not declared", replacement)
 		}
-		if slices.ContainsFunc(derivations, func(other javascript.Derivation) bool { return other.Pattern() == derivation.Source() }) {
-			return errors.Errorf("%s: source endpoint is itself derived", derivation)
+		if slices.ContainsFunc(replacements, func(other javascript.Replacement) bool { return other.Pattern() == replacement.Source() }) {
+			return errors.Errorf("%s: source endpoint itself replaces another", replacement)
 		}
-		if declared := endpoints[index].Type(); declared != derivation.SourceRequest() {
-			return errors.Errorf("%s: source requests are %s, not %s", derivation, declared, derivation.SourceRequest())
+		if declared := endpoints[index].Type(); declared != replacement.SourceRequest() {
+			return errors.Errorf("%s: source requests are %s, not %s", replacement, declared, replacement.SourceRequest())
 		}
-		if response, seen := responses[derivation.Source()]; seen && response != derivation.SourceResponse() {
-			return errors.Errorf("%s: source responses are decoded as both %s and %s", derivation, response, derivation.SourceResponse())
+		if response, seen := responses[replacement.Source()]; seen && response != replacement.SourceResponse() {
+			return errors.Errorf("%s: source responses are decoded as both %s and %s", replacement, response, replacement.SourceResponse())
 		}
-		responses[derivation.Source()] = derivation.SourceResponse()
+		responses[replacement.Source()] = replacement.SourceResponse()
 	}
 	return nil
 }
 
-// DeriveRequest maps a request to a derived endpoint to the source request it pairs with.
-func (s *Scripts) DeriveRequest(ctx context.Context, derivation javascript.Derivation, request any) (any, error) {
-	return s.derive(ctx, derivation.SourceRequest(), func(evaluator *javascript.Evaluator) (any, error) {
-		return errors.WithStack2(evaluator.DeriveRequest(derivation, request))
+// ReplaceRequest maps a request to a replacing endpoint to the source request it pairs with.
+func (s *Scripts) ReplaceRequest(ctx context.Context, replacement javascript.Replacement, request any) (any, error) {
+	return s.replace(ctx, replacement.SourceRequest(), func(evaluator *javascript.Evaluator) (any, error) {
+		return errors.WithStack2(evaluator.ReplaceRequest(replacement, request))
 	})
 }
 
-// DeriveResponse builds the answer to a request to a derived endpoint from a
+// ReplaceResponse builds the answer to a request to a replacing endpoint from a
 // reference response to its source.
-func (s *Scripts) DeriveResponse(ctx context.Context, derivation javascript.Derivation, request, reference any) (any, error) {
-	return s.derive(ctx, derivation.Response(), func(evaluator *javascript.Evaluator) (any, error) {
-		return errors.WithStack2(evaluator.DeriveResponse(derivation, request, reference))
+func (s *Scripts) ReplaceResponse(ctx context.Context, replacement javascript.Replacement, request, reference any) (any, error) {
+	return s.replace(ctx, replacement.Response(), func(evaluator *javascript.Evaluator) (any, error) {
+		return errors.WithStack2(evaluator.ReplaceResponse(replacement, request, reference))
 	})
 }
 
-// derive runs one derivation function in a fresh evaluator and validates its result as typeName.
-func (s *Scripts) derive(ctx context.Context, typeName schema.TypeRef, function func(*javascript.Evaluator) (any, error)) (any, error) {
+// replace runs one replacement function in a fresh evaluator and validates its result as typeName.
+func (s *Scripts) replace(ctx context.Context, typeName schema.TypeRef, function func(*javascript.Evaluator) (any, error)) (any, error) {
 	ctx, cancel := context.WithTimeout(ctx, s.timeout)
 	defer cancel()
 	evaluator, err := s.program.NewEvaluator(ctx)
@@ -135,14 +135,14 @@ func (s *Scripts) derive(ctx context.Context, typeName schema.TypeRef, function 
 		return nil, errors.Wrap(err, "initialise JavaScript evaluator")
 	}
 	defer evaluator.Close()
-	derived, err := function(evaluator)
+	translated, err := function(evaluator)
 	if err != nil {
 		return nil, err
 	}
-	if err := s.plan.Schema().Validate(typeName, derived); err != nil {
-		return nil, errors.Wrapf(err, "validate derived %s", typeName)
+	if err := s.plan.Schema().Validate(typeName, translated); err != nil {
+		return nil, errors.Wrapf(err, "validate translated %s", typeName)
 	}
-	return derived, nil
+	return translated, nil
 }
 
 // SelectRule returns the first rule that selects a response. rules must be in
