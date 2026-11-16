@@ -304,6 +304,10 @@ A mirror quarantines its candidate for one of these reasons:
 | `unable` | The mirror could not compare or replay the traffic. |
 | `capacity` | Candidate work exceeded a concurrency or buffer limit. |
 
+A mirrored request that does not finish within `--candidate-timeout` quarantines
+the candidate as `unable`. The reason says whether the candidate or the reference
+was too slow, or whether the comparison did not finish.
+
 A quarantined candidate gets no more traffic until the mirror restarts. The
 reference and its clients are unaffected.
 

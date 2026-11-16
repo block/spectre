@@ -250,7 +250,9 @@ func TestIngressReportsUnableExchanges(t *testing.T) {
 		referenceFails bool
 		candidateFails bool
 		// cancelled cancels the failing side's context.
-		cancelled   bool
+		cancelled bool
+		// timedOut expires the failing side's deadline.
+		timedOut    bool
 		quarantined []string
 		compared    []map[string]any
 		unfinished  []map[string]any
@@ -274,6 +276,21 @@ func TestIngressReportsUnableExchanges(t *testing.T) {
 			candidateFails: true,
 			cancelled:      true,
 		},
+		"CandidateTimedOut": {
+			candidateFails: true,
+			timedOut:       true,
+			quarantined:    []string{"response comparison failed: candidate did not respond within the candidate timeout"},
+			compared: []map[string]any{comparisonRecord("compared", map[string]any{
+				"outcome": "unable", "reason": "candidate did not respond within the candidate timeout",
+			})},
+		},
+		"IgnoredCandidateTimedOut": {
+			route:          "ignored",
+			ignored:        ignoredFor,
+			candidateFails: true,
+			timedOut:       true,
+			compared:       []map[string]any{comparisonRecord("ignored", map[string]any{"outcome": "skipped", "reason": "ignored for test"})},
+		},
 		"IgnoredCandidate": {
 			route:          "ignored",
 			ignored:        ignoredFor,
@@ -294,10 +311,15 @@ func TestIngressReportsUnableExchanges(t *testing.T) {
 				route, ignored = test.route, test.ignored
 			}
 			failing := h.ctx
-			if test.cancelled {
+			switch {
+			case test.cancelled:
 				cancelled, cancel := context.WithCancel(h.ctx)
 				cancel()
 				failing = cancelled
+			case test.timedOut:
+				expired, cancel := context.WithDeadline(h.ctx, time.Now())
+				defer cancel()
+				failing = expired
 			}
 			referenceRaw, candidateRaw := newRaw("reference"), newRaw("candidate")
 			reference, candidate := h.mirror(t, route, ignored)
@@ -447,45 +469,91 @@ func TestIngressIgnoredCandidateReportsWithoutReference(t *testing.T) {
 	assert.Equal(t, nil, h.quarantine.Reasons())
 }
 
-func TestIngressCandidateCancelledDuringComparisonDoesNotQuarantine(t *testing.T) {
-	h := newHarness(t, time.Second)
-	reference, candidate := h.mirror(t, "compared", notIgnored)
-	referenceRaw, candidateRaw := newRaw("reference"), newRaw("candidate")
-	ctx, cancel := context.WithCancel(h.ctx)
-	defer cancel()
-	interrupted := func(context.Context) protocol.Content {
-		cancel()
-		return protocol.Content{Failure: Some(errors.New("read interrupted"))}
+func TestIngressCandidateStoppedDuringComparison(t *testing.T) {
+	for name, test := range map[string]struct {
+		cause       error
+		quarantined []string
+		compared    []map[string]any
+		unfinished  []map[string]any
+	}{
+		"Cancelled": {
+			unfinished: []map[string]any{unfinishedRecord("context canceled: candidate: read interrupted")},
+		},
+		"TimedOut": {
+			cause:       context.DeadlineExceeded,
+			quarantined: []string{"response comparison failed: comparison did not finish within the candidate timeout"},
+			compared: []map[string]any{comparisonRecord("compared", map[string]any{
+				"outcome": "unable", "reason": "comparison did not finish within the candidate timeout",
+			})},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t, time.Second)
+			reference, candidate := h.mirror(t, "compared", notIgnored)
+			referenceRaw, candidateRaw := newRaw("reference"), newRaw("candidate")
+			ctx, cancel := context.WithCancelCause(h.ctx)
+			defer cancel(nil)
+			interrupted := func(context.Context) protocol.Content {
+				cancel(test.cause)
+				return protocol.Content{Failure: Some(errors.New("read interrupted"))}
+			}
+			h.engine.IngressReference(fake).ProcessResponse(h.ctx, reference, protocol.Response{Raw: referenceRaw, Decode: statusOnly("OK")})
+
+			h.engine.IngressCandidate(fake).ProcessResponse(ctx, candidate, protocol.Response{Raw: candidateRaw, Decode: interrupted})
+
+			assert.Equal(t, test.quarantined, h.quarantine.Reasons())
+			assert.Equal(t, append([]map[string]any{}, test.compared...), h.records(t, "Response comparison completed"))
+			assert.Equal(t, append([]map[string]any{}, test.unfinished...), h.records(t, "Response comparison did not finish"))
+			assert.Equal(t, 1, referenceRaw.Releases())
+			assert.Equal(t, 1, candidateRaw.Releases())
+		})
 	}
-	h.engine.IngressReference(fake).ProcessResponse(h.ctx, reference, protocol.Response{Raw: referenceRaw, Decode: statusOnly("OK")})
-
-	h.engine.IngressCandidate(fake).ProcessResponse(ctx, candidate, protocol.Response{Raw: candidateRaw, Decode: interrupted})
-
-	assert.Equal(t, nil, h.quarantine.Reasons())
-	assert.Equal(t, []map[string]any{}, h.records(t, "Response comparison completed"))
-	assert.Equal(t, []map[string]any{unfinishedRecord("context canceled: candidate: read interrupted")},
-		h.records(t, "Response comparison did not finish"))
-	assert.Equal(t, 1, referenceRaw.Releases())
-	assert.Equal(t, 1, candidateRaw.Releases())
 }
 
 func TestIngressCandidateWaitIsBoundedByContext(t *testing.T) {
-	h := newHarness(t, time.Second)
-	reference, candidate := h.mirror(t, "compared", notIgnored)
-	referenceRaw, candidateRaw := newRaw("reference"), newRaw("candidate")
-	ctx, cancel := context.WithTimeout(h.ctx, 20*time.Millisecond)
-	defer cancel()
+	for name, test := range map[string]struct {
+		stop        func(ctx context.Context) (context.Context, context.CancelFunc)
+		quarantined []string
+		compared    []map[string]any
+		unfinished  []map[string]any
+	}{
+		"Cancelled": {
+			stop: func(ctx context.Context) (context.Context, context.CancelFunc) {
+				ctx, cancel := context.WithCancel(ctx)
+				time.AfterFunc(20*time.Millisecond, cancel)
+				return ctx, cancel
+			},
+			unfinished: []map[string]any{unfinishedRecord("context canceled")},
+		},
+		"TimedOut": {
+			stop: func(ctx context.Context) (context.Context, context.CancelFunc) {
+				return context.WithTimeout(ctx, 20*time.Millisecond)
+			},
+			quarantined: []string{"response comparison failed: reference did not respond within the candidate timeout"},
+			compared: []map[string]any{comparisonRecord("compared", map[string]any{
+				"outcome": "unable", "reason": "reference did not respond within the candidate timeout",
+			})},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t, time.Second)
+			reference, candidate := h.mirror(t, "compared", notIgnored)
+			referenceRaw, candidateRaw := newRaw("reference"), newRaw("candidate")
+			ctx, cancel := test.stop(h.ctx)
+			defer cancel()
 
-	h.engine.IngressCandidate(fake).ProcessResponse(ctx, candidate, protocol.Response{Decode: statusOnly("NOT_FOUND"), Raw: candidateRaw})
+			h.engine.IngressCandidate(fake).ProcessResponse(ctx, candidate, protocol.Response{Decode: statusOnly("NOT_FOUND"), Raw: candidateRaw})
 
-	assert.Equal(t, 1, candidateRaw.Releases())
-	assert.Equal(t, []map[string]any{unfinishedRecord("context deadline exceeded")}, h.records(t, "Response comparison did not finish"))
+			assert.Equal(t, 1, candidateRaw.Releases())
+			assert.Equal(t, append([]map[string]any{}, test.unfinished...), h.records(t, "Response comparison did not finish"))
 
-	h.engine.IngressReference(fake).ProcessResponse(h.ctx, reference, protocol.Response{Decode: statusOnly("OK"), Raw: referenceRaw})
+			h.engine.IngressReference(fake).ProcessResponse(h.ctx, reference, protocol.Response{Decode: statusOnly("OK"), Raw: referenceRaw})
 
-	assert.Equal(t, 1, referenceRaw.Releases())
-	assert.Equal(t, nil, h.quarantine.Reasons())
-	assert.Equal(t, []map[string]any{}, h.records(t, "Response comparison completed"))
+			assert.Equal(t, 1, referenceRaw.Releases())
+			assert.Equal(t, test.quarantined, h.quarantine.Reasons())
+			assert.Equal(t, append([]map[string]any{}, test.compared...), h.records(t, "Response comparison completed"))
+		})
+	}
 }
 
 func TestIngressReleasesResponsesForUnknownExchanges(t *testing.T) {

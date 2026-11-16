@@ -1088,6 +1088,48 @@ func TestAbortedCandidateResponseQuarantinesCandidate(t *testing.T) {
 		})
 	}
 }
+
+func TestCandidateTimeoutQuarantinesCandidate(t *testing.T) {
+	const timeout = 50 * time.Millisecond
+	for name, test := range map[string]struct {
+		candidateSlow bool
+		reason        string
+	}{
+		"Candidate": {candidateSlow: true, reason: "candidate did not respond within the candidate timeout"},
+		"Reference": {reason: "reference did not respond within the candidate timeout"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			candidateAddress := acceptingAddress(t)
+			transport := roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+				isCandidate := request.URL.Host == candidateAddress
+				if isCandidate == test.candidateSlow {
+					select {
+					case <-time.After(4 * timeout):
+					case <-request.Context().Done():
+						return nil, errors.Wrap(request.Context().Err(), "slow backend")
+					}
+				}
+				return noContentResponse(request), nil
+			})
+			logs := &syncBuffer{}
+			ctx := withLogs(t, logs)
+			config := newTestConfig(t, "http://"+acceptingAddress(t), "http://"+candidateAddress)
+			config.CandidateTimeout = timeout
+			handler, err := newIngress(t, config, newEngineConfig(t), transport, Some[httpserver.DescriptorLoader](matchingDescriptorLoader()))
+			assert.NoError(t, err)
+			serveIngress(ctx, t, handler)
+
+			handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequestWithContext(ctx, http.MethodGet, "http://proxy.example/compared/slow", nil))
+
+			assert.Equal(t, []comparisonRecord{{Event: "correlation", Protocol: "http", Route: "GET /compared/slow", Outcome: "unable", Reason: test.reason}},
+				waitForRecords[comparisonRecord](t, logs, "Response comparison completed", 1))
+			assert.Equal(t, quarantineRecord{Event: "quarantine", Reason: "response comparison failed: " + test.reason},
+				waitForRecords[quarantineRecord](t, logs, "Candidate quarantined", 1)[0])
+			assert.NoError(t, handler.Shutdown(t.Context()))
+		})
+	}
+}
+
 func TestRewritesUntrustedForwardingHeaders(t *testing.T) {
 	referenceRequest := make(chan forwardingView, 1)
 	candidateRequest := make(chan forwardingView, 1)
