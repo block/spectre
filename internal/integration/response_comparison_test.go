@@ -27,9 +27,9 @@ func TestNormalisedResponsesAreEquivalent(t *testing.T) {
 	// The candidate reorders roles and generates its own timestamp, which the
 	// sample's scripts normalise, so each call counts and none quarantines.
 	listUserOne(t, users)
-	waitForCalls(t, m, map[model.Route]uint64{listUsers: 1})
+	expectCalls(t, m, map[model.Route]uint64{listUsers: 1})
 	listUserOne(t, users)
-	waitForCalls(t, m, map[model.Route]uint64{listUsers: 2})
+	expectCalls(t, m, map[model.Route]uint64{listUsers: 2})
 }
 
 func TestRawHTTPResponsesAreEquivalent(t *testing.T) {
@@ -38,15 +38,15 @@ func TestRawHTTPResponsesAreEquivalent(t *testing.T) {
 
 	// Raw HTTP responses are typed by the endpoints that weather.ts declares,
 	// whose scripts treat the candidate's reordered alerts as equivalent.
-	status, body := m.Get(t, m.IngressURL+"/v2/forecast?location=london")
+	status, body := m.get(t, m.ingressURL+"/v2/forecast?location=london")
 	assert.Equal(t, http.StatusOK, status)
 	assert.Contains(t, body, `"alerts"`)
-	status, _ = m.Get(t, m.IngressURL+"/api/v1/forecast?location=sydney")
+	status, _ = m.get(t, m.ingressURL+"/api/v1/forecast?location=sydney")
 	assert.Equal(t, http.StatusOK, status)
-	status, _ = m.Get(t, m.IngressURL+"/_status")
+	status, _ = m.get(t, m.ingressURL+"/_status")
 	assert.Equal(t, http.StatusOK, status)
 
-	waitForCalls(t, m, map[model.Route]uint64{"GET /v2/forecast": 1, "GET /api/v1/forecast": 1, "GET /_status": 1})
+	expectCalls(t, m, map[model.Route]uint64{"GET /v2/forecast": 1, "GET /api/v1/forecast": 1, "GET /_status": 1})
 }
 
 func TestEgressReplaysReferenceResponses(t *testing.T) {
@@ -54,11 +54,11 @@ func TestEgressReplaysReferenceResponses(t *testing.T) {
 	m := startSampleMirror(t)
 
 	for _, path := range []string{"/v2/forecast?location=london", "/api/v1/forecast?location=sydney"} {
-		status, _ := m.Get(t, m.IngressURL+path)
+		status, _ := m.get(t, m.ingressURL+path)
 		assert.Equal(t, http.StatusOK, status)
 	}
 
-	waitForCalls(t, m, map[model.Route]uint64{"GET /v2/forecast": 1, "GET /api/v1/forecast": 1})
+	expectCalls(t, m, map[model.Route]uint64{"GET /v2/forecast": 1, "GET /api/v1/forecast": 1})
 	// Egress answers the candidate with the reference's forecast, so each location
 	// reaches the provider once.
 	for _, location := range []string{"london", "sydney"} {
@@ -80,7 +80,7 @@ func TestDivergentResponseQuarantinesCandidate(t *testing.T) {
 		Traffic: Some(model.Traffic{Direction: model.Ingress, Protocol: model.ProtocolHTTP, Route: getUser}),
 		// Reasons never quote values, so the label's key is a wildcard.
 		Differences: []model.Difference{{Path: "$.user.labels[*]", Change: model.ChangeChanged, Count: 1}},
-	}, m.WaitForQuarantine(t, model.Ingress))
+	}, m.waitForQuarantine(t, model.Ingress))
 
 	// The reference still answers. Ingress turns the candidate away before the
 	// reference responds, so once ListUsers returns the candidate cannot get it.
@@ -92,10 +92,10 @@ func TestUnmatchedCandidateEgressQuarantinesCandidate(t *testing.T) {
 	t.Parallel()
 	m := startSampleMirror(t)
 	forecast := func(location string) int {
-		request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, m.CandidateEgressURL+"/v1/forecasts/"+location, nil)
+		request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, m.candidateEgressURL+"/v1/forecasts/"+location, nil)
 		assert.NoError(t, err)
 		request.Host = forecastsHost
-		status, _ := m.Do(t, request)
+		status, _ := m.do(t, request)
 		return status
 	}
 
@@ -105,16 +105,16 @@ func TestUnmatchedCandidateEgressQuarantinesCandidate(t *testing.T) {
 		Kind:    model.QuarantineUnmatched,
 		Traffic: Some(model.Traffic{Direction: model.Egress, Protocol: model.ProtocolHTTP, Route: "GET forecasts.example/v1/forecasts/{location}"}),
 		Detail:  "no matching reference request within 1s",
-	}, m.WaitForQuarantine(t, model.Egress))
+	}, m.waitForQuarantine(t, model.Egress))
 	assert.Equal(t, http.StatusServiceUnavailable, forecast("london"))
 	assert.Equal(t, 0, m.forecasts.count("/v1/forecasts/paris"))
 }
 
-// waitForCalls waits for the proxy to report the expected compared calls, and
+// expectCalls waits for the proxy to report the expected compared calls, and
 // checks the candidate is still healthy.
-func waitForCalls(t *testing.T, m sampleMirror, expected map[model.Route]uint64) {
+func expectCalls(t *testing.T, m sampleMirror, expected map[model.Route]uint64) {
 	t.Helper()
-	state := m.WaitForCalls(t, expected)
+	state := m.waitForCalls(t, expected)
 	assert.Equal(t, map[model.Direction]model.Quarantine(nil), state.Quarantines)
 	assert.Equal(t, model.Calls{Routes: expected}, state.Calls)
 }

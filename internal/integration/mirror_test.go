@@ -1,4 +1,6 @@
-package integration
+//go:build integration
+
+package integration_test
 
 import (
 	"context"
@@ -7,10 +9,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"os"
-	"os/exec"
-	"path/filepath"
-	"runtime"
 	"testing"
 	"time"
 
@@ -26,7 +24,7 @@ import (
 )
 
 const (
-	// startTimeout bounds how long Start waits for the mirror to be ready.
+	// startTimeout bounds how long start waits for the mirror to be ready.
 	startTimeout = 60 * time.Second
 	// waitTimeout bounds how long a test waits for a condition.
 	waitTimeout = 10 * time.Second
@@ -39,55 +37,44 @@ const (
 	keepaliveInterval = 20 * time.Millisecond
 )
 
-// Egress is where a service sends its dependency calls, with the transport to
+// egress is where a service sends its dependency calls, with the transport to
 // send them on.
-type Egress struct {
-	URL       *url.URL
-	Transport http.RoundTripper
+type egress struct {
+	url       *url.URL
+	transport http.RoundTripper
 }
 
-// Service builds the handler of a reference or candidate service.
-type Service func(egress Egress) http.Handler
+// service builds the handler of a reference or candidate service.
+type service func(egress egress) http.Handler
 
-// Mirror defines the services a mirror runs and how the proxy compares them.
+// mirror defines the services a mirror runs and how the proxy compares them.
 // Directories are relative to the test's working directory.
-type Mirror struct {
-	Reference Service
-	Candidate Service
-	// Dependencies serve the egress proxy's destinations, keyed by host.
-	Dependencies   map[string]http.Handler
-	ScriptsDir     string
-	SchemaDir      string
-	DescriptorsDir string
-	// MatchWindow replaces the proxy's default when it is not zero.
-	MatchWindow time.Duration
+type mirror struct {
+	reference service
+	candidate service
+	// dependencies serve the egress proxy's destinations, keyed by host.
+	dependencies   map[string]http.Handler
+	scriptsDir     string
+	schemaDir      string
+	descriptorsDir string
+	// matchWindow replaces the proxy's default when it is not zero.
+	matchWindow time.Duration
 }
 
-// Running is a started mirror, which stops when its test ends. URLs are the
+// running is a started mirror, which stops when its test ends. URLs are the
 // base URLs of its listeners.
-type Running struct {
-	IngressURL         string
-	CandidateEgressURL string
-	client             *http.Client
-	server             *client.Client
-	watch              *watch
+type running struct {
+	ingressURL         string
+	candidateEgressURL string
+	// client speaks HTTP/2 without TLS, as gRPC needs.
+	client *http.Client
+	server *client.Client
+	watch  *watch
 }
 
-// Main builds the given bit targets once, then runs the tests. Call it from
-// TestMain.
-func Main(m *testing.M, targets ...string) int {
-	if len(targets) > 0 {
-		if err := build(targets); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			return 1
-		}
-	}
-	return m.Run()
-}
-
-// Start serves the services, the SPECTRE server and the proxy on free ports in
+// start serves the services, the SPECTRE server and the proxy on free ports in
 // the test process, and waits until the proxy is ready. They stop with the test.
-func Start(t *testing.T, mirror Mirror) *Running {
+func start(t *testing.T, m mirror) *running {
 	t.Helper()
 	ctx := t.Context()
 	watch := newWatch()
@@ -99,17 +86,17 @@ func Start(t *testing.T, mirror Mirror) *Running {
 
 	reference, candidate := listen(t), listen(t)
 	listeners := proxies.Listeners{Ingress: listen(t), ReferenceEgress: listen(t), CandidateEgress: listen(t), EgressHealth: listen(t), Health: listen(t)}
-	running := &Running{
-		IngressURL:         baseURL(listeners.Ingress),
-		CandidateEgressURL: baseURL(listeners.CandidateEgress),
+	r := &running{
+		ingressURL:         baseURL(listeners.Ingress),
+		candidateEgressURL: baseURL(listeners.CandidateEgress),
 		client:             newClient(t),
 		server:             client.New(client.Config{URL: serverURL}),
 		watch:              watch,
 	}
-	serve(t, reference, mirror.Reference(egress(t, baseURL(listeners.ReferenceEgress))))
-	serve(t, candidate, mirror.Candidate(egress(t, running.CandidateEgressURL)))
+	serve(t, reference, m.reference(newEgress(t, baseURL(listeners.ReferenceEgress))))
+	serve(t, candidate, m.candidate(newEgress(t, r.candidateEgressURL)))
 	destinations := map[string]string{}
-	for host, handler := range mirror.Dependencies {
+	for host, handler := range m.dependencies {
 		dependency := listen(t)
 		serve(t, dependency, handler)
 		destinations[host] = baseURL(dependency)
@@ -126,11 +113,11 @@ func Start(t *testing.T, mirror Mirror) *Running {
 		Mirror:                proxies.NewConfig(),
 	}
 	config.Mirror.Destinations = destinations
-	config.Mirror.ScriptsDir = mirror.ScriptsDir
-	config.Mirror.SchemaDir = mirror.SchemaDir
-	config.Mirror.Descriptors.DescriptorsDir = mirror.DescriptorsDir
-	if mirror.MatchWindow != 0 {
-		config.Mirror.MatchWindow = mirror.MatchWindow
+	config.Mirror.ScriptsDir = m.scriptsDir
+	config.Mirror.SchemaDir = m.schemaDir
+	config.Mirror.Descriptors.DescriptorsDir = m.descriptorsDir
+	if m.matchWindow != 0 {
+		config.Mirror.MatchWindow = m.matchWindow
 	}
 	config.Mirror.Server.Client.URL = serverURL
 	config.Mirror.Server.KeepaliveInterval = keepaliveInterval
@@ -144,24 +131,24 @@ func Start(t *testing.T, mirror Mirror) *Running {
 
 	healthURL := baseURL(listeners.Health) + "/readyz"
 	watch.await(t, startTimeout, "the proxy to be ready", func() bool {
-		return running.ready(t, healthURL)
+		return r.ready(t, healthURL)
 	})
-	return running
+	return r
 }
 
-// Eventually waits until condition holds, polling it with backoff. It fails the
+// eventually waits until condition holds, polling it with backoff. It fails the
 // test after a timeout, or as soon as the proxy or the server exits.
-func (r *Running) Eventually(t *testing.T, what string, condition func() bool) {
+func (r *running) eventually(t *testing.T, what string, condition func() bool) {
 	t.Helper()
 	r.watch.await(t, waitTimeout, what, condition)
 }
 
-// WaitForState waits until the state the proxy reported to the SPECTRE server
+// waitForState waits until the state the proxy reported to the SPECTRE server
 // satisfies condition, and returns it.
-func (r *Running) WaitForState(t *testing.T, what string, condition func(state model.State) bool) model.State {
+func (r *running) waitForState(t *testing.T, what string, condition func(state model.State) bool) model.State {
 	t.Helper()
 	var matched model.State
-	r.Eventually(t, what, func() bool {
+	r.eventually(t, what, func() bool {
 		states, _, err := r.server.ListDivergences(t.Context(), model.DivergenceFilter{})
 		assert.NoError(t, err)
 		for _, state := range states {
@@ -175,11 +162,11 @@ func (r *Running) WaitForState(t *testing.T, what string, condition func(state m
 	return matched
 }
 
-// WaitForCalls waits until the proxy reports at least the expected compared
+// waitForCalls waits until the proxy reports at least the expected compared
 // calls on each route, or a quarantine, and returns its state.
-func (r *Running) WaitForCalls(t *testing.T, expected map[model.Route]uint64) model.State {
+func (r *running) waitForCalls(t *testing.T, expected map[model.Route]uint64) model.State {
 	t.Helper()
-	return r.WaitForState(t, fmt.Sprintf("compared calls %v", expected), func(state model.State) bool {
+	return r.waitForState(t, fmt.Sprintf("compared calls %v", expected), func(state model.State) bool {
 		if len(state.Quarantines) > 0 {
 			return true
 		}
@@ -192,32 +179,27 @@ func (r *Running) WaitForCalls(t *testing.T, expected map[model.Route]uint64) mo
 	})
 }
 
-// WaitForQuarantine waits until the proxy reports a quarantine in direction,
+// waitForQuarantine waits until the proxy reports a quarantine in direction,
 // and returns its reason.
-func (r *Running) WaitForQuarantine(t *testing.T, direction model.Direction) model.QuarantineReason {
+func (r *running) waitForQuarantine(t *testing.T, direction model.Direction) model.QuarantineReason {
 	t.Helper()
-	state := r.WaitForState(t, fmt.Sprintf("an %s quarantine", direction), func(state model.State) bool {
+	state := r.waitForState(t, fmt.Sprintf("an %s quarantine", direction), func(state model.State) bool {
 		_, ok := state.Quarantines[direction]
 		return ok
 	})
 	return state.Quarantines[direction].Reason
 }
 
-// Client returns a client that speaks HTTP/2 without TLS, as gRPC needs.
-func (r *Running) Client() *http.Client {
-	return r.client
-}
-
-// Get fetches url, returning the response's status and body.
-func (r *Running) Get(t *testing.T, url string) (status int, body string) {
+// get fetches url, returning the response's status and body.
+func (r *running) get(t *testing.T, url string) (status int, body string) {
 	t.Helper()
 	request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, url, nil)
 	assert.NoError(t, err)
-	return r.Do(t, request)
+	return r.do(t, request)
 }
 
-// Do sends request, returning the response's status and body.
-func (r *Running) Do(t *testing.T, request *http.Request) (status int, body string) {
+// do sends request, returning the response's status and body.
+func (r *running) do(t *testing.T, request *http.Request) (status int, body string) {
 	t.Helper()
 	response, err := r.client.Do(request)
 	assert.NoError(t, err)
@@ -227,7 +209,7 @@ func (r *Running) Do(t *testing.T, request *http.Request) (status int, body stri
 	return response.StatusCode, string(data)
 }
 
-func (r *Running) ready(t *testing.T, url string) bool {
+func (r *running) ready(t *testing.T, url string) bool {
 	t.Helper()
 	request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, url, nil)
 	assert.NoError(t, err)
@@ -307,14 +289,14 @@ func serve(t *testing.T, listener net.Listener, handler http.Handler) {
 	})
 }
 
-// egress returns where a service reaches the egress listener at base.
-func egress(t *testing.T, base string) Egress {
+// newEgress returns where a service reaches the egress listener at base.
+func newEgress(t *testing.T, base string) egress {
 	t.Helper()
 	target, err := url.Parse(base)
 	assert.NoError(t, err)
 	transport := &http.Transport{}
 	t.Cleanup(transport.CloseIdleConnections)
-	return Egress{URL: target, Transport: transport}
+	return egress{url: target, transport: transport}
 }
 
 func newClient(t *testing.T) *http.Client {
@@ -324,20 +306,4 @@ func newClient(t *testing.T) *http.Client {
 	transport := &http.Transport{Protocols: protocols}
 	t.Cleanup(transport.CloseIdleConnections)
 	return &http.Client{Transport: transport, Timeout: requestTimeout}
-}
-
-// build runs bit in the repository root for targets.
-func build(targets []string) error {
-	root := repositoryRoot()
-	command := exec.CommandContext(context.Background(), filepath.Join(root, "bin", "bit"), append([]string{"-q"}, targets...)...)
-	command.Dir = root
-	command.Stdout = os.Stderr
-	command.Stderr = os.Stderr
-	return errors.Wrap(command.Run(), "build the test's dependencies")
-}
-
-// repositoryRoot finds the root from this file's path, two directories down.
-func repositoryRoot() string {
-	_, file, _, _ := runtime.Caller(0)
-	return filepath.Join(filepath.Dir(file), "..", "..")
 }

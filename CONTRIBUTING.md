@@ -80,18 +80,19 @@ declarations. Generated declarations are checked in alongside the Go bindings.
 
 ## Integration tests
 
-The [`internal/integration`](internal/integration) package is a test library
-that runs a whole mirror for a Go test. The test defines the reference,
-candidate and dependency services as Go handlers, and the library serves them
-in the test process. It runs the SPECTRE server and the proxy in front of them in
-goroutines of the same process, as `spectre serve` and `spectre proxy` would.
-The library opens every listener on a free port and hands it over, so tests run
-in parallel without port conflicts. A test drives the mirror through its URLs,
-and checks the responses and the state the proxy reports to the server: its
-calls and quarantines.
+The [`internal/integration`](internal/integration) tests run a whole mirror
+each. A test defines the reference, candidate and dependency services as Go
+handlers, and the harness in the package's test files serves them in the test
+process. It runs the SPECTRE server and the proxy in front of them in goroutines
+of the same process, as `spectre serve` and `spectre proxy` would. The harness
+opens every listener on a free port and hands it over, so tests run in parallel
+without port conflicts. A test drives the mirror through its URLs, and checks
+the responses and the state the proxy reports to the server: its calls and
+quarantines.
 
-The tests carry the `integration` build tag, so `bit test` leaves them out and
-CI runs them in a separate job. Run them with `bit test-integration`, or with
+Every file in the package carries the `integration` build tag, so `bit test`
+leaves them out and CI runs them in a separate job. Run them with
+`bit test-integration`, or with
 `go test -tags=integration ./internal/integration` once Hermit is active.
 
 ## Editor configuration

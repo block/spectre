@@ -17,7 +17,6 @@ import (
 	"github.com/alecthomas/assert/v2"
 	. "github.com/alecthomas/types/optional"
 
-	"github.com/block/spectre/internal/integration"
 	"github.com/block/spectre/internal/sample"
 	samplepb "github.com/block/spectre/internal/sample/pb"
 	"github.com/block/spectre/internal/sample/pb/samplepbconnect"
@@ -29,7 +28,7 @@ const forecastsHost = "forecasts.example"
 // sampleMirror is a running sample mirror, with the requests that reached the
 // candidate and the forecast provider.
 type sampleMirror struct {
-	*integration.Running
+	*running
 	candidate *calls
 	forecasts *calls
 }
@@ -51,31 +50,31 @@ func startSampleMirror(t *testing.T) sampleMirror {
 	forecasts.HandleFunc("GET /v1/forecasts/{location}", provider.FetchForecast)
 	m := sampleMirror{candidate: newCalls(), forecasts: newCalls()}
 	candidate := sampleService(t, "candidate", candidateUsers, candidateWeather)
-	m.Running = integration.Start(t, integration.Mirror{
-		Reference: sampleService(t, "reference", users, weather),
-		Candidate: func(egress integration.Egress) http.Handler {
+	m.running = start(t, mirror{
+		reference: sampleService(t, "reference", users, weather),
+		candidate: func(egress egress) http.Handler {
 			return m.candidate.wrap(candidate(egress))
 		},
-		Dependencies:   map[string]http.Handler{forecastsHost: m.forecasts.wrap(forecasts)},
-		ScriptsDir:     "../sample/scripts",
-		SchemaDir:      "../sample/schema",
-		DescriptorsDir: "../../dist/descriptors",
-		MatchWindow:    time.Second,
+		dependencies:   map[string]http.Handler{forecastsHost: m.forecasts.wrap(forecasts)},
+		scriptsDir:     "../sample/scripts",
+		schemaDir:      "../sample/schema",
+		descriptorsDir: "../../dist/descriptors",
+		matchWindow:    time.Second,
 	})
 	return m
 }
 
 // sampleService serves the sample's users and weather, fetching forecasts through egress.
-func sampleService(t *testing.T, revision string, users []byte, weather []byte) integration.Service {
+func sampleService(t *testing.T, revision string, users []byte, weather []byte) service {
 	t.Helper()
-	return func(egress integration.Egress) http.Handler {
-		service, err := sample.New(users)
+	return func(egress egress) http.Handler {
+		userService, err := sample.New(users)
 		assert.NoError(t, err)
-		forecasts := sample.NewForecastClient(egress.URL, forecastsHost, egress.Transport)
+		forecasts := sample.NewForecastClient(egress.url, forecastsHost, egress.transport)
 		weatherService, err := sample.NewWeather(weather, revision, Some(forecasts))
 		assert.NoError(t, err)
 		server := connect.NewServer()
-		samplepbconnect.RegisterUserServiceHandler(server, service)
+		samplepbconnect.RegisterUserServiceHandler(server, userService)
 		grpcreflect.Register(server)
 		mux := http.NewServeMux()
 		connecthttp.Mount(mux, server)
@@ -88,7 +87,7 @@ func sampleService(t *testing.T, revision string, users []byte, weather []byte) 
 
 // users returns a gRPC client of the sample's user service through ingress.
 func users(m sampleMirror) samplepbconnect.UserServiceClient {
-	return samplepbconnect.NewUserServiceClient(connect.NewClient(connecthttp.NewTransport(m.Client(), m.IngressURL, connecthttp.WithGRPC())))
+	return samplepbconnect.NewUserServiceClient(connect.NewClient(connecthttp.NewTransport(m.client, m.ingressURL, connecthttp.WithGRPC())))
 }
 
 // listUserOne lists user-1 through ingress, checking it gets the reference's answer.
