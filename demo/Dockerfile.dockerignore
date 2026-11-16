@@ -8,7 +8,6 @@
 .gitsv
 .goreleaser.yaml
 .tsk
-bin
 dist/*
 !dist/descriptors
 docs
