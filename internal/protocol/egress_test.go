@@ -193,17 +193,23 @@ func TestEgressCandidateWaitsForReference(t *testing.T) {
 }
 
 func TestEgressCandidateGivesUpWhenCancelled(t *testing.T) {
+	const (
+		waitingForReference = `^no matching reference request before the candidate gave up after \d+m?s: context deadline exceeded$`
+		waitingForResponse  = `^wait for reference response: context deadline exceeded$`
+	)
 	for name, test := range map[string]struct {
 		referenced bool
+		// stopped cancels the candidate as the proxy does when it stops candidate work.
+		stopped bool
 		// expected matches the error the candidate gets.
-		expected    string
-		quarantined bool
+		expected string
+		// kind is empty when the candidate is not quarantined.
+		kind model.QuarantineKind
 	}{
-		"WaitingForReference": {
-			expected:    `^no matching reference request before the candidate gave up after \d+m?s: context deadline exceeded$`,
-			quarantined: true,
-		},
-		"WaitingForResponse": {referenced: true, expected: `^wait for reference response: context deadline exceeded$`},
+		"WaitingForReference":        {expected: waitingForReference, kind: model.QuarantineUnmatched},
+		"WaitingForResponse":         {referenced: true, expected: waitingForResponse, kind: model.QuarantineUnable},
+		"StoppedWaitingForReference": {stopped: true, expected: waitingForReference},
+		"StoppedWaitingForResponse":  {referenced: true, stopped: true, expected: waitingForResponse},
 	} {
 		t.Run(name, func(t *testing.T) {
 			h := newHarness(t, time.Second)
@@ -211,7 +217,11 @@ func TestEgressCandidateGivesUpWhenCancelled(t *testing.T) {
 			if test.referenced {
 				exchange = h.forward(t, "query", query(queryType, "london", ""))
 			}
-			ctx, cancel := context.WithTimeout(h.ctx, 20*time.Millisecond)
+			var cause error
+			if test.stopped {
+				cause = protocol.ErrCandidateStopped
+			}
+			ctx, cancel := context.WithTimeoutCause(h.ctx, 20*time.Millisecond, cause)
 			defer cancel()
 
 			decision, err := h.engine.EgressCandidate(fake).ProcessRequest(ctx, None[protocol.RequestID](), "query", notIgnored, query(queryType, "london", ""))
@@ -220,9 +230,9 @@ func TestEgressCandidateGivesUpWhenCancelled(t *testing.T) {
 			assert.True(t, regexp.MustCompile(test.expected).MatchString(err.Error()), "error: %s", err)
 			assert.True(t, errors.Is(err, context.DeadlineExceeded))
 			assert.Equal(t, nil, decision)
-			if test.quarantined {
+			if test.kind != "" {
 				assert.Equal(t, []model.QuarantineReason{{
-					Kind:    model.QuarantineUnmatched,
+					Kind:    test.kind,
 					Traffic: Some(model.Traffic{Direction: model.Egress, Protocol: fake, Route: "query"}),
 					Detail:  err.Error(),
 				}}, h.quarantine.Recorded())
@@ -237,17 +247,6 @@ func TestEgressCandidateGivesUpWhenCancelled(t *testing.T) {
 			}
 		})
 	}
-}
-
-func TestEgressCandidateStoppedByProxyIsNotQuarantined(t *testing.T) {
-	h := newHarness(t, time.Second)
-	ctx, cancel := context.WithCancelCause(h.ctx)
-	cancel(protocol.ErrCandidateStopped)
-
-	_, err := h.engine.EgressCandidate(fake).ProcessRequest(ctx, None[protocol.RequestID](), "query", notIgnored, query(queryType, "london", ""))
-
-	assert.True(t, errors.Is(err, context.Canceled))
-	assert.Equal(t, nil, h.quarantine.Reasons())
 }
 
 func TestEgressQuarantinesUnreplayableRequests(t *testing.T) {

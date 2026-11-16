@@ -342,7 +342,7 @@ func TestEgressReplacingRequestStoppedByProxyIsNotQuarantined(t *testing.T) {
 	assert.Equal(t, nil, h.quarantine.Reasons())
 }
 
-func TestEgressReplacingRequestGivesUpOnSourceResponse(t *testing.T) {
+func TestEgressQuarantinesReplacingRequestThatGivesUpOnSourceResponse(t *testing.T) {
 	h := newScriptHarness(t, replacementScript, time.Second)
 	h.forwardHTTP(t, listRoute, query(queryType, "london", "reference"))
 	ctx, cancel := context.WithTimeout(h.ctx, 20*time.Millisecond)
@@ -350,8 +350,12 @@ func TestEgressReplacingRequestGivesUpOnSourceResponse(t *testing.T) {
 
 	_, err := h.engine.EgressCandidate(model.ProtocolHTTP).ProcessRequest(ctx, None[protocol.RequestID](), getRoute, notIgnored, query(queryType, "london", ""))
 
-	assert.True(t, errors.Is(err, context.DeadlineExceeded))
-	assert.Equal(t, nil, h.quarantine.Reasons())
+	assert.Equal(t, "wait for source reference response: context deadline exceeded", err.Error())
+	assert.Equal(t, []model.QuarantineReason{{
+		Kind:    model.QuarantineUnable,
+		Traffic: Some(model.Traffic{Direction: model.Egress, Protocol: model.ProtocolHTTP, Route: getRoute}),
+		Detail:  err.Error(),
+	}}, h.quarantine.Recorded())
 }
 
 func TestEngineReportsSourceResponseTypes(t *testing.T) {

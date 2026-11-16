@@ -175,7 +175,7 @@ func (q *egressQueue) intercept(ctx context.Context, protocol model.Protocol, ro
 	}
 	raw, kind, err := q.match(ctx, protocol, route, request)
 	if err != nil {
-		if blamesCandidate(ctx, kind) {
+		if blamesCandidate(ctx) {
 			q.quarantine.Quarantine(ctx, egressReason(kind, protocol, route, err))
 		}
 		return nil, err
@@ -205,13 +205,10 @@ func (q *egressQueue) match(ctx context.Context, protocol model.Protocol, route 
 	return raw, "", nil
 }
 
-// blamesCandidate reports whether a failed match quarantines the candidate. Giving up
-// explains a failure, except giving up unmatched; work the proxy stopped never does.
-func blamesCandidate(ctx context.Context, kind model.QuarantineKind) bool {
-	if ctx.Err() == nil {
-		return true
-	}
-	return kind == model.QuarantineUnmatched && !errors.Is(context.Cause(ctx), ErrCandidateStopped)
+// blamesCandidate reports whether a failed match quarantines the candidate. A candidate that
+// gives up was never answered as the reference was, so only work the proxy stopped is excused.
+func blamesCandidate(ctx context.Context) bool {
+	return !errors.Is(context.Cause(ctx), ErrCandidateStopped)
 }
 
 // answer answers a candidate request to a replacing endpoint with an equivalent reference
@@ -221,7 +218,7 @@ func (q *egressQueue) answer(ctx context.Context, protocol model.Protocol, route
 ) (Decision, error) {
 	decision, kind, err := q.respond(ctx, protocol, route, replacement, request)
 	if err != nil {
-		if blamesCandidate(ctx, kind) {
+		if blamesCandidate(ctx) {
 			q.quarantine.Quarantine(ctx, egressReason(kind, protocol, route, err))
 		}
 		return nil, err
