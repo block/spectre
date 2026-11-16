@@ -190,14 +190,15 @@ func (d *Decoder) decompress(header http.Header, body []byte) ([]byte, error) {
 	return decompressHTTPBody(header, body, d.maxBodyBytes)
 }
 
-// unruled decodes responses no rule selects as their RPC method's output.
+// unruled decodes responses no rule selects as their RPC method's output. An
+// unrecognised content type is a gap in the scripts, so it fails rather than skips.
 func (d *Decoder) unruled(method, path, rawQuery string, header http.Header) decoding {
 	selected, err := requestWire(header.Get("Content-Type"))
 	switch {
 	case err != nil && header.Get("Content-Type") == "" && connectGet(method, rawQuery):
 		selected = wireConnectJSON
 	case err != nil:
-		return ignoredDecoding(err.Error())
+		return failedDecoding(errors.Wrap(err, "undeclared request"))
 	}
 	operation, err := d.conventionalMethod(path)
 	if err != nil {

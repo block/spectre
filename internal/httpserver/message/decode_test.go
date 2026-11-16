@@ -353,7 +353,7 @@ func TestRulesSelectEachResponse(t *testing.T) {
 		},
 		"NoRuleSelectsUnsupportedRequest": {
 			method: http.MethodPost, path: "/v1/forecast", response: httpResponse(http.StatusOK, "application/json", body),
-			expected: decoded{status: Some("200"), ignored: Some("request content type is not supported: mime: no media type")},
+			expected: decoded{status: Some("200"), failure: "undeclared request: request content type is not supported: mime: no media type"},
 		},
 		"EmptyText": {
 			method: http.MethodHead, path: "/v1/forecast", response: httpResponse(http.StatusInternalServerError, "text/html", ""),

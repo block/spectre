@@ -145,7 +145,7 @@ Each server constructor builds its own candidates, route matcher, and engine fro
 Only assembly differs:
 
 - Ingress: one listener sends each request to two points. The candidate is admitted first; if it is refused, the reference is proxied without the engine. The reference streams to the client, and the candidate runs in the background with a mirrored body and its own timeout. Descriptors come from reflection.
-- Ingress classifies each request when it arrives. Undeclared requests without a content type are compared only as Connect GET requests, and otherwise ignored.
+- Ingress classifies each request when it arrives. Undeclared requests without a content type are compared only as Connect GET requests. Any other undeclared request whose content type is unrecognised quarantines the candidate, because it is a gap in the comparison scripts.
 - Egress: two listeners, one point each. The reference selects its upstream by host. The candidate has no upstream, so even a wrong `Forward` cannot reach a dependency. The request decoder is built at startup, so a schema that cannot decode the declared endpoints fails startup.
 
 ## Consequences
