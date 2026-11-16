@@ -78,6 +78,16 @@ Edit the [protobuf definitions](internal/sample/proto/service.proto) and run
 `bit sample` to regenerate the Go and Connect bindings, descriptors, and TypeScript
 declarations. Generated declarations are checked in alongside the Go bindings.
 
+## Integration tests
+
+The Go tests in [`internal/integration`](internal/integration) each run
+[`Procfile.integration`](Procfile.integration) with proctor, from a directory of
+their own under `/tmp`, so they run in parallel without sharing sockets. Each test
+drives the mirror over its sockets and checks what the processes log. The tests
+are skipped with `-short`, which `bit test-go` passes. Run them with
+`bit test-integration`, or with `go test ./internal/integration` once Hermit is
+active. A failing test logs proctor's whole output.
+
 ## Editor configuration
 
 `tsconfig.json` gives editors the host's compiler options, so they report the errors

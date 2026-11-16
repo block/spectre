@@ -39,20 +39,24 @@ sample-schema = exec {
   depends_on = [sample-descriptors, typescript-compiler]
 }
 
+# -short skips the integration tests, which test-integration runs.
 test-go[go-module](package = "./...", run = ".") = go.test {
   package = package
   dir = go-module
-  flags = ["-timeout=30s", "-run=#{run}"]
+  flags = ["-short", "-timeout=30s", "-run=#{run}"]
   depends_on = [sample-schema, typescript-compiler]
 }
 test-launcher = exec.test {
   command = "spectre.test.sh"
   inputs = ["scripts/spectre", "scripts/spectre.test.sh"]
 }
-test-response-comparison-integration = exec.test {
-  command = "response-comparison.integration.test.sh"
-  inputs = ["Procfile.integration", "scripts/response-comparison.integration.test.sh", "scripts/spectre", "scripts/spectre-sample", "scripts/spectre-sample-forecasts", "internal/**/*.ts", "internal/sample/testdata/*.json", "bin/jq"]
-  depends_on = [spectre-bin, sample-bin, sample-forecasts-bin, sample-schema]
+# Each test runs Procfile.integration with proctor, whose processes run the binaries that
+# the launcher builds, so their sources are inputs too. -count=1 stops go caching the result.
+test-integration(run = ".") = go.test {
+  package = "./internal/integration"
+  flags = ["-count=1", "-timeout=5m", "-run=#{run}"]
+  inputs = go-inputs + ["Procfile.integration", "scripts/spectre", "internal/**/*.ts", "internal/sample/testdata/*.json", "bin/proctor"]
+  depends_on = [spectre-bin, sample-bin, sample-forecasts-bin, sample-descriptors, sample-schema]
 }
 test-release-version = exec.test {
   command = "release-version.test.sh"
@@ -176,7 +180,7 @@ target demo = [demo-image]
 target publish-container(registry : string, image-tag : string, version : string) = [publish-release-image(registry = registry, image-tag = image-tag, version = version)]
 
 # Run all tests
-target test = [test-go, test-launcher, test-response-comparison-integration, test-release-version, test-container-images, test-tsk]
+target test = [test-go, test-launcher, test-integration, test-release-version, test-container-images, test-tsk]
 
 # Lint everything
 target lint = [lint-go-modules, lint-tsk, lint-proto, lint-actions, lint-action-pins, lint-dockerfile, lint-release, lint-scripts, fmt-check-go]
