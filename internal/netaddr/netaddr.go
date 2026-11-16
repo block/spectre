@@ -21,7 +21,9 @@ const (
 	schemeH2C     = "h2c"
 	networkUnix   = "unix"
 	networkTCP    = "tcp"
+	networkFD     = "fd"
 	unixPrefix    = "unix:"
+	fdPrefix      = "fd:"
 	hostLocalhost = "localhost"
 )
 
@@ -45,11 +47,14 @@ func newEndpoint(network string, address string, target Option[*url.URL], h2c bo
 	return &Endpoint{network: network, address: address, url: target, h2c: h2c, port: port}
 }
 
-// ParseListen parses a listener address. A "unix:" prefix selects a unix socket
-// (absolute path or "@" abstract name); anything else is a TCP host:port.
+// ParseListen parses a listener address: "unix:" and an absolute path or "@"
+// abstract name, "fd:" and an inherited descriptor, or else a TCP host:port.
 func ParseListen(value string) *Endpoint {
 	if socket, ok := strings.CutPrefix(value, unixPrefix); ok {
 		return newEndpoint(networkUnix, socket, None[*url.URL](), false, 0)
+	}
+	if descriptor, ok := strings.CutPrefix(value, fdPrefix); ok {
+		return newEndpoint(networkFD, descriptor, None[*url.URL](), false, 0)
 	}
 	return newEndpoint(networkTCP, value, None[*url.URL](), false, 0)
 }
@@ -126,8 +131,11 @@ func backendPort(parsed *url.URL, value string) (uint16, error) {
 }
 
 // Listen binds a stream listener for the endpoint, clearing a stale unix socket
-// so a restart can rebind it.
+// so a restart can rebind it. An inherited socket is taken over instead.
 func (e *Endpoint) Listen(ctx context.Context) (net.Listener, error) {
+	if e.network == networkFD {
+		return e.inherit()
+	}
 	if e.network == networkUnix {
 		if err := removeStaleSocket(e.address); err != nil {
 			return nil, errors.Wrap(err, "prepare unix socket")
@@ -139,6 +147,29 @@ func (e *Endpoint) Listen(ctx context.Context) (net.Listener, error) {
 	}
 	if err := shareSocket(e.network, e.address); err != nil {
 		return nil, errors.Join(err, listener.Close())
+	}
+	return listener, nil
+}
+
+// inherit takes over the listening socket the process inherited as the
+// endpoint's file descriptor.
+func (e *Endpoint) inherit() (net.Listener, error) {
+	descriptor, err := strconv.ParseUint(e.address, 10, 31)
+	if err != nil {
+		return nil, errors.Errorf("inherited listener must be a file descriptor number: %q", e.address)
+	}
+	file := os.NewFile(uintptr(descriptor), fdPrefix+e.address)
+	if file == nil {
+		return nil, errors.Errorf("file descriptor %s is not open", e.address)
+	}
+	// FileListener duplicates the descriptor, so the original is no longer needed.
+	listener, err := net.FileListener(file)
+	closeErr := file.Close()
+	if err != nil {
+		return nil, errors.Wrapf(err, "inherit listener from file descriptor %s", e.address)
+	}
+	if closeErr != nil {
+		return nil, errors.Join(errors.Wrapf(closeErr, "close file descriptor %s", e.address), listener.Close())
 	}
 	return listener, nil
 }
@@ -207,6 +238,23 @@ func (e *Endpoint) URL() Option[*url.URL] {
 // Port returns the resolved backend TCP port.
 func (e *Endpoint) Port() uint16 {
 	return e.port
+}
+
+// IsInherited reports whether the listener is a socket the process inherited.
+func (e *Endpoint) IsInherited() bool {
+	return e.network == networkFD
+}
+
+// IsLocal reports whether a listener's address is a unix socket or a loopback IP.
+func IsLocal(address net.Addr) bool {
+	switch address := address.(type) {
+	case *net.UnixAddr:
+		return true
+	case *net.TCPAddr:
+		return address.IP.IsLoopback()
+	default:
+		return false
+	}
 }
 
 // IsLoopback reports whether the backend or TCP listener host is a loopback IP address.

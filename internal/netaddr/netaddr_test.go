@@ -2,11 +2,13 @@ package netaddr_test
 
 import (
 	"context"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -187,6 +189,45 @@ func TestListenTCP(t *testing.T) {
 	assert.NoError(t, err)
 	t.Cleanup(func() { assert.NoError(t, response.Body.Close()) })
 	assert.Equal(t, http.StatusNoContent, response.StatusCode)
+}
+
+func TestListenInherited(t *testing.T) {
+	inherited, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
+	assert.NoError(t, err)
+	t.Cleanup(func() { _ = inherited.Close() })
+	file, err := inherited.(*net.TCPListener).File()
+	assert.NoError(t, err)
+
+	endpoint := netaddr.ParseListen("fd:" + strconv.Itoa(int(file.Fd())))
+	assert.True(t, endpoint.IsInherited())
+	listener, err := endpoint.Listen(t.Context())
+	assert.NoError(t, err)
+	t.Cleanup(func() { assert.NoError(t, listener.Close()) })
+	assert.Equal(t, inherited.Addr().String(), listener.Addr().String())
+}
+
+func TestListenInheritedRejectsInvalid(t *testing.T) {
+	for _, value := range []string{"fd:", "fd:three", "fd:-1"} {
+		_, err := netaddr.ParseListen(value).Listen(t.Context())
+		assert.Error(t, err, value)
+	}
+}
+
+func TestIsLocal(t *testing.T) {
+	for name, test := range map[string]struct {
+		address net.Addr
+		local   bool
+	}{
+		"Loopback":    {address: &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)}, local: true},
+		"IPv6":        {address: &net.TCPAddr{IP: net.IPv6loopback}, local: true},
+		"Unspecified": {address: &net.TCPAddr{IP: net.IPv4zero}},
+		"Remote":      {address: &net.TCPAddr{IP: net.IPv4(10, 0, 0, 1)}},
+		"Unix":        {address: &net.UnixAddr{Name: "/tmp/a.sock", Net: "unix"}, local: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, test.local, netaddr.IsLocal(test.address))
+		})
+	}
 }
 
 func TestAwaitAccepting(t *testing.T) {

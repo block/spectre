@@ -109,7 +109,8 @@ func NewIngress(
 	candidates := proxy.NewCandidates(config.Candidates)
 	routes := route.NewMatcher()
 	quarantiner := newNodeQuarantiner(candidates, owners)
-	engine, err := protocol.NewEngine(ctx, engineConfig, map[model.Protocol]protocol.Matcher{model.ProtocolHTTP: routes}, quarantiner)
+	calls := proxy.NewCallCounter()
+	engine, err := protocol.NewEngine(ctx, engineConfig, map[model.Protocol]protocol.Matcher{model.ProtocolHTTP: routes}, quarantiner, Some[protocol.CallCounter](calls))
 	if err != nil {
 		return nil, errors.Wrap(err, "configure response comparison")
 	}
@@ -130,7 +131,7 @@ func NewIngress(
 		descriptors:      loader,
 		static:           static,
 		candidates:       candidates,
-		calls:            proxy.NewCallCounter(),
+		calls:            calls,
 		quarantiner:      quarantiner,
 		migration:        migrationRoutes,
 	}
@@ -249,7 +250,7 @@ func (i *Ingress) Health() *health.Handler {
 	return i.health
 }
 
-// Calls returns the requests ingress has received on each route.
+// Calls returns the requests on each route whose comparison completed.
 func (i *Ingress) Calls() model.Calls {
 	return i.calls.Calls()
 }
@@ -260,7 +261,6 @@ func (i *Ingress) serveProxy(writer http.ResponseWriter, request *http.Request) 
 		return
 	}
 	route := i.route(request)
-	i.calls.Count(route)
 	select {
 	case i.requests <- struct{}{}:
 		defer func() { <-i.requests }()
@@ -409,7 +409,7 @@ func (i *Ingress) Shutdown(ctx context.Context) error {
 // Serve accepts ingress traffic until the context is cancelled or the server fails.
 // It rejects requests until both backends accept and the schema is configured.
 func (i *Ingress) Serve(ctx context.Context, listener net.Listener) error {
-	bindings := []Binding{NewBinding("ingress", listener, i)}
+	bindings := []Binding{NewBinding(listener, i)}
 	lifecycle := NewLifecycle(i.start, i.markUnready, i.Shutdown)
 	return errors.Wrap(Serve(ctx, i.config.Config, bindings, lifecycle), "serve ingress")
 }

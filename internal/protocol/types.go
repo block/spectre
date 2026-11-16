@@ -67,6 +67,11 @@ type Quarantiner interface {
 	Quarantine(ctx context.Context, reason model.QuarantineReason)
 }
 
+// CallCounter counts the ingress requests whose comparison completed, by route.
+type CallCounter interface {
+	Count(route model.Route)
+}
+
 // Raw is a server's own record of a response, which an intercept replays.
 // Release frees it, and must be safe to call more than once.
 type Raw interface {

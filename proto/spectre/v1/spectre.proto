@@ -187,8 +187,8 @@ message State {
   Calls calls = 7;
 }
 
-// Calls counts the requests the mirror's ingress proxy received on each route
-// since the mirror started.
+// Calls counts the requests on each route whose responses the mirror's ingress
+// proxy compared since the mirror started.
 message Calls {
   // Routes maps each route to its number of requests.
   map<string, uint64> routes = 1;

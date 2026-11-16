@@ -61,7 +61,8 @@ func NewEgress(
 		return nil, errors.New("transport is required")
 	}
 	candidateListen := netaddr.ParseListen(config.CandidateListen)
-	if !candidateListen.IsUnix() && !candidateListen.IsLoopback() {
+	// Serve checks an inherited listener once it holds its address.
+	if !candidateListen.IsUnix() && !candidateListen.IsLoopback() && !candidateListen.IsInherited() {
 		return nil, errors.New("candidate listener must use a loopback IP address or a unix socket")
 	}
 	listeners := []*netaddr.Endpoint{
@@ -79,7 +80,7 @@ func NewEgress(
 	}
 	candidates := proxy.NewCandidates(config.Candidates)
 	routes := route.NewMatcher()
-	engine, err := protocol.NewEngine(ctx, engineConfig, map[model.Protocol]protocol.Matcher{model.ProtocolHTTP: routes}, candidates)
+	engine, err := protocol.NewEngine(ctx, engineConfig, map[model.Protocol]protocol.Matcher{model.ProtocolHTTP: routes}, candidates, None[protocol.CallCounter]())
 	if err != nil {
 		return nil, errors.Wrap(err, "configure request hashing")
 	}
@@ -154,10 +155,13 @@ func egressDestinations(ctx context.Context, upstreams map[string]string, transp
 // Serve accepts reference, candidate, and health traffic until the context is
 // cancelled or a server fails. Readiness turns true once the servers start.
 func (e *Egress) Serve(ctx context.Context, reference net.Listener, candidate net.Listener, probes net.Listener) error {
+	if !netaddr.IsLocal(candidate.Addr()) {
+		return errors.Errorf("candidate listener must use a loopback IP address or a unix socket, not %s", candidate.Addr())
+	}
 	bindings := []Binding{
-		NewBinding("reference-egress", reference, e.referenceHandler),
-		NewBinding("candidate-egress", candidate, e.candidateHandler),
-		NewBinding("egress-health", probes, e.health),
+		NewBinding(reference, e.referenceHandler),
+		NewBinding(candidate, e.candidateHandler),
+		NewBinding(probes, e.health),
 	}
 	lifecycle := NewLifecycle(e.markReady, e.stop, e.drain)
 	return errors.Wrap(Serve(ctx, e.config, bindings, lifecycle), "serve egress")

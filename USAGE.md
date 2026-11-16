@@ -74,7 +74,8 @@ descriptors-dir = "spectre/descriptors"
 ### Addresses
 
 Flags that listen take `host:port`, or `unix:<path>` for a unix socket. On Linux,
-`unix:@<name>` is an abstract socket.
+`unix:@<name>` is an abstract socket. `fd:<n>` takes over a listening socket
+that SPECTRE inherits as file descriptor `n` from the process that starts it.
 
 Flags that name a service take a URL with one of these schemes:
 
@@ -534,7 +535,9 @@ List the reporting mirrors and recorded divergences with
 several servers together, such as one per deployment; `status` fails if any of
 them does, so no server's mirrors go missing. Filter with `--service`,
 `--environment`, `--revision`, or `--node`, and print JSON with `--json`. Each
-mirror lists its calls per route, which lag by up to the keepalive interval. A
+mirror lists the calls on each route whose responses it has compared, which lag
+by up to the keepalive interval. Calls ingress does not mirror, or that arrive
+after a quarantine, are not counted. A
 mirror stays listed until it sends nothing for the server's `--state-ttl`
 (90s by default), so keep that above the keepalive interval. A mirror stays
 quarantined until it restarts.

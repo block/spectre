@@ -11,21 +11,15 @@ import (
 	"github.com/block/spectre/internal/logger"
 )
 
-// Binding pairs a named listener with the handler that serves its connections.
+// Binding pairs a listener with the handler that serves its connections.
 type Binding struct {
-	name     string
 	listener net.Listener
 	handler  http.Handler
 }
 
-// NewBinding serves connections accepted by listener with handler. The name
-// labels the listener in logs.
-func NewBinding(name string, listener net.Listener, handler http.Handler) Binding {
-	return Binding{name: name, listener: listener, handler: handler}
-}
-
-func (b Binding) label() string {
-	return b.name
+// NewBinding serves connections accepted by listener with handler.
+func NewBinding(listener net.Listener, handler http.Handler) Binding {
+	return Binding{listener: listener, handler: handler}
 }
 
 func (b Binding) address() string {
@@ -87,7 +81,7 @@ func Serve(ctx context.Context, config Config, bindings []Binding, lifecycle Lif
 	servers := make([]*http.Server, 0, len(bindings))
 	for _, binding := range bindings {
 		servers = append(servers, binding.start(serverContext, config, serveDone))
-		logger.FromContext(ctx).InfoContext(ctx, "Proxy listening", "listener", binding.label(), "address", binding.address())
+		logger.FromContext(ctx).InfoContext(ctx, "Proxy listening", "address", binding.address())
 	}
 	lifecycle.start(ctx)
 
