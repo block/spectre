@@ -3,6 +3,7 @@ package protocol_test
 import (
 	"context"
 	"regexp"
+	"slices"
 	"testing"
 	"time"
 
@@ -66,7 +67,7 @@ func TestEgressReplacingRequestWaitsForSourceReference(t *testing.T) {
 		"Response": true,
 	} {
 		t.Run(name, func(t *testing.T) {
-			h := newScriptHarness(t, replacementScript, time.Second)
+			h := newScriptHarness(t, replacementScript, 200*time.Millisecond)
 			var exchange protocol.Exchange
 			if hashedFirst {
 				exchange = h.forwardHTTP(t, listRoute, query(queryType, "london", ""))
@@ -81,11 +82,14 @@ func TestEgressReplacingRequestWaitsForSourceReference(t *testing.T) {
 				exchange = h.forwardHTTP(t, listRoute, query(queryType, "london", ""))
 			}
 
-			h.engine.EgressReference(model.ProtocolHTTP).ProcessResponse(h.ctx, exchange, listed(newRaw("list")))
+			raw := newRaw("list")
+			h.engine.EgressReference(model.ProtocolHTTP).ProcessResponse(h.ctx, exchange, listed(raw))
 
 			assert.Equal(t, candidateDecision{decision: protocol.DecisionAnswer{
 				Message: protocol.Message{Type: replacementType, Value: map[string]any{"value": "listed/london"}},
 			}}, <-decided)
+			// The replacing request matched the source reference, so it expires without quarantine.
+			awaitRelease(t, raw)
 			assert.Equal(t, nil, h.quarantine.Reasons())
 		})
 	}
@@ -306,7 +310,11 @@ func TestEgressQuarantinesUnanswerableReplacingRequests(t *testing.T) {
 			assert.Error(t, err)
 			assert.Contains(t, err.Error(), test.expected)
 			assert.Equal(t, nil, decision)
-			recorded := h.quarantine.Recorded()
+			// A source reference nothing matched also quarantines, on its own route.
+			recorded := slices.DeleteFunc(h.quarantine.Recorded(), func(reason model.QuarantineReason) bool {
+				traffic, _ := reason.Traffic.Get()
+				return traffic.Route != getRoute
+			})
 			assert.Equal(t, 1, len(recorded))
 			assert.Equal(t, test.kind, recorded[0].Kind)
 			assert.Equal(t, err.Error(), recorded[0].Detail)

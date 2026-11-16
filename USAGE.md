@@ -278,6 +278,14 @@ reference call. Giving up before a match is `unmatched`, and giving up later, su
 as while waiting for the reference's response, is `unable`. Calls SPECTRE cancels
 itself, while shutting down or after a quarantine, never quarantine.
 
+A reference call that no candidate call matches within `--match-window` also
+quarantines the candidate, because the candidate left it out. Egress cannot yet
+tell which reference calls belong to mirrored requests. So it also quarantines
+for reference calls made while the candidate is starting, after ingress
+quarantined it, and for routes ingress does not mirror, such as those of pending
+migration state nodes. Reference calls left unmatched during shutdown never
+quarantine.
+
 When the candidate asks a dependency for data the reference read from another of
 its endpoints, declare that the candidate's call `replaces` the reference's call
 to that source endpoint. The candidate is then answered from the reference's
@@ -285,7 +293,8 @@ response. The source endpoint must be declared with `match`. `using` takes two
 functions: `request` maps the candidate's request to the source request it pairs
 with, and `response` builds the answer from the paired reference response.
 Replacing never claims the source reference, so a candidate call to the source
-still pairs with it:
+still pairs with it. A source reference that a replacing call matched is not
+left out:
 
 ```ts
 import { egress } from "spectre";
@@ -314,7 +323,7 @@ A mirror quarantines its candidate for one of these reasons:
 | Kind | Reason |
 | --- | --- |
 | `divergent` | The candidate's response differed from the reference's. |
-| `unmatched` | The candidate made a dependency call the reference did not. |
+| `unmatched` | The candidate or reference made a dependency call the other did not. |
 | `unlisted` | A request's route is in no node of the [migration state](#migration-state). |
 | `pairing` | The mirror could not pair the candidate's traffic with the reference's. |
 | `unable` | The mirror could not compare or replay the traffic. |

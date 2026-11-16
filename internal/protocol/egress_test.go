@@ -3,6 +3,8 @@ package protocol_test
 import (
 	"context"
 	"regexp"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -71,12 +73,22 @@ func TestEgressCandidatePairsWithEquivalentReference(t *testing.T) {
 			}
 			assert.EqualError(t, err, "no matching reference request within 200ms")
 			assert.Equal(t, nil, decision)
-			assert.Equal(t, []model.QuarantineReason{{
-				Kind:    model.QuarantineUnmatched,
-				Traffic: Some(model.Traffic{Direction: model.Egress, Protocol: fake, Route: test.candidateRoute}),
-				Detail:  "no matching reference request within 200ms",
-			}}, h.quarantine.Recorded())
 			awaitRelease(t, raw)
+			// Each side made a request the other did not, and the windows may close in either order.
+			recorded := h.quarantine.Recorded()
+			slices.SortFunc(recorded, func(a, b model.QuarantineReason) int { return strings.Compare(a.Detail, b.Detail) })
+			assert.Equal(t, []model.QuarantineReason{
+				{
+					Kind:    model.QuarantineUnmatched,
+					Traffic: Some(model.Traffic{Direction: model.Egress, Protocol: fake, Route: test.referenceRoute}),
+					Detail:  "no matching candidate request within 200ms",
+				},
+				{
+					Kind:    model.QuarantineUnmatched,
+					Traffic: Some(model.Traffic{Direction: model.Egress, Protocol: fake, Route: test.candidateRoute}),
+					Detail:  "no matching reference request within 200ms",
+				},
+			}, recorded)
 		})
 	}
 }
@@ -302,15 +314,44 @@ func TestEgressQuarantinesUnreplayableRequests(t *testing.T) {
 	}
 }
 
-func TestEgressReleasesUnclaimedReferenceAfterWindow(t *testing.T) {
+func TestEgressQuarantinesUnclaimedReferenceAfterWindow(t *testing.T) {
+	for name, test := range map[string]struct {
+		script   string
+		protocol model.Protocol
+		route    model.Route
+		forward  func(h *harness, t *testing.T, route model.Route, request func(ctx context.Context) (protocol.Message, error)) protocol.Exchange
+	}{
+		"Reference":       {script: fakeScript, protocol: fake, route: "query", forward: (*harness).forward},
+		"SourceReference": {script: replacementScript, protocol: model.ProtocolHTTP, route: listRoute, forward: (*harness).forwardHTTP},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newScriptHarness(t, test.script, 20*time.Millisecond)
+			raw := newRaw("reference")
+			exchange := test.forward(h, t, test.route, query(queryType, "london", ""))
+			h.engine.EgressReference(test.protocol).ProcessResponse(h.ctx, exchange, listed(raw))
+
+			awaitRelease(t, raw)
+
+			assert.Equal(t, []model.QuarantineReason{{
+				Kind:    model.QuarantineUnmatched,
+				Traffic: Some(model.Traffic{Direction: model.Egress, Protocol: test.protocol, Route: test.route}),
+				Detail:  "no matching candidate request within 20ms",
+			}}, h.quarantine.Recorded())
+			_, err := h.engine.EgressCandidate(test.protocol).ProcessRequest(h.ctx, None[protocol.RequestID](), test.route, notIgnored, query(queryType, "london", ""))
+			assert.EqualError(t, err, "no matching reference request within 20ms")
+		})
+	}
+}
+
+func TestEgressReleasesUnclaimedReferenceAfterCloseWithoutQuarantine(t *testing.T) {
 	h := newHarness(t, 20*time.Millisecond)
 	raw := newRaw("reference")
 	h.reference(t, "query", query(queryType, "london", ""), raw)
 
-	awaitRelease(t, raw)
+	h.engine.Close()
 
-	_, err := h.engine.EgressCandidate(fake).ProcessRequest(h.ctx, None[protocol.RequestID](), "query", notIgnored, query(queryType, "london", ""))
-	assert.EqualError(t, err, "no matching reference request within 20ms")
+	awaitRelease(t, raw)
+	assert.Equal(t, nil, h.quarantine.Reasons())
 }
 
 func TestEgressCandidateReleasesReportedResponse(t *testing.T) {

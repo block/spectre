@@ -52,6 +52,9 @@ type egressQueue struct {
 	// claims them, and observers wait for one; neither claims a reference.
 	sources   map[comparison.Hash][]*egressExchange
 	observers map[comparison.Hash][]chan *egressExchange
+	// closed means the server is stopping candidate work, so references that
+	// expire unclaimed are no longer the candidate's fault.
+	closed bool
 }
 
 func newEgressQueue(scripts *comparison.Scripts, window time.Duration, quarantine Quarantiner) *egressQueue {
@@ -115,6 +118,13 @@ func (q *egressQueue) arrive() uint64 {
 	return q.arrivals
 }
 
+// close stops quarantining for references that expire unclaimed.
+func (q *egressQueue) close() {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.closed = true
+}
+
 // shutdown waits until no reference is being hashed.
 func (q *egressQueue) shutdown(ctx context.Context) error {
 	q.mu.Lock()
@@ -147,7 +157,7 @@ func (q *egressQueue) forward(ctx context.Context, protocol model.Protocol, rout
 	q.mu.Lock()
 	q.arrivals++
 	_, source := q.sourceResponses[endpoint{protocol, string(route)}]
-	pending := newEgressExchange(q.arrivals, source)
+	pending := newEgressExchange(q.arrivals, protocol, route, source)
 	q.exchanges[exchange] = pending
 	q.startHashing()
 	q.mu.Unlock()
@@ -161,7 +171,7 @@ func (q *egressQueue) forward(ctx context.Context, protocol model.Protocol, rout
 			q.quarantine.Quarantine(background, egressReason(model.QuarantineUnable, protocol, route, errors.Wrap(err, "identify reference request")))
 			return
 		}
-		q.add(hash, pending)
+		q.add(background, hash, pending)
 	}()
 	return DecisionForward{RequestID: None[RequestID](), Exchange: exchange}
 }
@@ -330,8 +340,8 @@ func (q *egressQueue) take(ctx context.Context, exchange Exchange) (*egressExcha
 }
 
 // add offers a reference to the earliest waiting candidate, or keeps it unused
-// for the window before releasing it.
-func (q *egressQueue) add(hash comparison.Hash, pending *egressExchange) {
+// for the window before expiring it.
+func (q *egressQueue) add(ctx context.Context, hash comparison.Hash, pending *egressExchange) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	if pending.isSource() {
@@ -349,7 +359,7 @@ func (q *egressQueue) add(hash comparison.Hash, pending *egressExchange) {
 		return
 	}
 	q.unused[hash] = insertByArrival(q.unused[hash], pending)
-	pending.expireAfter(q.window, func() { q.expire(hash, pending) })
+	pending.expireAfter(q.window, func() { q.expire(ctx, hash, pending) })
 }
 
 // forget stops offering a source reference to observers.
@@ -381,6 +391,8 @@ func (q *egressQueue) pick(ctx context.Context, hash, sourceHash comparison.Hash
 	if sources := q.sources[sourceHash]; len(sources) > 0 {
 		// forget edits the slice in place, so read it before unlocking.
 		source := sources[0]
+		// Matching under q.mu keeps it ordered with expire, which checks it under q.mu.
+		source.markMatched()
 		q.mu.Unlock()
 		return source, false, nil
 	}
@@ -432,6 +444,9 @@ func (q *egressQueue) pick(ctx context.Context, hash, sourceHash comparison.Hash
 		received = Some(<-observer)
 	}
 	if pending, ok := received.Get(); ok {
+		if !direct {
+			pending.markMatched()
+		}
 		return pending, direct, nil
 	}
 	return nil, false, err
@@ -477,18 +492,24 @@ func (q *egressQueue) claim(ctx context.Context, hash comparison.Hash, waiter *e
 	return nil, err
 }
 
-// expire releases a reference that no candidate claimed within the window.
-func (q *egressQueue) expire(hash comparison.Hash, pending *egressExchange) {
+// expire releases a reference that no candidate claimed within the window. The
+// candidate left it out, and is quarantined, unless a replacing request matched it.
+func (q *egressQueue) expire(ctx context.Context, hash comparison.Hash, pending *egressExchange) {
 	q.mu.Lock()
 	unused := q.unused[hash]
 	index := slices.Index(unused, pending)
 	if index >= 0 {
 		q.setUnused(hash, slices.Delete(unused, index, index+1))
 	}
+	leftOut := index >= 0 && !pending.isMatched() && !q.closed
 	q.mu.Unlock()
-	if index >= 0 {
-		pending.abandon()
+	if index < 0 {
+		return
 	}
+	if leftOut {
+		q.quarantine.Quarantine(ctx, pending.leftOut(q.window))
+	}
+	pending.abandon()
 }
 
 // setUnused replaces the unused queue for hash. Callers hold q.mu.
@@ -550,20 +571,25 @@ type egressOutcome struct {
 
 // egressExchange is one forwarded reference request.
 type egressExchange struct {
-	arrival uint64
+	arrival  uint64
+	protocol model.Protocol
+	route    model.Route
 	// source reports that replacements read the response, so it is decoded when it finishes.
 	source  bool
 	outcome *future.Future[egressOutcome]
 
 	mu        sync.Mutex
 	abandoned bool
+	// matched reports that a replacing request used the source reference, which
+	// pairs it without claiming it.
+	matched bool
 	// forgotten reports that observers no longer find the source reference.
 	forgotten bool
 	expiry    Option[*time.Timer]
 }
 
-func newEgressExchange(arrival uint64, source bool) *egressExchange {
-	return &egressExchange{arrival: arrival, source: source, outcome: future.New[egressOutcome]()}
+func newEgressExchange(arrival uint64, protocol model.Protocol, route model.Route, source bool) *egressExchange {
+	return &egressExchange{arrival: arrival, protocol: protocol, route: route, source: source, outcome: future.New[egressOutcome]()}
 }
 
 func (e *egressExchange) arrived() uint64 {
@@ -573,6 +599,24 @@ func (e *egressExchange) arrived() uint64 {
 // isSource reports whether replacements read the response.
 func (e *egressExchange) isSource() bool {
 	return e.source
+}
+
+// markMatched records that a replacing request used the source reference.
+func (e *egressExchange) markMatched() {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.matched = true
+}
+
+func (e *egressExchange) isMatched() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.matched
+}
+
+// leftOut is why the candidate is quarantined when no request of its matched the reference.
+func (e *egressExchange) leftOut(window time.Duration) model.QuarantineReason {
+	return egressReason(model.QuarantineUnmatched, e.protocol, e.route, errors.Errorf("no matching candidate request within %s", window))
 }
 
 // expireAfter calls expire once window passes, unless stopExpiry is called first.

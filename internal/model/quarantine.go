@@ -15,7 +15,7 @@ const (
 	QuarantineDivergent QuarantineKind = "divergent"
 	// QuarantineUnable means the mirror could not compare or replay traffic.
 	QuarantineUnable QuarantineKind = "unable"
-	// QuarantineUnmatched means the candidate made a dependency request the reference did not.
+	// QuarantineUnmatched means the candidate or reference made a dependency request the other did not.
 	QuarantineUnmatched QuarantineKind = "unmatched"
 	// QuarantineUnlisted means an ingress route is in no node of the migration state.
 	QuarantineUnlisted QuarantineKind = "unlisted"

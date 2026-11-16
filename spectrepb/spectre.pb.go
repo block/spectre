@@ -146,7 +146,7 @@ const (
 	Quarantine_KIND_DIVERGENT Quarantine_Kind = 1
 	// The mirror could not compare or replay traffic.
 	Quarantine_KIND_UNABLE Quarantine_Kind = 2
-	// The candidate made a dependency request the reference did not.
+	// The candidate or reference made a dependency request the other did not.
 	Quarantine_KIND_UNMATCHED Quarantine_Kind = 3
 	// An ingress route is in no node of the migration state.
 	Quarantine_KIND_UNLISTED Quarantine_Kind = 4
