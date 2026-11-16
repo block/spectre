@@ -36,6 +36,8 @@ type egressQueue struct {
 	// and sourceResponses types the reference responses replacements read.
 	replacements    map[endpoint]javascript.Replacement
 	sourceResponses map[endpoint]schema.TypeRef
+	// optional holds the endpoints whose reference requests the candidate may leave out.
+	optional map[endpoint]bool
 	// mu guards every map. A hash never has unused references and waiting
 	// candidates at the same time, because add hands over to a waiter first.
 	mu sync.Mutex
@@ -65,12 +67,19 @@ func newEgressQueue(scripts *comparison.Scripts, window time.Duration, quarantin
 		replacements[endpoint{replacement.Protocol(), replacement.Pattern()}] = replacement
 		sourceResponses[endpoint{replacement.Protocol(), replacement.Source()}] = replacement.SourceResponse()
 	}
+	optional := map[endpoint]bool{}
+	for _, declared := range scripts.Endpoints() {
+		if declared.Direction() == model.Egress && declared.Optional() {
+			optional[endpoint{declared.Protocol(), declared.Pattern()}] = true
+		}
+	}
 	return &egressQueue{
 		scripts:         scripts,
 		window:          window,
 		quarantine:      quarantine,
 		replacements:    replacements,
 		sourceResponses: sourceResponses,
+		optional:        optional,
 		exchanges:       map[Exchange]*egressExchange{},
 		unused:          map[comparison.Hash][]*egressExchange{},
 		waiting:         map[comparison.Hash][]*egressWaiter{},
@@ -157,8 +166,9 @@ func (q *egressQueue) forward(ctx context.Context, protocol model.Protocol, rout
 	exchange := newExchange()
 	q.mu.Lock()
 	q.arrivals++
-	_, source := q.sourceResponses[endpoint{protocol, string(route)}]
-	pending := newEgressExchange(q.arrivals, protocol, route, source)
+	declared := endpoint{protocol, string(route)}
+	_, source := q.sourceResponses[declared]
+	pending := newEgressExchange(q.arrivals, protocol, route, source, q.optional[declared])
 	q.exchanges[exchange] = pending
 	q.startHashing()
 	q.mu.Unlock()
@@ -486,7 +496,7 @@ func removeWaiter(queues map[comparison.Hash][]*egressWaiter, hash comparison.Ha
 }
 
 // expire releases a reference that no candidate claimed within the window. The
-// candidate left it out, and is quarantined, unless a replacing request matched it.
+// candidate left it out, unless a replacing request matched it.
 func (q *egressQueue) expire(ctx context.Context, hash comparison.Hash, pending *egressExchange) {
 	q.mu.Lock()
 	unused := q.unused[hash]
@@ -500,7 +510,7 @@ func (q *egressQueue) expire(ctx context.Context, hash comparison.Hash, pending 
 		return
 	}
 	if leftOut {
-		q.quarantine.Quarantine(ctx, pending.leftOut(q.window))
+		pending.leaveOut(ctx, q.quarantine, q.window)
 	}
 	pending.abandon()
 }
@@ -581,8 +591,10 @@ type egressExchange struct {
 	protocol model.Protocol
 	route    model.Route
 	// source reports that replacements read the response, so it is decoded when it finishes.
-	source  bool
-	outcome *future.Future[egressOutcome]
+	source bool
+	// optional reports that the candidate may leave the request out.
+	optional bool
+	outcome  *future.Future[egressOutcome]
 
 	mu        sync.Mutex
 	abandoned bool
@@ -594,8 +606,11 @@ type egressExchange struct {
 	expiry    Option[*time.Timer]
 }
 
-func newEgressExchange(arrival uint64, protocol model.Protocol, route model.Route, source bool) *egressExchange {
-	return &egressExchange{arrival: arrival, protocol: protocol, route: route, source: source, outcome: future.New[egressOutcome]()}
+func newEgressExchange(arrival uint64, protocol model.Protocol, route model.Route, source, optional bool) *egressExchange {
+	return &egressExchange{
+		arrival: arrival, protocol: protocol, route: route, source: source, optional: optional,
+		outcome: future.New[egressOutcome](),
+	}
 }
 
 func (e *egressExchange) arrived() uint64 {
@@ -623,6 +638,16 @@ func (e *egressExchange) isMatched() bool {
 // leftOut is why the candidate is quarantined when no request of its matched the reference.
 func (e *egressExchange) leftOut(window time.Duration) model.QuarantineReason {
 	return egressReason(model.QuarantineUnmatched, e.protocol, e.route, errors.Errorf("no matching candidate request within %s", window))
+}
+
+// leaveOut quarantines the candidate for leaving the request out, or logs it if the request is optional.
+func (e *egressExchange) leaveOut(ctx context.Context, quarantine Quarantiner, window time.Duration) {
+	if !e.optional {
+		quarantine.Quarantine(ctx, e.leftOut(window))
+		return
+	}
+	logger.FromContext(ctx).InfoContext(ctx, "Candidate left out an optional reference request",
+		"event", logger.EventCorrelation, "protocol", e.protocol, "route", e.route)
 }
 
 // expireAfter calls expire once window passes, unless stopExpiry is called first.

@@ -114,7 +114,7 @@ A script can declare that a candidate's requests to one egress endpoint replace 
 
 ### Pairing windows
 
-- An unused egress reference expires after `MatchWindow` (default 5s), releasing its `Raw`. Unless a replacement used it, the candidate left it out.
+- An unused egress reference expires after `MatchWindow` (default 5s), releasing its `Raw`. Unless a replacement used it, the candidate left it out. A script marks an endpoint whose references the candidate may leave out with `optional()`.
 - An egress candidate waits up to `MatchWindow` for a matching reference.
 - The server must call the ingress candidate's `ProcessRequest` before forwarding the reference. A reference that ends with no candidate joined is dropped at once.
 - An ingress candidate's response waits for the reference, bounded by the candidate's context, which the server limits with `CandidateTimeout`. If the reference was cancelled, or the proxy stopped the candidate, the engine logs that comparison did not finish.
@@ -132,7 +132,7 @@ Divergence, `Unable`, an unidentifiable request, an unmatched egress candidate, 
 - An egress reference that ends `Unable` with a cancelled context gave up on the request, most likely because its own ingress request was cancelled. A candidate request matching it, or answered from it as a source reference, is refused without quarantine. A failed reference otherwise quarantines a candidate that matches it.
 - An egress candidate that gives up before it is answered is quarantined, because the reference's call was not mirrored. Giving up while no reference request matches its own is unmatched, because the reference made no such request. Giving up at any later step, such as waiting for the reference response, is unable.
 - Egress work the proxy stops, cancelled with `ErrCandidateStopped`, never quarantines. The proxy stops candidate work only when it shuts down or quarantines the candidate.
-- An egress reference that expires unclaimed and unused by any replacement is quarantined as unmatched, because the candidate left that request out. This holds for every protocol, and for reference requests that no mirrored ingress request caused.
+- An egress reference that expires unclaimed and unused by any replacement is quarantined as unmatched, because the candidate left that request out. This holds for every protocol, and for reference requests that no mirrored ingress request caused. A reference to an optional endpoint is logged instead.
 - A server tells the engine when it starts stopping candidate work, so references that expire during shutdown never quarantine. One that expires after quarantine changes nothing, because only the first reason is kept.
 - Ignored routes never quarantine, even when the candidate fails. Their candidate responses are reported as skipped without waiting for the reference.
 - Streaming RPCs cannot be compared yet, so ingress quarantines the candidate as unable when one arrives, before sending it to the candidate. Rules that match a streaming RPC do not change this; only rules that ignore it do.

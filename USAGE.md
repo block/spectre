@@ -227,6 +227,19 @@ quarantined it, and for routes ingress does not mirror, such as those of pending
 migration state nodes. Reference calls left unmatched during shutdown never
 quarantine.
 
+When the candidate legitimately makes fewer calls to an endpoint than the
+reference, for example because it reads data the reference fetched again from a
+cache or a session, mark the endpoint `optional()`. A reference call to it that
+no candidate call matches within `--match-window` then expires without
+quarantining, and the mirror logs `Candidate left out an optional reference
+request` with its route. Candidate calls to the endpoint still pair with
+reference calls as usual, and one with no match still quarantines. `optional()`
+comes before `match` or `replaces`:
+
+```ts
+egress.http("POST users.example/users.UserService/ListUsers").optional().match<ListUsersRequest>();
+```
+
 When the candidate asks a dependency for data the reference read from another of
 its endpoints, declare that the candidate's call `replaces` the reference's call
 to that source endpoint. The candidate is then answered from the reference's

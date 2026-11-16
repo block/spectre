@@ -52,6 +52,30 @@ func TestProgramOwnsDeclarations(t *testing.T) {
 	assert.Equal(t, "test.v1.User", operation.Request)
 }
 
+func TestDeclaresOptionalEgressEndpoints(t *testing.T) {
+	program, err := compile(t, fstest.MapFS{
+		"weather.ts": script(`
+			spectre.egress.http("GET weather.example/v1/forecast").match<v1.Response>();
+			spectre.egress.http("GET weather.example/v1/users").optional().match<v1.User>();
+			spectre.egress.http("GET weather.example/v1/user").optional().replaces<v1.User, v1.User>("GET weather.example/v1/users").using<v1.User, v1.User>(
+				(request) => request,
+				(_request, reference) => reference,
+			);
+		`),
+	})
+	assert.NoError(t, err)
+
+	optional := map[string]bool{}
+	for _, declared := range program.Endpoints(model.Egress) {
+		optional[declared.Pattern()] = declared.Optional()
+	}
+	assert.Equal(t, map[string]bool{
+		"GET weather.example/v1/forecast": false,
+		"GET weather.example/v1/users":    true,
+		"GET weather.example/v1/user":     true,
+	}, optional)
+}
+
 func TestRegistersRulesInOrder(t *testing.T) {
 	program, err := compile(t, fstest.MapFS{
 		"rules.ts": script(`
@@ -283,6 +307,7 @@ func TestRejectsInvalidEndpointDeclarations(t *testing.T) {
 		"MatchNoType":      {body: `egress.http("GET weather.example/v1/forecast").match();`, message: "spectre.EgressHTTPRule.match requires a type name"},
 		"MatchTwoArgs":     {body: `egress.http("GET weather.example/v1/forecast").match("test.v1.Response", () => ({}));`, message: "spectre.EgressHTTPRule.match requires a type name"},
 		"MatchEmptyType":   {body: `egress.http("GET weather.example/v1/forecast").match("");`, message: "type name must be a non-empty string"},
+		"OptionalWithArgs": {body: `egress.http("GET weather.example/v1/forecast").optional(true);`, message: "spectre.EgressHTTPRule.optional takes no arguments"},
 		"Duplicate": {
 			body:    `spectre.egress.http("GET weather.example/v1/forecast").match<v1.Response>(); spectre.egress.http("GET weather.example/v1/forecast").match<v1.User>();`,
 			message: `duplicate endpoint "GET weather.example/v1/forecast"`,
