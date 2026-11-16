@@ -80,13 +80,18 @@ declarations. Generated declarations are checked in alongside the Go bindings.
 
 ## Integration tests
 
-The Go tests in [`internal/integration`](internal/integration) each run
-[`Procfile.integration`](Procfile.integration) with proctor, from a directory of
-their own under `/tmp`, so they run in parallel without sharing sockets. Each test
-drives the mirror over its sockets and checks what the processes log. The tests
-are skipped with `-short`, which `bit test-go` passes. Run them with
+The [`internal/integration`](internal/integration) package is a test library
+that runs a whole mirror for a Go test. The test defines the reference,
+candidate and dependency services as Go handlers, and the library serves them
+in the test process. It runs `spectre serve` and `spectre proxy` in front of them
+as processes of their own. Every listener takes a free port from the operating
+system, so tests run in parallel. A test drives the mirror through its URLs, and
+checks the requests each service received and the records the processes logged.
+A failing test logs the output of every process.
+
+The tests are skipped with `-short`, which `bit test-go` passes. Run them with
 `bit test-integration`, or with `go test ./internal/integration` once Hermit is
-active. A failing test logs proctor's whole output.
+active.
 
 ## Editor configuration
 

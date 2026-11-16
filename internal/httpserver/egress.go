@@ -155,9 +155,9 @@ func egressDestinations(ctx context.Context, upstreams map[string]string, transp
 // cancelled or a server fails. Readiness turns true once the servers start.
 func (e *Egress) Serve(ctx context.Context, reference net.Listener, candidate net.Listener, probes net.Listener) error {
 	bindings := []Binding{
-		NewBinding(reference, e.referenceHandler),
-		NewBinding(candidate, e.candidateHandler),
-		NewBinding(probes, e.health),
+		NewBinding("reference-egress", reference, e.referenceHandler),
+		NewBinding("candidate-egress", candidate, e.candidateHandler),
+		NewBinding("egress-health", probes, e.health),
 	}
 	lifecycle := NewLifecycle(e.markReady, e.stop, e.drain)
 	return errors.Wrap(Serve(ctx, e.config, bindings, lifecycle), "serve egress")

@@ -50,13 +50,13 @@ test-launcher = exec.test {
   command = "spectre.test.sh"
   inputs = ["scripts/spectre", "scripts/spectre.test.sh"]
 }
-# Each test runs Procfile.integration with proctor, whose processes run the binaries that
-# the launcher builds, so their sources are inputs too. -count=1 stops go caching the result.
+# Each test runs dist/spectre as processes, which go cannot see, so -count=1 stops it
+# caching the result.
 test-integration(run = ".") = go.test {
   package = "./internal/integration"
   flags = ["-count=1", "-timeout=5m", "-run=#{run}"]
-  inputs = go-inputs + ["Procfile.integration", "scripts/spectre", "internal/**/*.ts", "internal/sample/testdata/*.json", "bin/proctor"]
-  depends_on = [spectre-bin, sample-bin, sample-forecasts-bin, sample-descriptors, sample-schema]
+  inputs = go-inputs + ["internal/**/*.ts", "internal/sample/testdata/*.json"]
+  depends_on = [spectre-bin, sample-descriptors, sample-schema]
 }
 test-release-version = exec.test {
   command = "release-version.test.sh"

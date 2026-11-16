@@ -409,7 +409,7 @@ func (i *Ingress) Shutdown(ctx context.Context) error {
 // Serve accepts ingress traffic until the context is cancelled or the server fails.
 // It rejects requests until both backends accept and the schema is configured.
 func (i *Ingress) Serve(ctx context.Context, listener net.Listener) error {
-	bindings := []Binding{NewBinding(listener, i)}
+	bindings := []Binding{NewBinding("ingress", listener, i)}
 	lifecycle := NewLifecycle(i.start, i.markUnready, i.Shutdown)
 	return errors.Wrap(Serve(ctx, i.config.Config, bindings, lifecycle), "serve ingress")
 }

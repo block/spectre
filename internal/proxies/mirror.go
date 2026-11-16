@@ -170,7 +170,7 @@ func (m *Mirror) startHealth(ctx context.Context) error {
 	healthContext := logger.WithSubsystem(ctx, "health")
 	lifecycle := httpserver.NewLifecycle(func(context.Context) {}, func() {}, func(context.Context) error { return nil })
 	m.serve(ctx, "health", func() {}, func() error {
-		return errors.Wrap(httpserver.Serve(healthContext, config, []httpserver.Binding{httpserver.NewBinding(listener, handler)}, lifecycle), "serve health")
+		return errors.Wrap(httpserver.Serve(healthContext, config, []httpserver.Binding{httpserver.NewBinding("health", listener, handler)}, lifecycle), "serve health")
 	})
 	return nil
 }

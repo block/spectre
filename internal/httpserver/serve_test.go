@@ -37,8 +37,8 @@ func TestServeShutsDownEveryListenerWhenOneFails(t *testing.T) {
 		},
 	)
 	bindings := []httpserver.Binding{
-		httpserver.NewBinding(first, namedHandler("first")),
-		httpserver.NewBinding(second, namedHandler("second")),
+		httpserver.NewBinding("first", first, namedHandler("first")),
+		httpserver.NewBinding("second", second, namedHandler("second")),
 	}
 	serveDone := make(chan error, 1)
 	go func() {
