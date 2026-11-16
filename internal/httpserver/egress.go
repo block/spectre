@@ -61,8 +61,7 @@ func NewEgress(
 		return nil, errors.New("transport is required")
 	}
 	candidateListen := netaddr.ParseListen(config.CandidateListen)
-	// Serve checks an inherited listener once it holds its address.
-	if !candidateListen.IsUnix() && !candidateListen.IsLoopback() && !candidateListen.IsInherited() {
+	if !candidateListen.IsUnix() && !candidateListen.IsLoopback() {
 		return nil, errors.New("candidate listener must use a loopback IP address or a unix socket")
 	}
 	listeners := []*netaddr.Endpoint{
@@ -155,9 +154,6 @@ func egressDestinations(ctx context.Context, upstreams map[string]string, transp
 // Serve accepts reference, candidate, and health traffic until the context is
 // cancelled or a server fails. Readiness turns true once the servers start.
 func (e *Egress) Serve(ctx context.Context, reference net.Listener, candidate net.Listener, probes net.Listener) error {
-	if !netaddr.IsLocal(candidate.Addr()) {
-		return errors.Errorf("candidate listener must use a loopback IP address or a unix socket, not %s", candidate.Addr())
-	}
 	bindings := []Binding{
 		NewBinding(reference, e.referenceHandler),
 		NewBinding(candidate, e.candidateHandler),

@@ -12,15 +12,18 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"testing"
 	"time"
 
 	"github.com/alecthomas/assert/v2"
 	"github.com/alecthomas/errors"
 
+	"github.com/block/spectre/internal/httpserver"
 	"github.com/block/spectre/internal/model"
+	"github.com/block/spectre/internal/proxies"
+	spectreserver "github.com/block/spectre/internal/server"
 	"github.com/block/spectre/internal/server/client"
+	"github.com/block/spectre/internal/state"
 )
 
 const (
@@ -57,8 +60,8 @@ type Mirror struct {
 	ScriptsDir     string
 	SchemaDir      string
 	DescriptorsDir string
-	// ProxyFlags are added to the proxy's command line.
-	ProxyFlags []string
+	// MatchWindow replaces the proxy's default when it is not zero.
+	MatchWindow time.Duration
 }
 
 // Running is a started mirror, which stops when its test ends. URLs are the
@@ -71,11 +74,11 @@ type Running struct {
 	watch              *watch
 }
 
-// Main builds the spectre binary and the given bit targets once, unless -short
-// skips the tests, then runs them. Call it from TestMain.
+// Main builds the given bit targets once, unless -short skips the tests, then
+// runs them. Call it from TestMain.
 func Main(m *testing.M, targets ...string) int {
 	flag.Parse()
-	if !testing.Short() {
+	if !testing.Short() && len(targets) > 0 {
 		if err := build(targets); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			return 1
@@ -84,55 +87,67 @@ func Main(m *testing.M, targets ...string) int {
 	return m.Run()
 }
 
-// Start serves the mirror's services on free ports, runs the SPECTRE server and
-// the proxy in front of them on free ports of their own, and waits until the proxy is ready.
+// Start serves the services, the SPECTRE server and the proxy on free ports in
+// the test process, and waits until the proxy is ready. They stop with the test.
 func Start(t *testing.T, mirror Mirror) *Running {
 	t.Helper()
 	if testing.Short() {
 		t.Skip("starts a whole mirror")
 	}
+	ctx := withLogs(t)
 	watch := newWatch()
-	reference, candidate := listen(t), listen(t)
-	dependencies := map[string]net.Listener{}
-	for host := range mirror.Dependencies {
-		dependencies[host] = listen(t)
-	}
 	server := listen(t)
 	serverURL := baseURL(server)
-	watch.start(t, "server", []net.Listener{server}, "serve", "--listen=fd:3")
+	watch.run(ctx, t, "server", func(ctx context.Context) error {
+		return errors.WithStack(spectreserver.ServeListener(ctx, spectreserver.NewServeConfig(), server))
+	})
 
-	// Each listener flag names the descriptor its listener is inherited as.
-	listenerFlags := []string{"listen", "reference-egress-listen", "candidate-egress-listen", "egress-health-listen", "health-listen"}
-	proxyListeners := make([]net.Listener, len(listenerFlags))
-	args := []string{
-		"proxy",
-		"--reference-url=h2c://" + reference.Addr().String(), "--candidate-url=h2c://" + candidate.Addr().String(),
-		"--server-url=" + serverURL, "--server-keepalive-interval=" + keepaliveInterval.String(),
-		"--service=integration", "--environment=integration", "--revision=candidate",
-	}
-	for i, name := range listenerFlags {
-		proxyListeners[i] = listen(t)
-		args = append(args, "--"+name+"=fd:"+strconv.Itoa(3+i))
-	}
-	ingress, referenceEgress, candidateEgress, health := proxyListeners[0], proxyListeners[1], proxyListeners[2], proxyListeners[4]
-	for host, listener := range dependencies {
-		args = append(args, "--destination="+host+"="+baseURL(listener))
-	}
-	args = append(append(args, directoryFlags(t, mirror)...), mirror.ProxyFlags...)
+	reference, candidate := listen(t), listen(t)
+	listeners := proxies.Listeners{Ingress: listen(t), ReferenceEgress: listen(t), CandidateEgress: listen(t), EgressHealth: listen(t), Health: listen(t)}
 	running := &Running{
-		IngressURL:         baseURL(ingress),
-		CandidateEgressURL: baseURL(candidateEgress),
+		IngressURL:         baseURL(listeners.Ingress),
+		CandidateEgressURL: baseURL(listeners.CandidateEgress),
 		client:             newClient(t),
 		server:             client.New(client.Config{URL: serverURL}),
 		watch:              watch,
 	}
-	healthURL := baseURL(health) + "/readyz"
-	serve(t, reference, mirror.Reference(egress(t, baseURL(referenceEgress))))
+	serve(t, reference, mirror.Reference(egress(t, baseURL(listeners.ReferenceEgress))))
 	serve(t, candidate, mirror.Candidate(egress(t, running.CandidateEgressURL)))
-	for host, listener := range dependencies {
-		serve(t, listener, mirror.Dependencies[host])
+	destinations := map[string]string{}
+	for host, handler := range mirror.Dependencies {
+		dependency := listen(t)
+		serve(t, dependency, handler)
+		destinations[host] = baseURL(dependency)
 	}
-	watch.start(t, "proxy", proxyListeners, args...)
+
+	config := proxies.ProxyConfig{
+		Listen:                listeners.Ingress.Addr().String(),
+		ReferenceURL:          "h2c://" + reference.Addr().String(),
+		CandidateURL:          "h2c://" + candidate.Addr().String(),
+		ReferenceEgressListen: listeners.ReferenceEgress.Addr().String(),
+		CandidateEgressListen: listeners.CandidateEgress.Addr().String(),
+		EgressHealthListen:    listeners.EgressHealth.Addr().String(),
+		HealthListen:          listeners.Health.Addr().String(),
+		Mirror:                proxies.NewConfig(),
+	}
+	config.Mirror.Destinations = destinations
+	config.Mirror.ScriptsDir = mirror.ScriptsDir
+	config.Mirror.SchemaDir = mirror.SchemaDir
+	config.Mirror.Descriptors.DescriptorsDir = mirror.DescriptorsDir
+	if mirror.MatchWindow != 0 {
+		config.Mirror.MatchWindow = mirror.MatchWindow
+	}
+	config.Mirror.Server.Client.URL = serverURL
+	config.Mirror.Server.KeepaliveInterval = keepaliveInterval
+	config.Mirror.Server.Service, config.Mirror.Server.Environment, config.Mirror.Server.Revision = "integration", "integration", "candidate"
+	catalog, err := state.NewCatalog(httpserver.Supports()...)
+	assert.NoError(t, err)
+	proxy, err := proxies.New(ctx, config, catalog)
+	assert.NoError(t, err)
+	assert.NoError(t, proxy.StartListeners(ctx, listeners))
+	watch.run(ctx, t, "proxy", func(ctx context.Context) error { return proxy.Wait(ctx) })
+
+	healthURL := baseURL(listeners.Health) + "/readyz"
 	watch.await(t, startTimeout, "the proxy to be ready", func() bool {
 		return running.ready(t, healthURL)
 	})
@@ -229,29 +244,33 @@ func (r *Running) ready(t *testing.T, url string) bool {
 	return response.StatusCode == http.StatusNoContent
 }
 
-// watch tracks a mirror's processes, so that waiting fails as soon as one exits.
+// watch tracks the server and proxy, so that waiting fails as soon as one stops.
 type watch struct {
-	processes []*process
+	components []*component
 }
 
 func newWatch() *watch {
 	return &watch{}
 }
 
-func (w *watch) start(t *testing.T, name string, listeners []net.Listener, args ...string) {
+// run runs a component until the test ends, and waits for it to stop.
+func (w *watch) run(ctx context.Context, t *testing.T, name string, run func(ctx context.Context) error) {
 	t.Helper()
-	w.processes = append(w.processes, startProcess(t, name, listeners, args...))
+	c := newComponent(name)
+	go c.run(ctx, run)
+	t.Cleanup(c.wait)
+	w.components = append(w.components, c)
 }
 
 // await polls done until it holds, failing the test on timeout or when a
-// process exits. The interval between polls doubles up to maxPollInterval.
+// component stops. The interval between polls doubles up to maxPollInterval.
 func (w *watch) await(t *testing.T, timeout time.Duration, what string, done func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	interval := minPollInterval
 	for !done() {
-		for _, p := range w.processes {
-			if err := p.failure(); err != nil {
+		for _, c := range w.components {
+			if err := c.failure(); err != nil {
 				t.Fatalf("%v while waiting for %s", err, what)
 			}
 		}
@@ -261,21 +280,6 @@ func (w *watch) await(t *testing.T, timeout time.Duration, what string, done fun
 		time.Sleep(min(interval, time.Until(deadline)))
 		interval = min(2*interval, maxPollInterval)
 	}
-}
-
-// directoryFlags passes the mirror's directories to the proxy as absolute paths.
-func directoryFlags(t *testing.T, mirror Mirror) []string {
-	t.Helper()
-	flags := []string{}
-	for flag, dir := range map[string]string{"scripts-dir": mirror.ScriptsDir, "schema-dir": mirror.SchemaDir, "descriptors-dir": mirror.DescriptorsDir} {
-		if dir == "" {
-			continue
-		}
-		absolute, err := filepath.Abs(dir)
-		assert.NoError(t, err)
-		flags = append(flags, "--"+flag+"="+absolute)
-	}
-	return flags
 }
 
 // listen opens a listener on a free loopback port, closed when the test ends.
@@ -327,14 +331,14 @@ func newClient(t *testing.T) *http.Client {
 	return &http.Client{Transport: transport, Timeout: requestTimeout}
 }
 
-// build runs bit in the repository root for the spectre binary and targets.
+// build runs bit in the repository root for targets.
 func build(targets []string) error {
 	root := repositoryRoot()
-	command := exec.CommandContext(context.Background(), filepath.Join(root, "bin", "bit"), append([]string{"-q", "spectre-bin"}, targets...)...)
+	command := exec.CommandContext(context.Background(), filepath.Join(root, "bin", "bit"), append([]string{"-q"}, targets...)...)
 	command.Dir = root
 	command.Stdout = os.Stderr
 	command.Stderr = os.Stderr
-	return errors.Wrap(command.Run(), "build spectre")
+	return errors.Wrap(command.Run(), "build the test's dependencies")
 }
 
 // repositoryRoot finds the root from this file's path, two directories down.

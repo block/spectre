@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"connectrpc.com/connect/v2"
 	"connectrpc.com/connect/v2/connecthttp"
@@ -57,7 +58,7 @@ func startSampleMirror(t *testing.T) sampleMirror {
 		ScriptsDir:     "../sample/scripts",
 		SchemaDir:      "../sample/schema",
 		DescriptorsDir: "../../dist/descriptors",
-		ProxyFlags:     []string{"--match-window=1s"},
+		MatchWindow:    time.Second,
 	})
 	return m
 }

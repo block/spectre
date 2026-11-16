@@ -133,9 +133,15 @@ func Serve(ctx context.Context, config ServeConfig) error {
 	if err != nil {
 		return errors.Wrap(err, "listen for SPECTRE server requests")
 	}
+	return ServeListener(ctx, config, listener)
+}
+
+// ServeListener runs a SPECTRE server on listener, ignoring the configured
+// address, until ctx is cancelled. It closes listener.
+func ServeListener(ctx context.Context, config ServeConfig, listener net.Listener) error {
 	store, err := storage.Open(ctx, config.Storage)
 	if err != nil {
-		return errors.Wrap(err, "open state storage")
+		return errors.Join(errors.Wrap(err, "open state storage"), listener.Close())
 	}
 	defer store.Close()
 	handler := health.New(logging.New(NewService(store, config.StateTTL).Handler(), logger.EventReceived))

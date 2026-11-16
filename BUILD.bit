@@ -50,13 +50,13 @@ test-launcher = exec.test {
   command = "spectre.test.sh"
   inputs = ["scripts/spectre", "scripts/spectre.test.sh"]
 }
-# Each test runs dist/spectre as processes, which go cannot see, so -count=1 stops it
-# caching the result.
+# The tests read the sample's scripts, schema and descriptors, which go cannot see, so
+# -count=1 stops it caching the result.
 test-integration(run = ".") = go.test {
   package = "./internal/integration"
   flags = ["-count=1", "-timeout=5m", "-run=#{run}"]
   inputs = go-inputs + ["internal/**/*.ts", "internal/sample/testdata/*.json"]
-  depends_on = [spectre-bin, sample-descriptors, sample-schema]
+  depends_on = [sample-descriptors, sample-schema, typescript-compiler]
 }
 test-release-version = exec.test {
   command = "release-version.test.sh"

@@ -74,8 +74,7 @@ descriptors-dir = "spectre/descriptors"
 ### Addresses
 
 Flags that listen take `host:port`, or `unix:<path>` for a unix socket. On Linux,
-`unix:@<name>` is an abstract socket. `fd:<n>` takes over a listening socket
-that SPECTRE inherits as file descriptor `n` from the process that starts it.
+`unix:@<name>` is an abstract socket.
 
 Flags that name a service take a URL with one of these schemes:
 
