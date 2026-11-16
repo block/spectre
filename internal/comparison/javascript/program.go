@@ -31,14 +31,14 @@ const (
 // Program is one immutable set of scripts, shared by all payload normalisations.
 // It retains no runtime-local callback state.
 type Program struct {
-	schema      *schema.Schema
-	entry       *sobek.SourceTextModuleRecord
-	spectre     *spectreModule
-	endpoints   []Endpoint
-	rules       []Rule
-	derivations []Derivation
-	fields      []FieldTarget
-	messages    []schema.TypeRef
+	schema       *schema.Schema
+	entry        *sobek.SourceTextModuleRecord
+	spectre      *spectreModule
+	endpoints    []Endpoint
+	rules        []Rule
+	replacements []Replacement
+	fields       []FieldTarget
+	messages     []schema.TypeRef
 }
 
 // NewProgram type-checks scripts against the schema declarations with their variables, links
@@ -72,14 +72,14 @@ func NewProgram(ctx context.Context, evaluationTimeout time.Duration, declaratio
 	}
 	defer evaluator.Close()
 	return &Program{
-		schema:      checked.schema,
-		entry:       module,
-		spectre:     loader.spectreModule(),
-		endpoints:   registered.endpoints,
-		rules:       registered.rules,
-		derivations: registered.derivations,
-		fields:      registered.fields,
-		messages:    registered.messages,
+		schema:       checked.schema,
+		entry:        module,
+		spectre:      loader.spectreModule(),
+		endpoints:    registered.endpoints,
+		rules:        registered.rules,
+		replacements: registered.replacements,
+		fields:       registered.fields,
+		messages:     registered.messages,
 	}, nil
 }
 
@@ -131,9 +131,9 @@ func (p *Program) Rules() []Rule {
 	return slices.Clone(p.rules)
 }
 
-// Derivations returns the egress derivations in declaration order.
-func (p *Program) Derivations() []Derivation {
-	return slices.Clone(p.derivations)
+// Replacements returns the egress replacements in declaration order.
+func (p *Program) Replacements() []Replacement {
+	return slices.Clone(p.replacements)
 }
 
 // Fields returns the declared type names and JSON field paths, sorted by type then path.
@@ -155,7 +155,7 @@ func (p *Program) NewEvaluator(ctx context.Context) (*Evaluator, error) {
 	}
 	if !slices.Equal(registered.endpoints, p.endpoints) ||
 		!reflect.DeepEqual(registered.rules, p.rules) ||
-		!slices.Equal(registered.derivations, p.derivations) ||
+		!slices.Equal(registered.replacements, p.replacements) ||
 		!slices.Equal(registered.fields, p.fields) ||
 		!slices.Equal(registered.messages, p.messages) {
 		evaluator.Close()

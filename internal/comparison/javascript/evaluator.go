@@ -188,26 +188,26 @@ func (e *Evaluator) NormaliseResponse(rule Rule, response any) (Option[any], err
 	return e.normalise(callback, Some(response))
 }
 
-// DeriveRequest maps a request to a derived endpoint to the source request it pairs with.
-func (e *Evaluator) DeriveRequest(derivation Derivation, request any) (any, error) {
-	callbacks, ok := e.registry.deriver(derivation.Index())
+// ReplaceRequest maps a request to a replacing endpoint to the source request it pairs with.
+func (e *Evaluator) ReplaceRequest(replacement Replacement, request any) (any, error) {
+	callbacks, ok := e.registry.replacer(replacement.Index())
 	if !ok {
-		return nil, errors.Errorf("JavaScript request function of %s is unavailable", derivation)
+		return nil, errors.Errorf("JavaScript request function of %s is unavailable", replacement)
 	}
-	return e.derive(derivation, "request", callbacks.request, request)
+	return e.replace(replacement, "request", callbacks.request, request)
 }
 
-// DeriveResponse builds the answer to a request to a derived endpoint from a
+// ReplaceResponse builds the answer to a request to a replacing endpoint from a
 // reference response to its source.
-func (e *Evaluator) DeriveResponse(derivation Derivation, request, reference any) (any, error) {
-	callbacks, ok := e.registry.deriver(derivation.Index())
+func (e *Evaluator) ReplaceResponse(replacement Replacement, request, reference any) (any, error) {
+	callbacks, ok := e.registry.replacer(replacement.Index())
 	if !ok {
-		return nil, errors.Errorf("JavaScript response function of %s is unavailable", derivation)
+		return nil, errors.Errorf("JavaScript response function of %s is unavailable", replacement)
 	}
-	return e.derive(derivation, "response", callbacks.response, request, reference)
+	return e.replace(replacement, "response", callbacks.response, request, reference)
 }
 
-func (e *Evaluator) derive(derivation Derivation, function string, callback sobek.Callable, values ...any) (any, error) {
+func (e *Evaluator) replace(replacement Replacement, function string, callback sobek.Callable, values ...any) (any, error) {
 	arguments := make([]sobek.Value, 0, len(values))
 	for _, value := range values {
 		argument, err := e.argument(Some(value))
@@ -218,13 +218,13 @@ func (e *Evaluator) derive(derivation Derivation, function string, callback sobe
 	}
 	result, err := callback(sobek.Undefined(), arguments...)
 	if err != nil {
-		return nil, errors.Errorf("JavaScript %s function of %s threw an exception", function, derivation)
+		return nil, errors.Errorf("JavaScript %s function of %s threw an exception", function, replacement)
 	}
 	if sobek.IsUndefined(result) {
-		return nil, errors.Errorf("JavaScript %s function of %s returned undefined", function, derivation)
+		return nil, errors.Errorf("JavaScript %s function of %s returned undefined", function, replacement)
 	}
-	derived, err := e.result(result)
-	return derived, errors.Wrapf(err, "%s function of %s", function, derivation)
+	value, err := e.result(result)
+	return value, errors.Wrapf(err, "%s function of %s", function, replacement)
 }
 
 // normalise returns an undefined result as None so callers can remove the node.

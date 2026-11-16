@@ -97,21 +97,20 @@ declare module "spectre" {
     /** Decodes the selected requests' bodies as T. */
     match<T extends object>(): void;
     /**
-     * Decodes the selected requests' bodies as T and answers the candidate's with an R built from a
-     * reference response to another endpoint, instead of pairing them with the reference's own requests.
+     * Declares that the candidate's requests to this endpoint replace the reference's requests to the
+     * source endpoint, which must be declared with match<S>(), and decodes the source's responses as U.
      */
-    derive<T extends object, R extends object>(): EgressDerivation<T, R>;
+    replaces<S extends object, U extends object>(source: string): EgressReplacement<S, U>;
   }
-  /** Builds the responses to a derived endpoint from the reference's requests to a source endpoint. */
-  export interface EgressDerivation<T, R> {
+  /** Translates between a replacing endpoint and the source endpoint it replaces. */
+  export interface EgressReplacement<S, U> {
     /**
-     * Names the source endpoint, which must be declared with match<S>(), and decodes its responses as U.
-     * request maps a candidate request to the source request it pairs with, as match pairs requests;
-     * response builds the answer from the candidate request and the paired reference response. Pairing
-     * never claims the reference request, so it still pairs with a candidate request to the source.
+     * Decodes the selected requests' bodies as T and answers them with an R. request maps a candidate
+     * request to the source request it pairs with, as match pairs requests; response builds the answer
+     * from the candidate request and the paired reference response. Pairing never claims the reference
+     * request, so it still pairs with a candidate request to the source.
      */
-    from<S extends object, U extends object>(
-      pattern: string,
+    using<T extends object, R extends object>(
       request: (request: T) => S,
       response: (request: T, reference: U) => R,
     ): void;

@@ -265,32 +265,32 @@ without a match gets a `502` and stops all later candidate calls until the proce
 restarts. Ingress then quarantines the candidate when its responses diverge.
 
 When the candidate asks a dependency for data the reference read from another of
-its endpoints, `derive` answers the candidate from the reference's response
-instead. The source endpoint must be declared with `match`. `request` maps the
-candidate's request to the source request it pairs with, and `response` builds
-the answer from the paired reference response. Deriving never claims the source
-reference, so a candidate call to the source still pairs with it:
+its endpoints, declare that the candidate's call `replaces` the reference's call
+to that source endpoint. The candidate is then answered from the reference's
+response. The source endpoint must be declared with `match`. `using` takes two
+functions: `request` maps the candidate's request to the source request it pairs
+with, and `response` builds the answer from the paired reference response.
+Replacing never claims the source reference, so a candidate call to the source
+still pairs with it:
 
 ```ts
 import { egress } from "spectre";
 import type { GetUserRequest, GetUserResponse, ListUsersRequest, ListUsersResponse } from "users";
 
-const list = "POST users.example/users.UserService/ListUsers";
-egress.http(list).match<ListUsersRequest>();
+egress.http("POST users.example/users.UserService/ListUsers").match<ListUsersRequest>();
 egress
   .http("POST users.example/users.UserService/GetUser")
-  .derive<GetUserRequest, GetUserResponse>()
-  .from<ListUsersRequest, ListUsersResponse>(
-    list,
+  .replaces<ListUsersRequest, ListUsersResponse>("POST users.example/users.UserService/ListUsers")
+  .using<GetUserRequest, GetUserResponse>(
     (request) => ({ ids: [request.id] }),
     (request, reference) => ({ user: reference.users.find((user) => user.id === request.id) }),
   );
 ```
 
-Every candidate call to a derived endpoint is answered this way, as bare
+Every candidate call to a replacing endpoint is answered this way, as bare
 protobuf or HTTP JSON in the request's format. One with no matching source
 reference within `--match-window` gets a `502` and quarantines the candidate, as
-does one whose source reference failed or did not succeed. Derive only from
+does one whose source reference failed or did not succeed. Replace only
 read-only endpoints, because the candidate's call is never sent.
 
 ### Quarantine

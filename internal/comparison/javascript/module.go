@@ -84,11 +84,11 @@ func (t FieldTarget) String() string {
 
 // registrations are the declarations one evaluation of a program produced.
 type registrations struct {
-	endpoints   []Endpoint
-	rules       []Rule
-	derivations []Derivation
-	fields      []FieldTarget
-	messages    []schema.TypeRef
+	endpoints    []Endpoint
+	rules        []Rule
+	replacements []Replacement
+	fields       []FieldTarget
+	messages     []schema.TypeRef
 }
 
 // spectreModule is an immutable module record shared safely across isolated runtimes.
@@ -139,11 +139,11 @@ type callbackRegistry struct {
 	endpoints []Endpoint
 	rules     []Rule
 	callbacks []ruleCallbacks
-	// derivations and derivers are indexed alike.
-	derivations []Derivation
-	derivers    []deriverCallbacks
-	fields      map[FieldTarget]sobek.Callable
-	messages    map[schema.TypeRef]sobek.Callable
+	// replacements and replacers are indexed alike.
+	replacements []Replacement
+	replacers    []replacementCallbacks
+	fields       map[FieldTarget]sobek.Callable
+	messages     map[schema.TypeRef]sobek.Callable
 }
 
 // ruleCallbacks are the script functions of one rule, indexed like the rules.
@@ -156,8 +156,8 @@ type ruleCallbacks struct {
 	normalise       Option[sobek.Callable]
 }
 
-// deriverCallbacks are the script functions of one derivation.
-type deriverCallbacks struct {
+// replacementCallbacks are the script functions of one replacement.
+type replacementCallbacks struct {
 	request  sobek.Callable
 	response sobek.Callable
 }
@@ -207,9 +207,9 @@ const (
 	// requestHeaderMethod and responseHeaderMethod select by a header's value.
 	requestHeaderMethod  = "requestHeader"
 	responseHeaderMethod = "responseHeader"
-	// deriveMethod and fromMethod declare a derivation; each takes two type arguments.
-	deriveMethod = "derive"
-	fromMethod   = "from"
+	// replacesMethod and usingMethod declare a replacement; each takes two type arguments.
+	replacesMethod = "replaces"
+	usingMethod    = "using"
 	// textTypeName is the type name compile inserts for the spectre Text type.
 	textTypeName = "spectre.Text"
 	// variableFunction reads a script variable and takes no type arguments.
@@ -238,43 +238,43 @@ func (r *callbackRegistry) egressRule(call sobek.FunctionCall) sobek.Value {
 		r.matchEndpoint(pattern, call)
 		return sobek.Undefined()
 	})
-	r.defineMethod(object, "EgressHTTPRule."+deriveMethod, deriveMethod, func(call sobek.FunctionCall) sobek.Value {
-		return r.derivationObject(pattern, call)
+	r.defineMethod(object, "EgressHTTPRule."+replacesMethod, replacesMethod, func(call sobek.FunctionCall) sobek.Value {
+		return r.replacementObject(pattern, call)
 	})
 	return object
 }
 
-// derivationObject receives the request and response type names compile inserts.
-func (r *callbackRegistry) derivationObject(pattern string, call sobek.FunctionCall) sobek.Value {
-	const qualified = "EgressHTTPRule." + deriveMethod
-	if len(call.Arguments) != 2 {
-		panic(r.runtime.NewTypeError("spectre.%s requires request and response type names", qualified))
+// replacementObject receives the source type names compile inserts before the source pattern.
+func (r *callbackRegistry) replacementObject(pattern string, call sobek.FunctionCall) sobek.Value {
+	const qualified = "EgressHTTPRule." + replacesMethod
+	if len(call.Arguments) != 3 {
+		panic(r.runtime.NewTypeError("spectre.%s requires a source pattern", qualified))
 	}
-	request := schema.TypeRef(r.stringArgument(call, 0, qualified, "request type name"))
-	response := schema.TypeRef(r.stringArgument(call, 1, qualified, "response type name"))
+	sourceRequest := schema.TypeRef(r.stringArgument(call, 0, qualified, "source request type name"))
+	sourceResponse := schema.TypeRef(r.stringArgument(call, 1, qualified, "source response type name"))
+	source := r.stringArgument(call, 2, qualified, "source pattern")
 	object := r.runtime.NewObject()
-	r.defineMethod(object, "EgressDerivation."+fromMethod, fromMethod, func(call sobek.FunctionCall) sobek.Value {
-		r.deriveFrom(pattern, request, response, call)
+	r.defineMethod(object, "EgressReplacement."+usingMethod, usingMethod, func(call sobek.FunctionCall) sobek.Value {
+		r.replaceUsing(pattern, source, sourceRequest, sourceResponse, call)
 		return sobek.Undefined()
 	})
 	return object
 }
 
-// deriveFrom receives the source type names compile inserts before the source
-// pattern and the two functions.
-func (r *callbackRegistry) deriveFrom(pattern string, request, response schema.TypeRef, call sobek.FunctionCall) {
-	const qualified = "EgressDerivation." + fromMethod
-	if len(call.Arguments) != 5 {
-		panic(r.runtime.NewTypeError("spectre.%s requires a source pattern, a request function, and a response function", qualified))
+// replaceUsing receives the request and response type names compile inserts
+// before the two functions.
+func (r *callbackRegistry) replaceUsing(pattern, source string, sourceRequest, sourceResponse schema.TypeRef, call sobek.FunctionCall) {
+	const qualified = "EgressReplacement." + usingMethod
+	if len(call.Arguments) != 4 {
+		panic(r.runtime.NewTypeError("spectre.%s requires a request function and a response function", qualified))
 	}
-	sourceRequest := schema.TypeRef(r.stringArgument(call, 0, qualified, "source request type name"))
-	sourceResponse := schema.TypeRef(r.stringArgument(call, 1, qualified, "source response type name"))
-	source := r.stringArgument(call, 2, qualified, "pattern")
-	requestFunction, ok := sobek.AssertFunction(call.Argument(3))
+	request := schema.TypeRef(r.stringArgument(call, 0, qualified, "request type name"))
+	response := schema.TypeRef(r.stringArgument(call, 1, qualified, "response type name"))
+	requestFunction, ok := sobek.AssertFunction(call.Argument(2))
 	if !ok {
 		panic(r.runtime.NewTypeError("spectre.%s request must be a function", qualified))
 	}
-	responseFunction, ok := sobek.AssertFunction(call.Argument(4))
+	responseFunction, ok := sobek.AssertFunction(call.Argument(3))
 	if !ok {
 		panic(r.runtime.NewTypeError("spectre.%s response must be a function", qualified))
 	}
@@ -282,8 +282,8 @@ func (r *callbackRegistry) deriveFrom(pattern string, request, response schema.T
 		panic(r.runtime.NewTypeError("duplicate endpoint %q", pattern))
 	}
 	r.endpoints = append(r.endpoints, newEndpoint(model.Egress, model.ProtocolHTTP, pattern, request))
-	r.derivations = append(r.derivations, newDerivation(len(r.derivations), pattern, response, source, sourceRequest, sourceResponse))
-	r.derivers = append(r.derivers, deriverCallbacks{request: requestFunction, response: responseFunction})
+	r.replacements = append(r.replacements, newReplacement(len(r.replacements), pattern, response, source, sourceRequest, sourceResponse))
+	r.replacers = append(r.replacers, replacementCallbacks{request: requestFunction, response: responseFunction})
 }
 
 // matchEndpoint receives the type name compile inserts.
@@ -522,12 +522,12 @@ func (r *callbackRegistry) message(typeName schema.TypeRef) (sobek.Callable, boo
 	return callback, ok
 }
 
-// deriver returns the callbacks of the derivation at index.
-func (r *callbackRegistry) deriver(index int) (deriverCallbacks, bool) {
-	if index < 0 || index >= len(r.derivers) {
-		return deriverCallbacks{}, false
+// replacer returns the callbacks of the replacement at index.
+func (r *callbackRegistry) replacer(index int) (replacementCallbacks, bool) {
+	if index < 0 || index >= len(r.replacers) {
+		return replacementCallbacks{}, false
 	}
-	return r.derivers[index], true
+	return r.replacers[index], true
 }
 
 // rule returns the callbacks of the rule at index, or none for an unknown rule.
@@ -551,7 +551,7 @@ func (r *callbackRegistry) registrations() registrations {
 	})
 	messages := slices.Sorted(maps.Keys(r.messages))
 	return registrations{
-		endpoints: slices.Clone(r.endpoints), rules: slices.Clone(r.rules), derivations: slices.Clone(r.derivations),
+		endpoints: slices.Clone(r.endpoints), rules: slices.Clone(r.rules), replacements: slices.Clone(r.replacements),
 		fields: fields, messages: messages,
 	}
 }

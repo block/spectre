@@ -241,7 +241,7 @@ func (e *Egress) serveReference(writer http.ResponseWriter, request *http.Reques
 	e.referencePoint.respond(writer, outbound, decision, upstream, e.sourceDecode(request, route))
 }
 
-// sourceDecode decodes the reference responses that derivations read, and no others.
+// sourceDecode decodes the reference responses that replacements read, and no others.
 func (e *Egress) sourceDecode(request *http.Request, route model.Route) decodeFunc {
 	name, source := e.engine.EgressSourceResponse(model.ProtocolHTTP, route).Get()
 	if !source {
@@ -334,7 +334,7 @@ func (e *Egress) serveCandidate(writer http.ResponseWriter, request *http.Reques
 	e.candidatePoint.respond(writer, request, decision, None[*httputil.ReverseProxy](), noDecode)
 }
 
-// answer writes a derived response. One that cannot be encoded quarantines the
+// answer writes a replacement response. One that cannot be encoded quarantines the
 // candidate, because the candidate would otherwise see a response the reference never could.
 func (e *Egress) answer(writer http.ResponseWriter, request *http.Request, route model.Route, answer protocol.Message) {
 	encoded, err := e.decoder.Answer(request.Header, answer)
@@ -342,16 +342,16 @@ func (e *Egress) answer(writer http.ResponseWriter, request *http.Request, route
 		e.candidates.Quarantine(request.Context(), model.QuarantineReason{
 			Kind:    model.QuarantineUnable,
 			Traffic: Some(model.Traffic{Direction: model.Egress, Protocol: model.ProtocolHTTP, Route: route}),
-			Detail:  errors.Wrap(err, "encode derived response").Error(),
+			Detail:  errors.Wrap(err, "encode replacement response").Error(),
 		})
-		http.Error(writer, "derived response cannot be encoded", http.StatusBadGateway)
+		http.Error(writer, "replacement response cannot be encoded", http.StatusBadGateway)
 		return
 	}
 	maps.Copy(writer.Header(), encoded.Header)
 	writer.Header().Set("Content-Length", strconv.Itoa(len(encoded.Body)))
 	writer.WriteHeader(http.StatusOK)
 	if _, err := writer.Write(encoded.Body); err != nil {
-		logger.FromContext(request.Context()).WarnContext(request.Context(), "Derived response was not written", "error", err)
+		logger.FromContext(request.Context()).WarnContext(request.Context(), "Replacement response was not written", "error", err)
 	}
 }
 

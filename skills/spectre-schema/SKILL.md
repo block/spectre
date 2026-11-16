@@ -28,8 +28,8 @@ Keep it out of `spectre/schema/`, which cannot redeclare the module.
   so egress can pair the candidate's call with the reference's. Keep one script
   per dependency.
 - When the candidate reads, from one read-only endpoint, data that the reference
-  read from another, answer it with
-  `egress.http(pattern).derive<Request, Response>().from<SourceRequest, SourceResponse>(source, request, response)`.
+  read from another, declare that the call replaces the reference's with
+  `egress.http(pattern).replaces<SourceRequest, SourceResponse>(source).using<Request, Response>(request, response)`.
   `request` maps the candidate's request to the source request it pairs with, and
   `response` builds the answer from the reference's source response.
 - Read hosts that differ between environments with `variable("NAME")` from

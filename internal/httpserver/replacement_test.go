@@ -23,7 +23,7 @@ const (
 	getUser   = "/spectre.sample.v1.UserService/GetUser"
 )
 
-func TestAnswersDerivedRequestFromSourceReference(t *testing.T) {
+func TestAnswersReplacingRequestFromSourceReference(t *testing.T) {
 	var calls atomic.Int32
 	upstream := newUpstream(t, func(writer http.ResponseWriter, request *http.Request) {
 		calls.Add(1)
@@ -36,7 +36,7 @@ func TestAnswersDerivedRequestFromSourceReference(t *testing.T) {
 		writer.Header().Set("Content-Type", "application/x-protobuf")
 		_, _ = writer.Write(body)
 	})
-	harness := newDerivingHarness(t, upstream)
+	harness := newReplacingHarness(t, upstream)
 	harness.Start(t)
 
 	reference := sendProto(t, harness.Reference.Addr().String(), listUsers, &samplepb.ListUsersRequest{Ids: []string{"bob"}})
@@ -61,11 +61,11 @@ func TestAnswersDerivedRequestFromSourceReference(t *testing.T) {
 	assert.Equal(t, reference.Body, source.Body)
 }
 
-func TestQuarantinesUnanswerableDerivedRequest(t *testing.T) {
+func TestQuarantinesUnanswerableReplacingRequest(t *testing.T) {
 	upstream := newUpstream(t, func(writer http.ResponseWriter, _ *http.Request) {
 		writer.WriteHeader(http.StatusServiceUnavailable)
 	})
-	harness := newDerivingHarness(t, upstream)
+	harness := newReplacingHarness(t, upstream)
 	harness.Start(t)
 
 	sendProto(t, harness.Reference.Addr().String(), listUsers, &samplepb.ListUsersRequest{Ids: []string{"bob"}})
@@ -75,14 +75,14 @@ func TestQuarantinesUnanswerableDerivedRequest(t *testing.T) {
 	assert.Contains(t, harness.QuarantineReason(t), "decode source reference response: response has status 503")
 }
 
-func TestQuarantinesDerivedRequestWhenDecodedSourceExceedsBudget(t *testing.T) {
+func TestQuarantinesReplacingRequestWhenDecodedSourceExceedsBudget(t *testing.T) {
 	body, err := proto.Marshal(&samplepb.ListUsersResponse{Users: []*samplepb.User{{Id: "bob", Name: "Bob"}}, TotalCount: 1})
 	assert.NoError(t, err)
 	upstream := newUpstream(t, func(writer http.ResponseWriter, _ *http.Request) {
 		writer.Header().Set("Content-Type", "application/x-protobuf")
 		_, _ = writer.Write(body)
 	})
-	harness := newDerivingHarness(t, upstream)
+	harness := newReplacingHarness(t, upstream)
 	// The recording fits, but a decoded copy of it does not.
 	harness.Config.RecordingBufferBytes = len(body)
 	harness.Start(t)
@@ -95,8 +95,8 @@ func TestQuarantinesDerivedRequestWhenDecodedSourceExceedsBudget(t *testing.T) {
 	assert.Contains(t, harness.QuarantineReason(t), "decoded response exceeds the")
 }
 
-// newDerivingHarness answers GetUser from ListUsers references.
-func newDerivingHarness(t *testing.T, upstream string) *harness {
+// newReplacingHarness answers GetUser from ListUsers references.
+func newReplacingHarness(t *testing.T, upstream string) *harness {
 	t.Helper()
 	harness := newHarness(t, upstream)
 	harness.Config.Destinations = map[string]string{usersHost: upstream}
@@ -111,12 +111,10 @@ func newDerivingHarness(t *testing.T, upstream string) *harness {
 	assert.NoError(t, os.WriteFile(filepath.Join(scripts, "users.ts"), []byte(`
 import * as spectre from "spectre";
 import type { GetUserRequest, GetUserResponse, ListUsersRequest, ListUsersResponse } from "spectre.sample.v1";
-const list = "POST `+usersHost+listUsers+`";
-spectre.egress.http(list).match<ListUsersRequest>();
+spectre.egress.http("POST `+usersHost+listUsers+`").match<ListUsersRequest>();
 spectre.egress.http("POST `+usersHost+getUser+`")
-  .derive<GetUserRequest, GetUserResponse>()
-  .from<ListUsersRequest, ListUsersResponse>(
-    list,
+  .replaces<ListUsersRequest, ListUsersResponse>("POST `+usersHost+listUsers+`")
+  .using<GetUserRequest, GetUserResponse>(
     (request) => ({ ids: [request.id] }),
     (request, reference) => ({ user: reference.users.find((user) => user.id === request.id) }),
   );

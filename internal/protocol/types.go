@@ -85,7 +85,7 @@ type Response struct {
 	// Latency is the time to the first response byte, or zero if unmeasured.
 	Latency time.Duration
 	// Decode is called to compare, on the candidate's time rather than the reference's,
-	// or when a derivation's source response finishes. The engine still holds Raw.
+	// or when a replacement's source response finishes. The engine still holds Raw.
 	Decode func(ctx context.Context) Content
 }
 
