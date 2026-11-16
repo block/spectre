@@ -32,6 +32,10 @@ Keep it out of `spectre/schema/`, which cannot redeclare the module.
   `egress.http(pattern).replaces<SourceRequest, SourceResponse>(source).using<Request, Response>(request, response)`.
   `request` maps the candidate's request to the source request it pairs with, and
   `response` builds the answer from the reference's source response.
+- When the candidate may legitimately skip a call the reference makes, such as
+  one whose data it already has, mark the endpoint
+  `egress.http(pattern).optional().match<Request>()`. A reference call no
+  candidate call matches then does not quarantine.
 - Read hosts that differ between environments with `variable("NAME")` from
   `spectre`, such as `` `GET users.${variable("environment")}.example/v1/users` ``,
   and pass each value with `--script-variable=NAME=VALUE`.

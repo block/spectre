@@ -29,10 +29,11 @@ type Endpoint struct {
 	protocol  model.Protocol
 	pattern   string
 	typeName  schema.TypeRef
+	optional  bool
 }
 
-func newEndpoint(direction model.Direction, protocol model.Protocol, pattern string, typeName schema.TypeRef) Endpoint {
-	return Endpoint{direction: direction, protocol: protocol, pattern: pattern, typeName: typeName}
+func newEndpoint(direction model.Direction, protocol model.Protocol, pattern string, typeName schema.TypeRef, optional bool) Endpoint {
+	return Endpoint{direction: direction, protocol: protocol, pattern: pattern, typeName: typeName, optional: optional}
 }
 
 // Direction returns the proxy that uses the endpoint.
@@ -53,6 +54,11 @@ func (e Endpoint) Pattern() string {
 // Type returns the fully qualified name of the endpoint's payload type.
 func (e Endpoint) Type() schema.TypeRef {
 	return e.typeName
+}
+
+// Optional reports whether the candidate may leave out the reference's requests to the endpoint.
+func (e Endpoint) Optional() bool {
+	return e.optional
 }
 
 // FieldTarget identifies a JSON field path relative to an explicitly named type.
@@ -198,12 +204,14 @@ func (r *callbackRegistry) variable(variables map[string]string) func(sobek.Func
 	}
 }
 
-// matchMethod, ignoreMethod, statusMethod, and the header methods name the script API's methods
-// whose type arguments, or lack of them, compile treats specially.
+// matchMethod, ignoreMethod, statusMethod, optionalMethod, and the header methods name the script
+// API's methods whose type arguments, or lack of them, compile treats specially.
 const (
 	matchMethod  = "match"
 	ignoreMethod = "ignore"
 	statusMethod = "status"
+	// optionalMethod lets the candidate leave out an egress endpoint's reference requests.
+	optionalMethod = "optional"
 	// requestHeaderMethod and responseHeaderMethod select by a header's value.
 	requestHeaderMethod  = "requestHeader"
 	responseHeaderMethod = "responseHeader"
@@ -233,19 +241,30 @@ func (r *callbackRegistry) egressRule(call sobek.FunctionCall) sobek.Value {
 	if !hasForm(pattern, true) {
 		panic(r.runtime.NewTypeError("spectre.%s pattern %q must have the form \"<METHOD> <host>/<path>\"", qualified, pattern))
 	}
+	return r.egressRuleObject(pattern, false)
+}
+
+// egressRuleObject is an egress rule for pattern whose endpoint is not yet declared.
+func (r *callbackRegistry) egressRuleObject(pattern string, optional bool) sobek.Value {
 	object := r.runtime.NewObject()
+	r.defineMethod(object, "EgressHTTPRule."+optionalMethod, optionalMethod, func(call sobek.FunctionCall) sobek.Value {
+		if len(call.Arguments) != 0 {
+			panic(r.runtime.NewTypeError("spectre.EgressHTTPRule.%s takes no arguments", optionalMethod))
+		}
+		return r.egressRuleObject(pattern, true)
+	})
 	r.defineMethod(object, "EgressHTTPRule."+matchMethod, matchMethod, func(call sobek.FunctionCall) sobek.Value {
-		r.matchEndpoint(pattern, call)
+		r.matchEndpoint(pattern, optional, call)
 		return sobek.Undefined()
 	})
 	r.defineMethod(object, "EgressHTTPRule."+replacesMethod, replacesMethod, func(call sobek.FunctionCall) sobek.Value {
-		return r.replacementObject(pattern, call)
+		return r.replacementObject(pattern, optional, call)
 	})
 	return object
 }
 
 // replacementObject receives the source type names compile inserts before the source pattern.
-func (r *callbackRegistry) replacementObject(pattern string, call sobek.FunctionCall) sobek.Value {
+func (r *callbackRegistry) replacementObject(pattern string, optional bool, call sobek.FunctionCall) sobek.Value {
 	const qualified = "EgressHTTPRule." + replacesMethod
 	if len(call.Arguments) != 3 {
 		panic(r.runtime.NewTypeError("spectre.%s requires a source pattern", qualified))
@@ -255,7 +274,7 @@ func (r *callbackRegistry) replacementObject(pattern string, call sobek.Function
 	source := r.stringArgument(call, 2, qualified, "source pattern")
 	object := r.runtime.NewObject()
 	r.defineMethod(object, "EgressReplacement."+usingMethod, usingMethod, func(call sobek.FunctionCall) sobek.Value {
-		r.replaceUsing(pattern, source, sourceRequest, sourceResponse, call)
+		r.replaceUsing(pattern, optional, source, sourceRequest, sourceResponse, call)
 		return sobek.Undefined()
 	})
 	return object
@@ -263,7 +282,7 @@ func (r *callbackRegistry) replacementObject(pattern string, call sobek.Function
 
 // replaceUsing receives the request and response type names compile inserts
 // before the two functions.
-func (r *callbackRegistry) replaceUsing(pattern, source string, sourceRequest, sourceResponse schema.TypeRef, call sobek.FunctionCall) {
+func (r *callbackRegistry) replaceUsing(pattern string, optional bool, source string, sourceRequest, sourceResponse schema.TypeRef, call sobek.FunctionCall) {
 	const qualified = "EgressReplacement." + usingMethod
 	if len(call.Arguments) != 4 {
 		panic(r.runtime.NewTypeError("spectre.%s requires a request function and a response function", qualified))
@@ -281,13 +300,13 @@ func (r *callbackRegistry) replaceUsing(pattern, source string, sourceRequest, s
 	if slices.ContainsFunc(r.endpoints, func(endpoint Endpoint) bool { return endpoint.Pattern() == pattern }) {
 		panic(r.runtime.NewTypeError("duplicate endpoint %q", pattern))
 	}
-	r.endpoints = append(r.endpoints, newEndpoint(model.Egress, model.ProtocolHTTP, pattern, request))
+	r.endpoints = append(r.endpoints, newEndpoint(model.Egress, model.ProtocolHTTP, pattern, request, optional))
 	r.replacements = append(r.replacements, newReplacement(len(r.replacements), pattern, response, source, sourceRequest, sourceResponse))
 	r.replacers = append(r.replacers, replacementCallbacks{request: requestFunction, response: responseFunction})
 }
 
 // matchEndpoint receives the type name compile inserts.
-func (r *callbackRegistry) matchEndpoint(pattern string, call sobek.FunctionCall) {
+func (r *callbackRegistry) matchEndpoint(pattern string, optional bool, call sobek.FunctionCall) {
 	const qualified = "EgressHTTPRule.match"
 	if len(call.Arguments) != 1 {
 		panic(r.runtime.NewTypeError("spectre.%s requires a type name", qualified))
@@ -296,7 +315,7 @@ func (r *callbackRegistry) matchEndpoint(pattern string, call sobek.FunctionCall
 	if slices.ContainsFunc(r.endpoints, func(endpoint Endpoint) bool { return endpoint.Pattern() == pattern }) {
 		panic(r.runtime.NewTypeError("duplicate endpoint %q", pattern))
 	}
-	r.endpoints = append(r.endpoints, newEndpoint(model.Egress, model.ProtocolHTTP, pattern, typeName))
+	r.endpoints = append(r.endpoints, newEndpoint(model.Egress, model.ProtocolHTTP, pattern, typeName, optional))
 }
 
 // ruleBuilder is a rule whose selectors are chosen but whose action is not yet.

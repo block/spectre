@@ -94,6 +94,12 @@ declare module "spectre" {
   };
   /** Selects a dependency's requests by pattern. */
   export interface EgressHTTPRule {
+    /**
+     * Lets the candidate leave out the reference's requests to this endpoint: one that no candidate
+     * request claims within the match window expires without quarantining. Candidate requests still
+     * pair as before.
+     */
+    optional(): EgressHTTPRule;
     /** Decodes the selected requests' bodies as T. */
     match<T extends object>(): void;
     /**

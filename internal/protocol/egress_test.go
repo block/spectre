@@ -357,6 +357,49 @@ func TestEgressQuarantinesUnclaimedReferenceAfterWindow(t *testing.T) {
 	}
 }
 
+const optionalScript = `
+import * as spectre from "spectre";
+import type * as v1 from "test.v1";
+spectre.egress.http("POST fake.example/list").optional().match<v1.Query>();
+spectre.egress.http("POST fake.example/get").optional().replaces<v1.Query, v1.Response>("POST fake.example/list").using<v1.Query, v1.Response>(
+  (request) => ({ value: request.value }),
+  (request, reference) => ({ value: reference.value + "/" + request.value }),
+);
+spectre.field<v1.Query, "trace">(() => undefined);
+`
+
+func TestEgressReleasesUnclaimedOptionalReferenceWithoutQuarantine(t *testing.T) {
+	for name, route := range map[string]model.Route{"Source": listRoute, "Replacing": getRoute} {
+		t.Run(name, func(t *testing.T) {
+			h := newScriptHarness(t, optionalScript, 20*time.Millisecond)
+			raw := newRaw("reference")
+			exchange := h.forwardHTTP(t, route, query(queryType, "london", ""))
+			h.engine.EgressReference(model.ProtocolHTTP).ProcessResponse(h.ctx, exchange, listed(raw))
+
+			awaitRelease(t, raw)
+
+			assert.Equal(t, nil, h.quarantine.Reasons())
+			assert.Equal(t, []map[string]any{{
+				"level": "INFO", "msg": "Candidate left out an optional reference request",
+				"event": "correlation", "protocol": "http", "route": string(route),
+			}}, h.records(t, "Candidate left out an optional reference request"))
+		})
+	}
+}
+
+func TestEgressQuarantinesUnmatchedCandidateToOptionalEndpoint(t *testing.T) {
+	h := newScriptHarness(t, optionalScript, 20*time.Millisecond)
+
+	_, err := h.engine.EgressCandidate(model.ProtocolHTTP).ProcessRequest(h.ctx, None[protocol.RequestID](), listRoute, notIgnored, query(queryType, "london", ""))
+
+	assert.EqualError(t, err, "no matching reference request within 20ms")
+	assert.Equal(t, []model.QuarantineReason{{
+		Kind:    model.QuarantineUnmatched,
+		Traffic: Some(model.Traffic{Direction: model.Egress, Protocol: model.ProtocolHTTP, Route: listRoute}),
+		Detail:  "no matching reference request within 20ms",
+	}}, h.quarantine.Recorded())
+}
+
 func TestEgressReleasesUnclaimedReferenceAfterCloseWithoutQuarantine(t *testing.T) {
 	h := newHarness(t, 20*time.Millisecond)
 	raw := newRaw("reference")
