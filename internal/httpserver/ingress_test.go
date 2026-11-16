@@ -491,6 +491,35 @@ func TestClassifiesResponsesForComparison(t *testing.T) {
 		})
 	}
 }
+func TestStreamingRPCQuarantinesCandidate(t *testing.T) {
+	candidateAddress := acceptingAddress(t)
+	candidatePaths := make(chan string, 1)
+	transport := roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+		if request.URL.Host == candidateAddress {
+			candidatePaths <- request.URL.Path
+		}
+		return noContentResponse(request), nil
+	})
+	handler := newTestHandlerWithFakeBackends(t, candidateAddress, transport)
+	serveIngress(t.Context(), t, handler)
+	request := httptest.NewRequest(http.MethodPost, "http://proxy.example/test.Echo/Watch", nil)
+	request.Header.Set("Content-Type", "application/grpc")
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	assert.Equal(t, http.StatusNoContent, response.Code)
+	status, quarantined := handler.Candidates().QuarantineStatus().Get()
+	assert.True(t, quarantined)
+	assert.Equal(t, model.QuarantineReason{
+		Kind:    model.QuarantineUnable,
+		Traffic: Some(model.Traffic{Direction: model.Ingress, Protocol: model.ProtocolHTTP, Route: "POST /test.Echo/Watch"}),
+		Detail:  "streaming RPC comparison is not supported: test.Echo.Watch",
+	}, status.Reason)
+	assert.NoError(t, handler.Shutdown(t.Context()))
+	assert.Equal(t, 0, len(candidatePaths))
+}
+
 func TestServeStopsAfterContextCancellation(t *testing.T) {
 	reference := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 		writer.WriteHeader(http.StatusNoContent)
@@ -1667,6 +1696,8 @@ func matchingDescriptorLoader() descriptorLoaderFunc {
 				Name: new("Echo"),
 				Method: []*descriptorpb.MethodDescriptorProto{{
 					Name: new("Get"), InputType: new(".test.Payload"), OutputType: new(".test.Payload"),
+				}, {
+					Name: new("Watch"), InputType: new(".test.Payload"), OutputType: new(".test.Payload"), ServerStreaming: new(true),
 				}},
 			}},
 		}}}, nil

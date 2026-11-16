@@ -277,7 +277,15 @@ func (i *Ingress) serveProxy(writer http.ResponseWriter, request *http.Request) 
 		i.referenceProxy.ServeHTTP(writer, referenceRequest)
 		return
 	}
-	ignored, decode := i.classify(request)
+	ignored, unsupported, decode := i.classify(request)
+	// Only admitted requests quarantine, so a stopping or quarantined candidate never does.
+	if reason, ok := unsupported.Get(); ok {
+		cancel()
+		i.candidates.Finish(run)
+		i.candidates.Quarantine(request.Context(), i.reason(model.QuarantineUnable, request, reason))
+		i.referenceProxy.ServeHTTP(writer, referenceRequest)
+		return
+	}
 	reference, err := i.reference.process(request.Context(), None[protocol.RequestID](), route, ignored, unreadRequest)
 	forward, forwarded := reference.(protocol.DecisionForward)
 	if err != nil || !forwarded {
@@ -344,15 +352,16 @@ func (i *Ingress) mirror(ctx context.Context, request, referenceRequest *http.Re
 }
 
 // classify decides at request time whether, and how, both responses are compared.
-func (i *Ingress) classify(request *http.Request) (ignored Option[string], decode decodeFunc) {
+// An unsupported request cannot be compared at all.
+func (i *Ingress) classify(request *http.Request) (ignored, unsupported Option[string], decode decodeFunc) {
 	i.mu.RLock()
 	decoder, ready := i.decoder.Get()
 	i.mu.RUnlock()
 	if !ready {
-		return Some("comparison schema is not ready"), noDecode
+		return Some("comparison schema is not ready"), None[string](), noDecode
 	}
 	plan := decoder.Responses(request.Method, request.URL.EscapedPath(), request.URL.RawQuery, request.Header)
-	return plan.Ignored(), func(ctx context.Context, recorded *recording) protocol.Content {
+	return plan.Ignored(), plan.Unsupported(), func(ctx context.Context, recorded *recording) protocol.Content {
 		response, err := recorded.response()
 		if err != nil {
 			return protocol.Content{Failure: Some(err)}

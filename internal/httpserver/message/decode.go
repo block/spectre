@@ -71,6 +71,8 @@ type ResponsePlan struct {
 	// requested is the request's wire, if its content type names one.
 	requested wire
 	unruled   decoding
+	// unsupported is why SPECTRE cannot compare any response to the request.
+	unsupported Option[string]
 }
 
 func newResponsePlan(decoder *Decoder, request javascript.Request, rules []javascript.Rule, requested wire, unruled decoding) ResponsePlan {
@@ -79,6 +81,16 @@ func newResponsePlan(decoder *Decoder, request javascript.Request, rules []javas
 
 func ignoredResponsePlan(decoder *Decoder, request javascript.Request, reason string) ResponsePlan {
 	return ResponsePlan{decoder: decoder, request: request, unruled: ignoredDecoding(reason)}
+}
+
+func unsupportedResponsePlan(decoder *Decoder, request javascript.Request, reason string) ResponsePlan {
+	return ResponsePlan{decoder: decoder, request: request, unruled: failedDecoding(errors.New(reason)), unsupported: Some(reason)}
+}
+
+// Unsupported returns why the responses cannot be compared, if SPECTRE does not
+// support comparing them. Unlike an ignored request, this quarantines the candidate.
+func (p ResponsePlan) Unsupported() Option[string] {
+	return p.unsupported
 }
 
 // Ignored returns why the responses are never compared, if that is known before any arrives.
