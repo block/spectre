@@ -592,6 +592,7 @@ func main() {
 - `WithTemplateRepo` sets the default template repository for `spectre init`.
 - `WithServerURL` sets the default `--server-url`.
 - `WithStatusServers` sets the servers `spectre status` calls by default, such
-  as every deployment's server, instead of the `WithServerURL` one.
+  as every deployment's server. Pass it after `WithServerURL`, which also sets
+  them.
 - `WithKongOptions` passes options to the command-line parser, such as
   `kong.Vars{"version": ...}` to set the `--version` string.

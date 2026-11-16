@@ -27,14 +27,15 @@ type Command interface {
 	Run(ctx context.Context, log *slog.Logger) error
 }
 
+// statusServersVar names the Kong variable holding spectre status's default servers.
+const statusServersVar = "status_servers"
+
 // Option registers an extension with Main.
 type Option func(registered *extensions)
 
 // extensions collects what the options register, before the parser is built.
 type extensions struct {
-	kongOptions   []kong.Option
-	serverURL     string
-	statusServers []string
+	kongOptions []kong.Option
 }
 
 // WithCommand adds a top-level command. command must be a pointer to a struct,
@@ -57,15 +58,15 @@ func WithTemplateRepo(source string) Option {
 // such as spectre status and spectre supervise call.
 func WithServerURL(url string) Option {
 	return func(registered *extensions) {
-		registered.serverURL = url
+		registered.kongOptions = append(registered.kongOptions, kong.Vars{"server_url": url, statusServersVar: url})
 	}
 }
 
 // WithStatusServers sets the SPECTRE servers spectre status lists and clears by
-// default, such as the servers of every deployment, instead of WithServerURL's.
+// default. Pass it after WithServerURL, which also sets them.
 func WithStatusServers(urls ...string) Option {
 	return func(registered *extensions) {
-		registered.statusServers = urls
+		registered.kongOptions = append(registered.kongOptions, kong.Vars{statusServersVar: strings.Join(urls, ",")})
 	}
 }
 
@@ -112,21 +113,12 @@ func newParser(command *cli.CommandLine, options ...Option) (*kong.Kong, error) 
 	for _, option := range options {
 		option(registered)
 	}
-	statusServers := registered.statusServers
-	if len(statusServers) == 0 {
-		statusServers = []string{registered.serverURL}
-	}
 	catalog, err := state.NewCatalog(httpserver.Supports()...)
 	if err != nil {
 		return nil, errors.Wrap(err, "collect supported IO")
 	}
 	kongOptions := append([]kong.Option{
-		kong.Vars{
-			"version":        internal.Version,
-			"template_repo":  "",
-			"server_url":     registered.serverURL,
-			"status_servers": strings.Join(statusServers, ","),
-		},
+		kong.Vars{"version": internal.Version, "template_repo": "", "server_url": "", statusServersVar: ""},
 		kong.Configuration(kongtoml.Loader),
 		kong.DefaultEnvars("SPECTRE"),
 		kong.Bind(catalog),
