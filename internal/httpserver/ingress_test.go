@@ -374,6 +374,32 @@ func TestReferenceFailureQuarantinesCandidate(t *testing.T) {
 	assert.NoError(t, handler.Shutdown(t.Context()))
 }
 
+// A request no rule declares and whose content type is unrecognised is a gap in the
+// scripts, so it quarantines rather than skips.
+func TestUndeclaredContentTypeQuarantinesCandidate(t *testing.T) {
+	candidateAddress := acceptingAddress(t)
+	transport := roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+		return jsonResponse(request, `{"value":"same"}`), nil
+	})
+	logs := &syncBuffer{}
+	ctx := withLogs(t, logs)
+	handler := newTestHandlerWithFakeBackends(t, candidateAddress, transport)
+	serveIngress(ctx, t, handler)
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequestWithContext(ctx, http.MethodGet, "http://proxy.example/test.Echo/Get", nil))
+
+	reason := "reference: undeclared request: request content type is not supported: mime: no media type"
+	assert.Equal(t, quarantineRecord{Event: "quarantine", Reason: "response comparison failed: " + reason},
+		waitForRecords[quarantineRecord](t, logs, "Candidate quarantined", 1)[0])
+	assert.Equal(t, []comparisonRecord{{
+		Event:    "correlation",
+		Protocol: "http",
+		Route:    "GET /test.Echo/Get",
+		Outcome:  "unable",
+		Reason:   reason,
+	}}, logRecords[comparisonRecord](t, logs, "Response comparison completed"))
+	assert.NoError(t, handler.Shutdown(t.Context()))
+}
+
 // A status difference is divergent even when the candidate's body cannot be decoded.
 func TestStatusDifferenceIsDivergentWhenCandidateBodyIsUndecodable(t *testing.T) {
 	candidateAddress := acceptingAddress(t)
@@ -463,10 +489,6 @@ func TestClassifiesResponsesForComparison(t *testing.T) {
 		"ConnectGet": {
 			target:   "/test.Echo/Get?encoding=json&message=%7B%7D",
 			expected: comparisonRecord{Route: "GET /test.Echo/Get", Outcome: "equivalent"},
-		},
-		"UndeclaredWithoutContentType": {
-			target:   "/test.Echo/Get",
-			expected: comparisonRecord{Route: "GET /test.Echo/Get", Outcome: "skipped", Reason: "request content type is not supported: mime: no media type"},
 		},
 		"GRPCNamespace": {
 			target:   "/grpc.health.v1.Health/Check?encoding=json",

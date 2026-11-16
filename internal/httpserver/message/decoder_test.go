@@ -58,25 +58,7 @@ func TestClassifiesResponses(t *testing.T) {
 			method: http.MethodPost, path: "/test.v1.Service/Watch", contentType: "application/grpc",
 			ignored: Some("streaming RPC comparison is not supported: test.v1.Service.Watch"),
 		},
-		"GRPCWeb": {
-			method: http.MethodPost, path: "/test.v1.Service/Get", contentType: "application/grpc-web+proto",
-			ignored: Some(`request protocol is not supported: "application/grpc-web+proto"`),
-		},
 		"ConnectGet": {method: http.MethodGet, path: "/test.v1.Service/Get", rawQuery: "encoding=json&message=%7B%7D", ignored: compared},
-		// Without a content type, only Connect GET requests are compared as Connect JSON.
-		"UndeclaredGetWithoutContentType": {
-			method: http.MethodGet, path: "/test.v1.Service/Get",
-			ignored: Some("request content type is not supported: mime: no media type"),
-		},
-		// Only the declared method matches, so neither POST nor HEAD is compared as GET.
-		"UndeclaredMethod": {
-			method: http.MethodPost, path: "/v1/forecast",
-			ignored: Some("request content type is not supported: mime: no media type"),
-		},
-		"HeadIsNotGet": {
-			method: http.MethodHead, path: "/v1/forecast",
-			ignored: Some("request content type is not supported: mime: no media type"),
-		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			header := http.Header{}
@@ -94,33 +76,53 @@ func TestClassifiesResponses(t *testing.T) {
 func TestUnresolvableResponsesFailToDecode(t *testing.T) {
 	decoder := newDecoder(t, weatherScripts)
 	for name, test := range map[string]struct {
-		method  string
-		path    string
-		message string
+		method      string
+		path        string
+		contentType string
+		message     string
 	}{
 		"UndeclaredMethod": {
-			method:  http.MethodPost,
-			path:    "/v1/forecast",
+			method: http.MethodPost, path: "/v1/forecast", contentType: "application/json",
 			message: `RPC method is absent from the comparison schema: operation "v1.forecast" is not declared`,
 		},
 		"EgressEndpoint": {
-			method:  http.MethodPost,
-			path:    "/v1/search",
+			method: http.MethodPost, path: "/v1/search", contentType: "application/json",
 			message: `operation "v1.search" is not declared`,
 		},
 		"MissingRPCMethod": {
-			method:  http.MethodPost,
-			path:    "/test.v1.Service/Missing",
+			method: http.MethodPost, path: "/test.v1.Service/Missing", contentType: "application/json",
 			message: `operation "test.v1.Service.Missing" is not declared`,
 		},
 		"NoRPCMethod": {
-			method:  http.MethodPost,
-			path:    "/forecast",
+			method: http.MethodPost, path: "/forecast", contentType: "application/json",
 			message: `RPC path does not identify a method: "/forecast"`,
+		},
+		// A content type that no rule declares is a gap in the scripts, so it fails rather than skips.
+		"UnsupportedContentType": {
+			method: http.MethodPost, path: "/test.v1.Service/Get", contentType: "application/grpc-web+proto",
+			message: `undeclared request: request protocol is not supported: "application/grpc-web+proto"`,
+		},
+		// Without a content type, only Connect GET requests are decoded as Connect JSON.
+		"UndeclaredGetWithoutContentType": {
+			method: http.MethodGet, path: "/test.v1.Service/Get",
+			message: "undeclared request: request content type is not supported: mime: no media type",
+		},
+		// Only the declared method matches, so neither POST nor HEAD is decoded as GET.
+		"UndeclaredMethodWithoutContentType": {
+			method: http.MethodPost, path: "/v1/forecast",
+			message: "undeclared request: request content type is not supported: mime: no media type",
+		},
+		"HeadIsNotGet": {
+			method: http.MethodHead, path: "/v1/forecast",
+			message: "undeclared request: request content type is not supported: mime: no media type",
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			plan := decoder.Responses(test.method, test.path, "", http.Header{"Content-Type": []string{"application/json"}})
+			header := http.Header{}
+			if test.contentType != "" {
+				header.Set("Content-Type", test.contentType)
+			}
+			plan := decoder.Responses(test.method, test.path, "", header)
 			assert.Equal(t, None[string](), plan.Ignored())
 
 			content := plan.Decode(t.Context(), connectResponse(`{}`))

@@ -239,7 +239,9 @@ within `--candidate-startup-timeout` (5m by default) is quarantined.
 
 Clients always receive the reference's response. Each pair of responses is
 compared as the [comparison scripts](#comparison-scripts) describe. Without a
-script rule, a response is decoded by its content type.
+script rule, a response is decoded by its content type. A request no
+rule covers, whose content type is not JSON, protobuf, or gRPC, quarantines the
+candidate unless it is a Connect GET.
 
 ### Egress
 
