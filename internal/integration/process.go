@@ -2,8 +2,8 @@ package integration
 
 import (
 	"bytes"
-	"encoding/json"
-	"fmt"
+	"net"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
@@ -17,45 +17,34 @@ import (
 	"github.com/alecthomas/errors"
 )
 
-// Fields are the attributes of a JSON log record.
-type Fields map[string]any
-
-// matches reports whether record has every one of the fields.
-func (f Fields) matches(record Fields) bool {
-	for key, value := range f {
-		if record[key] != value {
-			return false
-		}
-	}
-	return true
-}
-
 // process is a running spectre command, whose output it collects. It is safe
 // for concurrent use.
 type process struct {
-	name    string
-	exited  chan struct{}
-	mu      sync.Mutex
-	partial []byte
-	lines   []string
-	records []Fields
-	err     error
+	name   string
+	exited chan struct{}
+	mu     sync.Mutex
+	output bytes.Buffer
+	err    error
 }
 
-// startProcess runs the spectre binary with args and JSON debug logs. It stops
-// when the test ends, logging its output if the test failed.
-func startProcess(t *testing.T, name string, args ...string) *process {
+// startProcess runs spectre with args, handing it listeners as descriptors 3
+// onwards. It stops when the test ends, logging its output if the test failed.
+func startProcess(t *testing.T, name string, listeners []net.Listener, args ...string) *process {
 	t.Helper()
 	p := &process{name: name, exited: make(chan struct{})}
-	args = append(args, "--log-level=debug", "--log-json=DEFAULT")
-	cmd := exec.CommandContext(t.Context(), filepath.Join(repositoryRoot(), "dist", "spectre"), args...)
+	cmd := exec.CommandContext(t.Context(), filepath.Join(repositoryRoot(), "dist", "spectre"), append(args, "--log-level=debug")...)
 	// Every flag reads a SPECTRE_ variable, which must not leak in from the caller.
 	cmd.Env = slices.DeleteFunc(cmd.Environ(), func(variable string) bool { return strings.HasPrefix(variable, "SPECTRE_") })
 	cmd.Stdout = p
 	cmd.Stderr = p
+	cmd.ExtraFiles = files(t, listeners)
 	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
 	cmd.WaitDelay = 20 * time.Second
 	assert.NoError(t, cmd.Start(), "start %s", name)
+	for i, file := range cmd.ExtraFiles {
+		_ = file.Close()
+		_ = listeners[i].Close()
+	}
 	go func() {
 		err := cmd.Wait()
 		p.mu.Lock()
@@ -75,49 +64,25 @@ func startProcess(t *testing.T, name string, args ...string) *process {
 	return p
 }
 
-// Write collects each complete line, keeping any partial line for the next write.
+// files returns a file for each TCP listener, for a process to inherit.
+func files(t *testing.T, listeners []net.Listener) []*os.File {
+	t.Helper()
+	inherited := make([]*os.File, 0, len(listeners))
+	for _, listener := range listeners {
+		tcp, ok := listener.(*net.TCPListener)
+		assert.True(t, ok, "%s is not a TCP listener", listener.Addr())
+		file, err := tcp.File()
+		assert.NoError(t, err)
+		inherited = append(inherited, file)
+	}
+	return inherited
+}
+
+// Write collects the process's output.
 func (p *process) Write(data []byte) (int, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.partial = append(p.partial, data...)
-	for {
-		end := bytes.IndexByte(p.partial, '\n')
-		if end < 0 {
-			return len(data), nil
-		}
-		line := string(p.partial[:end])
-		p.partial = p.partial[end+1:]
-		p.lines = append(p.lines, line)
-		var record Fields
-		if json.Unmarshal([]byte(line), &record) == nil {
-			p.records = append(p.records, record)
-		}
-	}
-}
-
-// find returns the first record with every one of fields.
-func (p *process) find(fields Fields) (Fields, bool) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	for _, record := range p.records {
-		if fields.matches(record) {
-			return record, true
-		}
-	}
-	return nil, false
-}
-
-// count returns how many records have every one of fields.
-func (p *process) count(fields Fields) int {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	matched := 0
-	for _, record := range p.records {
-		if fields.matches(record) {
-			matched++
-		}
-	}
-	return matched
+	return errors.WithStack2(p.output.Write(data))
 }
 
 // failure returns why the process exited, or nil while it runs.
@@ -132,14 +97,9 @@ func (p *process) failure() error {
 	}
 }
 
-// describe names the process's records with fields, for test failures.
-func (p *process) describe(fields Fields) string {
-	return fmt.Sprintf("a %s record matching %v", p.name, fields)
-}
-
 // String returns everything the process wrote.
 func (p *process) String() string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return strings.Join(p.lines, "\n") + "\n" + string(p.partial)
+	return p.output.String()
 }

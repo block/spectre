@@ -12,32 +12,29 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"testing"
 	"time"
 
 	"github.com/alecthomas/assert/v2"
 	"github.com/alecthomas/errors"
+
+	"github.com/block/spectre/internal/model"
+	"github.com/block/spectre/internal/server/client"
 )
 
 const (
 	// startTimeout bounds how long Start waits for the mirror to be ready.
 	startTimeout = 60 * time.Second
-	// waitTimeout bounds how long a test waits for a record or a request.
+	// waitTimeout bounds how long a test waits for a condition.
 	waitTimeout = 10 * time.Second
 	// requestTimeout bounds each request a test sends.
 	requestTimeout = 5 * time.Second
 	// Polls start at minPollInterval and back off to maxPollInterval.
 	minPollInterval = 5 * time.Millisecond
 	maxPollInterval = 500 * time.Millisecond
-)
-
-// proxyListeners name the proxy's listeners in its "Proxy listening" records.
-const (
-	ingressListener         = "ingress"
-	referenceEgressListener = "reference-egress"
-	candidateEgressListener = "candidate-egress"
-	egressHealthListener    = "egress-health"
-	healthListener          = "health"
+	// keepaliveInterval is how soon the proxy reports changed call counts.
+	keepaliveInterval = 20 * time.Millisecond
 )
 
 // Egress is where a service sends its dependency calls, with the transport to
@@ -69,13 +66,9 @@ type Mirror struct {
 type Running struct {
 	IngressURL         string
 	CandidateEgressURL string
-	ServerURL          string
-	// Ingress, Egress and Server select what the proxies and the server log.
-	Ingress Log
-	Egress  Log
-	Server  Log
-	client  *http.Client
-	watch   *watch
+	client             *http.Client
+	server             *client.Client
+	watch              *watch
 }
 
 // Main builds the spectre binary and the given bit targets once, unless -short
@@ -92,7 +85,7 @@ func Main(m *testing.M, targets ...string) int {
 }
 
 // Start serves the mirror's services on free ports, runs the SPECTRE server and
-// the proxy in front of them, and waits until the proxy is ready.
+// the proxy in front of them on free ports of their own, and waits until the proxy is ready.
 func Start(t *testing.T, mirror Mirror) *Running {
 	t.Helper()
 	if testing.Short() {
@@ -104,44 +97,44 @@ func Start(t *testing.T, mirror Mirror) *Running {
 	for host := range mirror.Dependencies {
 		dependencies[host] = listen(t)
 	}
+	server := listen(t)
+	serverURL := baseURL(server)
+	watch.start(t, "server", []net.Listener{server}, "serve", "--listen=fd:3")
 
-	server := watch.start(t, "server", "serve", "--listen=127.0.0.1:0")
-	serverURL := "http://" + address(t, newLog(server, Fields{}, watch), Fields{"msg": "SPECTRE server listening"})
+	// Each listener flag names the descriptor its listener is inherited as.
+	listenerFlags := []string{"listen", "reference-egress-listen", "candidate-egress-listen", "egress-health-listen", "health-listen"}
+	proxyListeners := make([]net.Listener, len(listenerFlags))
 	args := []string{
-		"proxy", "--listen=127.0.0.1:0",
-		"--reference-egress-listen=127.0.0.1:0", "--candidate-egress-listen=127.0.0.1:0",
-		"--egress-health-listen=127.0.0.1:0", "--health-listen=127.0.0.1:0",
+		"proxy",
 		"--reference-url=h2c://" + reference.Addr().String(), "--candidate-url=h2c://" + candidate.Addr().String(),
-		"--server-url=" + serverURL, "--service=integration", "--environment=integration", "--revision=candidate",
+		"--server-url=" + serverURL, "--server-keepalive-interval=" + keepaliveInterval.String(),
+		"--service=integration", "--environment=integration", "--revision=candidate",
 	}
+	for i, name := range listenerFlags {
+		proxyListeners[i] = listen(t)
+		args = append(args, "--"+name+"=fd:"+strconv.Itoa(3+i))
+	}
+	ingress, referenceEgress, candidateEgress, health := proxyListeners[0], proxyListeners[1], proxyListeners[2], proxyListeners[4]
 	for host, listener := range dependencies {
-		args = append(args, "--destination="+host+"=http://"+listener.Addr().String())
+		args = append(args, "--destination="+host+"="+baseURL(listener))
 	}
 	args = append(append(args, directoryFlags(t, mirror)...), mirror.ProxyFlags...)
-	proxy := watch.start(t, "proxy", args...)
-	listening := newLog(proxy, Fields{"msg": "Proxy listening"}, watch)
-	urls := map[string]string{}
-	for _, name := range []string{ingressListener, referenceEgressListener, candidateEgressListener, egressHealthListener, healthListener} {
-		urls[name] = "http://" + address(t, listening, Fields{"listener": name})
-	}
-
 	running := &Running{
-		IngressURL:         urls[ingressListener],
-		CandidateEgressURL: urls[candidateEgressListener],
-		ServerURL:          serverURL,
-		Ingress:            newLog(proxy, Fields{"spectre.subsystem": "ingress"}, watch),
-		Egress:             newLog(proxy, Fields{"spectre.subsystem": "egress"}, watch),
-		Server:             newLog(server, Fields{}, watch),
+		IngressURL:         baseURL(ingress),
+		CandidateEgressURL: baseURL(candidateEgress),
 		client:             newClient(t),
+		server:             client.New(client.Config{URL: serverURL}),
 		watch:              watch,
 	}
-	serve(t, reference, mirror.Reference(egress(t, urls[referenceEgressListener])))
-	serve(t, candidate, mirror.Candidate(egress(t, urls[candidateEgressListener])))
+	healthURL := baseURL(health) + "/readyz"
+	serve(t, reference, mirror.Reference(egress(t, baseURL(referenceEgress))))
+	serve(t, candidate, mirror.Candidate(egress(t, running.CandidateEgressURL)))
 	for host, listener := range dependencies {
 		serve(t, listener, mirror.Dependencies[host])
 	}
+	watch.start(t, "proxy", proxyListeners, args...)
 	watch.await(t, startTimeout, "the proxy to be ready", func() bool {
-		return running.ready(t, urls[healthListener]+"/readyz")
+		return running.ready(t, healthURL)
 	})
 	return running
 }
@@ -151,6 +144,53 @@ func Start(t *testing.T, mirror Mirror) *Running {
 func (r *Running) Eventually(t *testing.T, what string, condition func() bool) {
 	t.Helper()
 	r.watch.await(t, waitTimeout, what, condition)
+}
+
+// WaitForState waits until the state the proxy reported to the SPECTRE server
+// satisfies condition, and returns it.
+func (r *Running) WaitForState(t *testing.T, what string, condition func(state model.State) bool) model.State {
+	t.Helper()
+	var matched model.State
+	r.Eventually(t, what, func() bool {
+		states, _, err := r.server.ListDivergences(t.Context(), model.DivergenceFilter{})
+		assert.NoError(t, err)
+		for _, state := range states {
+			if condition(state) {
+				matched = state
+				return true
+			}
+		}
+		return false
+	})
+	return matched
+}
+
+// WaitForCalls waits until the proxy reports at least the expected compared
+// calls on each route, or a quarantine, and returns its state.
+func (r *Running) WaitForCalls(t *testing.T, expected map[model.Route]uint64) model.State {
+	t.Helper()
+	return r.WaitForState(t, fmt.Sprintf("compared calls %v", expected), func(state model.State) bool {
+		if len(state.Quarantines) > 0 {
+			return true
+		}
+		for route, calls := range expected {
+			if state.Calls.Routes[route] < calls {
+				return false
+			}
+		}
+		return true
+	})
+}
+
+// WaitForQuarantine waits until the proxy reports a quarantine in direction,
+// and returns its reason.
+func (r *Running) WaitForQuarantine(t *testing.T, direction model.Direction) model.QuarantineReason {
+	t.Helper()
+	state := r.WaitForState(t, fmt.Sprintf("an %s quarantine", direction), func(state model.State) bool {
+		_, ok := state.Quarantines[direction]
+		return ok
+	})
+	return state.Quarantines[direction].Reason
 }
 
 // Client returns a client that speaks HTTP/2 without TLS, as gRPC needs.
@@ -198,11 +238,9 @@ func newWatch() *watch {
 	return &watch{}
 }
 
-func (w *watch) start(t *testing.T, name string, args ...string) *process {
+func (w *watch) start(t *testing.T, name string, listeners []net.Listener, args ...string) {
 	t.Helper()
-	p := startProcess(t, name, args...)
-	w.processes = append(w.processes, p)
-	return p
+	w.processes = append(w.processes, startProcess(t, name, listeners, args...))
 }
 
 // await polls done until it holds, failing the test on timeout or when a
@@ -223,14 +261,6 @@ func (w *watch) await(t *testing.T, timeout time.Duration, what string, done fun
 		time.Sleep(min(interval, time.Until(deadline)))
 		interval = min(2*interval, maxPollInterval)
 	}
-}
-
-// address waits for a record in log with fields, and returns its address.
-func address(t *testing.T, log Log, fields Fields) string {
-	t.Helper()
-	value, ok := log.WaitFor(t, fields)["address"].(string)
-	assert.True(t, ok, "%s record has no address", log.describe(log.selection(fields)))
-	return value
 }
 
 // directoryFlags passes the mirror's directories to the proxy as absolute paths.
@@ -255,6 +285,10 @@ func listen(t *testing.T) net.Listener {
 	assert.NoError(t, err)
 	t.Cleanup(func() { _ = listener.Close() })
 	return listener
+}
+
+func baseURL(listener net.Listener) string {
+	return "http://" + listener.Addr().String()
 }
 
 // serve serves handler on listener over HTTP/1 and HTTP/2 without TLS until the test ends.
