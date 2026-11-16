@@ -20,26 +20,9 @@ import (
 	"github.com/block/spectre/internal/state"
 )
 
-// Wiring is where the proxies listen and where ingress reaches both services.
-type Wiring struct {
-	// Listen is the public ingress address.
-	Listen string
-	// Reference and Candidate are the service URLs ingress forwards to.
-	Reference string
-	Candidate string
-	// ReferenceEgress and CandidateEgress receive each service's dependency calls.
-	ReferenceEgress string
-	CandidateEgress string
-	// EgressHealth serves the egress proxy's own health endpoints.
-	EgressHealth string
-	// Health serves the health of both proxies.
-	Health Option[string]
-}
-
 // Mirror runs the ingress and egress proxies and reports their state.
 type Mirror struct {
-	config    Config
-	wiring    Wiring
+	config    ProxyConfig
 	log       *slog.Logger
 	migration Option[state.State]
 
@@ -57,36 +40,27 @@ type exit struct {
 	err  error
 }
 
-// New validates config and returns a mirror wired by wiring. The catalog checks
-// the migration state, if config names one.
-func New(ctx context.Context, config Config, wiring Wiring, catalog *state.Catalog) (*Mirror, error) {
+// New validates config and returns a mirror of services that run elsewhere. The
+// catalog checks the migration state, if config names one.
+func New(ctx context.Context, config ProxyConfig, catalog *state.Catalog) (*Mirror, error) {
 	if err := config.Validate(); err != nil {
 		return nil, errors.WithStack(err)
 	}
 	migration := None[state.State]()
-	if config.StateFile != "" {
-		loaded, err := state.Load(config.StateFile, catalog)
+	if stateFile := config.Mirror.StateFile; stateFile != "" {
+		loaded, err := state.Load(stateFile, catalog)
 		if err != nil {
-			return nil, errors.Wrapf(err, "load migration state %s", config.StateFile)
+			return nil, errors.Wrapf(err, "load migration state %s", stateFile)
 		}
 		migration = Some(loaded)
 	}
 	return &Mirror{
 		config:    config,
-		wiring:    wiring,
 		log:       logger.FromContext(ctx).With(logger.SubsystemKey, "mirror"),
 		migration: migration,
 		cancel:    func() {},
 		exits:     make(chan exit, 3),
 	}, nil
-}
-
-// NewProxy validates config and returns a mirror of services that run elsewhere.
-func NewProxy(ctx context.Context, config ProxyConfig, catalog *state.Catalog) (*Mirror, error) {
-	if err := config.Validate(); err != nil {
-		return nil, errors.WithStack(err)
-	}
-	return New(ctx, config.Mirror, config.wiring(), catalog)
 }
 
 // Run starts the proxies, then serves until the context is cancelled or a proxy exits.
@@ -106,7 +80,7 @@ func (m *Mirror) Start(ctx context.Context) error {
 		m.drain()
 		return err
 	}
-	m.log.InfoContext(ctx, "Mirror started", "ingress", m.wiring.Listen, "health", m.wiring.Health.Default(""))
+	m.log.InfoContext(ctx, "Mirror started", "ingress", m.config.Listen, "health", m.config.HealthListen)
 	return nil
 }
 
@@ -185,13 +159,9 @@ func (m *Mirror) startIngress(ctx context.Context) error {
 	return nil
 }
 
-// startHealth serves the health of both proxies, when the wiring asks for it.
+// startHealth serves the health of both proxies, for probes.
 func (m *Mirror) startHealth(ctx context.Context) error {
-	address, ok := m.wiring.Health.Get()
-	if !ok {
-		return nil
-	}
-	listener, err := netaddr.ParseListen(address).Listen(ctx)
+	listener, err := netaddr.ParseListen(m.config.HealthListen).Listen(ctx)
 	if err != nil {
 		return errors.Wrap(err, "listen for health")
 	}
@@ -208,12 +178,12 @@ func (m *Mirror) startHealth(ctx context.Context) error {
 // startReporter streams the mirror's state, with ingress call counts and both
 // proxies' quarantines, to the SPECTRE server. Reporting never stops the mirror.
 func (m *Mirror) startReporter(ctx context.Context) {
-	reporter := reporter.New(m.config.Server, client.New(m.config.Server.Client), m.ingress.Calls,
+	reporter := reporter.New(m.config.Mirror.Server, client.New(m.config.Mirror.Server.Client), m.ingress.Calls,
 		reporter.Source{Direction: model.Ingress, Quarantined: m.ingress.Candidates().Quarantined()},
 		reporter.Source{Direction: model.Egress, Quarantined: m.egress.Candidates().Quarantined()},
 	)
 	go reporter.Run(logger.WithLogger(ctx, m.log))
-	m.log.InfoContext(ctx, "Reporting to the SPECTRE server", "url", m.config.Server.Client.URL)
+	m.log.InfoContext(ctx, "Reporting to the SPECTRE server", "url", m.config.Mirror.Server.Client.URL)
 }
 
 // serve runs a server in the background, reporting its exit and calling release
@@ -238,33 +208,33 @@ func (m *Mirror) drain() {
 // engineConfig builds the comparison engine configuration shared by both proxies.
 func (m *Mirror) engineConfig() protocol.Config {
 	config := protocol.NewConfig()
-	config.Comparison.ScriptsDir = m.config.ScriptsDir
-	config.Comparison.Schema.SchemaDir = m.config.SchemaDir
-	config.Comparison.Variables = m.config.ScriptVariables
-	config.MatchWindow = m.config.MatchWindow
+	config.Comparison.ScriptsDir = m.config.Mirror.ScriptsDir
+	config.Comparison.Schema.SchemaDir = m.config.Mirror.SchemaDir
+	config.Comparison.Variables = m.config.Mirror.ScriptVariables
+	config.MatchWindow = m.config.Mirror.MatchWindow
 	return config
 }
 
-// egressConfig builds the egress proxy configuration from the wiring.
+// egressConfig builds the egress proxy configuration.
 func (m *Mirror) egressConfig() httpserver.EgressConfig {
 	config := httpserver.NewEgressConfig()
-	config.ReferenceListen = m.wiring.ReferenceEgress
-	config.CandidateListen = m.wiring.CandidateEgress
-	config.HealthListen = m.wiring.EgressHealth
-	config.Destinations = m.config.Destinations
-	config.Descriptors = m.config.Descriptors
+	config.ReferenceListen = m.config.ReferenceEgressListen
+	config.CandidateListen = m.config.CandidateEgressListen
+	config.HealthListen = m.config.EgressHealthListen
+	config.Destinations = m.config.Mirror.Destinations
+	config.Descriptors = m.config.Mirror.Descriptors
 	return config
 }
 
-// ingressConfig builds the ingress proxy configuration from the wiring.
+// ingressConfig builds the ingress proxy configuration.
 func (m *Mirror) ingressConfig() httpserver.IngressConfig {
 	config := httpserver.NewIngressConfig()
-	config.Listen = m.wiring.Listen
-	config.Reference = m.wiring.Reference
-	config.Candidate = m.wiring.Candidate
-	config.Reflection = m.config.Reflection
-	config.CandidateStartupTimeout = m.config.CandidateStartupTimeout
-	config.Descriptors = m.config.Descriptors
+	config.Listen = m.config.Listen
+	config.Reference = m.config.ReferenceURL
+	config.Candidate = m.config.CandidateURL
+	config.Reflection = m.config.Mirror.Reflection
+	config.CandidateStartupTimeout = m.config.Mirror.CandidateStartupTimeout
+	config.Descriptors = m.config.Mirror.Descriptors
 	return config
 }
 

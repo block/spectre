@@ -19,7 +19,6 @@ import (
 	"github.com/block/spectre/internal/httpserver"
 	"github.com/block/spectre/internal/logger"
 	"github.com/block/spectre/internal/state"
-	"github.com/block/spectre/internal/supervisor"
 )
 
 // Command is a top-level command. Kong parses its tagged fields before Run.
@@ -55,7 +54,7 @@ func WithTemplateRepo(source string) Option {
 }
 
 // WithServerURL sets the default base URL of the SPECTRE server that commands
-// such as spectre status and spectre supervise call.
+// such as spectre status and spectre proxy call.
 func WithServerURL(url string) Option {
 	return func(registered *extensions) {
 		registered.kongOptions = append(registered.kongOptions, kong.Vars{"server_url": url, collectorServersVar: url})
@@ -80,16 +79,6 @@ func WithKongOptions(options ...kong.Option) Option {
 
 // Main runs the command line with the given extensions, then exits.
 func Main(options ...Option) {
-	// A re-exec through the egress sandbox installs the seccomp filter then execs
-	// the real command, so it must run before any flag parsing.
-	if len(os.Args) > 1 && os.Args[1] == supervisor.SandboxArg {
-		if err := supervisor.ExecSandbox(os.Args[2:]); err != nil {
-			logger.New(logger.NewConfig(), os.Stderr).Error("Egress sandbox failed", "error", err)
-			os.Exit(1)
-		}
-		return
-	}
-
 	command := &cli.CommandLine{}
 	parser, err := newParser(command, options...)
 	if err != nil {

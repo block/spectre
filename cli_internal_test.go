@@ -19,10 +19,9 @@ import (
 	"github.com/block/spectre/internal/server/client"
 	"github.com/block/spectre/internal/server/reporter"
 	"github.com/block/spectre/internal/server/storage"
-	"github.com/block/spectre/internal/supervisor"
 )
 
-// reportingFlags are the SPECTRE server flags every supervise command requires.
+// reportingFlags are the SPECTRE server flags every proxy command requires.
 func reportingFlags() []string {
 	return []string{"--server-url=http://server.example", "--service=users", "--environment=production", "--revision=abc123"}
 }
@@ -39,63 +38,25 @@ func expectedReporting() reporter.Config {
 	}
 }
 
-func TestSuperviseCommandEmbedsConfig(t *testing.T) {
-	scripts := t.TempDir()
-	schema := writeSchemaDir(t)
-	descriptors := t.TempDir()
-	command := &cli.CommandLine{}
-	parser, err := newParser(command)
-	assert.NoError(t, err)
-	_, err = parser.Parse(append([]string{
-		"supervise",
-		"--candidate=run-candidate",
-		"--reference=run-reference",
-		"--destination=forecasts.example=http://127.0.0.1:50053",
-		"--match-window=2s",
-		"--scripts-dir=" + scripts,
-		"--schema-dir=" + schema,
-		"--descriptors-dir=" + descriptors,
-		"--no-limits",
-	}, reportingFlags()...))
-	assert.NoError(t, err)
-	expected := supervisor.NewConfig()
-	expected.Candidate = "run-candidate"
-	expected.Reference = "run-reference"
-	expected.Mirror.Destinations = map[string]string{"forecasts.example": "http://127.0.0.1:50053"}
-	expected.Mirror.MatchWindow = 2 * time.Second
-	expected.Mirror.ScriptsDir = scripts
-	expected.Mirror.SchemaDir = schema
-	expected.Mirror.Descriptors.DescriptorsDir = descriptors
-	expected.Limits.Enabled = false
-	expected.Mirror.Server = expectedReporting()
-	assert.Equal(t, expected, command.Supervise.Supervisor)
+// serviceFlags are the service addresses every proxy command requires.
+func serviceFlags() []string {
+	return []string{"--reference-url=h2c+unix:/sockets/reference.sock", "--candidate-url=h2c+unix:/sockets/candidate.sock"}
 }
 
-func TestSuperviseCommandReadsFlagsFromEnvironment(t *testing.T) {
-	t.Setenv("SPECTRE_SERVER_URL", "http://server.example")
-	t.Setenv("SPECTRE_SERVICE", "invoices")
-	t.Setenv("SPECTRE_ENVIRONMENT", "production-us-west-2")
-	t.Setenv("SPECTRE_REVISION", "3f9c2a1")
-	command := &cli.CommandLine{}
-	parser, err := newParser(command)
-	assert.NoError(t, err)
-	_, err = parser.Parse([]string{
-		"supervise",
-		"--candidate=run-candidate",
-		"--reference=run-reference",
-		"--scripts-dir=" + t.TempDir(),
-		"--schema-dir=" + writeSchemaDir(t),
-	})
-	assert.NoError(t, err)
-	expected := reporter.Config{
-		Client:            client.Config{URL: "http://server.example"},
-		Service:           "invoices",
-		Environment:       "production-us-west-2",
-		Revision:          "3f9c2a1",
-		KeepaliveInterval: 30 * time.Second,
-		StreamMaxAge:      10 * time.Minute,
+// expectedProxy is the proxy config that serviceFlags and reportingFlags parse to.
+func expectedProxy() proxies.ProxyConfig {
+	expected := proxies.ProxyConfig{
+		Listen:                "127.0.0.1:50050",
+		ReferenceURL:          "h2c+unix:/sockets/reference.sock",
+		CandidateURL:          "h2c+unix:/sockets/candidate.sock",
+		ReferenceEgressListen: "127.0.0.1:50060",
+		CandidateEgressListen: "127.0.0.1:50061",
+		EgressHealthListen:    "127.0.0.1:50062",
+		HealthListen:          "127.0.0.1:50063",
+		Mirror:                proxies.NewConfig(),
 	}
-	assert.Equal(t, expected, command.Supervise.Supervisor.Mirror.Server)
+	expected.Mirror.Server = expectedReporting()
+	return expected
 }
 
 func TestProxyCommandReadsFlagsFromEnvironment(t *testing.T) {
@@ -205,14 +166,14 @@ func TestServeCommandEmbedsConfig(t *testing.T) {
 	assert.Equal(t, expected, command.Serve.Serve)
 }
 
-func TestSuperviseCommandRequiresFlags(t *testing.T) {
-	complete := append([]string{"--candidate=run-candidate", "--reference=run-reference"}, reportingFlags()...)
+func TestProxyCommandRequiresFlags(t *testing.T) {
+	complete := append(serviceFlags(), reportingFlags()...)
 	tests := []struct {
 		name    string
 		missing string
 	}{
-		{name: "Candidate", missing: "--candidate="},
-		{name: "Reference", missing: "--reference="},
+		{name: "ReferenceURL", missing: "--reference-url="},
+		{name: "CandidateURL", missing: "--candidate-url="},
 		{name: "ServerURL", missing: "--server-url="},
 		{name: "Service", missing: "--service="},
 		{name: "Environment", missing: "--environment="},
@@ -223,7 +184,7 @@ func TestSuperviseCommandRequiresFlags(t *testing.T) {
 			parser, err := newParser(&cli.CommandLine{})
 			assert.NoError(t, err)
 			args := slices.DeleteFunc(slices.Clone(complete), func(arg string) bool { return strings.HasPrefix(arg, test.missing) })
-			args = append([]string{"supervise", "--scripts-dir=" + t.TempDir(), "--schema-dir=" + writeSchemaDir(t)}, args...)
+			args = append([]string{"proxy", "--scripts-dir=" + t.TempDir(), "--schema-dir=" + writeSchemaDir(t)}, args...)
 
 			_, err = parser.Parse(args)
 
@@ -232,14 +193,14 @@ func TestSuperviseCommandRequiresFlags(t *testing.T) {
 	}
 }
 
-func TestSuperviseCommandLoadsConfigFile(t *testing.T) {
+func TestProxyCommandLoadsConfigFile(t *testing.T) {
 	scripts := t.TempDir()
 	schema := writeSchemaDir(t)
 	descriptors := t.TempDir()
 	path := filepath.Join(t.TempDir(), "spectre.toml")
 	err := os.WriteFile(path, []byte(fmt.Sprintf(`
-candidate = "run-candidate"
-reference = "run-reference"
+reference-url = "h2c+unix:/sockets/reference.sock"
+candidate-url = "h2c+unix:/sockets/candidate.sock"
 match-window = "2s"
 scripts-dir = %q
 schema-dir = %q
@@ -252,36 +213,31 @@ descriptors-dir = %q
 	command := &cli.CommandLine{}
 	parser, err := newParser(command)
 	assert.NoError(t, err)
-	_, err = parser.Parse(append([]string{"supervise", "--config=" + path, "--match-window=3s"}, reportingFlags()...))
+	_, err = parser.Parse(append([]string{"proxy", "--config=" + path, "--match-window=3s"}, reportingFlags()...))
 	assert.NoError(t, err)
-	expected := supervisor.NewConfig()
-	expected.Candidate = "run-candidate"
-	expected.Reference = "run-reference"
+	expected := expectedProxy()
 	expected.Mirror.Destinations = map[string]string{"forecasts.example": "http://127.0.0.1:50053"}
 	expected.Mirror.MatchWindow = 3 * time.Second
 	expected.Mirror.ScriptsDir = scripts
 	expected.Mirror.SchemaDir = schema
 	expected.Mirror.Descriptors.DescriptorsDir = descriptors
-	expected.Mirror.Server = expectedReporting()
-	assert.Equal(t, expected, command.Supervise.Supervisor)
+	assert.Equal(t, expected, command.Proxy.Proxy)
 }
 
-func TestSuperviseCommandRejectsUnknownConfigKeys(t *testing.T) {
+func TestProxyCommandRejectsUnknownConfigKeys(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "spectre.toml")
-	assert.NoError(t, os.WriteFile(path, []byte(`canddate = "run-candidate"`), 0o600))
+	assert.NoError(t, os.WriteFile(path, []byte(`refrence-url = "h2c+unix:/sockets/reference.sock"`), 0o600))
 	parser, err := newParser(&cli.CommandLine{})
 	assert.NoError(t, err)
 
-	_, err = parser.Parse(append([]string{
-		"supervise",
+	_, err = parser.Parse(append(append([]string{
+		"proxy",
 		"--config=" + path,
-		"--candidate=run-candidate",
-		"--reference=run-reference",
 		"--scripts-dir=" + t.TempDir(),
 		"--schema-dir=" + writeSchemaDir(t),
-	}, reportingFlags()...))
+	}, serviceFlags()...), reportingFlags()...))
 
-	assert.EqualError(t, err, path+": unknown configuration keys: canddate")
+	assert.EqualError(t, err, path+": unknown configuration keys: refrence-url")
 }
 
 func TestProxySubcommandsRemoved(t *testing.T) {

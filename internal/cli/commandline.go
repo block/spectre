@@ -17,7 +17,6 @@ import (
 	"github.com/block/spectre/internal/scaffold"
 	"github.com/block/spectre/internal/server"
 	"github.com/block/spectre/internal/state"
-	"github.com/block/spectre/internal/supervisor"
 )
 
 // CommandLine is the built-in command line. Extensions add to it, so custom
@@ -28,15 +27,14 @@ type CommandLine struct {
 	// A deployment's own SPECTRE_VERSION must not make every command exit.
 	Version kong.VersionFlag `env:"-" help:"Print the version and exit."`
 
-	Supervise superviseCommand `cmd:"" help:"Supervise a candidate and a reference behind the embedded proxies, splitting resources between them."`
-	Proxy     proxyCommand     `cmd:"" help:"Run the embedded proxies in front of a candidate and a reference that run elsewhere, such as in other containers of the same pod."`
-	Contain   containCommand   `cmd:"" help:"Reject a user's IPv4 and IPv6 traffic, such as a candidate's in its own container, so it reaches dependencies only through unix sockets. Needs Linux, root and NET_ADMIN."`
-	Serve     serveCommand     `cmd:"" help:"Run the SPECTRE server, which mirrors stream their states to."`
-	Gen       genCommand       `cmd:"" help:"Generate TypeScript schema declarations and the script API."`
-	Status    statusCommand    `cmd:"" help:"List the mirrors reporting to the SPECTRE server and the divergences they reported, or clear divergences."`
-	State     stateCommand     `cmd:"" help:"Describe a service's migration state."`
-	Next      nextCommand      `cmd:"" help:"List the nodes to migrate next: one ingress node and the pending nodes it needs."`
-	Done      doneCommand      `cmd:"" help:"Mark migrated nodes in the migration state, which must stay valid."`
+	Proxy   proxyCommand   `cmd:"" help:"Run the embedded proxies in front of a candidate and a reference that run elsewhere, such as in other containers of the same pod."`
+	Contain containCommand `cmd:"" help:"Reject a user's IPv4 and IPv6 traffic, such as a candidate's in its own container, so it reaches dependencies only through unix sockets. Needs Linux, root and NET_ADMIN."`
+	Serve   serveCommand   `cmd:"" help:"Run the SPECTRE server, which mirrors stream their states to."`
+	Gen     genCommand     `cmd:"" help:"Generate TypeScript schema declarations and the script API."`
+	Status  statusCommand  `cmd:"" help:"List the mirrors reporting to the SPECTRE server and the divergences they reported, or clear divergences."`
+	State   stateCommand   `cmd:"" help:"Describe a service's migration state."`
+	Next    nextCommand    `cmd:"" help:"List the nodes to migrate next: one ingress node and the pending nodes it needs."`
+	Done    doneCommand    `cmd:"" help:"Mark migrated nodes in the migration state, which must stay valid."`
 
 	Init initCommand `cmd:"" help:"Set a service checkout up for a SPECTRE migration from a template."`
 }
@@ -59,26 +57,13 @@ func (c *serveCommand) Run(ctx context.Context) error {
 	return errors.WithStack(server.Serve(ctx, c.Serve))
 }
 
-// superviseCommand supervises the candidate and reference behind the embedded proxies.
-type superviseCommand struct {
-	Supervisor supervisor.Config `embed:""`
-}
-
-func (c *superviseCommand) Run(ctx context.Context, catalog *state.Catalog) error {
-	super, err := supervisor.New(ctx, c.Supervisor, catalog)
-	if err != nil {
-		return errors.WithStack(err)
-	}
-	return errors.WithStack(super.Run(ctx))
-}
-
 // proxyCommand runs the embedded proxies in front of services that run elsewhere.
 type proxyCommand struct {
 	Proxy proxies.ProxyConfig `embed:""`
 }
 
 func (c *proxyCommand) Run(ctx context.Context, catalog *state.Catalog) error {
-	proxy, err := proxies.NewProxy(ctx, c.Proxy, catalog)
+	proxy, err := proxies.New(ctx, c.Proxy, catalog)
 	if err != nil {
 		return errors.WithStack(err)
 	}

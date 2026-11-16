@@ -45,7 +45,7 @@ func TestProxyMirrorsServicesThatRunElsewhere(t *testing.T) {
 	config.Mirror.Reflection = false
 	config.Mirror.ScriptsDir = t.TempDir()
 	config.Mirror.SchemaDir = t.TempDir()
-	proxy, err := proxies.NewProxy(t.Context(), config, testCatalog(t))
+	proxy, err := proxies.New(t.Context(), config, testCatalog(t))
 	assert.NoError(t, err)
 
 	ctx, cancel := context.WithCancel(t.Context())
@@ -80,7 +80,7 @@ func TestProxyMirrorsServicesThatRunElsewhere(t *testing.T) {
 func TestNewProxyValidates(t *testing.T) {
 	config := proxies.ProxyConfig{Mirror: proxies.NewConfig()}
 	config.Mirror.MatchWindow = 0
-	_, err := proxies.NewProxy(t.Context(), config, testCatalog(t))
+	_, err := proxies.New(t.Context(), config, testCatalog(t))
 	assert.EqualError(t, err, "match window must be positive")
 }
 

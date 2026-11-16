@@ -6,13 +6,13 @@ See [USAGE.md](USAGE.md) for how to run and configure SPECTRE.
 
 Build the local Alpine-based image with `bit container`.
 
-Build the [demo](demo/README.md) image with `bit demo`. It wraps a complete
-supervised example around the sample service, including the cgroup split and
-egress sandbox.
+Build the [demo](demo/README.md) image with `bit demo`. It carries the sample
+services and their comparison config for the containers of
+[`demo/mirror-pod.yaml`](demo/mirror-pod.yaml).
 
-`bit test-mirror-pod` runs [`demo/mirror-pod.yaml`](demo/mirror-pod.yaml) in a
-local kind cluster with Docker and checks that it mirrors, replays egress, and
-refuses the candidate's direct IP traffic.
+`bit test-mirror-pod` runs that pod in a local kind cluster with Docker and
+checks that it mirrors, replays egress, and refuses the candidate's direct IP
+traffic.
 
 ## Sample Connect service
 
@@ -23,35 +23,16 @@ bit sample
 spectre-sample
 ```
 
-Run two samples as the candidate and reference behind the proxies with
-`spectre supervise`, which starts both services itself. It reports to a SPECTRE
-server, so start one first:
-
-```sh
-spectre serve &
-spectre supervise \
-  --server-url=http://127.0.0.1:50070 \
-  --service=sample \
-  --environment=local \
-  --revision=local \
-  --reference='spectre-sample --listen=$SPECTRE_LISTEN' \
-  --candidate='spectre-sample --listen=$SPECTRE_LISTEN' \
-  --scripts-dir=internal/sample/scripts \
-  --schema-dir=internal/sample/schema \
-  --descriptors-dir=dist/descriptors \
-  --no-limits
-```
-
 The sample serves Connect, gRPC, and gRPC-Web on `127.0.0.1:50051` with
 reflection enabled.
 Use `--listen=127.0.0.1:50052` to run a second instance and `--data=path/to/users.json`
 to load a different ProtoJSON `ListUsersResponse` at startup. With `grpcurl` installed,
-call it through ingress:
+call it directly:
 
 ```sh
-grpcurl -plaintext -d '{}' localhost:50050 spectre.sample.v1.UserService/ListUsers
-grpcurl -plaintext -d '{"id":"user-1"}' localhost:50050 spectre.sample.v1.UserService/GetUser
-grpcurl -plaintext -d '{"role":"ROLE_READER"}' localhost:50050 spectre.sample.v1.UserService/ListUsers
+grpcurl -plaintext -d '{}' localhost:50051 spectre.sample.v1.UserService/ListUsers
+grpcurl -plaintext -d '{"id":"user-1"}' localhost:50051 spectre.sample.v1.UserService/GetUser
+grpcurl -plaintext -d '{"role":"ROLE_READER"}' localhost:50051 spectre.sample.v1.UserService/ListUsers
 ```
 
 The [sample data](internal/sample/testdata/users.json) includes nested messages,
@@ -69,9 +50,9 @@ Use `--weather=path/to/weather.json` to load different
 [weather](internal/sample/testdata/weather.json) and `--revision` to set the status revision:
 
 ```sh
-curl 'localhost:50050/v2/forecast?location=london'
-curl 'localhost:50050/api/v1/forecast?location=sydney'
-curl localhost:50050/_status
+curl 'localhost:50051/v2/forecast?location=london'
+curl 'localhost:50051/api/v1/forecast?location=sydney'
+curl localhost:50051/_status
 ```
 
 With `--forecasts=URL`, the weather endpoints fetch forecasts from a forecast
@@ -82,12 +63,15 @@ Run the provider with `spectre-sample-forecasts`, which listens on
 data. The [forecasts script](internal/sample/scripts/forecasts.ts) declares this
 endpoint for egress.
 
-To run the whole stack on unix sockets under `dist/sockets/`, with reloads on
-change, run `proctor`. It starts the forecast provider, egress, reference and
-candidate samples in dependency mode, and ingress:
+To run a whole mirror on unix sockets under `dist/sockets/`, with reloads on
+change, run `proctor`. Like the containers of a mirror pod, the
+[`Procfile`](Procfile) runs each of these as a process of its own: the forecast
+provider, a SPECTRE server, reference and candidate samples in dependency mode,
+and `spectre proxy` in front of them:
 
 ```sh
 curl --unix-socket dist/sockets/ingress.sock 'http://ingress/v2/forecast?location=london'
+grpcurl -unix -plaintext -d '{}' "$(pwd)/dist/sockets/ingress.sock" spectre.sample.v1.UserService/ListUsers
 ```
 
 Edit the [protobuf definitions](internal/sample/proto/service.proto) and run

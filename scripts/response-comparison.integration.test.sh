@@ -8,13 +8,12 @@ egress_candidate_address=$(pwd)/dist/sockets/egress-candidate.sock
 escape=$(printf '\033')
 
 # Proctor prefixes each line with a coloured, right-aligned process name and a bar.
-# The proxies and services share the supervisor's output, so their JSON records are
-# selected by the spectre.subsystem or revision each one logs. Other lines are skipped.
+# Both proxies share one process, so their JSON records are selected by the
+# spectre.subsystem each one logs. Other lines are skipped.
 process_log() {
 	# shellcheck disable=SC2016 # $process is a jq variable, bound with --arg.
 	case $1 in
-	ingress | egress) label=supervisor selector='.["spectre.subsystem"] == $process' ;;
-	candidate) label=supervisor selector='.revision == "candidate"' ;;
+	ingress | egress) label=proxy selector='.["spectre.subsystem"] == $process' ;;
 	*) label=$1 selector=true ;;
 	esac
 	sed -n -e "s/${escape}\[[0-9;]*m//g" -e "s/^ *$label │ //p" "$SPECTRE_PROCTOR_LOG" |
