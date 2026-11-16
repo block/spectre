@@ -58,10 +58,14 @@ test-launcher = exec.test {
   command = "spectre.test.sh"
   inputs = ["scripts/spectre", "scripts/spectre.test.sh"]
 }
-test-response-comparison-integration = exec.test {
-  command = "response-comparison.integration.test.sh"
-  inputs = ["Procfile.integration", "scripts/response-comparison.integration.test.sh", "scripts/spectre", "scripts/spectre-sample", "scripts/spectre-sample-forecasts", "internal/**/*.ts", "internal/sample/testdata/*.json", "bin/jq"]
-  depends_on = [spectre-bin, sample-bin, sample-forecasts-bin, sample-schema]
+# Only the integration build tag includes these tests, and CI runs them in their own
+# job. They read the sample's scripts, schema and descriptors, which go cannot see, so
+# -count=1 stops it caching the result.
+test-integration(run = ".") = go.test {
+  package = "./internal/integration"
+  flags = ["-tags=integration", "-count=1", "-timeout=5m", "-run=#{run}"]
+  inputs = go-inputs + ["internal/**/*.ts", "internal/sample/testdata/*.json"]
+  depends_on = [sample-descriptors, sample-schema, typescript-compiler]
 }
 test-release-version = exec.test {
   command = "release-version.test.sh"
@@ -134,8 +138,9 @@ lint-go-modules = exec.test {
   command = "go-module-sync --check internal/typescript"
   inputs = go-module-sync-inputs
 }
+# The tag lints the integration tests too, which only it includes.
 lint-tsk[go-module] = exec.test {
-  command = "tsk lint ./..."
+  command = "GOFLAGS=-tags=integration tsk lint ./..."
   dir = go-module
   inputs = tsk-inputs + prefix(go-inputs, "#{go-module}/")
   depends_on = [build-go]
@@ -187,7 +192,7 @@ group demo = [demo-image]
 group publish-container(registry : string, image-tag : string, version : string) = [publish-release-image(registry = registry, image-tag = image-tag, version = version)]
 
 # Run all tests
-group test = [test-go, test-launcher, test-response-comparison-integration, test-release-version, test-container-images, test-tsk]
+group test = [test-go, test-launcher, test-release-version, test-container-images, test-tsk]
 
 # Lint everything
 group lint = [lint-go-modules, lint-tsk, lint-proto, lint-actions, lint-action-pins, lint-dockerfile, lint-release, lint-scripts, fmt-check-go]

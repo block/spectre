@@ -29,6 +29,7 @@ func NewEngine(
 	config Config,
 	matchers map[model.Protocol]Matcher,
 	quarantine Quarantiner,
+	calls Option[CallCounter],
 ) (*Engine, error) {
 	if quarantine == nil {
 		return nil, errors.New("quarantiner is required")
@@ -53,7 +54,7 @@ func NewEngine(
 	return &Engine{
 		schema:  scripts.Schema(),
 		scripts: scripts,
-		ingress: newIngressPairs(scripts, quarantine),
+		ingress: newIngressPairs(scripts, quarantine, calls),
 		egress:  newEgressQueue(scripts, config.MatchWindow, quarantine),
 	}, nil
 }

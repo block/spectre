@@ -335,7 +335,7 @@ func buildDecoder(t *testing.T, set *descriptorpb.FileDescriptorSet, declaration
 	config.Comparison.ScriptsDir = writeFiles(t, scripts)
 	routes := route.NewMatcher()
 	matchers := map[model.Protocol]protocol.Matcher{model.ProtocolHTTP: routes}
-	engine, err := protocol.NewEngine(t.Context(), config, matchers, discardQuarantine{})
+	engine, err := protocol.NewEngine(t.Context(), config, matchers, discardQuarantine{}, None[protocol.CallCounter]())
 	assert.NoError(t, err)
 	return message.New(engine.Schema(), set, routes, engine, maxBodyBytes)
 }

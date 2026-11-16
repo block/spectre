@@ -79,7 +79,7 @@ func NewEgress(
 	}
 	candidates := proxy.NewCandidates(config.Candidates)
 	routes := route.NewMatcher()
-	engine, err := protocol.NewEngine(ctx, engineConfig, map[model.Protocol]protocol.Matcher{model.ProtocolHTTP: routes}, candidates)
+	engine, err := protocol.NewEngine(ctx, engineConfig, map[model.Protocol]protocol.Matcher{model.ProtocolHTTP: routes}, candidates, None[protocol.CallCounter]())
 	if err != nil {
 		return nil, errors.Wrap(err, "configure request hashing")
 	}

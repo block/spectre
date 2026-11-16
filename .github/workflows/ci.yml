@@ -50,6 +50,24 @@ jobs:
           path: ${{ env.BUILD_CACHE_PATHS }}
           key: build-test-${{ steps.cache-day.outputs.day }}-${{ github.sha }}
 
+  integration:
+    name: Integration
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # ratchet:actions/checkout@v7
+      - uses: cashapp/activate-hermit@cea9af7913204a965fd488637a8d1811bba2e616 # ratchet:cashapp/activate-hermit@v1
+      - id: cache-day
+        run: echo "day=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+      # Reads the Test job's cache, which holds most of the packages these
+      # tests compile. Only the Test job saves it.
+      - uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # ratchet:actions/cache/restore@v5
+        with:
+          path: ${{ env.BUILD_CACHE_PATHS }}
+          key: build-test-${{ steps.cache-day.outputs.day }}-${{ github.sha }}
+          restore-keys: build-test-${{ steps.cache-day.outputs.day }}-
+      - name: Run integration tests
+        run: bit test-integration
+
   lint:
     name: Lint
     runs-on: ubuntu-latest

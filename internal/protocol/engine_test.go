@@ -22,6 +22,7 @@ import (
 	"github.com/block/spectre/internal/logger"
 	"github.com/block/spectre/internal/model"
 	"github.com/block/spectre/internal/protocol"
+	"github.com/block/spectre/internal/proxy"
 )
 
 // fake and other are protocols no script declares, so the engine pipelines are
@@ -56,7 +57,7 @@ func TestNewEngineDeclaresEndpointsToTheirMatchers(t *testing.T) {
 
 	//nolint:exhaustive // the engine is tested with fake protocols, not real ones
 	_, err := protocol.NewEngine(t.Context(), config,
-		map[model.Protocol]protocol.Matcher{fake: fakeMatcher, model.ProtocolHTTP: httpMatcher}, &recordingQuarantiner{})
+		map[model.Protocol]protocol.Matcher{fake: fakeMatcher, model.ProtocolHTTP: httpMatcher}, &recordingQuarantiner{}, None[protocol.CallCounter]())
 
 	assert.NoError(t, err)
 	assert.Equal(t, []string{
@@ -92,7 +93,7 @@ func TestNewEngineRejectsInvalidSetup(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, err := protocol.NewEngine(t.Context(), newConfig(t, fakeScript, time.Second), test.matchers, test.quarantine)
+			_, err := protocol.NewEngine(t.Context(), newConfig(t, fakeScript, time.Second), test.matchers, test.quarantine, None[protocol.CallCounter]())
 			assert.EqualError(t, err, test.expected)
 		})
 	}
@@ -104,6 +105,7 @@ type harness struct {
 	ctx        context.Context
 	engine     *protocol.Engine
 	quarantine *recordingQuarantiner
+	calls      *proxy.CallCounter
 	logs       *lockedBuffer
 	// rules are the fake script's ingress rules in declaration order.
 	rules []javascript.Rule
@@ -118,13 +120,14 @@ func newScriptHarness(t *testing.T, script string, window time.Duration) *harnes
 	t.Helper()
 	logs := &lockedBuffer{}
 	quarantine := &recordingQuarantiner{}
+	calls := proxy.NewCallCounter()
 	rules := &recordingMatcher{}
 	ctx := logger.WithLogger(t.Context(), slog.New(slog.NewJSONHandler(logs, &slog.HandlerOptions{Level: slog.LevelInfo})))
 	engine, err := protocol.NewEngine(ctx, newConfig(t, script, window),
 		//nolint:exhaustive // the engine is tested with fake protocols, not real ones
-		map[model.Protocol]protocol.Matcher{fake: &recordingMatcher{}, model.ProtocolHTTP: rules}, quarantine)
+		map[model.Protocol]protocol.Matcher{fake: &recordingMatcher{}, model.ProtocolHTTP: rules}, quarantine, Some[protocol.CallCounter](calls))
 	assert.NoError(t, err)
-	return &harness{ctx: ctx, engine: engine, quarantine: quarantine, logs: logs, rules: rules.rules}
+	return &harness{ctx: ctx, engine: engine, quarantine: quarantine, calls: calls, logs: logs, rules: rules.rules}
 }
 
 // records returns every log record with msg, without its timestamp.

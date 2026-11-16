@@ -24,7 +24,6 @@ Dockerfile
 GOVERNANCE.md
 LICENSE
 Procfile
-Procfile.integration
 README.md
 buf.gen.yaml
 buf.yaml

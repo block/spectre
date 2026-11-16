@@ -10,8 +10,12 @@ cp "$source_root/scripts/spectre" "$test_root/scripts/spectre"
 
 export SPECTRE_LAUNCHER_TEST_LOG="$test_root/log"
 export PATH="$test_root/scripts:$test_root/bin:$PATH"
+touch "$test_root/BUILD.bit"
 cat > "$test_root/bin/bit" <<'EOF'
 #!/bin/sh
+if [ ! -f BUILD.bit ]; then
+  printf 'bit ran outside the repository root: %s\n' "$(pwd)" >> "$SPECTRE_LAUNCHER_TEST_LOG"
+fi
 printf 'bit %s\n' "$*" >> "$SPECTRE_LAUNCHER_TEST_LOG"
 EOF
 chmod +x "$test_root/bin/bit"
@@ -29,7 +33,8 @@ EOF
   chmod +x "$test_root/dist/$name"
   : > "$SPECTRE_LAUNCHER_TEST_LOG"
 
-  "$name" --flag 'two words'
+  # Launch from elsewhere, as proctor does from a test's own directory.
+  (cd / && "$name" --flag 'two words')
 
   expected=$(printf 'bit -q %s\n%s --flag two words' "$target" "$name")
   actual=$(cat "$SPECTRE_LAUNCHER_TEST_LOG")

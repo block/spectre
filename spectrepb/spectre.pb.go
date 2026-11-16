@@ -1150,8 +1150,8 @@ func (x *State) GetCalls() *Calls {
 	return nil
 }
 
-// Calls counts the requests the mirror's ingress proxy received on each route
-// since the mirror started.
+// Calls counts the requests on each route whose responses the mirror's ingress
+// proxy compared since the mirror started.
 type Calls struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Routes maps each route to its number of requests.

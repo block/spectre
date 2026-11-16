@@ -61,6 +61,7 @@ func statusDifference(reference, candidate string) comparisonResult {
 type ingressPairs struct {
 	scripts    *comparison.Scripts
 	quarantine Quarantiner
+	calls      Option[CallCounter]
 
 	// mu guards both maps and every pair's lifecycle flags.
 	mu        sync.Mutex
@@ -68,10 +69,11 @@ type ingressPairs struct {
 	exchanges map[Exchange]*ingressPair
 }
 
-func newIngressPairs(scripts *comparison.Scripts, quarantine Quarantiner) *ingressPairs {
+func newIngressPairs(scripts *comparison.Scripts, quarantine Quarantiner, calls Option[CallCounter]) *ingressPairs {
 	return &ingressPairs{
 		scripts:    scripts,
 		quarantine: quarantine,
+		calls:      calls,
 		requests:   map[RequestID]*ingressPair{},
 		exchanges:  map[Exchange]*ingressPair{},
 	}
@@ -450,7 +452,7 @@ func (p *ingressPairs) candidateUnable(ctx context.Context, exchange Exchange, r
 	p.report(ctx, pair, result, 0)
 }
 
-// report logs a comparison and applies the fail-closed policy to it.
+// report logs and counts a comparison, and applies the fail-closed policy to it.
 func (p *ingressPairs) report(ctx context.Context, pair *ingressPair, result comparisonResult, latency time.Duration) {
 	attributes := append([]any{"event", logger.EventCorrelation}, pair.describe()...)
 	attributes = append(attributes, "outcome", result.outcome)
@@ -474,6 +476,10 @@ func (p *ingressPairs) report(ctx context.Context, pair *ingressPair, result com
 		p.quarantine.Quarantine(ctx, model.QuarantineReason{
 			Kind: model.QuarantineUnable, Traffic: Some(pair.traffic()), Detail: "response comparison failed: " + result.reason,
 		})
+	}
+	// Counting after quarantine means a reported count never runs ahead of its quarantine.
+	if calls, ok := p.calls.Get(); ok {
+		calls.Count(pair.traffic().Route)
 	}
 }
 

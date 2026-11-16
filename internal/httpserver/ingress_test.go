@@ -786,6 +786,19 @@ func awaitQuarantine(t *testing.T, handler *httpserver.Ingress) model.Quarantine
 	}
 }
 
+// awaitCalls waits until handler has counted the expected calls.
+func awaitCalls(t *testing.T, handler *httpserver.Ingress, expected model.Calls) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for !handler.Calls().Equal(expected) {
+		if time.Now().After(deadline) {
+			assert.Equal(t, expected, handler.Calls())
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 func TestReflectionRequiresDescriptorLoader(t *testing.T) {
 	config := newTestConfig(t, "http://127.0.0.1:50051", "http://127.0.0.1:50052")
 	_, err := newIngress(t, config, newEngineConfig(t), http.DefaultTransport, None[httpserver.DescriptorLoader]())
@@ -1429,6 +1442,8 @@ status = "migrated"
 	case <-time.After(time.Second):
 		t.Fatal("migrated route was not mirrored")
 	}
+	// Only compared calls count, under the migration state pattern that lists their route.
+	awaitCalls(t, handler, model.Calls{Routes: map[model.Route]uint64{"GET /test.Echo/{method}": 1}})
 	assert.False(t, handler.Candidates().QuarantineStatus().Ok())
 
 	serve(http.MethodGet, "/unlisted")
@@ -1444,14 +1459,6 @@ status = "migrated"
 	referenceMu.Lock()
 	defer referenceMu.Unlock()
 	assert.Equal(t, []string{"/pending/a", "/ignored/a", "/grpc.reflection.v1.ServerReflection/ServerReflectionInfo", "/test.Echo/Get", "/unlisted"}, referencePaths)
-	// Calls count under the migration state pattern that lists their route.
-	assert.Equal(t, model.Calls{Routes: map[model.Route]uint64{
-		"GET /pending/{name}": 1,
-		"GET /ignored/a":      1,
-		"POST /grpc.reflection.v1.ServerReflection/ServerReflectionInfo": 1,
-		"GET /test.Echo/{method}": 1,
-		"GET /unlisted":           1,
-	}}, handler.Calls())
 }
 
 func TestQuarantineNamesNodeOfRoute(t *testing.T) {

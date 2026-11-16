@@ -5,6 +5,9 @@ package server
 import (
 	"time"
 
+	"github.com/alecthomas/errors"
+	"github.com/alecthomas/kong"
+
 	"github.com/block/spectre/internal/server/storage"
 )
 
@@ -13,6 +16,15 @@ type ServeConfig struct {
 	Listen   string         `default:"127.0.0.1:50070" help:"Address for the SPECTRE server: host:port, or unix:<path|@abstract>."`
 	Storage  storage.Config `embed:""`
 	StateTTL time.Duration  `default:"90s" help:"How long a mirror's state is listed after its last update. Keep it above the mirrors' keepalive interval."`
+}
+
+// NewServeConfig returns the default server configuration.
+func NewServeConfig() ServeConfig {
+	config := ServeConfig{}
+	if err := kong.ApplyDefaults(&config); err != nil {
+		panic(errors.Wrap(err, "apply server defaults"))
+	}
+	return config
 }
 
 // ClearConfig names the service environment whose divergences to clear.

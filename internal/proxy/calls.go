@@ -11,8 +11,7 @@ import (
 // migration state hold raw paths.
 const maxCountedRoutes = 100
 
-// CallCounter counts the requests a proxy receives on each route. It is safe
-// for concurrent use.
+// CallCounter counts requests on each route. It is safe for concurrent use.
 type CallCounter struct {
 	mu    sync.Mutex
 	calls model.Calls

@@ -2,8 +2,8 @@ package model
 
 import "maps"
 
-// Calls counts the requests the ingress proxy received on each route since the
-// mirror started.
+// Calls counts the requests on each route whose responses the ingress proxy
+// compared since the mirror started.
 type Calls struct {
 	Routes map[Route]uint64 `json:"routes,omitempty"`
 	// Other counts requests to routes beyond the most a mirror counts.

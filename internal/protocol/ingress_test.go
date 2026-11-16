@@ -151,6 +151,7 @@ func TestIngressComparesResponses(t *testing.T) {
 
 			assert.Equal(t, test.quarantined, h.quarantine.Reasons())
 			assert.Equal(t, []map[string]any{comparisonRecord(route, test.logged)}, h.records(t, "Response comparison completed"))
+			assert.Equal(t, model.Calls{Routes: map[model.Route]uint64{route: 1}}, h.calls.Calls())
 			assert.Equal(t, 1, referenceRaw.Releases())
 			assert.Equal(t, 1, candidateRaw.Releases())
 		})
@@ -418,6 +419,7 @@ func TestIngressDropsReferenceWithoutCandidate(t *testing.T) {
 	assert.Equal(t, 1, raw.Releases())
 	assert.Equal(t, nil, h.quarantine.Reasons())
 	assert.Equal(t, []map[string]any{}, h.records(t, "Response comparison completed"))
+	assert.Equal(t, model.Calls{Routes: map[model.Route]uint64{}}, h.calls.Calls())
 }
 
 func TestIngressCandidateWaitsForReference(t *testing.T) {

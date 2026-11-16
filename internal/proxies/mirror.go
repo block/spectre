@@ -34,6 +34,26 @@ type Mirror struct {
 	exits   chan exit
 }
 
+// Listeners are the open listeners of a mirror's proxies.
+type Listeners struct {
+	Ingress         net.Listener
+	ReferenceEgress net.Listener
+	CandidateEgress net.Listener
+	EgressHealth    net.Listener
+	Health          net.Listener
+}
+
+// close closes every listener that a stopped proxy has not, joining any errors.
+func (l Listeners) close() error {
+	closeErrors := []error{}
+	for _, listener := range []net.Listener{l.Ingress, l.ReferenceEgress, l.CandidateEgress, l.EgressHealth, l.Health} {
+		if err := listener.Close(); !errors.Is(err, net.ErrClosed) {
+			closeErrors = append(closeErrors, err)
+		}
+	}
+	return errors.Join(closeErrors...)
+}
+
 // exit reports a finished proxy.
 type exit struct {
 	name string
@@ -74,11 +94,21 @@ func (m *Mirror) Run(ctx context.Context) error {
 // Start opens every listener and serves the proxies in the background. Ingress is
 // ready once the reference accepts, and mirrors once the candidate does.
 func (m *Mirror) Start(ctx context.Context) error {
+	listeners, err := m.listen(ctx)
+	if err != nil {
+		return err
+	}
+	return m.StartListeners(ctx, listeners)
+}
+
+// StartListeners serves the proxies on listeners in the background, ignoring
+// the configured addresses. The proxies close the listeners when they stop.
+func (m *Mirror) StartListeners(ctx context.Context, listeners Listeners) error {
 	ctx, m.cancel = context.WithCancel(ctx)
-	if err := m.startAll(ctx); err != nil {
+	if err := m.startAll(ctx, listeners); err != nil {
 		m.cancel()
 		m.drain()
-		return err
+		return errors.Join(err, listeners.close())
 	}
 	m.log.InfoContext(ctx, "Mirror started", "ingress", m.config.Listen, "health", m.config.HealthListen)
 	return nil
@@ -99,23 +129,30 @@ func (m *Mirror) Wait(ctx context.Context) error {
 	}
 }
 
+// listen opens the configured listener of every proxy.
+func (m *Mirror) listen(ctx context.Context) (Listeners, error) {
+	opened, err := listenAll(ctx, m.config.Listen, m.config.ReferenceEgressListen, m.config.CandidateEgressListen, m.config.EgressHealthListen, m.config.HealthListen)
+	if err != nil {
+		return Listeners{}, err
+	}
+	return Listeners{Ingress: opened[0], ReferenceEgress: opened[1], CandidateEgress: opened[2], EgressHealth: opened[3], Health: opened[4]}, nil
+}
+
 // startAll serves egress first, so services can reach dependencies as they start.
-func (m *Mirror) startAll(ctx context.Context) error {
-	if err := m.startEgress(ctx); err != nil {
+func (m *Mirror) startAll(ctx context.Context, listeners Listeners) error {
+	if err := m.startEgress(ctx, listeners); err != nil {
 		return err
 	}
-	if err := m.startIngress(ctx); err != nil {
+	if err := m.startIngress(ctx, listeners.Ingress); err != nil {
 		return err
 	}
-	if err := m.startHealth(ctx); err != nil {
-		return err
-	}
+	m.startHealth(ctx, listeners.Health)
 	m.startReporter(ctx)
 	return nil
 }
 
-// startEgress builds the egress proxy, opens its listeners, and serves it.
-func (m *Mirror) startEgress(ctx context.Context) error {
+// startEgress builds the egress proxy and serves it.
+func (m *Mirror) startEgress(ctx context.Context, listeners Listeners) error {
 	config := m.egressConfig()
 	transport := httpserver.NewTransport(config.TransportConfig)
 	proxyContext := logger.WithSubsystem(ctx, "egress")
@@ -125,19 +162,14 @@ func (m *Mirror) startEgress(ctx context.Context) error {
 		return errors.Wrap(err, "configure egress")
 	}
 	m.egress = handler
-	listeners, err := listenAll(ctx, config.ReferenceListen, config.CandidateListen, config.HealthListen)
-	if err != nil {
-		transport.CloseIdleConnections()
-		return errors.Wrap(err, "listen for egress")
-	}
 	m.serve(ctx, "egress", transport.CloseIdleConnections, func() error {
-		return handler.Serve(proxyContext, listeners[0], listeners[1], listeners[2])
+		return handler.Serve(proxyContext, listeners.ReferenceEgress, listeners.CandidateEgress, listeners.EgressHealth)
 	})
 	return nil
 }
 
-// startIngress builds the ingress proxy, opens its listener, and serves it.
-func (m *Mirror) startIngress(ctx context.Context) error {
+// startIngress builds the ingress proxy and serves it on listener.
+func (m *Mirror) startIngress(ctx context.Context, listener net.Listener) error {
 	config := m.ingressConfig()
 	transport := httpserver.NewTransport(config.TransportConfig)
 	loader := Some[httpserver.DescriptorLoader](descriptors.NewReflectionLoader())
@@ -148,23 +180,14 @@ func (m *Mirror) startIngress(ctx context.Context) error {
 		return errors.Wrap(err, "configure ingress")
 	}
 	m.ingress = handler
-	listener, err := netaddr.ParseListen(config.Listen).Listen(ctx)
-	if err != nil {
-		transport.CloseIdleConnections()
-		return errors.Wrap(err, "listen for ingress")
-	}
 	m.serve(ctx, "ingress", transport.CloseIdleConnections, func() error {
 		return handler.Serve(proxyContext, listener)
 	})
 	return nil
 }
 
-// startHealth serves the health of both proxies, for probes.
-func (m *Mirror) startHealth(ctx context.Context) error {
-	listener, err := netaddr.ParseListen(m.config.HealthListen).Listen(ctx)
-	if err != nil {
-		return errors.Wrap(err, "listen for health")
-	}
+// startHealth serves the health of both proxies on listener, for probes.
+func (m *Mirror) startHealth(ctx context.Context, listener net.Listener) {
 	handler := health.NewAll(m.ingress.Health(), m.egress.Health())
 	config := httpserver.NewConfig()
 	healthContext := logger.WithSubsystem(ctx, "health")
@@ -172,7 +195,6 @@ func (m *Mirror) startHealth(ctx context.Context) error {
 	m.serve(ctx, "health", func() {}, func() error {
 		return errors.Wrap(httpserver.Serve(healthContext, config, []httpserver.Binding{httpserver.NewBinding(listener, handler)}, lifecycle), "serve health")
 	})
-	return nil
 }
 
 // startReporter streams the mirror's state, with ingress call counts and both
