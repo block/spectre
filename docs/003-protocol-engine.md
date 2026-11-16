@@ -126,9 +126,10 @@ A script can declare that a candidate's requests to one egress endpoint replace 
 
 Divergence, `Unable`, an unidentifiable request, and an unmatched egress candidate are all reported to the `Quarantiner`. Servers pass the same `proxy.Candidates` they use for candidate admission, cancellation, and timeouts.
 
-- `Unable` with a cancelled context never quarantines, because the caller gave up. Nor does a comparison that cancellation cut short.
+- At ingress, `Unable` with a cancelled context never quarantines, because the caller gave up. Nor does a comparison that cancellation cut short.
 - The candidate timeout is SPECTRE's own limit, so it quarantines as unable when it ends the candidate's context. The reason says whether the candidate had not responded, the reference had not responded, or the comparison had not finished. The engine tells the timeout apart from other cancellation by the context's cause.
-- An egress candidate that gives up while no reference request matches its own is quarantined as unmatched, because the reference made no such request. Work the proxy stops, cancelled with `ErrCandidateStopped`, never quarantines.
+- An egress candidate that gives up before it is answered is quarantined, because the reference's call was not mirrored. Giving up while no reference request matches its own is unmatched, because the reference made no such request. Giving up at any later step, such as waiting for the reference response, is unable.
+- Egress work the proxy stops, cancelled with `ErrCandidateStopped`, never quarantines. The proxy stops candidate work only when it shuts down or quarantines the candidate.
 - Ignored routes never quarantine, even when the candidate fails. Their candidate responses are reported as skipped without waiting for the reference.
 - Streaming RPCs cannot be compared yet, so ingress quarantines the candidate as unable when one arrives, before sending it to the candidate. Rules that match a streaming RPC do not change this; only rules that ignore it do.
 - Known statuses are compared first, so a status difference is divergent even if a body fails to decode. Otherwise a response one side cannot decode is reported as unable.
