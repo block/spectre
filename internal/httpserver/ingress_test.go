@@ -1040,7 +1040,8 @@ func TestReferenceEarlyCloseAbortsCandidateWithoutQuarantine(t *testing.T) {
 		t.Fatal("candidate request was not aborted after the reference closed its body")
 	}
 
-	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequestWithContext(ctx, http.MethodGet, "http://proxy.example/later", nil))
+	// The later request only shows the candidate still receives traffic, so its responses are never compared.
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequestWithContext(ctx, http.MethodGet, "http://proxy.example/ignored/later", nil))
 	select {
 	case <-laterCandidate:
 	case <-time.After(time.Second):
