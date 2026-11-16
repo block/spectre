@@ -70,8 +70,8 @@ github.com/mdlayher/netlink v1.7.3-0.20250113171957-fbb4dce95f42 h1:A1Cq6Ysb0GM0
 github.com/mdlayher/netlink v1.7.3-0.20250113171957-fbb4dce95f42/go.mod h1:BB4YCPDOzfy7FniQ/lxuYQ3dgmM2cZumHbK8RpTjN2o=
 github.com/mdlayher/socket v0.5.0 h1:ilICZmJcQz70vrWVes1MFera4jGiWNocSkykwwoy3XI=
 github.com/mdlayher/socket v0.5.0/go.mod h1:WkcBFfvyG8QENs5+hfQPl1X6Jpd2yeLIYgrGFmJiJxI=
-github.com/microsoft/TypeScript/tsc v0.0.0-20261106223502-f7973164a5f0 h1:SlB+2AD1ZUFwIc6oCk5sT1Pk9acIeeAU2ZWnHbmXwBU=
-github.com/microsoft/TypeScript/tsc v0.0.0-20261106223502-f7973164a5f0/go.mod h1:oDRRWMco56IdG6k4/CcGIrcQxhML8VzTnqNkhig5lZ4=
+github.com/microsoft/TypeScript/tsc v0.0.0-20261114002809-6bdcb54d23f4 h1:p15OgrWWgTPNtkPSYfgg2Qvm9zzwutNYIGeL0nhJC8s=
+github.com/microsoft/TypeScript/tsc v0.0.0-20261114002809-6bdcb54d23f4/go.mod h1:oDRRWMco56IdG6k4/CcGIrcQxhML8VzTnqNkhig5lZ4=
 github.com/ncruces/go-strftime v0.1.9 h1:bY0MQC28UADQmHmaF5dgpLmImcShSi2kHU9XLdhx/f4=
 github.com/ncruces/go-strftime v0.1.9/go.mod h1:Fwc5htZGVVkseilnfgOVb9mKy6w1naJmn9CehxcKcls=
 github.com/pelletier/go-toml v1.9.5 h1:4yBQzkHv+7BHq2PQUZF3Mx0IYxG7LsP222s7Agd3ve8=

@@ -14,8 +14,8 @@ github.com/klauspost/compress v1.20.3 h1:zWNoFqq/lSuYQRim3dUXlXeA0IqwuZGicdG5ZTf
 github.com/klauspost/compress v1.20.3/go.mod h1:LUdAzn7YLVvxLpc7y3V1m40wESHTgc1422pwwBSKYuI=
 github.com/klauspost/cpuid/v2 v2.4.0 h1:S6Hrbc7+ywsr0r+RLapfGBHfyefhCTwEh3A0tV913Dw=
 github.com/klauspost/cpuid/v2 v2.4.0/go.mod h1:19jmZ9mjzoF//ddRSUsv0zfBTJWh3QJh9FNxZTMrGxU=
-github.com/microsoft/TypeScript/tsc v0.0.0-20261106223502-f7973164a5f0 h1:SlB+2AD1ZUFwIc6oCk5sT1Pk9acIeeAU2ZWnHbmXwBU=
-github.com/microsoft/TypeScript/tsc v0.0.0-20261106223502-f7973164a5f0/go.mod h1:oDRRWMco56IdG6k4/CcGIrcQxhML8VzTnqNkhig5lZ4=
+github.com/microsoft/TypeScript/tsc v0.0.0-20261114002809-6bdcb54d23f4 h1:p15OgrWWgTPNtkPSYfgg2Qvm9zzwutNYIGeL0nhJC8s=
+github.com/microsoft/TypeScript/tsc v0.0.0-20261114002809-6bdcb54d23f4/go.mod h1:oDRRWMco56IdG6k4/CcGIrcQxhML8VzTnqNkhig5lZ4=
 github.com/peter-evans/patience v0.3.0 h1:rX0JdJeepqdQl1Sk9c9uvorjYYzL2TfgLX1adqYm9cA=
 github.com/peter-evans/patience v0.3.0/go.mod h1:Kmxu5sY1NmBLFSStvXjX1wS9mIv7wMcP/ubucyMOAu0=
 github.com/zeebo/assert v1.3.0 h1:g7C04CbJuIDKNPFHmsk4hwZDO5O+kntRxzaUoNXj+IQ=
