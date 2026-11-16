@@ -230,14 +230,16 @@ pass, and unix sockets are unaffected. Running it again replaces the rules.
 
 ### Ingress
 
-Ingress is ready once the reference accepts connections. With `--reflection`,
-the default, it also waits for the candidate. It then loads both services'
-protobuf descriptors with gRPC reflection and requires them to match. Disable it
-with `--no-reflection` to compare using only `--descriptors-dir`.
+Ingress is ready once the reference and candidate both accept connections and
+its comparison schema is set up. With `--reflection`, the default, it loads both
+services' protobuf descriptors with gRPC reflection and requires them to match.
+Disable it with `--no-reflection` to compare using only `--descriptors-dir`.
 
-Ingress mirrors nothing until the candidate first accepts a connection, so a
-slow candidate start is not a divergence. A candidate that accepts nothing
-within `--candidate-startup-timeout` (5m by default) is quarantined.
+Until it is ready, ingress answers every request with 503, so no request
+reaches the reference without being mirrored. A candidate that accepts nothing
+within `--candidate-startup-timeout` (5m by default) is quarantined, as is one
+whose schema cannot be set up, for example because its descriptors differ from
+the reference's. Ingress then stays unready.
 
 Clients always receive the reference's response. Each pair of responses is
 compared as the [comparison scripts](#comparison-scripts) describe. Without a
