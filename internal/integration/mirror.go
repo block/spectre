@@ -68,14 +68,11 @@ type Running struct {
 	IngressURL         string
 	CandidateEgressURL string
 	ServerURL          string
-	Reference          *Recorder
-	Candidate          *Recorder
 	// Ingress, Egress and Server select what the proxies and the server log.
-	Ingress      Log
-	Egress       Log
-	Server       Log
-	dependencies map[string]*Recorder
-	client       *http.Client
+	Ingress Log
+	Egress  Log
+	Server  Log
+	client  *http.Client
 }
 
 // Main builds the spectre binary and the given bit targets once, unless -short
@@ -129,32 +126,20 @@ func Start(t *testing.T, mirror Mirror) *Running {
 		IngressURL:         urls[ingressListener],
 		CandidateEgressURL: urls[candidateEgressListener],
 		ServerURL:          serverURL,
-		Reference:          newRecorder("the reference", mirror.Reference(egress(t, urls[referenceEgressListener])), watch),
-		Candidate:          newRecorder("the candidate", mirror.Candidate(egress(t, urls[candidateEgressListener])), watch),
 		Ingress:            newLog(proxy, Fields{"spectre.subsystem": "ingress"}, watch),
 		Egress:             newLog(proxy, Fields{"spectre.subsystem": "egress"}, watch),
 		Server:             newLog(server, Fields{}, watch),
-		dependencies:       map[string]*Recorder{},
 		client:             newClient(t),
 	}
-	serve(t, reference, running.Reference)
-	serve(t, candidate, running.Candidate)
+	serve(t, reference, mirror.Reference(egress(t, urls[referenceEgressListener])))
+	serve(t, candidate, mirror.Candidate(egress(t, urls[candidateEgressListener])))
 	for host, listener := range dependencies {
-		running.dependencies[host] = newRecorder(host, mirror.Dependencies[host], watch)
-		serve(t, listener, running.dependencies[host])
+		serve(t, listener, mirror.Dependencies[host])
 	}
 	watch.await(t, startTimeout, "the proxy to be ready", func() bool {
 		return running.ready(t, urls[healthListener]+"/readyz")
 	})
 	return running
-}
-
-// Dependency returns the recorder of the dependency serving host.
-func (r *Running) Dependency(t *testing.T, host string) *Recorder {
-	t.Helper()
-	recorder, ok := r.dependencies[host]
-	assert.True(t, ok, "no dependency serves %s", host)
-	return recorder
 }
 
 // Client returns a client that speaks HTTP/2 without TLS, as gRPC needs.

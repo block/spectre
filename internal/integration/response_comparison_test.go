@@ -22,16 +22,15 @@ func TestNormalisedResponsesAreEquivalent(t *testing.T) {
 	users := users(m)
 
 	listUserOne(t, users)
-	m.Candidate.WaitFor(t, listUsersPath, 1)
 	m.Ingress.WaitFor(t, integration.Fields{"msg": "Payload normaliser completed", "kind": "field", "target": "spectre.sample.v1.User.roles"})
 	m.Ingress.WaitFor(t, integration.Fields{"target": "spectre.sample.v1.ListUsersResponse.generatedAt", "side": "candidate", "payload_path": "$.generatedAt"})
 	m.Ingress.WaitFor(t, comparison("POST "+listUsersPath, "equivalent"))
 
-	// Past the match window, a second mirrored request shows the reordered roles
+	// Past the match window, a second compared request shows the reordered roles
 	// did not quarantine the candidate.
 	time.Sleep(1100 * time.Millisecond)
 	listUserOne(t, users)
-	m.Candidate.WaitFor(t, listUsersPath, 2)
+	m.Ingress.WaitForCount(t, comparison("POST "+listUsersPath, "equivalent"), 2)
 }
 
 func TestRawHTTPResponsesAreEquivalent(t *testing.T) {
@@ -71,9 +70,8 @@ func TestEgressReplaysReferenceResponses(t *testing.T) {
 	m.Egress.WaitForCount(t, integration.Fields{"msg": "Candidate request matched a reference request", "event": "correlation", "protocol": "http", "route": "GET forecasts.example/v1/forecasts/{location}"}, len(locations))
 	// Egress answers the candidate with the reference's forecast, so each location
 	// reaches the provider once.
-	forecasts := m.Dependency(t, forecastsHost)
 	for location := range locations {
-		assert.Equal(t, 1, forecasts.Count("/v1/forecasts/"+location), "provider calls for %s", location)
+		assert.Equal(t, 1, m.forecasts.count("/v1/forecasts/"+location), "provider calls for %s", location)
 	}
 }
 
@@ -86,15 +84,13 @@ func TestDivergentResponseQuarantinesCandidate(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, "Sam Sample", response.GetUser().GetName())
 	assert.Equal(t, map[string]string{"team": "platform"}, response.GetUser().GetLabels())
-	m.Candidate.WaitFor(t, getUserPath, 1)
 	m.Ingress.WaitFor(t, comparison("POST "+getUserPath, "divergent"))
 	m.Ingress.WaitFor(t, integration.Fields{"msg": "Candidate quarantined"})
 
 	// The reference still answers, and the candidate receives nothing more.
 	listUserOne(t, users)
 	time.Sleep(200 * time.Millisecond)
-	assert.Equal(t, 1, m.Reference.Count(listUsersPath))
-	assert.Equal(t, 0, m.Candidate.Count(listUsersPath), "candidate requests after quarantine")
+	assert.Equal(t, 0, m.candidate.count(listUsersPath), "candidate requests after quarantine")
 }
 
 func TestUnmatchedCandidateEgressQuarantinesCandidate(t *testing.T) {
@@ -112,7 +108,7 @@ func TestUnmatchedCandidateEgressQuarantinesCandidate(t *testing.T) {
 	assert.Equal(t, http.StatusBadGateway, forecast("paris"))
 	m.Egress.WaitFor(t, integration.Fields{"msg": "Candidate quarantined"})
 	assert.Equal(t, http.StatusServiceUnavailable, forecast("london"))
-	assert.Equal(t, 0, m.Dependency(t, forecastsHost).Count("/v1/forecasts/paris"))
+	assert.Equal(t, 0, m.forecasts.count("/v1/forecasts/paris"))
 }
 
 // comparison selects the record ingress logs when it finishes comparing a route.

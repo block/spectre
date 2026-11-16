@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"connectrpc.com/connect/v2"
@@ -22,9 +23,17 @@ import (
 // forecastsHost is the host the samples send their forecast requests to.
 const forecastsHost = "forecasts.example"
 
+// sampleMirror is a running sample mirror, with the requests that reached the
+// candidate and the forecast provider.
+type sampleMirror struct {
+	*integration.Running
+	candidate *calls
+	forecasts *calls
+}
+
 // startSampleMirror mirrors the sample to a candidate with reordered user-1
 // roles, another user-2 team, and its first and last weather alerts swapped.
-func startSampleMirror(t *testing.T) *integration.Running {
+func startSampleMirror(t *testing.T) sampleMirror {
 	t.Helper()
 	users, weather := testdata(t, "users.json"), testdata(t, "weather.json")
 	candidateUsers := rewrite(t, users,
@@ -37,15 +46,20 @@ func startSampleMirror(t *testing.T) *integration.Running {
 	assert.NoError(t, err)
 	forecasts := http.NewServeMux()
 	forecasts.HandleFunc("GET /v1/forecasts/{location}", provider.FetchForecast)
-	return integration.Start(t, integration.Mirror{
-		Reference:      sampleService(t, "reference", users, weather),
-		Candidate:      sampleService(t, "candidate", candidateUsers, candidateWeather),
-		Dependencies:   map[string]http.Handler{forecastsHost: forecasts},
+	m := sampleMirror{candidate: newCalls(), forecasts: newCalls()}
+	candidate := sampleService(t, "candidate", candidateUsers, candidateWeather)
+	m.Running = integration.Start(t, integration.Mirror{
+		Reference: sampleService(t, "reference", users, weather),
+		Candidate: func(egress integration.Egress) http.Handler {
+			return m.candidate.wrap(candidate(egress))
+		},
+		Dependencies:   map[string]http.Handler{forecastsHost: m.forecasts.wrap(forecasts)},
 		ScriptsDir:     "../sample/scripts",
 		SchemaDir:      "../sample/schema",
 		DescriptorsDir: "../../dist/descriptors",
 		ProxyFlags:     []string{"--match-window=1s"},
 	})
+	return m
 }
 
 // sampleService serves the sample's users and weather, fetching forecasts through egress.
@@ -70,7 +84,7 @@ func sampleService(t *testing.T, revision string, users []byte, weather []byte) 
 }
 
 // users returns a gRPC client of the sample's user service through ingress.
-func users(m *integration.Running) samplepbconnect.UserServiceClient {
+func users(m sampleMirror) samplepbconnect.UserServiceClient {
 	return samplepbconnect.NewUserServiceClient(connect.NewClient(connecthttp.NewTransport(m.Client(), m.IngressURL, connecthttp.WithGRPC())))
 }
 
@@ -104,4 +118,32 @@ func rewrite(t *testing.T, data []byte, oldNew ...string) []byte {
 		text = strings.Replace(text, oldNew[i], oldNew[i+1], 1)
 	}
 	return []byte(text)
+}
+
+// calls counts the requests a handler receives, by path. It is safe for
+// concurrent use.
+type calls struct {
+	mu    sync.Mutex
+	paths map[string]int
+}
+
+func newCalls() *calls {
+	return &calls{paths: map[string]int{}}
+}
+
+// wrap counts each request to next as it arrives.
+func (c *calls) wrap(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		c.mu.Lock()
+		c.paths[request.URL.Path]++
+		c.mu.Unlock()
+		next.ServeHTTP(writer, request)
+	})
+}
+
+// count returns how many requests for path have arrived so far.
+func (c *calls) count(path string) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.paths[path]
 }

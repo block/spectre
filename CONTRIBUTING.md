@@ -86,7 +86,7 @@ candidate and dependency services as Go handlers, and the library serves them
 in the test process. It runs `spectre serve` and `spectre proxy` in front of them
 as processes of their own. Every listener takes a free port from the operating
 system, so tests run in parallel. A test drives the mirror through its URLs, and
-checks the requests each service received and the records the processes logged.
+checks the responses and the records the processes logged.
 A failing test logs the output of every process.
 
 The tests are skipped with `-short`, which `bit test-go` passes. Run them with
