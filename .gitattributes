@@ -1,0 +1,5 @@
+# GitHub collapses diffs of generated files by default; mark tests as generated
+# so pull requests open on the code under test.
+*_test.go linguist-generated=true
+*.test.sh linguist-generated=true
+**/testdata/** linguist-generated=true
