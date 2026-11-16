@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 
 	"github.com/alecthomas/errors"
@@ -68,6 +69,44 @@ func (c *stateValidateCommand) Run(out Output, catalog *state.Catalog) error {
 	}
 	_, err = fmt.Fprintf(out.Writer, "%s is valid: %d nodes, %d migrated\n", path, len(loaded.Nodes), migrated)
 	return errors.Wrap(err, "write validation result")
+}
+
+// doneCommand marks nodes migrated after the agent adds them to the candidate.
+// It writes nothing unless the state stays valid.
+type doneCommand struct {
+	State state.Config `embed:""`
+	Nodes []string     `arg:"" name:"node" help:"IDs of the nodes now in the candidate."`
+}
+
+func (c *doneCommand) Run(out Output, catalog *state.Catalog) error {
+	path := c.State.StateFile
+	info, err := os.Stat(path)
+	if err != nil {
+		return errors.Wrap(err, "read migration state")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return errors.Wrap(err, "read migration state")
+	}
+	updated, marked, err := state.MarkMigrated(data, catalog, c.Nodes)
+	if invalid, ok := errors.AsType[*state.InvalidError](err); ok {
+		for _, problem := range invalid.Problems {
+			writeProblem(out, path, out.Palette.Red("error"), problem)
+		}
+		return errors.Errorf("%s would be invalid, so it is unchanged", path)
+	}
+	if err != nil {
+		return errors.WithStack(err)
+	}
+	if len(marked) == 0 {
+		_, err = fmt.Fprintf(out.Writer, "%s is unchanged: every node is already migrated\n", path)
+		return errors.Wrap(err, "write done result")
+	}
+	if err := os.WriteFile(path, updated, info.Mode().Perm()); err != nil {
+		return errors.Wrap(err, "write migration state")
+	}
+	_, err = fmt.Fprintf(out.Writer, "%s: marked %s migrated\n", path, strings.Join(marked, ", "))
+	return errors.Wrap(err, "write done result")
 }
 
 // textWidth is the column that text output wraps at.

@@ -14,8 +14,8 @@ You need to be in a root directory of the service being migrated, and have `spec
   including errors and the dependency calls it makes. Match behaviour, not code.
 - Add or update the comparison scripts for its routes and dependency calls with
   the `spectre-schema` skill.
-- Set the node's `status` to `"migrated"` in `spectre/state.toml`, changing only
-  that line, and run `spectre state validate`.
+- Run `spectre done <node>` with the ID of the node you migrated. It marks it
+  migrated in `spectre/state.toml` and checks the state is still valid.
 - Commit the candidate change and the state change together, so the mirror only
   compares routes the candidate implements.
 

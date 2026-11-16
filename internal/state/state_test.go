@@ -187,3 +187,113 @@ depends_on = ["money"]
 	assert.NoError(t, err)
 	assert.Equal(t, []state.Problem{{Line: 12, Message: "nodes.job: no ingress node reaches it, so SPECTRE cannot verify it"}}, parsed.Unreached())
 }
+
+func TestMarkMigrated(t *testing.T) {
+	for name, test := range map[string]struct {
+		toml     string
+		ids      []string
+		expected string
+		marked   []string
+	}{
+		"ReplacesStatus": {
+			toml:     "[nodes.a]\nstatus = \"pending\" # keep\n",
+			ids:      []string{"a"},
+			expected: "[nodes.a]\nstatus = \"migrated\" # keep\n",
+			marked:   []string{"a"},
+		},
+		"AddsStatusAfterHeader": {
+			toml:     "# money\n[nodes.a] # shared\ndepends_on = []\n",
+			ids:      []string{"a"},
+			expected: "# money\n[nodes.a] # shared\nstatus = \"migrated\"\ndepends_on = []\n",
+			marked:   []string{"a"},
+		},
+		"AddsStatusAtEnd": {
+			toml:     "[nodes.a]",
+			ids:      []string{"a"},
+			expected: "[nodes.a]\nstatus = \"migrated\"\n",
+			marked:   []string{"a"},
+		},
+		"AddsTableBeforeSubtable": {
+			toml:     "[nodes.b]\n\n[nodes.api.ingress.rpc.methods]\nGet = {}\n",
+			ids:      []string{"api"},
+			expected: "[nodes.b]\n\n[nodes.api]\nstatus = \"migrated\"\n\n[nodes.api.ingress.rpc.methods]\nGet = {}\n",
+			marked:   []string{"api"},
+		},
+		"InlineStatus": {
+			toml:     "[nodes]\na = { status = 'pending' }\n",
+			ids:      []string{"a"},
+			expected: "[nodes]\na = { status = \"migrated\" }\n",
+			marked:   []string{"a"},
+		},
+		"DottedStatus": {
+			toml:     "nodes.a.status = \"pending\"\n",
+			ids:      []string{"a"},
+			expected: "nodes.a.status = \"migrated\"\n",
+			marked:   []string{"a"},
+		},
+		"DependenciesTogether": {
+			toml:     "[nodes.a]\ndepends_on = [\"b\"]\n\n[nodes.b]\nstatus = \"pending\"\n",
+			ids:      []string{"a", "b", "a"},
+			expected: "[nodes.a]\nstatus = \"migrated\"\ndepends_on = [\"b\"]\n\n[nodes.b]\nstatus = \"migrated\"\n",
+			marked:   []string{"a", "b"},
+		},
+		"AlreadyMigrated": {
+			toml:     "[nodes.a]\nstatus = \"migrated\"\n",
+			ids:      []string{"a"},
+			expected: "[nodes.a]\nstatus = \"migrated\"\n",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			updated, marked, err := state.MarkMigrated([]byte(test.toml), testCatalog(t), test.ids)
+			assert.NoError(t, err)
+			assert.Equal(t, test.expected, string(updated))
+			assert.Equal(t, test.marked, marked)
+		})
+	}
+}
+
+func TestMarkMigratedErrors(t *testing.T) {
+	for name, test := range map[string]struct {
+		toml     string
+		ids      []string
+		err      string
+		problems []state.Problem
+	}{
+		"UnknownNodes": {
+			toml: "[nodes.a]\n",
+			ids:  []string{"b", "a", "c"},
+			err:  "not a node: b, c",
+		},
+		"PendingDependency": {
+			toml:     "[nodes.a]\ndepends_on = [\"b\"]\n\n[nodes.b]\n",
+			ids:      []string{"a"},
+			problems: []state.Problem{{Line: 2, Message: `nodes.a.status: migrated, but depends on pending node "b"`}},
+		},
+		"InvalidBefore": {
+			toml:     "[nodes.a]\nstatus = \"done\"\n",
+			ids:      []string{"a"},
+			problems: []state.Problem{{Line: 2, Message: `nodes.a.status: must be "pending" or "migrated"`}},
+		},
+		"InlineNode": {
+			toml: "[nodes]\na = { depends_on = [] }\n",
+			ids:  []string{"a"},
+			err:  "nodes.a is not written as a [nodes.a] table, so set its status by hand",
+		},
+		"DottedNode": {
+			toml: "[nodes]\na.depends_on = []\n",
+			ids:  []string{"a"},
+			err:  "nodes.a is not written as a [nodes.a] table, so set its status by hand",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, _, err := state.MarkMigrated([]byte(test.toml), testCatalog(t), test.ids)
+			if len(test.problems) == 0 {
+				assert.EqualError(t, err, test.err)
+				return
+			}
+			invalid, ok := errors.AsType[*state.InvalidError](err)
+			assert.True(t, ok, "expected an invalid state, got %v", err)
+			assert.Equal(t, test.problems, invalid.Problems)
+		})
+	}
+}
