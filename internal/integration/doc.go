@@ -4,5 +4,6 @@
 // a free port and handed over, so tests run in parallel without conflicts.
 // Tests check the state the proxy reports to the server.
 //
-// Start skips the test with -short, so the unit test run leaves it out.
+// Tests that use it carry the integration build tag, so only a run with
+// -tags=integration includes them.
 package integration

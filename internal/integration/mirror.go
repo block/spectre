@@ -2,7 +2,6 @@ package integration
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"io"
 	"net"
@@ -74,11 +73,10 @@ type Running struct {
 	watch              *watch
 }
 
-// Main builds the given bit targets once, unless -short skips the tests, then
-// runs them. Call it from TestMain.
+// Main builds the given bit targets once, then runs the tests. Call it from
+// TestMain.
 func Main(m *testing.M, targets ...string) int {
-	flag.Parse()
-	if !testing.Short() && len(targets) > 0 {
+	if len(targets) > 0 {
 		if err := build(targets); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			return 1
@@ -91,9 +89,6 @@ func Main(m *testing.M, targets ...string) int {
 // the test process, and waits until the proxy is ready. They stop with the test.
 func Start(t *testing.T, mirror Mirror) *Running {
 	t.Helper()
-	if testing.Short() {
-		t.Skip("starts a whole mirror")
-	}
 	ctx := t.Context()
 	watch := newWatch()
 	server := listen(t)

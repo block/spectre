@@ -90,9 +90,9 @@ in parallel without port conflicts. A test drives the mirror through its URLs,
 and checks the responses and the state the proxy reports to the server: its
 calls and quarantines.
 
-The tests are skipped with `-short`, which `bit test-go` passes. Run them with
-`bit test-integration`, or with `go test ./internal/integration` once Hermit is
-active.
+The tests carry the `integration` build tag, so `bit test` leaves them out and
+CI runs them in a separate job. Run them with `bit test-integration`, or with
+`go test -tags=integration ./internal/integration` once Hermit is active.
 
 ## Editor configuration
 
