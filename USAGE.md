@@ -270,6 +270,12 @@ equivalent reference call and receives its recorded response. A candidate call
 without a match gets a `502` and stops all later candidate calls until the process
 restarts. Ingress then quarantines the candidate when its responses diverge.
 
+A candidate call that gives up before it is answered, for example because its
+own client timed out, also quarantines the candidate, whether or not it matched a
+reference call. Giving up before a match is `unmatched`, and giving up later, such
+as while waiting for the reference's response, is `unable`. Calls SPECTRE cancels
+itself, while shutting down or after a quarantine, never quarantine.
+
 When the candidate asks a dependency for data the reference read from another of
 its endpoints, declare that the candidate's call `replaces` the reference's call
 to that source endpoint. The candidate is then answered from the reference's
