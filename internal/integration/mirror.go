@@ -94,7 +94,7 @@ func Start(t *testing.T, mirror Mirror) *Running {
 	if testing.Short() {
 		t.Skip("starts a whole mirror")
 	}
-	ctx := withLogs(t)
+	ctx := t.Context()
 	watch := newWatch()
 	server := listen(t)
 	serverURL := baseURL(server)

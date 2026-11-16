@@ -88,7 +88,7 @@ goroutines of the same process, as `spectre serve` and `spectre proxy` would.
 The library opens every listener on a free port and hands it over, so tests run
 in parallel without port conflicts. A test drives the mirror through its URLs,
 and checks the responses and the state the proxy reports to the server: its
-calls and quarantines. A failing test logs the mirror's logs.
+calls and quarantines.
 
 The tests are skipped with `-short`, which `bit test-go` passes. Run them with
 `bit test-integration`, or with `go test ./internal/integration` once Hermit is
