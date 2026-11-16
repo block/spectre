@@ -3,7 +3,6 @@ package integration_test
 import (
 	"net/http"
 	"testing"
-	"time"
 
 	"github.com/alecthomas/assert/v2"
 
@@ -26,9 +25,7 @@ func TestNormalisedResponsesAreEquivalent(t *testing.T) {
 	m.Ingress.WaitFor(t, integration.Fields{"target": "spectre.sample.v1.ListUsersResponse.generatedAt", "side": "candidate", "payload_path": "$.generatedAt"})
 	m.Ingress.WaitFor(t, comparison("POST "+listUsersPath, "equivalent"))
 
-	// Past the match window, a second compared request shows the reordered roles
-	// did not quarantine the candidate.
-	time.Sleep(1100 * time.Millisecond)
+	// A second mirrored request shows the reordered roles did not quarantine the candidate.
 	listUserOne(t, users)
 	m.Ingress.WaitForCount(t, comparison("POST "+listUsersPath, "equivalent"), 2)
 }
@@ -87,9 +84,9 @@ func TestDivergentResponseQuarantinesCandidate(t *testing.T) {
 	m.Ingress.WaitFor(t, comparison("POST "+getUserPath, "divergent"))
 	m.Ingress.WaitFor(t, integration.Fields{"msg": "Candidate quarantined"})
 
-	// The reference still answers, and the candidate receives nothing more.
+	// The reference still answers. Ingress turns the candidate away before the
+	// reference responds, so once ListUsers returns the candidate cannot get it.
 	listUserOne(t, users)
-	time.Sleep(200 * time.Millisecond)
 	assert.Equal(t, 0, m.candidate.count(listUsersPath), "candidate requests after quarantine")
 }
 

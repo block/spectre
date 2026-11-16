@@ -26,7 +26,9 @@ const (
 	waitTimeout = 10 * time.Second
 	// requestTimeout bounds each request a test sends.
 	requestTimeout = 5 * time.Second
-	pollInterval   = 50 * time.Millisecond
+	// Polls start at minPollInterval and back off to maxPollInterval.
+	minPollInterval = 5 * time.Millisecond
+	maxPollInterval = 500 * time.Millisecond
 )
 
 // proxyListeners name the proxy's listeners in its "Proxy listening" records.
@@ -73,6 +75,7 @@ type Running struct {
 	Egress  Log
 	Server  Log
 	client  *http.Client
+	watch   *watch
 }
 
 // Main builds the spectre binary and the given bit targets once, unless -short
@@ -130,6 +133,7 @@ func Start(t *testing.T, mirror Mirror) *Running {
 		Egress:             newLog(proxy, Fields{"spectre.subsystem": "egress"}, watch),
 		Server:             newLog(server, Fields{}, watch),
 		client:             newClient(t),
+		watch:              watch,
 	}
 	serve(t, reference, mirror.Reference(egress(t, urls[referenceEgressListener])))
 	serve(t, candidate, mirror.Candidate(egress(t, urls[candidateEgressListener])))
@@ -140,6 +144,13 @@ func Start(t *testing.T, mirror Mirror) *Running {
 		return running.ready(t, urls[healthListener]+"/readyz")
 	})
 	return running
+}
+
+// Eventually waits until condition holds, polling it with backoff. It fails the
+// test after a timeout, or as soon as the proxy or the server exits.
+func (r *Running) Eventually(t *testing.T, what string, condition func() bool) {
+	t.Helper()
+	r.watch.await(t, waitTimeout, what, condition)
 }
 
 // Client returns a client that speaks HTTP/2 without TLS, as gRPC needs.
@@ -195,10 +206,11 @@ func (w *watch) start(t *testing.T, name string, args ...string) *process {
 }
 
 // await polls done until it holds, failing the test on timeout or when a
-// process exits.
+// process exits. The interval between polls doubles up to maxPollInterval.
 func (w *watch) await(t *testing.T, timeout time.Duration, what string, done func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
+	interval := minPollInterval
 	for !done() {
 		for _, p := range w.processes {
 			if err := p.failure(); err != nil {
@@ -206,9 +218,10 @@ func (w *watch) await(t *testing.T, timeout time.Duration, what string, done fun
 			}
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("timed out waiting for %s", what)
+			t.Fatalf("timed out after %s waiting for %s", timeout, what)
 		}
-		time.Sleep(pollInterval)
+		time.Sleep(min(interval, time.Until(deadline)))
+		interval = min(2*interval, maxPollInterval)
 	}
 }
 
