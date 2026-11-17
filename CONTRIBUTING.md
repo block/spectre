@@ -81,14 +81,35 @@ declarations. Generated declarations are checked in alongside the Go bindings.
 ## Integration tests
 
 The [`internal/integration`](internal/integration) tests run a whole mirror
-each. A test defines the reference, candidate and dependency services as Go
-handlers, and the harness in the package's test files serves them in the test
-process. It runs the SPECTRE server and the proxy in front of them in goroutines
-of the same process, as `spectre serve` and `spectre proxy` would. The harness
-opens every listener on a free port and hands it over, so tests run in parallel
-without port conflicts. A test drives the mirror through its URLs, and checks
-the responses and the state the proxy reports to the server: its calls and
-quarantines.
+each, in the test process: the services, the SPECTRE server and the proxy, on
+free ports, so tests run in parallel without port conflicts. A test starts its
+mirror with `startMirror`, passing the reference and candidate services, the
+dependencies, and its comparison scripts as TypeScript inline in the Go file:
+
+```go
+m := startMirror(t,
+	scripts(`
+		import { egress, ingress } from "spectre";
+		import type { FetchForecastRequest } from "forecasts";
+		import type { GetForecastV2Response } from "weather";
+
+		ingress.http("GET /v2/forecast").match<GetForecastV2Response>();
+		egress.http("GET forecasts.example/v1/forecasts/{location}").optional().match<FetchForecastRequest>();
+	`),
+	reference(sampleService()),
+	candidate(sampleService(ownForecasts())),
+	dependency(forecastsHost, forecastProvider),
+)
+m.ingress.get("/v2/forecast?location=london").expectStatus(http.StatusOK)
+m.expectCalls(calls{"GET /v2/forecast": 1})
+m.dependency(forecastsHost).expectReceived("/v1/forecasts/london", 1)
+```
+
+The sample's services, with variations such as `ownForecasts`, are the
+building blocks. Tests send requests through ingress or either egress listener,
+and check the responses, the requests each service and dependency received, and
+the calls and quarantines the proxy reports to the server. The sample's schema
+and descriptors and a 500ms match window are the defaults.
 
 Every file in the package carries the `integration` build tag, so `bit test`
 leaves them out and CI runs them in a separate job. Run them with

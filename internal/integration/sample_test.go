@@ -7,13 +7,10 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
-	"time"
 
 	"connectrpc.com/connect/v2"
 	"connectrpc.com/connect/v2/connecthttp"
-	"connectrpc.com/grpcreflect/v2"
 	"github.com/alecthomas/assert/v2"
 	. "github.com/alecthomas/types/optional"
 
@@ -25,81 +22,102 @@ import (
 // forecastsHost is the host the samples send their forecast requests to.
 const forecastsHost = "forecasts.example"
 
-// sampleMirror is a running sample mirror, with the requests that reached the
-// candidate and the forecast provider.
-type sampleMirror struct {
-	*running
-	candidate *calls
-	forecasts *calls
+// sampleData is what a sample service serves.
+type sampleData struct {
+	users        []byte
+	weather      []byte
+	revision     string
+	ownForecasts bool
 }
 
-// startSampleMirror mirrors the sample to a candidate with reordered user-1
-// roles, another user-2 team, and its first and last weather alerts swapped.
-func startSampleMirror(t *testing.T) sampleMirror {
-	t.Helper()
-	users, weather := testdata(t, "users.json"), testdata(t, "weather.json")
-	candidateUsers := rewrite(t, users,
-		`"ROLE_ADMIN", "ROLE_EDITOR"`, `"ROLE_EDITOR", "ROLE_ADMIN"`,
-		`"team": "platform"`, `"team": "candidate"`)
-	first := `"id": "alert-1", "severity": "moderate", "headline": "Heavy rain"`
-	last := `"id": "alert-3", "severity": "minor", "headline": "Fog"`
-	candidateWeather := rewrite(t, weather, first, "SWAPPED", last, first, "SWAPPED", last)
-	provider, err := sample.NewForecastProvider(weather)
-	assert.NoError(t, err)
-	forecasts := http.NewServeMux()
-	forecasts.HandleFunc("GET /v1/forecasts/{location}", provider.FetchForecast)
-	m := sampleMirror{candidate: newCalls(), forecasts: newCalls()}
-	candidate := sampleService(t, "candidate", candidateUsers, candidateWeather)
-	m.running = start(t, mirror{
-		reference: sampleService(t, "reference", users, weather),
-		candidate: func(egress egress) http.Handler {
-			return m.candidate.wrap(candidate(egress))
-		},
-		dependencies:   map[string]http.Handler{forecastsHost: m.forecasts.wrap(forecasts)},
-		scriptsDir:     "../sample/scripts",
-		schemaDir:      "../sample/schema",
-		descriptorsDir: "../../dist/descriptors",
-		matchWindow:    time.Second,
-	})
-	return m
-}
+// variation changes what a sample service serves.
+type variation func(t *testing.T, data *sampleData)
 
-// sampleService serves the sample's users and weather, fetching forecasts through egress.
-func sampleService(t *testing.T, revision string, users []byte, weather []byte) service {
-	t.Helper()
-	return func(egress egress) http.Handler {
-		userService, err := sample.New(users)
+// sampleService serves the sample's users and weather, changed by variations.
+// It fetches forecasts through egress from forecastsHost.
+func sampleService(variations ...variation) service {
+	return func(t *testing.T, backend backend) {
+		t.Helper()
+		data := sampleData{users: testdata(t, "users.json"), weather: testdata(t, "weather.json"), revision: "sample"}
+		for _, vary := range variations {
+			vary(t, &data)
+		}
+		users, err := sample.New(data.users)
 		assert.NoError(t, err)
-		forecasts := sample.NewForecastClient(egress.url, forecastsHost, egress.transport)
-		weatherService, err := sample.NewWeather(weather, revision, Some(forecasts))
+		forecasts := Some(sample.NewForecastClient(backend.egress.url, forecastsHost, backend.egress.transport))
+		if data.ownForecasts {
+			forecasts = None[*sample.ForecastClient]()
+		}
+		weather, err := sample.NewWeather(data.weather, data.revision, forecasts)
 		assert.NoError(t, err)
-		server := connect.NewServer()
-		samplepbconnect.RegisterUserServiceHandler(server, userService)
-		grpcreflect.Register(server)
-		mux := http.NewServeMux()
-		connecthttp.Mount(mux, server)
-		mux.HandleFunc("GET /api/v1/forecast", weatherService.GetForecast)
-		mux.HandleFunc("GET /v2/forecast", weatherService.GetForecastV2)
-		mux.HandleFunc("GET /_status", weatherService.GetStatus)
-		return mux
+		samplepbconnect.RegisterUserServiceHandler(backend.grpc, users)
+		backend.http.HandleFunc("GET /api/v1/forecast", weather.GetForecast)
+		backend.http.HandleFunc("GET /v2/forecast", weather.GetForecastV2)
+		backend.http.HandleFunc("GET /_status", weather.GetStatus)
 	}
 }
 
-// users returns a gRPC client of the sample's user service through ingress.
-func users(m sampleMirror) samplepbconnect.UserServiceClient {
-	return samplepbconnect.NewUserServiceClient(connect.NewClient(connecthttp.NewTransport(m.client, m.ingressURL, connecthttp.WithGRPC())))
+// reorderedRoles swaps user-1's roles.
+func reorderedRoles() variation {
+	return func(t *testing.T, data *sampleData) {
+		t.Helper()
+		data.users = rewrite(t, data.users, `"ROLE_ADMIN", "ROLE_EDITOR"`, `"ROLE_EDITOR", "ROLE_ADMIN"`)
+	}
+}
+
+// otherTeam moves user-2 to another team.
+func otherTeam() variation {
+	return func(t *testing.T, data *sampleData) {
+		t.Helper()
+		data.users = rewrite(t, data.users, `"team": "platform"`, `"team": "candidate"`)
+	}
+}
+
+// swappedAlerts swaps the first and last weather alerts.
+func swappedAlerts() variation {
+	return func(t *testing.T, data *sampleData) {
+		t.Helper()
+		first := `"id": "alert-1", "severity": "moderate", "headline": "Heavy rain"`
+		last := `"id": "alert-3", "severity": "minor", "headline": "Fog"`
+		data.weather = rewrite(t, data.weather, first, "SWAPPED", last, first, "SWAPPED", last)
+	}
+}
+
+// ownForecasts serves forecasts from the sample's data instead of fetching them.
+func ownForecasts() variation {
+	return func(_ *testing.T, data *sampleData) { data.ownForecasts = true }
+}
+
+// revision sets the revision the service reports on /_status.
+func revision(name string) variation {
+	return func(_ *testing.T, data *sampleData) { data.revision = name }
+}
+
+// forecastProvider serves the sample's forecasts, as the dependency at forecastsHost.
+func forecastProvider(t *testing.T) http.Handler {
+	t.Helper()
+	provider, err := sample.NewForecastProvider(testdata(t, "weather.json"))
+	assert.NoError(t, err)
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /v1/forecasts/{location}", provider.FetchForecast)
+	return mux
+}
+
+// userClient returns a gRPC client of the sample's user service through ingress.
+func userClient(m *mirror) samplepbconnect.UserServiceClient {
+	return samplepbconnect.NewUserServiceClient(connect.NewClient(connecthttp.NewTransport(m.client, m.ingress.base, connecthttp.WithGRPC())))
 }
 
 // listUserOne lists user-1 through ingress, checking it gets the reference's answer.
-func listUserOne(t *testing.T, users samplepbconnect.UserServiceClient) {
-	t.Helper()
-	response, err := users.ListUsers(t.Context(), &samplepb.ListUsersRequest{Ids: []string{"user-1"}})
-	assert.NoError(t, err)
+func listUserOne(m *mirror) {
+	m.t.Helper()
+	response, err := userClient(m).ListUsers(m.t.Context(), &samplepb.ListUsersRequest{Ids: []string{"user-1"}})
+	assert.NoError(m.t, err)
 	names := []string{}
 	for _, user := range response.GetUsers() {
 		names = append(names, user.GetName())
 	}
-	assert.Equal(t, []string{"Alex Example"}, names)
+	assert.Equal(m.t, []string{"Alex Example"}, names)
 }
 
 // testdata reads one of the sample's data files.
@@ -120,32 +138,4 @@ func rewrite(t *testing.T, data []byte, oldNew ...string) []byte {
 		text = strings.Replace(text, oldNew[i], oldNew[i+1], 1)
 	}
 	return []byte(text)
-}
-
-// calls counts the requests a handler receives, by path. It is safe for
-// concurrent use.
-type calls struct {
-	mu    sync.Mutex
-	paths map[string]int
-}
-
-func newCalls() *calls {
-	return &calls{paths: map[string]int{}}
-}
-
-// wrap counts each request to next as it arrives.
-func (c *calls) wrap(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		c.mu.Lock()
-		c.paths[request.URL.Path]++
-		c.mu.Unlock()
-		next.ServeHTTP(writer, request)
-	})
-}
-
-// count returns how many requests for path have arrived so far.
-func (c *calls) count(path string) int {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.paths[path]
 }
