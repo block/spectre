@@ -37,7 +37,7 @@ jobs:
       - uses: cashapp/activate-hermit@cea9af7913204a965fd488637a8d1811bba2e616 # ratchet:cashapp/activate-hermit@v1
       - id: cache-day
         run: echo "day=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
-      - uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # ratchet:actions/cache/restore@v5
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ${{ env.BUILD_CACHE_PATHS }}
           key: build-test-${{ steps.cache-day.outputs.day }}-${{ github.sha }}
@@ -45,7 +45,7 @@ jobs:
       - name: Run tests
         run: bit test
       - if: github.ref == 'refs/heads/main'
-        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # ratchet:actions/cache/save@v5
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ${{ env.BUILD_CACHE_PATHS }}
           key: build-test-${{ steps.cache-day.outputs.day }}-${{ github.sha }}
@@ -60,7 +60,7 @@ jobs:
         run: echo "day=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
       # Reads the Test job's cache, which holds most of the packages these
       # tests compile. Only the Test job saves it.
-      - uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # ratchet:actions/cache/restore@v5
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ${{ env.BUILD_CACHE_PATHS }}
           key: build-test-${{ steps.cache-day.outputs.day }}-${{ github.sha }}
@@ -76,7 +76,7 @@ jobs:
       - uses: cashapp/activate-hermit@cea9af7913204a965fd488637a8d1811bba2e616 # ratchet:cashapp/activate-hermit@v1
       - id: cache-day
         run: echo "day=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
-      - uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # ratchet:actions/cache/restore@v5
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ${{ env.BUILD_CACHE_PATHS }}
           key: build-lint-${{ steps.cache-day.outputs.day }}-${{ github.sha }}
@@ -84,7 +84,7 @@ jobs:
       - name: Run lint checks
         run: bit lint
       - if: github.ref == 'refs/heads/main'
-        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # ratchet:actions/cache/save@v5
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ${{ env.BUILD_CACHE_PATHS }}
           key: build-lint-${{ steps.cache-day.outputs.day }}-${{ github.sha }}
@@ -99,7 +99,7 @@ jobs:
         run: echo "day=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
       # Reads the Test job's cache, so building the images' binaries reuses its
       # compiled Go packages. Only the Test job saves it.
-      - uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # ratchet:actions/cache/restore@v5
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ${{ env.BUILD_CACHE_PATHS }}
           key: build-test-${{ steps.cache-day.outputs.day }}-${{ github.sha }}
