@@ -4,8 +4,6 @@ on:
   push:
     branches:
       - main
-      # Renovate opens a PR only after branch checks finish.
-      - renovate/**
   pull_request:
   # Fills the day's build cache on main, so the first branch builds each day
   # do not start empty. Off the hour, when GitHub delays scheduled runs most.
