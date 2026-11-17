@@ -6,14 +6,13 @@ let go-module = go.modules()
 # Files within a Go module that its checks depend on.
 let go-inputs = ["**/*.go", "go.mod", "go.sum"]
 
-# CI sets this to pass its restored Hermit and Go build caches to the image
-# builds. Elsewhere they would only be copied in for nothing: a macOS host's
-# caches hold Darwin builds that a Linux image cannot use.
-param host-caches = false
-let image-host-caches = if host-caches then {
-  host-hermit-cache = env("HERMIT_STATE_DIR", env("XDG_CACHE_HOME", env("HOME") + "/.cache") + "/hermit"),
-  host-go-build-cache = exec("go env GOCACHE") | trim,
-} else {}
+# The images copy in Linux binaries built here rather than compiling inside
+# Docker, so they reuse the host's Go build cache. Each image's build context
+# holds one directory per platform, named like Docker's TARGETOS-TARGETARCH.
+let image-goarch = ["amd64", "arm64"]
+let image-command = ["spectre", "spectre-sample", "spectre-sample-forecasts"]
+# Local images build only for the host's architecture, Docker's default.
+let host-goarch = exec("go env GOARCH") | trim
 
 let tsk-inputs = [".tsk/config.toml", ".tsk/lock.toml", ".tsk/**/*.ts", "bin/tsk"]
 
@@ -161,22 +160,40 @@ explicit spectre-bin = go.exe {
   output = "dist/spectre"
   depends_on = [spectre-proto, typescript-compiler]
 }
+# Matches the release binaries' flags in .goreleaser.yaml.
+explicit image-bin[image-goarch, image-command](version : string) = go.exe {
+  package = "./cmd/#{image-command}"
+  output = "dist/image/#{version}/linux-#{image-goarch}/#{image-command}"
+  goos = "linux"
+  goarch = image-goarch
+  flags = ["-ldflags=-s -w -buildid= -X github.com/block/spectre/internal.Version=#{version}"]
+  depends_on = [spectre-proto, sample-proto, typescript-compiler]
+}
 explicit local-image(version = "dev") = docker.image {
   tag = "spectre:#{version}"
-  build_args = { VERSION = version }
-  build_contexts = image-host-caches
+  build_contexts = { binaries = "dist/image/#{version}" }
+  depends_on = [image-bin[host-goarch, "spectre"](version = version)]
 }
 # The demo image carries the sample descriptors, so generate them first.
 explicit demo-image = docker.image {
   tag = "spectre-demo"
   dockerfile = "demo/Dockerfile"
-  build_contexts = image-host-caches
-  depends_on = [sample-descriptors]
+  build_contexts = { binaries = "dist/image/demo" }
+  depends_on = [
+    sample-descriptors,
+    image-bin[host-goarch, "spectre"](version = "demo"),
+    image-bin[host-goarch, "spectre-sample"](version = "demo"),
+    image-bin[host-goarch, "spectre-sample-forecasts"](version = "demo"),
+  ]
 }
 explicit publish-release-image(registry : string, image-tag : string, version : string) = docker.image {
   tag = "#{registry}/spectre:#{image-tag}"
-  build_args = { VERSION = version }
   platform = ["linux/amd64", "linux/arm64"]
+  build_contexts = { binaries = "dist/image/#{version}" }
+  depends_on = [
+    image-bin["amd64", "spectre"](version = version),
+    image-bin["arm64", "spectre"](version = version),
+  ]
 }
 
 # Generate the sample descriptors and build its servers.
