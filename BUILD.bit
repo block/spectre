@@ -139,7 +139,7 @@ lint-go-modules = exec.test {
 }
 # The tag lints the integration tests too, which only it includes.
 lint-tsk[go-module] = exec.test {
-  command = "GOFLAGS=-tags=integration tsk lint ./..."
+  command = "GOFLAGS=\"$GOFLAGS -tags=integration\" tsk lint ./..."
   dir = go-module
   inputs = tsk-inputs + prefix(go-inputs, "#{go-module}/")
   depends_on = [build-go]
