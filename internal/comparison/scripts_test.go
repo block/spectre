@@ -65,6 +65,10 @@ declare module "raw" {
     plan: string | null;
     note?: string | null;
     tier: "A" | "B" | null;
+    holder?: Holder | null;
+  }
+  interface Holder {
+    id: string;
   }
 }
 `
@@ -442,6 +446,26 @@ func TestCompareAppliesNormalisers(t *testing.T) {
 			`,
 			reference: `{"plan":null,"tier":null}`,
 			candidate: `{"plan":"none","tier":"none"}`,
+		},
+		"NormalisersSkipNullObjectMember": {
+			typeName: Some[schema.TypeRef]("raw.Fee"),
+			script: `
+				spectre.field<raw.Holder, "id">((id) => id.trim());
+				spectre.field<raw.Fee, "holder.id">((): any => "constant");
+				spectre.message<raw.Holder>((holder): any => {
+					if (holder === null) throw new Error("normalised a null holder");
+					return holder;
+				});
+			`,
+			reference: `{"plan":null,"tier":null,"holder":null}`,
+			candidate: `{"plan":null,"tier":null,"holder":null}`,
+		},
+		"NullObjectMemberAgainstObjectIsRetyped": {
+			typeName:  Some[schema.TypeRef]("raw.Fee"),
+			script:    `spectre.field<raw.Holder, "id">((id) => id.trim());`,
+			reference: `{"plan":null,"tier":null,"holder":null}`,
+			candidate: `{"plan":null,"tier":null,"holder":{"id":" h "}}`,
+			expected:  []string{"! $.holder null → object"},
 		},
 		"SameFieldInEveryElementIsMerged": {
 			typeName:  response,

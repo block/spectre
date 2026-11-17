@@ -117,7 +117,7 @@ func (p pathWithPresence) isPresent() bool {
 }
 
 // findMessages also reports absent singular message fields of present parents, so
-// normalisers see a missing message as undefined, as they do a missing field.
+// normalisers see a missing message as undefined. A null message is not reported.
 func findMessages(
 	loaded *schema.Schema,
 	descriptor *schema.Type,
@@ -129,6 +129,9 @@ func findMessages(
 	walk = func(value schema.Value, path documentPath, present bool) {
 		switch value.Kind {
 		case schema.KindObject:
+			if present && payload.Value(path).isNull() {
+				return
+			}
 			if value.Type == target {
 				paths = append(paths, newPathWithPresence(path, present))
 			}
@@ -168,7 +171,7 @@ func findMessages(
 	return paths
 }
 
-// descendField yields the final field of every present parent, present or not.
+// descendField yields the final field of every present, non-null parent, present or not.
 func descendField(
 	payload *document,
 	paths []pathWithPresence,
@@ -183,7 +186,7 @@ func descendField(
 			descended = append(descended, newPathWithPresence(fieldPath, present))
 			continue
 		}
-		if !present {
+		if !present || payload.Value(fieldPath).isNull() {
 			continue
 		}
 		if step.expandsElements() {
