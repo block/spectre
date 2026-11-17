@@ -82,6 +82,41 @@ declare module "audit" {
 	}}, loaded.Operations())
 }
 
+func TestParsesNullableMembers(t *testing.T) {
+	loaded, err := schema.ParseSources(t.Context(), map[string]string{"a.d.ts": `
+declare module "m" {
+  export interface A {
+    id: string | null;
+    note?: string | null;
+    null_first: null | number;
+    flag: boolean | null;
+    kind: "x" | "y" | null;
+    child: B | null;
+    items: B[] | null;
+    byKey?: Record<string, string> | null;
+    plain: string;
+  }
+  export interface B { id: string }
+}
+`})
+	assert.NoError(t, err)
+	child := schema.Value{Kind: schema.KindObject, Type: "m.B"}
+	assert.Equal(t, []*schema.Type{
+		{Name: "m.A", Fields: []schema.Field{
+			{Name: "id", Nullable: true, Value: schema.Value{Kind: schema.KindString}},
+			{Name: "note", Optional: true, Nullable: true, Value: schema.Value{Kind: schema.KindString}},
+			{Name: "null_first", Nullable: true, Value: schema.Value{Kind: schema.KindNumber}},
+			{Name: "flag", Nullable: true, Value: schema.Value{Kind: schema.KindBoolean}},
+			{Name: "kind", Nullable: true, Value: schema.Value{Kind: schema.KindEnum, Literals: []string{"x", "y"}}},
+			{Name: "child", Nullable: true, Value: child},
+			{Name: "items", Nullable: true, Value: schema.Value{Kind: schema.KindList, Element: Some(&child)}},
+			{Name: "byKey", Optional: true, Nullable: true, Value: schema.Value{Kind: schema.KindMap, Element: Some(&schema.Value{Kind: schema.KindString})}},
+			{Name: "plain", Value: schema.Value{Kind: schema.KindString}},
+		}},
+		{Name: "m.B", Fields: []schema.Field{{Name: "id", Value: schema.Value{Kind: schema.KindString}}}},
+	}, loaded.Types())
+}
+
 func TestRejectsSchemaSymlinks(t *testing.T) {
 	for name, test := range map[string]struct {
 		link      string
@@ -138,7 +173,10 @@ func TestRejectsDeclarations(t *testing.T) {
 		"GenericAlias":      {source: `declare module "m" { type A<T> = { a: T } }`, error: "generic declarations are not supported"},
 		"Any":               {source: `declare module "m" { interface A { a: any } }`, error: "schema/a.d.ts:1:36: type any is not supported in schemas"},
 		"Unknown":           {source: `declare module "m" { interface A { a: unknown } }`, error: "type unknown is not supported"},
-		"Null":              {source: `declare module "m" { interface A { a: string | null } }`, error: "type string | null is not supported"},
+		"Null":              {source: `declare module "m" { interface A { a: null } }`, error: "type null is not supported"},
+		"NullInList":        {source: `declare module "m" { interface A { a: (string | null)[] } }`, error: "type string | null is not supported"},
+		"NullInMap":         {source: `declare module "m" { interface A { a: Record<string, string | null> } }`, error: "type string | null is not supported"},
+		"NullableMixed":     {source: `declare module "m" { interface A { a: string | number | null } }`, error: "type string | number is not supported"},
 		"RequiredUndefined": {source: `declare module "m" { interface A { a: string | undefined } }`, error: "type string | undefined is not supported"},
 		"NumberLiteral":     {source: `declare module "m" { interface A { a: 1 } }`, error: "type 1 is not supported"},
 		"MixedUnion":        {source: `declare module "m" { interface A { a: string | number } }`, error: `type string | number is not supported`},
@@ -187,7 +225,7 @@ func TestCancelledCheckReturnsError(t *testing.T) {
 func TestValidatesJSON(t *testing.T) {
 	loaded, err := schema.ParseSources(t.Context(), map[string]string{"a.d.ts": `
 declare module "m" {
-  interface A { name: string; count?: number; ratio?: number | "NaN"; flag?: boolean; kind?: "x" | "y"; items?: B[]; byKey?: Record<string, B> }
+  interface A { name: string; nick: string | null; tag?: string | null; count?: number; ratio?: number | "NaN"; flag?: boolean; kind?: "x" | "y"; items?: B[]; byKey?: Record<string, B> }
   interface B { id: string }
 }
 `})
@@ -196,18 +234,23 @@ declare module "m" {
 		value any
 		error string
 	}{
-		"Minimal":         {value: map[string]any{"name": "a"}},
-		"Complete":        {value: map[string]any{"name": "a", "count": 1.0, "flag": true, "kind": "x", "items": []any{map[string]any{"id": "b"}}, "byKey": map[string]any{"k": map[string]any{"id": "c"}}}},
+		"Minimal":         {value: map[string]any{"name": "a", "nick": nil}},
+		"NullableString":  {value: map[string]any{"name": "a", "nick": "n"}},
+		"NullableValue":   {value: map[string]any{"name": "a", "nick": "n", "tag": nil}},
+		"NullableWrong":   {value: map[string]any{"name": "a", "nick": 1.0}, error: "$.nick: expected string, found a number"},
+		"NullableMissing": {value: map[string]any{"name": "a"}, error: `$: required field "nick" of type "m.A" is missing`},
+		"RequiredNull":    {value: map[string]any{"name": nil, "nick": nil}, error: "$.name: expected string, found null"},
+		"Complete":        {value: map[string]any{"name": "a", "nick": "n", "count": 1.0, "flag": true, "kind": "x", "items": []any{map[string]any{"id": "b"}}, "byKey": map[string]any{"k": map[string]any{"id": "c"}}}},
 		"NotObject":       {value: []any{}, error: "$: expected m.A, found an array"},
 		"MissingRequired": {value: map[string]any{}, error: `$: required field "name" of type "m.A" is missing`},
-		"UnknownField":    {value: map[string]any{"name": "a", "other": 1.0}, error: `$: type "m.A" has a field it does not declare`},
-		"Null":            {value: map[string]any{"name": "a", "count": nil}, error: "$.count: expected number, found null"},
+		"UnknownField":    {value: map[string]any{"name": "a", "nick": nil, "other": 1.0}, error: `$: type "m.A" has a field it does not declare`},
+		"Null":            {value: map[string]any{"name": "a", "nick": nil, "count": nil}, error: "$.count: expected number, found null"},
 		"WrongScalar":     {value: map[string]any{"name": 1.0}, error: "$.name: expected string, found a number"},
-		"WrongLiteral":    {value: map[string]any{"name": "a", "kind": "z"}, error: `$.kind: value is not one of "x" | "y"`},
-		"NumberLiteral":   {value: map[string]any{"name": "a", "ratio": "NaN"}},
-		"NumberString":    {value: map[string]any{"name": "a", "ratio": "Infinity"}, error: `$.ratio: expected number | "NaN", found a string`},
-		"NestedElement":   {value: map[string]any{"name": "a", "items": []any{map[string]any{}}}, error: `$.items[0]: required field "id" of type "m.B" is missing`},
-		"NestedMapValue":  {value: map[string]any{"name": "a", "byKey": map[string]any{"alice@example.com": "v"}}, error: `$.byKey[*]: expected m.B, found a string`},
+		"WrongLiteral":    {value: map[string]any{"name": "a", "nick": nil, "kind": "z"}, error: `$.kind: value is not one of "x" | "y"`},
+		"NumberLiteral":   {value: map[string]any{"name": "a", "nick": nil, "ratio": "NaN"}},
+		"NumberString":    {value: map[string]any{"name": "a", "nick": nil, "ratio": "Infinity"}, error: `$.ratio: expected number | "NaN", found a string`},
+		"NestedElement":   {value: map[string]any{"name": "a", "nick": nil, "items": []any{map[string]any{}}}, error: `$.items[0]: required field "id" of type "m.B" is missing`},
+		"NestedMapValue":  {value: map[string]any{"name": "a", "nick": nil, "byKey": map[string]any{"alice@example.com": "v"}}, error: `$.byKey[*]: expected m.B, found a string`},
 	} {
 		t.Run(name, func(t *testing.T) {
 			err := loaded.Validate("m.A", test.value)

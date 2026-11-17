@@ -164,8 +164,10 @@ func (v Value) Equal(other Value) bool {
 type Field struct {
 	// Name is the JSON key.
 	Name string
-	// Optional means the key may be absent. A present key never holds null.
+	// Optional means the key may be absent.
 	Optional bool
+	// Nullable means a present key may hold null.
+	Nullable bool
 	// Value is the member's type.
 	Value Value
 }
@@ -308,7 +310,7 @@ func (s *Schema) Operations() []Operation {
 }
 
 // Validate checks that a value is an instance of the named type, rejecting unknown
-// keys and nulls. Errors never quote payload keys, as they leave the mirror.
+// keys and nulls outside nullable members. Errors never quote payload keys.
 func (s *Schema) Validate(name TypeRef, value any) error {
 	return s.validate(Value{Kind: KindObject, Type: name}, value, "$")
 }
@@ -390,6 +392,9 @@ func (s *Schema) validateObject(name TypeRef, object map[string]any, path string
 				continue
 			}
 			return errors.Errorf("%s: required field %q of type %q is missing", path, field.Name, name)
+		}
+		if value == nil && field.Nullable {
+			continue
 		}
 		if err := s.validate(field.Value, value, path+"."+field.Name); err != nil {
 			return err

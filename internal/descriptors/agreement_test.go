@@ -119,6 +119,7 @@ func TestAgreementRejectsMismatchedFields(t *testing.T) {
 		"OptionalScalar":    {typeName: "User", fieldName: "nickname", mutate: func(field *schema.Field) { field.Optional = false }, message: `field "nickname" must be optional`},
 		"MessagePresence":   {typeName: "User", fieldName: "profile", mutate: func(field *schema.Field) { field.Optional = false }, message: `field "profile" must be optional`},
 		"OneofPresence":     {typeName: "User", fieldName: "email", mutate: func(field *schema.Field) { field.Optional = false }, message: `field "email" must be optional`},
+		"NullableScalar":    {typeName: "User", fieldName: "id", mutate: func(field *schema.Field) { field.Nullable = true }, message: `field "id" of a protobuf message cannot be null`},
 		"JSONName":          {typeName: "User", fieldName: "id", mutate: func(field *schema.Field) { field.Name = "userId" }, message: `field "id" is missing`},
 		"Bytes":             {typeName: "User", fieldName: "avatar", mutate: func(field *schema.Field) { field.Value = schema.Value{Kind: schema.KindNumber} }, message: `field "avatar" has type number, expected string`},
 		"Unsigned64":        {typeName: "User", fieldName: "revision", mutate: func(field *schema.Field) { field.Value = schema.Value{Kind: schema.KindNumber} }, message: `field "revision" has type number, expected string`},

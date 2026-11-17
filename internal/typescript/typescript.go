@@ -56,6 +56,7 @@ const (
 const (
 	TypeFlagsBoolean       = checker.TypeFlagsBoolean
 	TypeFlagsEnumLiteral   = checker.TypeFlagsEnumLiteral
+	TypeFlagsNull          = checker.TypeFlagsNull
 	TypeFlagsNumber        = checker.TypeFlagsNumber
 	TypeFlagsObject        = checker.TypeFlagsObject
 	TypeFlagsString        = checker.TypeFlagsString

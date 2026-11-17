@@ -324,6 +324,21 @@ Use interfaces or object aliases, namespaces, optional members, scalar types, ar
 startup. Raw JSON must match the declared shape; unknown keys, missing required
 members, and nulls are rejected.
 
+A member holds null only if its type is `T | null` or `null | T`, where `T` is any
+supported type; `note?: T | null` also lets it be absent. Elsewhere, such as in array
+elements or `Record` values, and as a bare `null` or any other union, null is
+unsupported. A null is its own JSON type in difference reports and reaches
+normalisers as `null`:
+
+```ts
+declare module "processing_fees" {
+  export interface Fee {
+    fee_plan_id: string | null;
+    note?: string | null;
+  }
+}
+```
+
 Protobuf traffic also needs binary `FileDescriptorSet` files, each including its
 imports, in `--descriptors-dir`. Every `.pb` file in it, including
 subdirectories, is loaded.

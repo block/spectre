@@ -402,11 +402,26 @@ func (r *reader) objectType(name TypeRef, t *ts.Type) (*Type, error) {
 		if optional {
 			propertyType = r.checker.RemoveMissingOrUndefinedType(propertyType)
 		}
+		propertyType, nullable := r.withoutNull(propertyType)
 		value, err := r.value(propertyType, at)
 		if err != nil {
 			return nil, err
 		}
-		declared.Fields = append(declared.Fields, Field{Name: property.Name(), Optional: optional, Value: value})
+		declared.Fields = append(declared.Fields, Field{Name: property.Name(), Optional: optional, Nullable: nullable, Value: value})
 	}
 	return declared, nil
+}
+
+// withoutNull removes null from a union, reporting whether it was a member.
+func (r *reader) withoutNull(t *ts.Type) (rest *ts.Type, nullable bool) {
+	if t.Flags()&ts.TypeFlagsUnion == 0 {
+		return t, false
+	}
+	members := slices.DeleteFunc(slices.Clone(t.Types()), func(member *ts.Type) bool {
+		return member.Flags()&ts.TypeFlagsNull != 0
+	})
+	if len(members) == len(t.Types()) {
+		return t, false
+	}
+	return r.checker.GetUnionType(members), true
 }
