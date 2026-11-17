@@ -81,7 +81,6 @@ type setup struct {
 	dependencies   map[string]DependencyHandler
 	scripts        []string
 	scriptsDir     string
-	schema         []string
 	schemaDir      string
 	descriptorsDir string
 	matchWindow    time.Duration
@@ -119,12 +118,6 @@ func Scripts(source string) Setting {
 // ScriptsDir loads the comparison scripts in dir instead.
 func ScriptsDir(dir string) Setting {
 	return func(setup *setup) { setup.scriptsDir = dir }
-}
-
-// Schema adds a schema module next to the sample's, without the indentation its
-// lines share.
-func Schema(source string) Setting {
-	return func(setup *setup) { setup.schema = append(setup.schema, source) }
 }
 
 // services returns the reference and candidate services, which every mirror needs.
@@ -171,24 +164,9 @@ func (s *setup) writeScripts(t *testing.T) string {
 	return dir
 }
 
-// writeSchema returns the schema directory, copying the sample's to a temporary
-// one with the modules given inline when there are any.
-func (s *setup) writeSchema(t *testing.T) string {
-	t.Helper()
-	if len(s.schema) == 0 {
-		return s.schemaDir
-	}
-	dir := t.TempDir()
-	assert.NoError(t, os.CopyFS(dir, os.DirFS(s.schemaDir)))
-	for i, source := range s.schema {
-		assert.NoError(t, os.WriteFile(filepath.Join(dir, fmt.Sprintf("schema%d.d.ts", i)), []byte(dedent(source)), 0o600))
-	}
-	return dir
-}
-
 // proxyConfig configures the proxy in front of the services on listeners.
 func (s *setup) proxyConfig(listeners proxies.Listeners, reference, candidate net.Listener,
-	destinations map[string]string, scriptsDir, schemaDir, serverURL string,
+	destinations map[string]string, scriptsDir, serverURL string,
 ) proxies.ProxyConfig {
 	config := proxies.ProxyConfig{
 		Listen:                listeners.Ingress.Addr().String(),
@@ -202,7 +180,7 @@ func (s *setup) proxyConfig(listeners proxies.Listeners, reference, candidate ne
 	}
 	config.Mirror.Destinations = destinations
 	config.Mirror.ScriptsDir = scriptsDir
-	config.Mirror.SchemaDir = schemaDir
+	config.Mirror.SchemaDir = s.schemaDir
 	config.Mirror.Descriptors.DescriptorsDir = s.descriptorsDir
 	config.Mirror.MatchWindow = s.matchWindow
 	config.Mirror.Server.Client.URL = serverURL
@@ -239,7 +217,6 @@ func Start(t *testing.T, settings ...Setting) *Mirror {
 	}
 	referenceService, candidateService := setup.services(t)
 	scriptsDir := setup.writeScripts(t)
-	schemaDir := setup.writeSchema(t)
 	ctx := t.Context()
 	server := listen(t)
 	serverURL := baseURL(server)
@@ -264,7 +241,7 @@ func Start(t *testing.T, settings ...Setting) *Mirror {
 	dependencies, destinations := setup.serveDependencies(t)
 	m.dependencies = dependencies
 
-	config := setup.proxyConfig(listeners, referenceListener, candidateListener, destinations, scriptsDir, schemaDir, serverURL)
+	config := setup.proxyConfig(listeners, referenceListener, candidateListener, destinations, scriptsDir, serverURL)
 	catalog, err := state.NewCatalog(httpserver.Supports()...)
 	assert.NoError(t, err)
 	proxy, err := proxies.New(ctx, config, catalog)
