@@ -327,8 +327,8 @@ members, and nulls are rejected.
 A member holds null only if its type is `T | null` or `null | T`, where `T` is any
 supported type; `note?: T | null` also lets it be absent. Elsewhere, such as in array
 elements or `Record` values, and as a bare `null` or any other union, null is
-unsupported. A null is its own JSON type in difference reports and reaches
-normalisers as `null`:
+unsupported, as are nullable members of protobuf messages. A null is its own JSON
+type in difference reports and reaches normalisers as `null`:
 
 ```ts
 declare module "processing_fees" {
