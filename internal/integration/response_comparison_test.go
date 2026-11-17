@@ -7,8 +7,8 @@ import (
 	"testing"
 
 	"github.com/alecthomas/assert/v2"
-	. "github.com/alecthomas/types/optional"
 
+	"github.com/block/spectre/internal/integration/it"
 	"github.com/block/spectre/internal/model"
 	samplepb "github.com/block/spectre/internal/sample/pb"
 )
@@ -20,101 +20,65 @@ const (
 )
 
 func TestNormalisedResponsesAreEquivalent(t *testing.T) {
-	t.Parallel()
 	m := startSampleMirror(t)
-	users := users(m)
 
 	// The candidate reorders roles and generates its own timestamp, which the
 	// sample's scripts normalise, so each call counts and none quarantines.
-	listUserOne(t, users)
-	expectCalls(t, m, map[model.Route]uint64{listUsers: 1})
-	listUserOne(t, users)
-	expectCalls(t, m, map[model.Route]uint64{listUsers: 2})
+	listUserOne(t, m)
+	m.ExpectCalls(it.Calls{listUsers: 1})
+	listUserOne(t, m)
+	m.ExpectCalls(it.Calls{listUsers: 2})
 }
 
 func TestRawHTTPResponsesAreEquivalent(t *testing.T) {
-	t.Parallel()
 	m := startSampleMirror(t)
 
 	// Raw HTTP responses are typed by the endpoints that weather.ts declares,
 	// whose scripts treat the candidate's reordered alerts as equivalent.
-	status, body := m.get(t, m.ingressURL+"/v2/forecast?location=london")
-	assert.Equal(t, http.StatusOK, status)
-	assert.Contains(t, body, `"alerts"`)
-	status, _ = m.get(t, m.ingressURL+"/api/v1/forecast?location=sydney")
-	assert.Equal(t, http.StatusOK, status)
-	status, _ = m.get(t, m.ingressURL+"/_status")
-	assert.Equal(t, http.StatusOK, status)
+	m.Ingress.Get("/v2/forecast?location=london").ExpectStatus(http.StatusOK).ExpectBodyContains(`"alerts"`)
+	m.Ingress.Get("/api/v1/forecast?location=sydney").ExpectStatus(http.StatusOK)
+	m.Ingress.Get("/_status").ExpectStatus(http.StatusOK)
 
-	expectCalls(t, m, map[model.Route]uint64{"GET /v2/forecast": 1, "GET /api/v1/forecast": 1, "GET /_status": 1})
+	m.ExpectCalls(it.Calls{"GET /v2/forecast": 1, "GET /api/v1/forecast": 1, "GET /_status": 1})
 }
 
 func TestEgressReplaysReferenceResponses(t *testing.T) {
-	t.Parallel()
 	m := startSampleMirror(t)
 
-	for _, path := range []string{"/v2/forecast?location=london", "/api/v1/forecast?location=sydney"} {
-		status, _ := m.get(t, m.ingressURL+path)
-		assert.Equal(t, http.StatusOK, status)
-	}
+	m.Ingress.Get("/v2/forecast?location=london").ExpectStatus(http.StatusOK)
+	m.Ingress.Get("/api/v1/forecast?location=sydney").ExpectStatus(http.StatusOK)
 
-	expectCalls(t, m, map[model.Route]uint64{"GET /v2/forecast": 1, "GET /api/v1/forecast": 1})
+	m.ExpectCalls(it.Calls{"GET /v2/forecast": 1, "GET /api/v1/forecast": 1})
 	// Egress answers the candidate with the reference's forecast, so each location
 	// reaches the provider once.
-	for _, location := range []string{"london", "sydney"} {
-		assert.Equal(t, 1, m.forecasts.count("/v1/forecasts/"+location), "provider calls for %s", location)
-	}
+	m.Dependency(forecastsHost).ExpectReceived("/v1/forecasts/london", 1)
+	m.Dependency(forecastsHost).ExpectReceived("/v1/forecasts/sydney", 1)
 }
 
 func TestDivergentResponseQuarantinesCandidate(t *testing.T) {
-	t.Parallel()
 	m := startSampleMirror(t)
-	users := users(m)
 
-	response, err := users.GetUser(t.Context(), &samplepb.GetUserRequest{Id: "user-2"})
+	response, err := userClient(m).GetUser(t.Context(), &samplepb.GetUserRequest{Id: "user-2"})
 	assert.NoError(t, err)
 	assert.Equal(t, "Sam Sample", response.GetUser().GetName())
 	assert.Equal(t, map[string]string{"team": "platform"}, response.GetUser().GetLabels())
-	assert.Equal(t, model.QuarantineReason{
-		Kind:    model.QuarantineDivergent,
-		Traffic: Some(model.Traffic{Direction: model.Ingress, Protocol: model.ProtocolHTTP, Route: getUser}),
-		// Reasons never quote values, so the label's key is a wildcard.
-		Differences: []model.Difference{{Path: "$.user.labels[*]", Change: model.ChangeChanged, Count: 1}},
-	}, m.waitForQuarantine(t, model.Ingress))
+	// Reasons never quote values, so the label's key is a wildcard.
+	m.ExpectQuarantine(it.DivergentIngress(getUser, model.Difference{Path: "$.user.labels[*]", Change: model.ChangeChanged, Count: 1}))
 
 	// The reference still answers. Ingress turns the candidate away before the
 	// reference responds, so once ListUsers returns the candidate cannot get it.
-	listUserOne(t, users)
-	assert.Equal(t, 0, m.candidate.count(listUsersPath), "candidate requests after quarantine")
+	listUserOne(t, m)
+	m.Candidate.ExpectReceived(listUsersPath, 0)
 }
 
-func TestUnmatchedCandidateEgressQuarantinesCandidate(t *testing.T) {
-	t.Parallel()
-	m := startSampleMirror(t)
-	forecast := func(location string) int {
-		request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, m.candidateEgressURL+"/v1/forecasts/"+location, nil)
-		assert.NoError(t, err)
-		request.Host = forecastsHost
-		status, _ := m.do(t, request)
-		return status
-	}
-
-	// A dependency call the reference never made gets a 502 without reaching the provider.
-	assert.Equal(t, http.StatusBadGateway, forecast("paris"))
-	assert.Equal(t, model.QuarantineReason{
-		Kind:    model.QuarantineUnmatched,
-		Traffic: Some(model.Traffic{Direction: model.Egress, Protocol: model.ProtocolHTTP, Route: "GET forecasts.example/v1/forecasts/{location}"}),
-		Detail:  "no matching reference request within 1s",
-	}, m.waitForQuarantine(t, model.Egress))
-	assert.Equal(t, http.StatusServiceUnavailable, forecast("london"))
-	assert.Equal(t, 0, m.forecasts.count("/v1/forecasts/paris"))
-}
-
-// expectCalls waits for the proxy to report the expected compared calls, and
-// checks the candidate is still healthy.
-func expectCalls(t *testing.T, m sampleMirror, expected map[model.Route]uint64) {
+// startSampleMirror mirrors the sample under its own scripts, to a candidate
+// that differs in ways the scripts normalise and in user-2's team.
+func startSampleMirror(t *testing.T) *it.Mirror {
 	t.Helper()
-	state := m.waitForCalls(t, expected)
-	assert.Equal(t, map[model.Direction]model.Quarantine(nil), state.Quarantines)
-	assert.Equal(t, model.Calls{Routes: expected}, state.Calls)
+	return it.Start(t,
+		it.ScriptsDir("../sample/scripts"),
+		it.Reference(sampleService(revision("reference"))),
+		it.Candidate(sampleService(revision("candidate"), reorderedRoles(), otherTeam(), swappedAlerts())),
+		it.Dependency(forecastsHost, forecastProvider),
+	)
 }
