@@ -105,6 +105,9 @@ func sameFields(expected, declared *schema.Type) error {
 		if actual.Optional != field.Optional {
 			return errors.Errorf("field %q must be %s", field.Name, optionality(field.Optional))
 		}
+		if actual.Nullable {
+			return errors.Errorf("field %q of a protobuf message cannot be null", field.Name)
+		}
 		if !actual.Value.Equal(field.Value) {
 			return errors.Errorf("field %q has type %s, expected %s", field.Name, actual.Value, field.Value)
 		}

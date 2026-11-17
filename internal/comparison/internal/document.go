@@ -69,6 +69,11 @@ func (v documentValue) isPresent() bool {
 	return v.value.Ok()
 }
 
+func (v documentValue) isNull() bool {
+	value, present := v.value.Get()
+	return present && value == nil
+}
+
 func (v documentValue) normaliserArgument() Option[any] {
 	return v.value
 }

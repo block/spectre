@@ -61,6 +61,15 @@ declare module "raw" {
     roles?: string[];
     metadata?: Record<string, string>;
   }
+  interface Fee {
+    plan: string | null;
+    note?: string | null;
+    tier: "A" | "B" | null;
+    holder?: Holder | null;
+  }
+  interface Holder {
+    id: string;
+  }
 }
 `
 
@@ -411,6 +420,52 @@ func TestCompareAppliesNormalisers(t *testing.T) {
 			reference: `{"stable":"same","owner":{"name":"alice"}}`,
 			candidate: `{"stable":"same","owner":null}`,
 			expected:  []string{"! $.owner object → null"},
+		},
+		"NullMembersAreEqual": {
+			typeName:  Some[schema.TypeRef]("raw.Fee"),
+			reference: `{"plan":null,"note":null,"tier":null}`,
+			candidate: `{"plan":null,"note":null,"tier":null}`,
+		},
+		"NullAgainstStringIsRetyped": {
+			typeName:  Some[schema.TypeRef]("raw.Fee"),
+			reference: `{"plan":null,"note":"n","tier":"A"}`,
+			candidate: `{"plan":"p","note":null,"tier":null}`,
+			expected:  []string{"! $.note string → null", "! $.plan null → string", "! $.tier string → null"},
+		},
+		"NullMemberIsMissingWhenAbsent": {
+			typeName:  Some[schema.TypeRef]("raw.Fee"),
+			reference: `{"plan":null,"note":null,"tier":null}`,
+			candidate: `{"plan":null,"tier":null}`,
+			expected:  []string{"- $.note"},
+		},
+		"NormaliserReceivesNullMember": {
+			typeName: Some[schema.TypeRef]("raw.Fee"),
+			script: `
+				spectre.field<raw.Fee, "plan">((plan) => plan === null ? "none" : plan);
+				spectre.field<raw.Fee, "tier">((tier): any => tier === null ? "none" : tier);
+			`,
+			reference: `{"plan":null,"tier":null}`,
+			candidate: `{"plan":"none","tier":"none"}`,
+		},
+		"NormalisersSkipNullObjectMember": {
+			typeName: Some[schema.TypeRef]("raw.Fee"),
+			script: `
+				spectre.field<raw.Holder, "id">((id) => id.trim());
+				spectre.field<raw.Fee, "holder.id">((): any => "constant");
+				spectre.message<raw.Holder>((holder): any => {
+					if (holder === null) throw new Error("normalised a null holder");
+					return holder;
+				});
+			`,
+			reference: `{"plan":null,"tier":null,"holder":null}`,
+			candidate: `{"plan":null,"tier":null,"holder":null}`,
+		},
+		"NullObjectMemberAgainstObjectIsRetyped": {
+			typeName:  Some[schema.TypeRef]("raw.Fee"),
+			script:    `spectre.field<raw.Holder, "id">((id) => id.trim());`,
+			reference: `{"plan":null,"tier":null,"holder":null}`,
+			candidate: `{"plan":null,"tier":null,"holder":{"id":" h "}}`,
+			expected:  []string{"! $.holder null → object"},
 		},
 		"SameFieldInEveryElementIsMerged": {
 			typeName:  response,
