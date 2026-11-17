@@ -2,6 +2,7 @@
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": ["config:recommended", "helpers:pinGitHubActionDigests"],
   "postUpdateOptions": ["gomodTidyAll"],
+  "prCreation": "immediate",
   "packageRules": [
     {
       "description": "The shim module's indirect dependencies are compiled into spectre, so update them; gomodTidyAll then moves the root module to the same versions, which bit lint-go-modules requires",
