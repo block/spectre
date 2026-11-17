@@ -82,13 +82,14 @@ declarations. Generated declarations are checked in alongside the Go bindings.
 
 The [`internal/integration`](internal/integration) tests run a whole mirror
 each, in the test process: the services, the SPECTRE server and the proxy, on
-free ports, so tests run in parallel without port conflicts. A test starts its
-mirror with `startMirror`, passing the reference and candidate services, the
-dependencies, and its comparison scripts as TypeScript inline in the Go file:
+free ports, so tests run in parallel without port conflicts. The
+[`it`](internal/integration/it) package is their DSL. A test starts its mirror
+with `it.Start`, passing the reference and candidate services, the dependencies,
+and its comparison scripts as TypeScript inline in the Go file:
 
 ```go
-m := startMirror(t,
-	scripts(`
+m := it.Start(t,
+	it.Scripts(`
 		import { egress, ingress } from "spectre";
 		import type { FetchForecastRequest } from "forecasts";
 		import type { GetForecastV2Response } from "weather";
@@ -96,22 +97,22 @@ m := startMirror(t,
 		ingress.http("GET /v2/forecast").match<GetForecastV2Response>();
 		egress.http("GET forecasts.example/v1/forecasts/{location}").optional().match<FetchForecastRequest>();
 	`),
-	reference(sampleService()),
-	candidate(sampleService(ownForecasts())),
-	dependency(forecastsHost, forecastProvider),
+	it.Reference(sampleService()),
+	it.Candidate(sampleService(ownForecasts())),
+	it.Dependency(forecastsHost, forecastProvider),
 )
-m.ingress.get("/v2/forecast?location=london").expectStatus(http.StatusOK)
-m.expectCalls(calls{"GET /v2/forecast": 1})
-m.dependency(forecastsHost).expectReceived("/v1/forecasts/london", 1)
+m.Ingress.Get("/v2/forecast?location=london").ExpectStatus(http.StatusOK)
+m.ExpectCalls(it.Calls{"GET /v2/forecast": 1})
+m.Dependency(forecastsHost).ExpectReceived("/v1/forecasts/london", 1)
 ```
 
-The sample's services, with variations such as `ownForecasts`, are the
-building blocks. Tests send requests through ingress or either egress listener,
+The tests build their services from the sample's, with variations such as
+`ownForecasts`. Tests send requests through ingress or either egress listener,
 and check the responses, the requests each service and dependency received, and
 the calls and quarantines the proxy reports to the server. The sample's schema
 and descriptors and a 500ms match window are the defaults.
 
-Every file in the package carries the `integration` build tag, so `bit test`
+Every file in both packages carries the `integration` build tag, so `bit test`
 leaves them out and CI runs them in a separate job. Run them with
 `bit test-integration`, or with
 `go test -tags=integration ./internal/integration` once Hermit is active.

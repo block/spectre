@@ -14,6 +14,7 @@ import (
 	"github.com/alecthomas/assert/v2"
 	. "github.com/alecthomas/types/optional"
 
+	"github.com/block/spectre/internal/integration/it"
 	"github.com/block/spectre/internal/sample"
 	samplepb "github.com/block/spectre/internal/sample/pb"
 	"github.com/block/spectre/internal/sample/pb/samplepbconnect"
@@ -35,8 +36,8 @@ type variation func(t *testing.T, data *sampleData)
 
 // sampleService serves the sample's users and weather, changed by variations.
 // It fetches forecasts through egress from forecastsHost.
-func sampleService(variations ...variation) service {
-	return func(t *testing.T, backend backend) {
+func sampleService(variations ...variation) it.Service {
+	return func(t *testing.T, backend it.Backend) {
 		t.Helper()
 		data := sampleData{users: testdata(t, "users.json"), weather: testdata(t, "weather.json"), revision: "sample"}
 		for _, vary := range variations {
@@ -44,16 +45,16 @@ func sampleService(variations ...variation) service {
 		}
 		users, err := sample.New(data.users)
 		assert.NoError(t, err)
-		forecasts := Some(sample.NewForecastClient(backend.egress.url, forecastsHost, backend.egress.transport))
+		forecasts := Some(sample.NewForecastClient(backend.Egress.URL, forecastsHost, backend.Egress.Transport))
 		if data.ownForecasts {
 			forecasts = None[*sample.ForecastClient]()
 		}
 		weather, err := sample.NewWeather(data.weather, data.revision, forecasts)
 		assert.NoError(t, err)
-		samplepbconnect.RegisterUserServiceHandler(backend.grpc, users)
-		backend.http.HandleFunc("GET /api/v1/forecast", weather.GetForecast)
-		backend.http.HandleFunc("GET /v2/forecast", weather.GetForecastV2)
-		backend.http.HandleFunc("GET /_status", weather.GetStatus)
+		samplepbconnect.RegisterUserServiceHandler(backend.GRPC, users)
+		backend.HTTP.HandleFunc("GET /api/v1/forecast", weather.GetForecast)
+		backend.HTTP.HandleFunc("GET /v2/forecast", weather.GetForecastV2)
+		backend.HTTP.HandleFunc("GET /_status", weather.GetStatus)
 	}
 }
 
@@ -104,20 +105,20 @@ func forecastProvider(t *testing.T) http.Handler {
 }
 
 // userClient returns a gRPC client of the sample's user service through ingress.
-func userClient(m *mirror) samplepbconnect.UserServiceClient {
-	return samplepbconnect.NewUserServiceClient(connect.NewClient(connecthttp.NewTransport(m.client, m.ingress.base, connecthttp.WithGRPC())))
+func userClient(m *it.Mirror) samplepbconnect.UserServiceClient {
+	return samplepbconnect.NewUserServiceClient(connect.NewClient(connecthttp.NewTransport(m.Client(), m.Ingress.URL(), connecthttp.WithGRPC())))
 }
 
 // listUserOne lists user-1 through ingress, checking it gets the reference's answer.
-func listUserOne(m *mirror) {
-	m.t.Helper()
-	response, err := userClient(m).ListUsers(m.t.Context(), &samplepb.ListUsersRequest{Ids: []string{"user-1"}})
-	assert.NoError(m.t, err)
+func listUserOne(t *testing.T, m *it.Mirror) {
+	t.Helper()
+	response, err := userClient(m).ListUsers(t.Context(), &samplepb.ListUsersRequest{Ids: []string{"user-1"}})
+	assert.NoError(t, err)
 	names := []string{}
 	for _, user := range response.GetUsers() {
 		names = append(names, user.GetName())
 	}
-	assert.Equal(m.t, []string{"Alex Example"}, names)
+	assert.Equal(t, []string{"Alex Example"}, names)
 }
 
 // testdata reads one of the sample's data files.

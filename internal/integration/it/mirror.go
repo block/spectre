@@ -1,6 +1,6 @@
 //go:build integration
 
-package integration_test
+package it
 
 import (
 	"context"
@@ -31,7 +31,7 @@ import (
 )
 
 const (
-	// startTimeout bounds how long startMirror waits for the mirror to be ready.
+	// startTimeout bounds how long Start waits for the mirror to be ready.
 	startTimeout = 60 * time.Second
 	// waitTimeout bounds how long a test waits for a condition.
 	waitTimeout = 10 * time.Second
@@ -46,39 +46,39 @@ const (
 	defaultMatchWindow = 500 * time.Millisecond
 )
 
-// egress is where a service sends its dependency calls, with the transport to
+// Egress is where a service sends its dependency calls, with the transport to
 // send them on.
-type egress struct {
-	url       *url.URL
-	transport http.RoundTripper
+type Egress struct {
+	URL       *url.URL
+	Transport http.RoundTripper
 }
 
-// backend is what a service registers its handlers on. The harness serves the
-// gRPC services, with reflection, next to the HTTP routes.
-type backend struct {
-	egress egress
-	grpc   *connect.Server
-	http   *http.ServeMux
+// Backend is what a service registers its handlers on. Start serves the gRPC
+// services, with reflection, next to the HTTP routes.
+type Backend struct {
+	Egress Egress
+	GRPC   *connect.Server
+	HTTP   *http.ServeMux
 }
 
-// service registers the handlers of a reference or candidate service.
-type service func(t *testing.T, backend backend)
+// Service registers the handlers of a reference or candidate service.
+type Service func(t *testing.T, backend Backend)
 
-// dependencyHandler builds the handler of a dependency.
-type dependencyHandler func(t *testing.T) http.Handler
+// DependencyHandler builds the handler of a dependency.
+type DependencyHandler func(t *testing.T) http.Handler
 
-// calls are the compared calls the proxy reports, by route.
-type calls map[model.Route]uint64
+// Calls are the compared calls the proxy reports, by route.
+type Calls map[model.Route]uint64
 
-// option configures a mirror.
-type option func(setup *setup)
+// Setting configures the mirror Start runs.
+type Setting func(setup *setup)
 
-// setup is what startMirror runs. Directories are relative to the test's
+// setup is what Start runs. Directories are relative to the test's
 // working directory.
 type setup struct {
-	reference      Option[service]
-	candidate      Option[service]
-	dependencies   map[string]dependencyHandler
+	reference      Option[Service]
+	candidate      Option[Service]
+	dependencies   map[string]DependencyHandler
 	scripts        []string
 	scriptsDir     string
 	schemaDir      string
@@ -88,36 +88,61 @@ type setup struct {
 
 func newSetup() *setup {
 	return &setup{
-		dependencies:   map[string]dependencyHandler{},
+		dependencies:   map[string]DependencyHandler{},
 		schemaDir:      "../sample/schema",
 		descriptorsDir: "../../dist/descriptors",
 		matchWindow:    defaultMatchWindow,
 	}
 }
 
-// reference sets the reference service.
-func reference(service service) option {
+// Reference sets the reference service.
+func Reference(service Service) Setting {
 	return func(setup *setup) { setup.reference = Some(service) }
 }
 
-// candidate sets the candidate service.
-func candidate(service service) option {
+// Candidate sets the candidate service.
+func Candidate(service Service) Setting {
 	return func(setup *setup) { setup.candidate = Some(service) }
 }
 
-// dependency serves a dependency that the services reach through egress as host.
-func dependency(host string, handler dependencyHandler) option {
+// Dependency serves a dependency that the services reach through egress as host.
+func Dependency(host string, handler DependencyHandler) Setting {
 	return func(setup *setup) { setup.dependencies[host] = handler }
 }
 
-// scripts adds a comparison script, without the indentation its lines share.
-func scripts(source string) option {
+// Scripts adds a comparison script, without the indentation its lines share.
+func Scripts(source string) Setting {
 	return func(setup *setup) { setup.scripts = append(setup.scripts, source) }
 }
 
-// scriptsDir loads the comparison scripts in dir instead.
-func scriptsDir(dir string) option {
+// ScriptsDir loads the comparison scripts in dir instead.
+func ScriptsDir(dir string) Setting {
 	return func(setup *setup) { setup.scriptsDir = dir }
+}
+
+// services returns the reference and candidate services, which every mirror needs.
+func (s *setup) services(t *testing.T) (reference, candidate Service) {
+	t.Helper()
+	reference, hasReference := s.reference.Get()
+	candidate, hasCandidate := s.candidate.Get()
+	if !hasReference || !hasCandidate {
+		t.Fatal("a mirror needs a reference and a candidate")
+	}
+	return reference, candidate
+}
+
+// serveDependencies serves each dependency until the test ends, and returns the
+// requests each receives and the proxy's destinations, by host.
+func (s *setup) serveDependencies(t *testing.T) (received map[string]*Counter, destinations map[string]string) {
+	t.Helper()
+	received, destinations = map[string]*Counter{}, map[string]string{}
+	for host, handler := range s.dependencies {
+		listener := listen(t)
+		counter := newCounter(t)
+		serve(t, listener, counter.wrap(handler(t)))
+		received[host], destinations[host] = counter, baseURL(listener)
+	}
+	return received, destinations
 }
 
 // writeScripts returns the directory of the comparison scripts, writing those
@@ -164,67 +189,57 @@ func (s *setup) proxyConfig(listeners proxies.Listeners, reference, candidate ne
 	return config
 }
 
-// mirror is a running mirror, which stops when its test ends.
-type mirror struct {
-	t       *testing.T
-	ingress ingressEndpoint
-	// referenceEgress and candidateEgress are where each service reaches its dependencies.
-	referenceEgress egressEndpoint
-	candidateEgress egressEndpoint
-	// reference and candidate count the requests that reach each service.
-	reference    *counter
-	candidate    *counter
-	dependencies map[string]*counter
+// Mirror is a running mirror, which stops when its test ends.
+type Mirror struct {
+	// Ingress is where clients reach the mirrored service.
+	Ingress IngressEndpoint
+	// ReferenceEgress and CandidateEgress are where each service reaches its dependencies.
+	ReferenceEgress EgressEndpoint
+	CandidateEgress EgressEndpoint
+	// Reference and Candidate count the requests that reach each service.
+	Reference    *Counter
+	Candidate    *Counter
+	t            *testing.T
+	dependencies map[string]*Counter
 	client       *http.Client
 	server       *client.Client
 	watch        *watch
 }
 
-// startMirror runs a mirror for a parallel test: its services, the SPECTRE
-// server and the proxy, on free ports in the test process.
-func startMirror(t *testing.T, options ...option) *mirror {
+// Start runs a mirror for a parallel test: its services, the SPECTRE server and
+// the proxy, on free ports in the test process.
+func Start(t *testing.T, settings ...Setting) *Mirror {
 	t.Helper()
 	t.Parallel()
 	setup := newSetup()
-	for _, option := range options {
-		option(setup)
+	for _, setting := range settings {
+		setting(setup)
 	}
-	referenceService, hasReference := setup.reference.Get()
-	candidateService, hasCandidate := setup.candidate.Get()
-	if !hasReference || !hasCandidate {
-		t.Fatal("a mirror needs a reference and a candidate")
-	}
+	referenceService, candidateService := setup.services(t)
 	scriptsDir := setup.writeScripts(t)
 	ctx := t.Context()
 	server := listen(t)
 	serverURL := baseURL(server)
 	httpClient := newClient(t)
-	m := &mirror{
-		t:            t,
-		dependencies: map[string]*counter{},
-		client:       httpClient,
-		server:       client.New(client.Config{URL: serverURL}),
-		watch:        newWatch(),
+	m := &Mirror{
+		t:      t,
+		client: httpClient,
+		server: client.New(client.Config{URL: serverURL}),
+		watch:  newWatch(),
 	}
 	m.watch.run(ctx, t, "server", func(ctx context.Context) error {
 		return errors.WithStack(spectreserver.ServeListener(ctx, spectreserver.NewServeConfig(), server))
 	})
 
 	listeners := proxies.Listeners{Ingress: listen(t), ReferenceEgress: listen(t), CandidateEgress: listen(t), EgressHealth: listen(t), Health: listen(t)}
-	m.ingress = ingressEndpoint{newSender(t, httpClient, baseURL(listeners.Ingress))}
-	m.referenceEgress = egressEndpoint{newSender(t, httpClient, baseURL(listeners.ReferenceEgress))}
-	m.candidateEgress = egressEndpoint{newSender(t, httpClient, baseURL(listeners.CandidateEgress))}
+	m.Ingress = newIngressEndpoint(t, httpClient, baseURL(listeners.Ingress))
+	m.ReferenceEgress = newEgressEndpoint(t, httpClient, baseURL(listeners.ReferenceEgress))
+	m.CandidateEgress = newEgressEndpoint(t, httpClient, baseURL(listeners.CandidateEgress))
 	referenceListener, candidateListener := listen(t), listen(t)
-	m.reference = serveService(t, referenceListener, referenceService, m.referenceEgress.base)
-	m.candidate = serveService(t, candidateListener, candidateService, m.candidateEgress.base)
-	destinations := map[string]string{}
-	for host, handler := range setup.dependencies {
-		listener := listen(t)
-		received := newCounter(t)
-		serve(t, listener, received.wrap(handler(t)))
-		m.dependencies[host] = received
-		destinations[host] = baseURL(listener)
-	}
+	m.Reference = serveService(t, referenceListener, referenceService, m.ReferenceEgress.url())
+	m.Candidate = serveService(t, candidateListener, candidateService, m.CandidateEgress.url())
+	dependencies, destinations := setup.serveDependencies(t)
+	m.dependencies = dependencies
 
 	config := setup.proxyConfig(listeners, referenceListener, candidateListener, destinations, scriptsDir, serverURL)
 	catalog, err := state.NewCatalog(httpserver.Supports()...)
@@ -241,8 +256,14 @@ func startMirror(t *testing.T, options ...option) *mirror {
 	return m
 }
 
-// dependency returns the requests that reached the dependency at host.
-func (m *mirror) dependency(host string) *counter {
+// Client returns the client the mirror sends requests with, which speaks
+// HTTP/2 without TLS, as gRPC needs.
+func (m *Mirror) Client() *http.Client {
+	return m.client
+}
+
+// Dependency returns the requests that reached the dependency at host.
+func (m *Mirror) Dependency(host string) *Counter {
 	m.t.Helper()
 	received, ok := m.dependencies[host]
 	if !ok {
@@ -251,9 +272,9 @@ func (m *mirror) dependency(host string) *counter {
 	return received
 }
 
-// expectCalls waits until the proxy reports the expected compared calls, and
+// ExpectCalls waits until the proxy reports the expected compared calls, and
 // checks that they are all it reports, with no quarantine.
-func (m *mirror) expectCalls(expected calls) {
+func (m *Mirror) ExpectCalls(expected Calls) {
 	m.t.Helper()
 	state := m.waitForState(fmt.Sprintf("compared calls %v", expected), func(state model.State) bool {
 		if len(state.Quarantines) > 0 {
@@ -270,11 +291,15 @@ func (m *mirror) expectCalls(expected calls) {
 	assert.Equal(m.t, model.Calls{Routes: expected}, state.Calls)
 }
 
-// expectQuarantine waits until the proxy reports a quarantine in the direction
+// ExpectQuarantine waits until the proxy reports a quarantine in the direction
 // of the expected reason's traffic, and checks its reason.
-func (m *mirror) expectQuarantine(expected model.QuarantineReason) {
+func (m *Mirror) ExpectQuarantine(expected model.QuarantineReason) {
 	m.t.Helper()
-	direction := expected.Traffic.MustGet().Direction
+	traffic, hasTraffic := expected.Traffic.Get()
+	if !hasTraffic {
+		m.t.Fatal("expect a quarantine reason with traffic")
+	}
+	direction := traffic.Direction
 	state := m.waitForState(fmt.Sprintf("an %s quarantine", direction), func(state model.State) bool {
 		_, ok := state.Quarantines[direction]
 		return ok
@@ -284,7 +309,7 @@ func (m *mirror) expectQuarantine(expected model.QuarantineReason) {
 
 // waitForState waits until the state the proxy reported to the SPECTRE server
 // satisfies condition, and returns it.
-func (m *mirror) waitForState(what string, condition func(state model.State) bool) model.State {
+func (m *Mirror) waitForState(what string, condition func(state model.State) bool) model.State {
 	m.t.Helper()
 	var matched model.State
 	m.watch.await(m.t, waitTimeout, what, func() bool {
@@ -301,7 +326,7 @@ func (m *mirror) waitForState(what string, condition func(state model.State) boo
 	return matched
 }
 
-func (m *mirror) ready(url string) bool {
+func (m *Mirror) ready(url string) bool {
 	m.t.Helper()
 	request, err := http.NewRequestWithContext(m.t.Context(), http.MethodGet, url, nil)
 	assert.NoError(m.t, err)
@@ -313,9 +338,9 @@ func (m *mirror) ready(url string) bool {
 	return response.StatusCode == http.StatusNoContent
 }
 
-// unmatchedEgress is the reason for an egress call on route that no call from
+// UnmatchedEgress is the reason for an egress call on route that no call from
 // the other service matched.
-func unmatchedEgress(route model.Route, detail string) model.QuarantineReason {
+func UnmatchedEgress(route model.Route, detail string) model.QuarantineReason {
 	return model.QuarantineReason{
 		Kind:    model.QuarantineUnmatched,
 		Traffic: Some(model.Traffic{Direction: model.Egress, Protocol: model.ProtocolHTTP, Route: route}),
@@ -323,9 +348,9 @@ func unmatchedEgress(route model.Route, detail string) model.QuarantineReason {
 	}
 }
 
-// divergentIngress is the reason for responses on route that differ as
+// DivergentIngress is the reason for responses on route that differ as
 // differences describe.
-func divergentIngress(route model.Route, differences ...model.Difference) model.QuarantineReason {
+func DivergentIngress(route model.Route, differences ...model.Difference) model.QuarantineReason {
 	return model.QuarantineReason{
 		Kind:        model.QuarantineDivergent,
 		Traffic:     Some(model.Traffic{Direction: model.Ingress, Protocol: model.ProtocolHTTP, Route: route}),
@@ -333,19 +358,19 @@ func divergentIngress(route model.Route, differences ...model.Difference) model.
 	}
 }
 
-// counter counts the requests a service or dependency receives, by path.
-type counter struct {
+// Counter counts the requests a service or dependency receives, by path.
+type Counter struct {
 	t     *testing.T
 	mu    sync.Mutex
 	paths map[string]int
 }
 
-func newCounter(t *testing.T) *counter {
-	return &counter{t: t, paths: map[string]int{}}
+func newCounter(t *testing.T) *Counter {
+	return &Counter{t: t, paths: map[string]int{}}
 }
 
 // wrap counts each request to next as it arrives.
-func (c *counter) wrap(next http.Handler) http.Handler {
+func (c *Counter) wrap(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		c.mu.Lock()
 		c.paths[request.URL.Path]++
@@ -354,8 +379,8 @@ func (c *counter) wrap(next http.Handler) http.Handler {
 	})
 }
 
-// expectReceived checks how many requests for path have arrived so far.
-func (c *counter) expectReceived(path string, expected int) {
+// ExpectReceived checks how many requests for path have arrived so far.
+func (c *Counter) ExpectReceived(path string, expected int) {
 	c.t.Helper()
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -402,11 +427,11 @@ func (w *watch) await(t *testing.T, timeout time.Duration, what string, done fun
 
 // serveService serves service on listener, with its calls through the egress
 // listener at egressURL, and counts the requests it receives.
-func serveService(t *testing.T, listener net.Listener, service service, egressURL string) *counter {
+func serveService(t *testing.T, listener net.Listener, service Service, egressURL string) *Counter {
 	t.Helper()
 	server := connect.NewServer()
 	mux := http.NewServeMux()
-	service(t, backend{egress: newEgress(t, egressURL), grpc: server, http: mux})
+	service(t, Backend{Egress: newEgress(t, egressURL), GRPC: server, HTTP: mux})
 	grpcreflect.Register(server)
 	connecthttp.Mount(mux, server)
 	received := newCounter(t)
@@ -445,13 +470,13 @@ func serve(t *testing.T, listener net.Listener, handler http.Handler) {
 }
 
 // newEgress returns where a service reaches the egress listener at base.
-func newEgress(t *testing.T, base string) egress {
+func newEgress(t *testing.T, base string) Egress {
 	t.Helper()
 	target, err := url.Parse(base)
 	assert.NoError(t, err)
 	transport := &http.Transport{}
 	t.Cleanup(transport.CloseIdleConnections)
-	return egress{url: target, transport: transport}
+	return Egress{URL: target, Transport: transport}
 }
 
 // newClient returns a client that speaks HTTP/2 without TLS, as gRPC needs.

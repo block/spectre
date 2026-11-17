@@ -5,31 +5,33 @@ package integration_test
 import (
 	"net/http"
 	"testing"
+
+	"github.com/block/spectre/internal/integration/it"
 )
 
 func TestUnmatchedCandidateEgressQuarantinesCandidate(t *testing.T) {
-	m := startMirror(t,
-		scripts(`
+	m := it.Start(t,
+		it.Scripts(`
 			import { egress } from "spectre";
 			import type { FetchForecastRequest } from "forecasts";
 
 			egress.http("GET forecasts.example/v1/forecasts/{location}").match<FetchForecastRequest>();
 		`),
-		reference(sampleService()),
-		candidate(sampleService()),
-		dependency(forecastsHost, forecastProvider),
+		it.Reference(sampleService()),
+		it.Candidate(sampleService()),
+		it.Dependency(forecastsHost, forecastProvider),
 	)
 
 	// A dependency call the reference never made gets a 502 without reaching the provider.
-	m.candidateEgress.get(forecastsHost, "/v1/forecasts/paris").expectStatus(http.StatusBadGateway)
-	m.expectQuarantine(unmatchedEgress("GET forecasts.example/v1/forecasts/{location}", "no matching reference request within 500ms"))
-	m.candidateEgress.get(forecastsHost, "/v1/forecasts/london").expectStatus(http.StatusServiceUnavailable)
-	m.dependency(forecastsHost).expectReceived("/v1/forecasts/paris", 0)
+	m.CandidateEgress.Get(forecastsHost, "/v1/forecasts/paris").ExpectStatus(http.StatusBadGateway)
+	m.ExpectQuarantine(it.UnmatchedEgress("GET forecasts.example/v1/forecasts/{location}", "no matching reference request within 500ms"))
+	m.CandidateEgress.Get(forecastsHost, "/v1/forecasts/london").ExpectStatus(http.StatusServiceUnavailable)
+	m.Dependency(forecastsHost).ExpectReceived("/v1/forecasts/paris", 0)
 }
 
 func TestCandidateLeavingOutEgressCallIsQuarantined(t *testing.T) {
-	m := startMirror(t,
-		scripts(`
+	m := it.Start(t,
+		it.Scripts(`
 			import { egress, ingress } from "spectre";
 			import type { FetchForecastRequest } from "forecasts";
 			import type { GetForecastV2Response } from "weather";
@@ -37,19 +39,19 @@ func TestCandidateLeavingOutEgressCallIsQuarantined(t *testing.T) {
 			ingress.http("GET /v2/forecast").match<GetForecastV2Response>();
 			egress.http("GET forecasts.example/v1/forecasts/{location}").match<FetchForecastRequest>();
 		`),
-		reference(sampleService()),
-		candidate(sampleService(ownForecasts())),
-		dependency(forecastsHost, forecastProvider),
+		it.Reference(sampleService()),
+		it.Candidate(sampleService(ownForecasts())),
+		it.Dependency(forecastsHost, forecastProvider),
 	)
 
-	m.ingress.get("/v2/forecast?location=london").expectStatus(http.StatusOK)
-	m.expectQuarantine(unmatchedEgress("GET forecasts.example/v1/forecasts/{location}", "no matching candidate request within 500ms"))
-	m.dependency(forecastsHost).expectReceived("/v1/forecasts/london", 1)
+	m.Ingress.Get("/v2/forecast?location=london").ExpectStatus(http.StatusOK)
+	m.ExpectQuarantine(it.UnmatchedEgress("GET forecasts.example/v1/forecasts/{location}", "no matching candidate request within 500ms"))
+	m.Dependency(forecastsHost).ExpectReceived("/v1/forecasts/london", 1)
 }
 
 func TestCandidateMayLeaveOutOptionalEgressCalls(t *testing.T) {
-	m := startMirror(t,
-		scripts(`
+	m := it.Start(t,
+		it.Scripts(`
 			import { egress, ingress } from "spectre";
 			import type { FetchForecastRequest } from "forecasts";
 			import type { GetForecastV2Response } from "weather";
@@ -58,39 +60,39 @@ func TestCandidateMayLeaveOutOptionalEgressCalls(t *testing.T) {
 			egress.http("GET forecasts.example/v1/forecasts/{location}").optional().match<FetchForecastRequest>();
 			egress.http("GET required.example/v1/forecasts/{location}").match<FetchForecastRequest>();
 		`),
-		reference(sampleService()),
-		candidate(sampleService(ownForecasts())),
-		dependency(forecastsHost, forecastProvider),
-		dependency("required.example", forecastProvider),
+		it.Reference(sampleService()),
+		it.Candidate(sampleService(ownForecasts())),
+		it.Dependency(forecastsHost, forecastProvider),
+		it.Dependency("required.example", forecastProvider),
 	)
 
 	// The reference fetches london's forecast, which the candidate reads from its own data.
-	m.ingress.get("/v2/forecast?location=london").expectStatus(http.StatusOK)
-	m.expectCalls(calls{"GET /v2/forecast": 1})
-	m.dependency(forecastsHost).expectReceived("/v1/forecasts/london", 1)
+	m.Ingress.Get("/v2/forecast?location=london").ExpectStatus(http.StatusOK)
+	m.ExpectCalls(it.Calls{"GET /v2/forecast": 1})
+	m.Dependency(forecastsHost).ExpectReceived("/v1/forecasts/london", 1)
 
 	// A required fetch the candidate leaves out quarantines it. Its window ends after
 	// the optional fetch's, and only the first reason is kept, so the optional one never quarantined.
-	m.referenceEgress.get("required.example", "/v1/forecasts/london").expectStatus(http.StatusOK)
-	m.dependency("required.example").expectReceived("/v1/forecasts/london", 1)
-	m.expectQuarantine(unmatchedEgress("GET required.example/v1/forecasts/{location}", "no matching candidate request within 500ms"))
+	m.ReferenceEgress.Get("required.example", "/v1/forecasts/london").ExpectStatus(http.StatusOK)
+	m.Dependency("required.example").ExpectReceived("/v1/forecasts/london", 1)
+	m.ExpectQuarantine(it.UnmatchedEgress("GET required.example/v1/forecasts/{location}", "no matching candidate request within 500ms"))
 }
 
 func TestUnmatchedCandidateCallToOptionalEndpointQuarantines(t *testing.T) {
-	m := startMirror(t,
-		scripts(`
+	m := it.Start(t,
+		it.Scripts(`
 			import { egress } from "spectre";
 			import type { FetchForecastRequest } from "forecasts";
 
 			egress.http("GET forecasts.example/v1/forecasts/{location}").optional().match<FetchForecastRequest>();
 		`),
-		reference(sampleService()),
-		candidate(sampleService()),
-		dependency(forecastsHost, forecastProvider),
+		it.Reference(sampleService()),
+		it.Candidate(sampleService()),
+		it.Dependency(forecastsHost, forecastProvider),
 	)
 
 	// Optional only lets the candidate make fewer calls, not calls the reference never made.
-	m.candidateEgress.get(forecastsHost, "/v1/forecasts/paris").expectStatus(http.StatusBadGateway)
-	m.expectQuarantine(unmatchedEgress("GET forecasts.example/v1/forecasts/{location}", "no matching reference request within 500ms"))
-	m.dependency(forecastsHost).expectReceived("/v1/forecasts/paris", 0)
+	m.CandidateEgress.Get(forecastsHost, "/v1/forecasts/paris").ExpectStatus(http.StatusBadGateway)
+	m.ExpectQuarantine(it.UnmatchedEgress("GET forecasts.example/v1/forecasts/{location}", "no matching reference request within 500ms"))
+	m.Dependency(forecastsHost).ExpectReceived("/v1/forecasts/paris", 0)
 }
