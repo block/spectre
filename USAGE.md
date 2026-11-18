@@ -301,6 +301,41 @@ reference within `--match-window` gets a `502` and quarantines the candidate, as
 does one whose source reference failed or did not succeed. Replace only
 read-only endpoints, because the candidate's call is never sent.
 
+### MySQL
+
+Set `--mysql-upstream=HOST:PORT` to proxy a MySQL server as well, with the
+`--mysql-user` and `--mysql-password` that the services use. The reference
+connects to `--mysql-reference-listen` and the candidate to
+`--mysql-candidate-listen`, both without TLS and with `mysql_native_password`.
+
+Reference commands, including prepared statements, reach the server and their
+replies come back unchanged. Candidate commands never reach it. Each candidate
+text statement is answered with the reply that the reference got for the same
+statement text in the same default database: its rows, its affected rows and
+insert ID, or its error. A candidate that repeats the reference's writes and
+transaction statements is therefore answered without writing anything.
+
+The candidate can send only text statements and select a database. A prepared
+statement, a column listing, or any other command gets an error and quarantines
+the candidate as `unable`. Reference prepared statements are only forwarded.
+
+Statements carry no request ID, so statements pair across all requests by text
+alone, within `--match-window`. Each reference statement answers one candidate
+statement. A candidate statement that no reference statement matches gets an
+error, and quarantines the candidate as `unmatched`, as does a reference
+statement that no candidate statement claims. Every text statement the
+reference sends through the proxy must therefore be one that the mirrored
+candidate also sends.
+
+Saved replies wait for the candidate in memory. When they exceed
+`--mysql-saved-replies-bytes`, the reference is still answered in full, and the
+candidate is quarantined as `capacity`.
+
+MySQL quarantines are egress quarantines with the protocol `mysql`. Their route
+is the statement's first keyword, such as `SELECT` or `COMMIT`, or `statement`
+when it starts with none, or `command` for a command that is not a statement.
+They never include a statement or its values.
+
 ### Quarantine
 
 A mirror quarantines its candidate for one of these reasons:

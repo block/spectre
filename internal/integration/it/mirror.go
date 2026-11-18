@@ -4,6 +4,7 @@ package it
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"net"
 	"net/http"
@@ -24,6 +25,7 @@ import (
 
 	"github.com/block/spectre/internal/httpserver"
 	"github.com/block/spectre/internal/model"
+	"github.com/block/spectre/internal/mysqlserver"
 	"github.com/block/spectre/internal/proxies"
 	spectreserver "github.com/block/spectre/internal/server"
 	"github.com/block/spectre/internal/server/client"
@@ -59,6 +61,8 @@ type Backend struct {
 	Egress Egress
 	GRPC   *connect.Server
 	HTTP   *http.ServeMux
+	// MySQL reaches the mirror's database through the proxy, when the mirror has one.
+	MySQL Option[*sql.DB]
 }
 
 // Service registers the handlers of a reference or candidate service.
@@ -81,9 +85,13 @@ type setup struct {
 	dependencies   map[string]DependencyHandler
 	scripts        []string
 	scriptsDir     string
+	schemas        []string
 	schemaDir      string
 	descriptorsDir string
 	matchWindow    time.Duration
+	// mysql holds the statements that set up the mirror's database, if it has one.
+	mysql                 Option[[]string]
+	mysqlSavedRepliesSize Option[int]
 }
 
 func newSetup() *setup {
@@ -113,6 +121,22 @@ func Dependency(host string, handler DependencyHandler) Setting {
 // Scripts adds a comparison script, without the indentation its lines share.
 func Scripts(source string) Setting {
 	return func(setup *setup) { setup.scripts = append(setup.scripts, source) }
+}
+
+// Schema declares TypeScript types for the scripts, next to the sample's schema.
+func Schema(source string) Setting {
+	return func(setup *setup) { setup.schemas = append(setup.schemas, source) }
+}
+
+// MySQL gives the services a database of their own on the shared MySQL server, set up
+// by statements, which they reach through the proxy.
+func MySQL(statements ...string) Setting {
+	return func(setup *setup) { setup.mysql = Some(statements) }
+}
+
+// MySQLSavedRepliesBytes limits the reference replies the proxy saves for candidate statements.
+func MySQLSavedRepliesBytes(size int) Setting {
+	return func(setup *setup) { setup.mysqlSavedRepliesSize = Some(size) }
 }
 
 // ScriptsDir loads the comparison scripts in dir instead.
@@ -145,6 +169,22 @@ func (s *setup) serveDependencies(t *testing.T) (received map[string]*Counter, d
 	return received, destinations
 }
 
+// createDatabase creates the mirror's MySQL database, if it has one, and returns how
+// the proxy reaches it. It opens the proxy's MySQL listeners in listeners.
+func (s *setup) createDatabase(t *testing.T, w *watch, listeners *proxies.Listeners) (mysqlserver.Config, Option[*Database]) {
+	t.Helper()
+	statements, ok := s.mysql.Get()
+	if !ok {
+		return mysqlserver.NewConfig(), None[*Database]()
+	}
+	database := newDatabase(t, w, statements)
+	reference, candidate := listen(t), listen(t)
+	listeners.MySQLReference, listeners.MySQLCandidate = Some(reference), Some(candidate)
+	config := database.connect(reference, candidate)
+	config.SavedRepliesBytes = s.mysqlSavedRepliesSize.Default(config.SavedRepliesBytes)
+	return config, Some(database)
+}
+
 // writeScripts returns the directory of the comparison scripts, writing those
 // given inline to a temporary one.
 func (s *setup) writeScripts(t *testing.T) string {
@@ -164,9 +204,24 @@ func (s *setup) writeScripts(t *testing.T) string {
 	return dir
 }
 
+// writeSchema returns the directory of the schema. Types given inline are written to a
+// temporary one, next to a copy of the schema the descriptors need.
+func (s *setup) writeSchema(t *testing.T) string {
+	t.Helper()
+	if len(s.schemas) == 0 {
+		return s.schemaDir
+	}
+	dir := t.TempDir()
+	assert.NoError(t, os.CopyFS(dir, os.DirFS(s.schemaDir)))
+	for i, source := range s.schemas {
+		assert.NoError(t, os.WriteFile(filepath.Join(dir, fmt.Sprintf("inline%d.d.ts", i)), []byte(dedent(source)), 0o600))
+	}
+	return dir
+}
+
 // proxyConfig configures the proxy in front of the services on listeners.
 func (s *setup) proxyConfig(listeners proxies.Listeners, reference, candidate net.Listener,
-	destinations map[string]string, scriptsDir, serverURL string,
+	destinations map[string]string, scriptsDir, schemaDir, serverURL string,
 ) proxies.ProxyConfig {
 	config := proxies.ProxyConfig{
 		Listen:                listeners.Ingress.Addr().String(),
@@ -180,7 +235,7 @@ func (s *setup) proxyConfig(listeners proxies.Listeners, reference, candidate ne
 	}
 	config.Mirror.Destinations = destinations
 	config.Mirror.ScriptsDir = scriptsDir
-	config.Mirror.SchemaDir = s.schemaDir
+	config.Mirror.SchemaDir = schemaDir
 	config.Mirror.Descriptors.DescriptorsDir = s.descriptorsDir
 	config.Mirror.MatchWindow = s.matchWindow
 	config.Mirror.Server.Client.URL = serverURL
@@ -200,6 +255,7 @@ type Mirror struct {
 	Reference    *Counter
 	Candidate    *Counter
 	t            *testing.T
+	mysql        Option[*Database]
 	dependencies map[string]*Counter
 	client       *http.Client
 	server       *client.Client
@@ -216,7 +272,7 @@ func Start(t *testing.T, settings ...Setting) *Mirror {
 		setting(setup)
 	}
 	referenceService, candidateService := setup.services(t)
-	scriptsDir := setup.writeScripts(t)
+	scriptsDir, schemaDir := setup.writeScripts(t), setup.writeSchema(t)
 	ctx := t.Context()
 	server := listen(t)
 	serverURL := baseURL(server)
@@ -235,16 +291,19 @@ func Start(t *testing.T, settings ...Setting) *Mirror {
 	m.Ingress = newIngressEndpoint(t, httpClient, baseURL(listeners.Ingress))
 	m.ReferenceEgress = newEgressEndpoint(t, httpClient, baseURL(listeners.ReferenceEgress))
 	m.CandidateEgress = newEgressEndpoint(t, httpClient, baseURL(listeners.CandidateEgress))
+	mysqlConfig, database := setup.createDatabase(t, m.watch, &listeners)
+	m.mysql = database
 	referenceListener, candidateListener := listen(t), listen(t)
-	m.Reference = serveService(t, referenceListener, referenceService, m.ReferenceEgress.url())
-	m.Candidate = serveService(t, candidateListener, candidateService, m.CandidateEgress.url())
+	m.Reference = serveService(t, referenceListener, referenceService, m.ReferenceEgress.url(), m.mysqlHandle(false))
+	m.Candidate = serveService(t, candidateListener, candidateService, m.CandidateEgress.url(), m.mysqlHandle(true))
 	dependencies, destinations := setup.serveDependencies(t)
 	m.dependencies = dependencies
 
-	config := setup.proxyConfig(listeners, referenceListener, candidateListener, destinations, scriptsDir, serverURL)
+	proxyConfig := setup.proxyConfig(listeners, referenceListener, candidateListener, destinations, scriptsDir, schemaDir, serverURL)
+	proxyConfig.Mirror.MySQL = mysqlConfig
 	catalog, err := state.NewCatalog(httpserver.Supports()...)
 	assert.NoError(t, err)
-	proxy, err := proxies.New(ctx, config, catalog)
+	proxy, err := proxies.New(ctx, proxyConfig, catalog)
 	assert.NoError(t, err)
 	assert.NoError(t, proxy.StartListeners(ctx, listeners))
 	m.watch.run(ctx, t, "proxy", func(ctx context.Context) error { return proxy.Wait(ctx) })
@@ -260,6 +319,28 @@ func Start(t *testing.T, settings ...Setting) *Mirror {
 // HTTP/2 without TLS, as gRPC needs.
 func (m *Mirror) Client() *http.Client {
 	return m.client
+}
+
+// MySQL returns the mirror's database.
+func (m *Mirror) MySQL() *Database {
+	m.t.Helper()
+	database, ok := m.mysql.Get()
+	if !ok {
+		m.t.Fatal("the mirror has no MySQL database")
+	}
+	return database
+}
+
+// mysqlHandle returns where the reference or the candidate reaches the mirror's database, if it has one.
+func (m *Mirror) mysqlHandle(candidate bool) Option[*sql.DB] {
+	database, ok := m.mysql.Get()
+	switch {
+	case !ok:
+		return None[*sql.DB]()
+	case candidate:
+		return Some(database.Candidate)
+	}
+	return Some(database.Reference)
 }
 
 // Dependency returns the requests that reached the dependency at host.
@@ -436,11 +517,11 @@ func (w *watch) await(t *testing.T, timeout time.Duration, what string, done fun
 
 // serveService serves service on listener, with its calls through the egress
 // listener at egressURL, and counts the requests it receives.
-func serveService(t *testing.T, listener net.Listener, service Service, egressURL string) *Counter {
+func serveService(t *testing.T, listener net.Listener, service Service, egressURL string, mysql Option[*sql.DB]) *Counter {
 	t.Helper()
 	server := connect.NewServer()
 	mux := http.NewServeMux()
-	service(t, Backend{Egress: newEgress(t, egressURL), GRPC: server, HTTP: mux})
+	service(t, Backend{Egress: newEgress(t, egressURL), GRPC: server, HTTP: mux, MySQL: mysql})
 	grpcreflect.Register(server)
 	connecthttp.Mount(mux, server)
 	received := newCounter(t)

@@ -12,15 +12,20 @@ import (
 	"testing"
 
 	"github.com/alecthomas/errors"
+
+	"github.com/block/spectre/internal/integration/it"
 )
 
-// TestMain builds the sample's descriptors once, then runs the tests.
+// TestMain builds the sample's descriptors once, runs the tests, then removes the
+// MySQL server they shared.
 func TestMain(m *testing.M) {
 	if err := build("sample-descriptors"); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	os.Exit(m.Run())
+	code := m.Run()
+	it.RemoveMySQLServer()
+	os.Exit(code)
 }
 
 // build runs bit in the repository root for targets.
