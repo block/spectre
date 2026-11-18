@@ -53,58 +53,38 @@ const (
 
 		ingress.http("GET /merchants/{merchant}/orders").match<MerchantOrders>();
 	`
-
-	selectOrders      = "SELECT id, label FROM orders WHERE merchant_id = ? ORDER BY id"
-	selectItems       = "SELECT id, sku, quantity FROM items WHERE order_id = ? ORDER BY id"
-	selectOrdersItems = "SELECT o.id, o.label, i.id, i.sku, i.quantity FROM orders o" +
-		" LEFT JOIN items i ON i.order_id = o.id WHERE o.merchant_id = ? ORDER BY o.id, i.id"
-
-	// The database server's digests of the statements above.
-	ordersDigest      = "SELECT `id` , `label` FROM `orders` WHERE `merchant_id` = ? ORDER BY `id`"
-	itemsDigest       = "SELECT `id` , `sku` , `quantity` FROM `items` WHERE `order_id` = ? ORDER BY `id`"
-	ordersItemsDigest = "SELECT `o` . `id` , `o` . `label` , `i` . `id` , `i` . `sku` , `i` . `quantity` FROM `orders` `o`" +
-		" LEFT JOIN `items` `i` ON `i` . `order_id` = `o` . `id` WHERE `o` . `merchant_id` = ? ORDER BY `o` . `id` , `i` . `id`"
 )
 
-func TestMySQLJoinAndSeparateSelectsReadTheSameRows(t *testing.T) {
-	for _, test := range []struct {
-		name      string
-		reference readOrders
-		candidate readOrders
-		// selects are the statements that reach the database, which are the reference's alone.
-		selects map[string]uint64
-	}{
-		{
-			name:      "ReferenceSelectsEachOrdersItems",
-			reference: selectEachOrdersItems,
-			candidate: joinOrdersToItems,
-			selects:   map[string]uint64{ordersDigest: 1, itemsDigest: 3},
-		},
-		{
-			name:      "ReferenceJoinsOrdersToItems",
-			reference: joinOrdersToItems,
-			candidate: selectEachOrdersItems,
-			selects:   map[string]uint64{ordersItemsDigest: 1},
-		},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			m := startOrdersMirror(t, test.reference, test.candidate)
+func TestMySQLJoinReadsTheRowsOfSeparateSelects(t *testing.T) {
+	m := startOrdersMirror(t, selectEachOrdersItems, joinOrdersToItems)
 
-			m.Ingress.Get("/merchants/1/orders").ExpectStatus(http.StatusOK).ExpectBodyContains(merchantOneOrders)
-			// Ingress counts the call once both services answered alike, so the candidate
-			// built the same orders from the reference's rows.
-			m.ExpectCalls(it.Calls{merchantOneOrdersRoute: 1})
-			m.MySQL().ExpectSelects(test.selects)
-		})
-	}
+	m.Ingress.Get("/merchants/1/orders").ExpectStatus(http.StatusOK).ExpectBodyContains(merchantOneOrders)
+	// Ingress counts the call once both services answered alike, so the candidate
+	// built the same orders from the reference's rows.
+	m.ExpectCalls(it.Calls{merchantOneOrdersRoute: 1})
+	// Only the reference's statements reach the database, as the server digests them.
+	m.MySQL().ExpectSelects(map[string]uint64{
+		"SELECT `id` , `label` FROM `orders` WHERE `merchant_id` = ? ORDER BY `id`":        1,
+		"SELECT `id` , `sku` , `quantity` FROM `items` WHERE `order_id` = ? ORDER BY `id`": 3,
+	})
+}
+
+func TestMySQLSeparateSelectsReadTheRowsOfAJoin(t *testing.T) {
+	m := startOrdersMirror(t, joinOrdersToItems, selectEachOrdersItems)
+
+	m.Ingress.Get("/merchants/1/orders").ExpectStatus(http.StatusOK).ExpectBodyContains(merchantOneOrders)
+	m.ExpectCalls(it.Calls{merchantOneOrdersRoute: 1})
+	m.MySQL().ExpectSelects(map[string]uint64{
+		"SELECT `o` . `id` , `o` . `label` , `i` . `id` , `i` . `sku` , `i` . `quantity` FROM `orders` `o` LEFT JOIN `items` `i`" +
+			" ON `i` . `order_id` = `o` . `id` WHERE `o` . `merchant_id` = ? ORDER BY `o` . `id` , `i` . `id`": 1,
+	})
 }
 
 func TestMySQLCandidateLookupTheReferenceNeverMadeQuarantines(t *testing.T) {
 	m := startOrdersMirror(t, selectEachOrdersItems, joinOrdersToItems)
 
 	// No reference statement read order 99's items, so the candidate gets an error, not rows.
-	id, sku, quantity := int64(0), sql.NullString{}, int64(0)
-	err := m.MySQL().Candidate.QueryRowContext(t.Context(), selectItems, 99).Scan(&id, &sku, &quantity)
+	_, err := selectItemsOf(t.Context(), m.MySQL().Candidate, 99)
 	assert.Contains(t, err.Error(), "SPECTRE: no matching reference rows")
 	m.ExpectQuarantine(m.MySQL().UnmatchedLookup("items", "no matching reference request within 500ms"))
 	m.MySQL().ExpectSelects(map[string]uint64{})
@@ -204,7 +184,7 @@ func ordersService(read readOrders) it.Service {
 
 // selectEachOrdersItems selects the orders, then the items of each order with a statement of its own.
 func selectEachOrdersItems(ctx context.Context, database *sql.DB, merchant int64) ([]order, error) {
-	rows, err := database.QueryContext(ctx, selectOrders, merchant)
+	rows, err := database.QueryContext(ctx, "SELECT id, label FROM orders WHERE merchant_id = ? ORDER BY id", merchant)
 	if err != nil {
 		return nil, errors.Wrap(err, "select orders")
 	}
@@ -231,7 +211,7 @@ func selectEachOrdersItems(ctx context.Context, database *sql.DB, merchant int64
 }
 
 func selectItemsOf(ctx context.Context, database *sql.DB, orderID int64) ([]item, error) {
-	rows, err := database.QueryContext(ctx, selectItems, orderID)
+	rows, err := database.QueryContext(ctx, "SELECT id, sku, quantity FROM items WHERE order_id = ? ORDER BY id", orderID)
 	if err != nil {
 		return nil, errors.Wrap(err, "select items")
 	}
@@ -252,7 +232,8 @@ func selectItemsOf(ctx context.Context, database *sql.DB, orderID int64) ([]item
 
 // joinOrdersToItems selects the orders and their items with one statement.
 func joinOrdersToItems(ctx context.Context, database *sql.DB, merchant int64) ([]order, error) {
-	rows, err := database.QueryContext(ctx, selectOrdersItems, merchant)
+	rows, err := database.QueryContext(ctx, "SELECT o.id, o.label, i.id, i.sku, i.quantity FROM orders o"+
+		" LEFT JOIN items i ON i.order_id = o.id WHERE o.merchant_id = ? ORDER BY o.id, i.id", merchant)
 	if err != nil {
 		return nil, errors.Wrap(err, "select orders and items")
 	}

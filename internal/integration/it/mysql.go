@@ -14,7 +14,6 @@ import (
 	"testing"
 
 	"github.com/alecthomas/assert/v2"
-	"github.com/alecthomas/errors"
 	. "github.com/alecthomas/types/optional"
 	"github.com/go-sql-driver/mysql"
 
@@ -26,40 +25,44 @@ const (
 	mysqlImage    = "mysql:8.4"
 	mysqlUser     = "root"
 	mysqlPassword = "spectre"
-	// mysqlLifetime removes the server even when a test process dies without stopping it.
+	// mysqlLifetime removes the server even when a test process dies without removing it.
 	mysqlLifetime = "900"
 )
 
-// StartMySQLServer starts the MySQL server that every test of this process shares,
-// without waiting for it to accept connections. stop removes it.
-func StartMySQLServer(ctx context.Context) (stop func() error, err error) {
-	name := mysqlContainer()
-	run := exec.CommandContext(ctx, "docker", "run", "--detach", "--rm", "--name", name,
-		"--env", "MYSQL_ROOT_PASSWORD="+mysqlPassword, "--publish", "127.0.0.1::3306",
-		"--tmpfs", "/var/lib/mysql", "--entrypoint", "timeout", mysqlImage,
-		mysqlLifetime, "docker-entrypoint.sh", "mysqld")
-	if output, err := run.CombinedOutput(); err != nil {
-		return func() error { return nil }, errors.Wrapf(err, "start MySQL: %s", strings.TrimSpace(string(output)))
+// RemoveMySQLServer removes the MySQL server that the tests of this process shared,
+// if any test started it.
+func RemoveMySQLServer() {
+	remove := exec.CommandContext(context.Background(), "docker", "rm", "--force", mysqlContainer())
+	if output, err := remove.CombinedOutput(); err != nil {
+		fmt.Fprintf(os.Stderr, "remove MySQL: %v: %s\n", err, output)
 	}
-	return func() error {
-		// The test context is done by now, and removal must still run.
-		remove := exec.CommandContext(context.WithoutCancel(ctx), "docker", "rm", "--force", name)
-		return errors.Wrap(remove.Run(), "remove MySQL")
-	}, nil
 }
 
-// mysqlContainer names the server after the test process, so tests find it without shared state.
+// startMySQL starts the MySQL server that the tests of this process share, unless
+// another test already did, and returns where it listens on this host.
+func startMySQL(t *testing.T, w *watch) string {
+	t.Helper()
+	name := mysqlContainer()
+	run := exec.CommandContext(t.Context(), "docker", "run", "--detach", "--rm", "--name", name,
+		"--env", "MYSQL_ROOT_PASSWORD="+mysqlPassword, "--publish", "127.0.0.1::3306", "--tmpfs", "/var/lib/mysql",
+		"--entrypoint", "timeout", mysqlImage, mysqlLifetime, "docker-entrypoint.sh", "mysqld")
+	if output, err := run.CombinedOutput(); err != nil && !strings.Contains(string(output), "is already in use") {
+		t.Fatalf("start MySQL; is Docker running? %v: %s", err, output)
+	}
+	address := ""
+	// The test that won the race to start the server may not have published its port yet.
+	w.await(t, startTimeout, "MySQL to publish its port", func() bool {
+		output, err := exec.CommandContext(t.Context(), "docker", "port", name, "3306/tcp").Output()
+		address, _, _ = strings.Cut(strings.TrimSpace(string(output)), "\n")
+		return err == nil && address != ""
+	})
+	return address
+}
+
+// mysqlContainer names the server after the test process, so its tests find it
+// without shared state, and other test processes never do.
 func mysqlContainer() string {
 	return fmt.Sprintf("spectre-integration-mysql-%d", os.Getpid())
-}
-
-// mysqlAddress returns where the shared MySQL server listens on this host.
-func mysqlAddress(t *testing.T) string {
-	t.Helper()
-	output, err := exec.CommandContext(t.Context(), "docker", "port", mysqlContainer(), "3306/tcp").Output()
-	assert.NoError(t, err, "find the MySQL server that TestMain starts; is Docker running?")
-	address, _, _ := strings.Cut(strings.TrimSpace(string(output)), "\n")
-	return address
 }
 
 // Database is the MySQL database of a mirror's services, and where each service reaches it.
@@ -74,11 +77,11 @@ type Database struct {
 	server    *sql.DB
 }
 
-// newMySQL creates the test's database on the shared server, once the server accepts
-// connections, and runs statements in it.
+// newDatabase creates the test's own database on the shared server, once the server
+// accepts connections, and runs statements in it.
 func newDatabase(t *testing.T, w *watch, statements []string) *Database {
 	t.Helper()
-	address := mysqlAddress(t)
+	address := startMySQL(t, w)
 	server := openMySQL(t, address, "")
 	w.await(t, startTimeout, "MySQL to accept connections", func() bool {
 		return server.PingContext(t.Context()) == nil
@@ -89,11 +92,6 @@ func newDatabase(t *testing.T, w *watch, statements []string) *Database {
 	database := fmt.Sprintf("it_%x", suffix)
 	_, err = server.ExecContext(t.Context(), "CREATE DATABASE "+database)
 	assert.NoError(t, err)
-	t.Cleanup(func() {
-		if _, err := server.ExecContext(context.WithoutCancel(t.Context()), "DROP DATABASE "+database); err != nil {
-			t.Logf("drop %s: %v", database, err)
-		}
-	})
 	seed := openMySQL(t, address, database)
 	for _, statement := range statements {
 		_, err := seed.ExecContext(t.Context(), statement)

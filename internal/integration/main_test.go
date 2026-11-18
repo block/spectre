@@ -16,22 +16,15 @@ import (
 	"github.com/block/spectre/internal/integration/it"
 )
 
-// TestMain builds the sample's descriptors once and starts the MySQL server the
-// tests share, then runs the tests.
+// TestMain builds the sample's descriptors once, runs the tests, then removes the
+// MySQL server they shared.
 func TestMain(m *testing.M) {
 	if err := build("sample-descriptors"); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	stopMySQL, err := it.StartMySQLServer(context.Background())
-	if err != nil {
-		// Only the tests that use MySQL need it, and they report that it is missing.
-		fmt.Fprintln(os.Stderr, err)
-	}
 	code := m.Run()
-	if err := stopMySQL(); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-	}
+	it.RemoveMySQLServer()
 	os.Exit(code)
 }
 

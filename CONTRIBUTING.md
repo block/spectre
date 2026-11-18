@@ -125,10 +125,11 @@ m := it.Start(t,
 m.MySQL().ExpectSelects(map[string]uint64{"SELECT `id` , `label` FROM `orders`": 1})
 ```
 
-The test process starts one `mysql:8.4` container with `docker` before its
-tests run and removes it afterwards, and each test creates a database of its
-own in it. The container also stops itself after 15 minutes, in case the
-process dies first. Without a running Docker daemon only the MySQL tests fail.
+The first such test starts a `mysql:8.4` container with `docker`, later ones
+reuse it, and each test creates a database of its own in it. `TestMain`
+removes the container once all tests have run. It also stops itself after 15
+minutes, in case the process dies first. Without a running Docker daemon only
+the MySQL tests fail.
 
 Every file in both packages carries the `integration` build tag, so `bit test`
 leaves them out and CI runs them in a separate job. Run them with
