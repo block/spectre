@@ -280,6 +280,58 @@ reference within `--match-window` gets a `502` and quarantines the candidate, as
 does one whose source reference failed or did not succeed. Replace only
 read-only endpoints, because the candidate's call is never sent.
 
+### MySQL
+
+Set `--mysql-upstream=HOST:PORT` to proxy a MySQL server as well, with the
+`--mysql-user` and `--mysql-password` that the services use. The reference
+connects to `--mysql-reference-listen` and the candidate to
+`--mysql-candidate-listen`, both without TLS and with `mysql_native_password`.
+
+Reference statements reach the server and their results come back unchanged.
+Candidate statements never reach it: each is answered from the rows that the
+reference read. The two services may read the same rows with different
+statements, so statements pair by what they read, not by their text. The unit is
+a lookup: one read of a table's rows by equality on its columns. The mirror
+reduces a `SELECT` to lookups:
+
+| Statement | Lookups |
+| --- | --- |
+| `SELECT id, label FROM orders WHERE merchant_id = 1` | `orders` where `merchant_id` is `1` |
+| `SELECT id, sku FROM items WHERE order_id = 7` | `items` where `order_id` is `7` |
+| `SELECT o.id, o.label, i.id, i.sku FROM orders o LEFT JOIN items i ON i.order_id = o.id WHERE o.merchant_id = 1` | `orders` where `merchant_id` is `1`, then `items` where `order_id` is each order's `id` |
+
+A service that joins `orders` to `items` and one that selects the items of each
+order separately therefore make the same lookups, and each gets the same rows.
+The mirror joins, projects, and sorts the saved rows itself to answer the
+candidate.
+
+A statement is reduced to lookups only when it is a `SELECT` of named columns
+from one table, or from two with one `LEFT JOIN ... ON` of a column of each, with
+`WHERE` comparing the first table's columns to literals with `=` and `AND`, and
+an optional `ORDER BY` on columns. A reference join must also select both
+tables' primary keys and the first table's join column, so its rows can be told
+apart. Other reference statements, including writes and prepared statements, are
+forwarded without saving rows. For the candidate the limits are stricter:
+
+- Only text statements are answered. A prepared statement, a write, or a
+  `SELECT` that is not lookups gets an error and quarantines the candidate as
+  `unable`.
+- It can read only columns that the reference read, and sort only by integer
+  columns.
+
+Statements carry no request ID, so lookups pair across all requests by table and
+values alone, within `--match-window`. Each reference lookup answers one
+candidate lookup. A candidate lookup that no reference lookup matches gets an
+error, and quarantines the candidate as `unmatched`, as does a reference lookup
+that no candidate lookup claims.
+
+Saved rows wait for the candidate in memory. When they exceed
+`--mysql-saved-rows-bytes`, the reference is still answered in full, and the
+candidate is quarantined as `capacity`.
+
+MySQL quarantines are egress quarantines with the protocol `mysql` and a route
+such as `SELECT shop.orders`. They never include a statement or its values.
+
 ### Quarantine
 
 A mirror quarantines its candidate for one of these reasons:

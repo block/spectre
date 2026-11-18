@@ -163,6 +163,11 @@ func (e *Egress) Serve(ctx context.Context, reference net.Listener, candidate ne
 	return errors.Wrap(Serve(ctx, e.config, bindings, lifecycle), "serve egress")
 }
 
+// Engine returns the engine that pairs egress traffic, which other egress protocols share.
+func (e *Egress) Engine() *protocol.Engine {
+	return e.engine
+}
+
 // Candidates reports the egress candidate quarantine state.
 func (e *Egress) Candidates() *proxy.Candidates {
 	return e.candidates

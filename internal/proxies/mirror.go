@@ -13,6 +13,7 @@ import (
 	"github.com/block/spectre/internal/httpserver/middleware/health"
 	"github.com/block/spectre/internal/logger"
 	"github.com/block/spectre/internal/model"
+	"github.com/block/spectre/internal/mysqlserver"
 	"github.com/block/spectre/internal/netaddr"
 	"github.com/block/spectre/internal/protocol"
 	"github.com/block/spectre/internal/server/client"
@@ -34,19 +35,28 @@ type Mirror struct {
 	exits   chan exit
 }
 
-// Listeners are the open listeners of a mirror's proxies.
+// Listeners are the open listeners of a mirror's proxies. The MySQL listeners are
+// present only when MySQL is proxied.
 type Listeners struct {
 	Ingress         net.Listener
 	ReferenceEgress net.Listener
 	CandidateEgress net.Listener
 	EgressHealth    net.Listener
 	Health          net.Listener
+	MySQLReference  Option[net.Listener]
+	MySQLCandidate  Option[net.Listener]
 }
 
 // close closes every listener that a stopped proxy has not, joining any errors.
 func (l Listeners) close() error {
 	closeErrors := []error{}
-	for _, listener := range []net.Listener{l.Ingress, l.ReferenceEgress, l.CandidateEgress, l.EgressHealth, l.Health} {
+	listeners := []net.Listener{l.Ingress, l.ReferenceEgress, l.CandidateEgress, l.EgressHealth, l.Health}
+	for _, optional := range []Option[net.Listener]{l.MySQLReference, l.MySQLCandidate} {
+		if listener, ok := optional.Get(); ok {
+			listeners = append(listeners, listener)
+		}
+	}
+	for _, listener := range listeners {
 		if err := listener.Close(); !errors.Is(err, net.ErrClosed) {
 			closeErrors = append(closeErrors, err)
 		}
@@ -79,7 +89,7 @@ func New(ctx context.Context, config ProxyConfig, catalog *state.Catalog) (*Mirr
 		log:       logger.FromContext(ctx).With(logger.SubsystemKey, "mirror"),
 		migration: migration,
 		cancel:    func() {},
-		exits:     make(chan exit, 3),
+		exits:     make(chan exit, 4),
 	}, nil
 }
 
@@ -135,12 +145,23 @@ func (m *Mirror) listen(ctx context.Context) (Listeners, error) {
 	if err != nil {
 		return Listeners{}, err
 	}
-	return Listeners{Ingress: opened[0], ReferenceEgress: opened[1], CandidateEgress: opened[2], EgressHealth: opened[3], Health: opened[4]}, nil
+	listeners := Listeners{Ingress: opened[0], ReferenceEgress: opened[1], CandidateEgress: opened[2], EgressHealth: opened[3], Health: opened[4]}
+	if mysql := m.config.Mirror.MySQL; mysql.Enabled() {
+		lookups, err := listenAll(ctx, mysql.ReferenceListen, mysql.CandidateListen)
+		if err != nil {
+			return Listeners{}, errors.Join(err, listeners.close())
+		}
+		listeners.MySQLReference, listeners.MySQLCandidate = Some(lookups[0]), Some(lookups[1])
+	}
+	return listeners, nil
 }
 
 // startAll serves egress first, so services can reach dependencies as they start.
 func (m *Mirror) startAll(ctx context.Context, listeners Listeners) error {
 	if err := m.startEgress(ctx, listeners); err != nil {
+		return err
+	}
+	if err := m.startMySQL(ctx, listeners.MySQLReference, listeners.MySQLCandidate); err != nil {
 		return err
 	}
 	if err := m.startIngress(ctx, listeners.Ingress); err != nil {
@@ -164,6 +185,29 @@ func (m *Mirror) startEgress(ctx context.Context, listeners Listeners) error {
 	m.egress = handler
 	m.serve(ctx, "egress", transport.CloseIdleConnections, func() error {
 		return handler.Serve(proxyContext, listeners.ReferenceEgress, listeners.CandidateEgress, listeners.EgressHealth)
+	})
+	return nil
+}
+
+// startMySQL serves the MySQL proxy, if MySQL is proxied. It pairs lookups in the egress
+// proxy's engine, and its quarantines are the egress proxy's.
+func (m *Mirror) startMySQL(ctx context.Context, referenceListener, candidateListener Option[net.Listener]) error {
+	config := m.config.Mirror.MySQL
+	if !config.Enabled() {
+		return nil
+	}
+	reference, hasReference := referenceListener.Get()
+	candidate, hasCandidate := candidateListener.Get()
+	if !hasReference || !hasCandidate {
+		return errors.New("MySQL is proxied, but its listeners are not open")
+	}
+	server, err := mysqlserver.New(config, m.egress.Engine(), m.egress.Candidates())
+	if err != nil {
+		return errors.Wrap(err, "configure MySQL")
+	}
+	proxyContext := logger.WithSubsystem(ctx, "mysql")
+	m.serve(ctx, "mysql", func() {}, func() error {
+		return errors.Wrap(server.Serve(proxyContext, reference, candidate), "serve MySQL")
 	})
 	return nil
 }
