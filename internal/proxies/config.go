@@ -10,6 +10,7 @@ import (
 	"github.com/alecthomas/kong"
 
 	"github.com/block/spectre/internal/descriptors"
+	"github.com/block/spectre/internal/mysqlserver"
 	"github.com/block/spectre/internal/server/client"
 	"github.com/block/spectre/internal/server/reporter"
 )
@@ -34,6 +35,8 @@ type Config struct {
 	CandidateStartupTimeout time.Duration `default:"5m" help:"Maximum time for the candidate to accept a first connection before it is quarantined. Ingress sends it nothing until then."`
 	// Descriptors supplies protobuf descriptors to both proxies.
 	Descriptors descriptors.Config `embed:""`
+	// MySQL proxies the services' MySQL statements, when it names a database server.
+	MySQL mysqlserver.Config `embed:"" prefix:"mysql-"`
 	// Server reports the mirror's state to the SPECTRE server.
 	Server reporter.Config `embed:""`
 }
@@ -59,13 +62,16 @@ func NewConfig() Config {
 	return config
 }
 
-// Validate checks that the timeouts and reporting intervals are usable.
+// Validate checks that the timeouts, the MySQL proxy and the reporting intervals are usable.
 func (c Config) Validate() error {
 	if c.MatchWindow <= 0 {
 		return errors.New("match window must be positive")
 	}
 	if c.CandidateStartupTimeout <= 0 {
 		return errors.New("candidate startup timeout must be positive")
+	}
+	if err := c.MySQL.Validate(); err != nil {
+		return errors.WithStack(err)
 	}
 	return errors.WithStack(c.Server.Validate())
 }
