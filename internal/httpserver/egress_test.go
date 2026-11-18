@@ -277,7 +277,7 @@ func TestQuarantinesCandidateWithoutValidRequestID(t *testing.T) {
 		"Missing":     {reason: "candidate request carries no SPECTRE request ID"},
 		"OtherOnly":   {baggage: []string{"tenant=a"}, reason: "candidate request carries no SPECTRE request ID"},
 		"Malformed":   {baggage: []string{"spectre_request_id=unknown"}, reason: "baggage carries a malformed SPECTRE request ID"},
-		"Conflicting": {baggage: []string{requestBaggage, "spectre_request_id=request_01jx0000000000000000000001"}, reason: "baggage carries conflicting SPECTRE request IDs"},
+		"Conflicting": {baggage: []string{requestBaggage, "spectre_request_id=srid_01jx0000000000000000000001"}, reason: "baggage carries conflicting SPECTRE request IDs"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			harness := newHarness(t, upstream)
@@ -701,7 +701,7 @@ func waitReady(t *testing.T, listener net.Listener) {
 }
 
 // requestBaggage puts requests in one mirrored request, as ingress would.
-const requestBaggage = "spectre_request_id=request_01jx0000000000000000000000"
+const requestBaggage = "spectre_request_id=srid_01jx0000000000000000000000"
 
 // send makes a raw JSON request for host through one egress listener.
 func send(t *testing.T, listener net.Listener, host string, body string) responseView {

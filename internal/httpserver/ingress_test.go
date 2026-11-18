@@ -101,7 +101,7 @@ func TestForwardsRequestToBothBackends(t *testing.T) {
 }
 
 // clientRequestBaggage is a request ID a client sends, which ingress never trusts.
-const clientRequestBaggage = "spectre_request_id=request_01jx0000000000000000000000"
+const clientRequestBaggage = "spectre_request_id=srid_01jx0000000000000000000000"
 
 func TestPassesOneRequestIDToBothBackends(t *testing.T) {
 	baggage := make(chan []string, 2)
@@ -127,7 +127,7 @@ func TestPassesOneRequestIDToBothBackends(t *testing.T) {
 	assert.Equal(t, 1, len(first))
 	members := strings.Split(first[0], ",")
 	assert.Equal(t, []string{"tenant=a", "user=b"}, members[:2])
-	assert.True(t, strings.HasPrefix(members[2], "spectre_request_id=request_"))
+	assert.True(t, strings.HasPrefix(members[2], "spectre_request_id=srid_"))
 	assert.NotEqual(t, clientRequestBaggage, members[2])
 }
 
@@ -1501,7 +1501,7 @@ status = "migrated"
 		"/pending/a": nil, "/ignored/a": nil, "/grpc.reflection.v1.ServerReflection/ServerReflectionInfo": nil, "/unlisted": nil,
 	}, referenceBaggage)
 	assert.Equal(t, 1, len(mirrored))
-	assert.True(t, strings.HasPrefix(mirrored[0], "spectre_request_id=request_"))
+	assert.True(t, strings.HasPrefix(mirrored[0], "spectre_request_id=srid_"))
 	assert.NotEqual(t, clientRequestBaggage, mirrored[0])
 }
 

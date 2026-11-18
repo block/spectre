@@ -17,7 +17,7 @@ import (
 
 type requestPrefix struct{}
 
-func (requestPrefix) Prefix() string { return "request" }
+func (requestPrefix) Prefix() string { return "srid" }
 
 // RequestID links a mirrored inbound request to the operations it causes.
 type RequestID struct {

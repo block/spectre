@@ -44,7 +44,7 @@ func newEgressEndpoint(t *testing.T, client *http.Client, base string) EgressEnd
 }
 
 // testRequestBaggage puts a test's direct egress calls in one mirrored request, as ingress would.
-const testRequestBaggage = "spectre_request_id=request_01jx0000000000000000000000"
+const testRequestBaggage = "spectre_request_id=srid_01jx0000000000000000000000"
 
 // Get fetches path from the dependency at host through egress, as a call of the one
 // mirrored request the test stands in for.

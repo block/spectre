@@ -96,11 +96,11 @@ func TestWeatherFetchesForecastsFromProvider(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			response := httptest.NewRecorder()
 			request := httptest.NewRequest(http.MethodGet, "/?"+test.query, nil)
-			request.Header.Add("Baggage", "spectre_request_id=request_1")
+			request.Header.Add("Baggage", "spectre_request_id=srid_1")
 			request.Header.Add("Baggage", "tenant=a")
 			test.handler(response, request)
 			assertJSONResponse(t, response, test.status, test.expected)
-			assert.Equal(t, received{host: "forecasts.example", baggage: []string{"spectre_request_id=request_1", "tenant=a"}}, <-requests)
+			assert.Equal(t, received{host: "forecasts.example", baggage: []string{"spectre_request_id=srid_1", "tenant=a"}}, <-requests)
 		})
 	}
 }

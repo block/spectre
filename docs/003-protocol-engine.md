@@ -15,7 +15,7 @@ Protocol servers report traffic to a protocol-agnostic engine that decides what 
 ```go
 type Route string // canonical; equal routes have identical text
 
-// RequestID and Exchange are TypeIDs (go.jetify.com/typeid) with prefixes "request" and "exchange".
+// RequestID and Exchange are TypeIDs (go.jetify.com/typeid) with prefixes "srid" and "exchange".
 type RequestID struct{ typeid.TypeID[requestPrefix] }
 type Exchange struct{ typeid.TypeID[exchangePrefix] }
 
