@@ -15,7 +15,8 @@ We will propagate our own context.
 - Assign a shared `spectre_request_id` at ingress and pass it to both implementations.
 - Egress identifies the reference and candidate by the listener an operation arrives on, never by propagated context, so a candidate cannot claim to be the reference.
 - Propagate context through protocols with header support, such as HTTP, gRPC, and Kafka, as a `spectre_request_id` entry in the W3C `baggage` header, which services already propagate. Ingress adds the entry without disturbing other baggage, and egress removes only that entry before forwarding to a dependency. The sections below cover only protocols without header support.
-- An operation without Spectre context quarantines the candidate, as with any other divergence.
+- A candidate operation without Spectre context quarantines the candidate, as with any other divergence.
+- A reference operation without Spectre context belongs to no mirrored request, such as one for a request ingress did not mirror or for work no request starts. It is forwarded but never paired, so no candidate operation is expected for it.
 
 ### MySQL
 

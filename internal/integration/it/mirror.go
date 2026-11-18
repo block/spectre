@@ -348,6 +348,15 @@ func UnmatchedEgress(route model.Route, detail string) model.QuarantineReason {
 	}
 }
 
+// UnpairedEgress is the reason for an egress call on route that could not be paired at all.
+func UnpairedEgress(route model.Route, detail string) model.QuarantineReason {
+	return model.QuarantineReason{
+		Kind:    model.QuarantinePairing,
+		Traffic: Some(model.Traffic{Direction: model.Egress, Protocol: model.ProtocolHTTP, Route: route}),
+		Detail:  detail,
+	}
+}
+
 // DivergentIngress is the reason for responses on route that differ as
 // differences describe.
 func DivergentIngress(route model.Route, differences ...model.Difference) model.QuarantineReason {

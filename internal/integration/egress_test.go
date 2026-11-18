@@ -29,6 +29,26 @@ func TestUnmatchedCandidateEgressQuarantinesCandidate(t *testing.T) {
 	m.Dependency(forecastsHost).ExpectReceived("/v1/forecasts/paris", 0)
 }
 
+func TestCandidateEgressOutsideMirroredRequestQuarantinesCandidate(t *testing.T) {
+	m := it.Start(t,
+		it.Scripts(`
+			import { egress } from "spectre";
+			import type { FetchForecastRequest } from "forecasts";
+
+			egress.http("GET forecasts.example/v1/forecasts/{location}").match<FetchForecastRequest>();
+		`),
+		it.Reference(sampleService()),
+		it.Candidate(sampleService()),
+		it.Dependency(forecastsHost, forecastProvider),
+	)
+
+	// The reference's call belongs to no mirrored request, so no candidate call is expected for it.
+	m.ReferenceEgress.GetUnmirrored(forecastsHost, "/v1/forecasts/london").ExpectStatus(http.StatusOK)
+	m.CandidateEgress.GetUnmirrored(forecastsHost, "/v1/forecasts/london").ExpectStatus(http.StatusBadGateway)
+	m.ExpectQuarantine(it.UnpairedEgress("GET forecasts.example/v1/forecasts/{location}", "candidate request carries no SPECTRE request ID"))
+	m.Dependency(forecastsHost).ExpectReceived("/v1/forecasts/london", 1)
+}
+
 func TestCandidateLeavingOutEgressCallIsQuarantined(t *testing.T) {
 	m := it.Start(t,
 		it.Scripts(`

@@ -26,7 +26,14 @@ type endpoint struct {
 	pattern  string
 }
 
-// egressQueue pairs candidate and reference requests of the same hash in arrival
+// egressKey identifies a request by the mirrored request it belongs to and its hash,
+// so requests pair only within one mirrored request.
+type egressKey struct {
+	request RequestID
+	hash    comparison.Hash
+}
+
+// egressQueue pairs candidate and reference requests of the same key in arrival
 // order. Each reference is claimed once, so duplicates pair one-to-one.
 type egressQueue struct {
 	scripts    *comparison.Scripts
@@ -38,7 +45,7 @@ type egressQueue struct {
 	sourceResponses map[endpoint]schema.TypeRef
 	// optional holds the endpoints whose reference requests the candidate may leave out.
 	optional map[endpoint]bool
-	// mu guards every map. A hash never has unused references and waiting
+	// mu guards every map. A key never has unused references and waiting
 	// candidates at the same time, because add hands over to a waiter first.
 	mu sync.Mutex
 	// arrivals numbers requests as they arrive, because hashing may finish out of order.
@@ -48,13 +55,13 @@ type egressQueue struct {
 	hashing   int
 	idle      chan struct{}
 	exchanges map[Exchange]*egressExchange
-	unused    map[comparison.Hash][]*egressExchange
-	waiting   map[comparison.Hash][]*egressWaiter
+	unused    map[egressKey][]*egressExchange
+	waiting   map[egressKey][]*egressWaiter
 	// sources keeps source references for the window, whether or not a candidate claims them.
-	sources map[comparison.Hash][]*egressExchange
-	// replacing holds waiters that also accept a source reference, by source hash. add hands each
+	sources map[egressKey][]*egressExchange
+	// replacing holds waiters that also accept a source reference, by source key. add hands each
 	// one reference and removes it from both maps under mu, so a match is never decided late.
-	replacing map[comparison.Hash][]*egressWaiter
+	replacing map[egressKey][]*egressWaiter
 	// closed means the server is stopping candidate work, so references that
 	// expire unclaimed are no longer the candidate's fault.
 	closed bool
@@ -81,10 +88,10 @@ func newEgressQueue(scripts *comparison.Scripts, window time.Duration, quarantin
 		sourceResponses: sourceResponses,
 		optional:        optional,
 		exchanges:       map[Exchange]*egressExchange{},
-		unused:          map[comparison.Hash][]*egressExchange{},
-		waiting:         map[comparison.Hash][]*egressWaiter{},
-		sources:         map[comparison.Hash][]*egressExchange{},
-		replacing:       map[comparison.Hash][]*egressWaiter{},
+		unused:          map[egressKey][]*egressExchange{},
+		waiting:         map[egressKey][]*egressWaiter{},
+		sources:         map[egressKey][]*egressExchange{},
+		replacing:       map[egressKey][]*egressWaiter{},
 		idle:            closedChannel(),
 	}
 }
@@ -159,10 +166,15 @@ func (q *egressQueue) hash(ctx context.Context, protocol model.Protocol, route m
 	return errors.WithStack2(q.scripts.Hash(ctx, string(protocol)+" "+string(route), message.Type, side, message.Value))
 }
 
-// forward registers a reference request and hashes it in the background.
-func (q *egressQueue) forward(ctx context.Context, protocol model.Protocol, route model.Route,
+// forward registers a reference request and hashes it in the background. A request
+// that belongs to no mirrored request passes through unpaired.
+func (q *egressQueue) forward(ctx context.Context, requestID Option[RequestID], protocol model.Protocol, route model.Route,
 	request func(ctx context.Context) (Message, error),
 ) Decision {
+	id, mirrored := requestID.Get()
+	if !mirrored {
+		return q.passThrough(ctx, protocol, route)
+	}
 	exchange := newExchange()
 	q.mu.Lock()
 	q.arrivals++
@@ -182,19 +194,40 @@ func (q *egressQueue) forward(ctx context.Context, protocol model.Protocol, rout
 			q.quarantine.Quarantine(background, egressReason(model.QuarantineUnable, protocol, route, errors.Wrap(err, "identify reference request")))
 			return
 		}
-		q.add(background, hash, pending)
+		q.add(background, egressKey{request: id, hash: hash}, pending)
 	}()
 	return DecisionForward{RequestID: None[RequestID](), Exchange: exchange}
 }
 
-// intercept answers a candidate request with an equivalent reference response.
-func (q *egressQueue) intercept(ctx context.Context, protocol model.Protocol, route model.Route,
+// passThrough forwards a reference request that no candidate request is expected to
+// match, such as one for an ingress request that was never mirrored. Its response is released on arrival.
+func (q *egressQueue) passThrough(ctx context.Context, protocol model.Protocol, route model.Route) Decision {
+	exchange := newExchange()
+	pending := newEgressExchange(0, protocol, route, false, false)
+	pending.abandon()
+	q.mu.Lock()
+	q.exchanges[exchange] = pending
+	q.mu.Unlock()
+	logger.FromContext(ctx).DebugContext(ctx, "Reference request belongs to no mirrored request, so it is not paired",
+		"event", logger.EventCorrelation, "protocol", protocol, "route", route)
+	return DecisionForward{RequestID: None[RequestID](), Exchange: exchange}
+}
+
+// intercept answers a candidate request with an equivalent reference response from the
+// same mirrored request. A request that belongs to none can never be answered.
+func (q *egressQueue) intercept(ctx context.Context, requestID Option[RequestID], protocol model.Protocol, route model.Route,
 	request func(ctx context.Context) (Message, error),
 ) (Decision, error) {
-	if replacement, replaces := q.replacements[endpoint{protocol, string(route)}]; replaces {
-		return q.answer(ctx, protocol, route, replacement, request)
+	id, mirrored := requestID.Get()
+	if !mirrored {
+		err := errors.New("candidate request carries no SPECTRE request ID")
+		q.refuse(ctx, model.QuarantinePairing, protocol, route, err)
+		return nil, err
 	}
-	raw, kind, err := q.match(ctx, protocol, route, request)
+	if replacement, replaces := q.replacements[endpoint{protocol, string(route)}]; replaces {
+		return q.answer(ctx, id, protocol, route, replacement, request)
+	}
+	raw, kind, err := q.match(ctx, id, protocol, route, request)
 	if err != nil {
 		q.refuse(ctx, kind, protocol, route, err)
 		return nil, err
@@ -205,7 +238,7 @@ func (q *egressQueue) intercept(ctx context.Context, protocol model.Protocol, ro
 }
 
 // match returns the reference response to replay, or why there is none.
-func (q *egressQueue) match(ctx context.Context, protocol model.Protocol, route model.Route,
+func (q *egressQueue) match(ctx context.Context, requestID RequestID, protocol model.Protocol, route model.Route,
 	request func(ctx context.Context) (Message, error),
 ) (Raw, model.QuarantineKind, error) {
 	arrival := q.arrive()
@@ -213,7 +246,7 @@ func (q *egressQueue) match(ctx context.Context, protocol model.Protocol, route 
 	if err != nil {
 		return nil, model.QuarantineUnable, errors.Wrap(err, "identify candidate request")
 	}
-	pending, err := q.claim(ctx, arrival, hash)
+	pending, err := q.claim(ctx, arrival, egressKey{request: requestID, hash: hash})
 	if err != nil {
 		return nil, model.QuarantineUnmatched, err
 	}
@@ -244,10 +277,10 @@ func blamesCandidate(ctx context.Context) bool {
 
 // answer answers a candidate request to a replacing endpoint with an equivalent reference
 // request to the endpoint, or else with a response translated from a source reference.
-func (q *egressQueue) answer(ctx context.Context, protocol model.Protocol, route model.Route, replacement javascript.Replacement,
-	request func(ctx context.Context) (Message, error),
+func (q *egressQueue) answer(ctx context.Context, requestID RequestID, protocol model.Protocol, route model.Route,
+	replacement javascript.Replacement, request func(ctx context.Context) (Message, error),
 ) (Decision, error) {
-	decision, kind, err := q.respond(ctx, protocol, route, replacement, request)
+	decision, kind, err := q.respond(ctx, requestID, protocol, route, replacement, request)
 	if err != nil {
 		q.refuse(ctx, kind, protocol, route, err)
 		return nil, err
@@ -263,8 +296,8 @@ func (q *egressQueue) answer(ctx context.Context, protocol model.Protocol, route
 }
 
 // respond returns the decision for a candidate request to a replacing endpoint, or why there is none.
-func (q *egressQueue) respond(ctx context.Context, protocol model.Protocol, route model.Route, replacement javascript.Replacement,
-	request func(ctx context.Context) (Message, error),
+func (q *egressQueue) respond(ctx context.Context, requestID RequestID, protocol model.Protocol, route model.Route,
+	replacement javascript.Replacement, request func(ctx context.Context) (Message, error),
 ) (Decision, model.QuarantineKind, error) {
 	arrival := q.arrive()
 	hash, value, err := q.identify(ctx, protocol, route, request)
@@ -279,7 +312,7 @@ func (q *egressQueue) respond(ctx context.Context, protocol model.Protocol, rout
 	if err != nil {
 		return nil, model.QuarantineUnable, errors.Wrap(err, "identify source request")
 	}
-	delivery, err := q.pick(ctx, arrival, hash, sourceHash)
+	delivery, err := q.pick(ctx, arrival, egressKey{request: requestID, hash: hash}, egressKey{request: requestID, hash: sourceHash})
 	if err != nil {
 		return nil, model.QuarantineUnmatched, err
 	}
@@ -360,12 +393,12 @@ func (q *egressQueue) take(ctx context.Context, exchange Exchange) (*egressExcha
 
 // add offers a reference to the earliest waiting candidate, or keeps it unused
 // for the window before expiring it.
-func (q *egressQueue) add(ctx context.Context, hash comparison.Hash, pending *egressExchange) {
+func (q *egressQueue) add(ctx context.Context, key egressKey, pending *egressExchange) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	if pending.isSource() {
 		// Every replacing waiter receives a source reference, and later ones find it for the window.
-		replacing := slices.Clone(q.replacing[hash])
+		replacing := slices.Clone(q.replacing[key])
 		for _, waiter := range replacing {
 			q.unregister(waiter)
 			waiter.deliver(egressDelivery{pending: pending})
@@ -373,71 +406,71 @@ func (q *egressQueue) add(ctx context.Context, hash comparison.Hash, pending *eg
 		if len(replacing) > 0 {
 			pending.markMatched()
 		}
-		q.sources[hash] = insertByArrival(q.sources[hash], pending)
-		time.AfterFunc(q.window, func() { q.forget(hash, pending) })
+		q.sources[key] = insertByArrival(q.sources[key], pending)
+		time.AfterFunc(q.window, func() { q.forget(key, pending) })
 	}
-	if waiters := q.waiting[hash]; len(waiters) > 0 {
+	if waiters := q.waiting[key]; len(waiters) > 0 {
 		waiter := waiters[0]
 		q.unregister(waiter)
 		waiter.deliver(egressDelivery{pending: pending, direct: true})
 		return
 	}
-	q.unused[hash] = insertByArrival(q.unused[hash], pending)
-	pending.expireAfter(q.window, func() { q.expire(ctx, hash, pending) })
+	q.unused[key] = insertByArrival(q.unused[key], pending)
+	pending.expireAfter(q.window, func() { q.expire(ctx, key, pending) })
 }
 
 // forget stops offering a source reference to replacing requests.
-func (q *egressQueue) forget(hash comparison.Hash, pending *egressExchange) {
+func (q *egressQueue) forget(key egressKey, pending *egressExchange) {
 	pending.forget()
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	sources := q.sources[hash]
+	sources := q.sources[key]
 	if index := slices.Index(sources, pending); index >= 0 {
 		sources = slices.Delete(sources, index, index+1)
 	}
 	if len(sources) == 0 {
-		delete(q.sources, hash)
+		delete(q.sources, key)
 		return
 	}
-	q.sources[hash] = sources
+	q.sources[key] = sources
 }
 
-// pick waits up to the window for the earliest unused reference with hash, which it claims and
-// reports as direct, or else the earliest source reference with sourceHash, which it never claims.
-func (q *egressQueue) pick(ctx context.Context, arrival uint64, hash, sourceHash comparison.Hash) (egressDelivery, error) {
+// pick waits up to the window for the earliest unused reference with key, which it claims and
+// reports as direct, or else the earliest source reference with sourceKey, which it never claims.
+func (q *egressQueue) pick(ctx context.Context, arrival uint64, key, sourceKey egressKey) (egressDelivery, error) {
 	q.mu.Lock()
-	if unused := q.unused[hash]; len(unused) > 0 {
-		q.setUnused(hash, unused[1:])
+	if unused := q.unused[key]; len(unused) > 0 {
+		q.setUnused(key, unused[1:])
 		unused[0].stopExpiry()
 		q.mu.Unlock()
 		return egressDelivery{pending: unused[0], direct: true}, nil
 	}
-	if sources := q.sources[sourceHash]; len(sources) > 0 {
+	if sources := q.sources[sourceKey]; len(sources) > 0 {
 		// forget edits the slice in place, so read it before unlocking.
 		source := sources[0]
 		source.markMatched()
 		q.mu.Unlock()
 		return egressDelivery{pending: source}, nil
 	}
-	waiter := newEgressWaiter(arrival, hash, Some(sourceHash))
-	q.waiting[hash] = insertByArrival(q.waiting[hash], waiter)
-	q.replacing[sourceHash] = append(q.replacing[sourceHash], waiter)
+	waiter := newEgressWaiter(arrival, key, Some(sourceKey))
+	q.waiting[key] = insertByArrival(q.waiting[key], waiter)
+	q.replacing[sourceKey] = append(q.replacing[sourceKey], waiter)
 	q.mu.Unlock()
 	return q.await(ctx, waiter, "no matching reference or source reference request")
 }
 
-// claim takes the earliest unused reference for hash, waiting up to the window
+// claim takes the earliest unused reference for key, waiting up to the window
 // for one to arrive. Ordering covers only hashed references, so it never waits on one still hashing.
-func (q *egressQueue) claim(ctx context.Context, arrival uint64, hash comparison.Hash) (*egressExchange, error) {
+func (q *egressQueue) claim(ctx context.Context, arrival uint64, key egressKey) (*egressExchange, error) {
 	q.mu.Lock()
-	if unused := q.unused[hash]; len(unused) > 0 {
-		q.setUnused(hash, unused[1:])
+	if unused := q.unused[key]; len(unused) > 0 {
+		q.setUnused(key, unused[1:])
 		unused[0].stopExpiry()
 		q.mu.Unlock()
 		return unused[0], nil
 	}
-	waiter := newEgressWaiter(arrival, hash, None[comparison.Hash]())
-	q.waiting[hash] = insertByArrival(q.waiting[hash], waiter)
+	waiter := newEgressWaiter(arrival, key, None[egressKey]())
+	q.waiting[key] = insertByArrival(q.waiting[key], waiter)
 	q.mu.Unlock()
 	delivery, err := q.await(ctx, waiter, "no matching reference request")
 	return delivery.pending, err
@@ -471,38 +504,38 @@ func (q *egressQueue) await(ctx context.Context, waiter *egressWaiter, missing s
 // unregister removes a waiter from every queue it waits in, reporting whether
 // it was still waiting. Callers hold q.mu.
 func (q *egressQueue) unregister(waiter *egressWaiter) (waiting bool) {
-	hash, source := waiter.hashes()
-	waiting = removeWaiter(q.waiting, hash, waiter)
-	if sourceHash, replacing := source.Get(); replacing {
-		removeWaiter(q.replacing, sourceHash, waiter)
+	key, source := waiter.keys()
+	waiting = removeWaiter(q.waiting, key, waiter)
+	if sourceKey, replacing := source.Get(); replacing {
+		removeWaiter(q.replacing, sourceKey, waiter)
 	}
 	return waiting
 }
 
-// removeWaiter removes a waiter from the queue for hash, reporting whether it was there.
-func removeWaiter(queues map[comparison.Hash][]*egressWaiter, hash comparison.Hash, waiter *egressWaiter) (removed bool) {
-	waiters := queues[hash]
+// removeWaiter removes a waiter from the queue for key, reporting whether it was there.
+func removeWaiter(queues map[egressKey][]*egressWaiter, key egressKey, waiter *egressWaiter) (removed bool) {
+	waiters := queues[key]
 	index := slices.Index(waiters, waiter)
 	if index < 0 {
 		return false
 	}
 	waiters = slices.Delete(waiters, index, index+1)
 	if len(waiters) == 0 {
-		delete(queues, hash)
+		delete(queues, key)
 		return true
 	}
-	queues[hash] = waiters
+	queues[key] = waiters
 	return true
 }
 
 // expire releases a reference that no candidate claimed within the window. The
 // candidate left it out, unless a replacing request matched it.
-func (q *egressQueue) expire(ctx context.Context, hash comparison.Hash, pending *egressExchange) {
+func (q *egressQueue) expire(ctx context.Context, key egressKey, pending *egressExchange) {
 	q.mu.Lock()
-	unused := q.unused[hash]
+	unused := q.unused[key]
 	index := slices.Index(unused, pending)
 	if index >= 0 {
-		q.setUnused(hash, slices.Delete(unused, index, index+1))
+		q.setUnused(key, slices.Delete(unused, index, index+1))
 	}
 	leftOut := index >= 0 && !pending.isMatched() && !q.closed
 	q.mu.Unlock()
@@ -515,13 +548,13 @@ func (q *egressQueue) expire(ctx context.Context, hash comparison.Hash, pending 
 	pending.abandon()
 }
 
-// setUnused replaces the unused queue for hash. Callers hold q.mu.
-func (q *egressQueue) setUnused(hash comparison.Hash, unused []*egressExchange) {
+// setUnused replaces the unused queue for key. Callers hold q.mu.
+func (q *egressQueue) setUnused(key egressKey, unused []*egressExchange) {
 	if len(unused) == 0 {
-		delete(q.unused, hash)
+		delete(q.unused, key)
 		return
 	}
-	q.unused[hash] = unused
+	q.unused[key] = unused
 }
 
 // insertByArrival keeps a queue in arrival order.
@@ -543,23 +576,23 @@ type egressDelivery struct {
 // also accepts a source reference with source, and receives whichever add hands over first.
 type egressWaiter struct {
 	arrival uint64
-	hash    comparison.Hash
-	source  Option[comparison.Hash]
+	key     egressKey
+	source  Option[egressKey]
 	// ready has one slot and receives at most one reference, so delivery never blocks.
 	ready chan egressDelivery
 }
 
-func newEgressWaiter(arrival uint64, hash comparison.Hash, source Option[comparison.Hash]) *egressWaiter {
-	return &egressWaiter{arrival: arrival, hash: hash, source: source, ready: make(chan egressDelivery, 1)}
+func newEgressWaiter(arrival uint64, key egressKey, source Option[egressKey]) *egressWaiter {
+	return &egressWaiter{arrival: arrival, key: key, source: source, ready: make(chan egressDelivery, 1)}
 }
 
 func (w *egressWaiter) arrived() uint64 {
 	return w.arrival
 }
 
-// hashes returns the hash the waiter claims a reference with, and any source hash it also accepts.
-func (w *egressWaiter) hashes() (hash comparison.Hash, source Option[comparison.Hash]) {
-	return w.hash, w.source
+// keys returns the key the waiter claims a reference with, and any source key it also accepts.
+func (w *egressWaiter) keys() (key egressKey, source Option[egressKey]) {
+	return w.key, w.source
 }
 
 func (w *egressWaiter) deliver(delivery egressDelivery) {
@@ -766,8 +799,8 @@ func (e *egressExchange) decoded(ctx context.Context) (any, error) {
 	return message.Value, nil
 }
 
-// egressReference forwards every dependency request at once and hashes it in
-// the background, so failing to identify a request never affects the reference.
+// egressReference forwards every dependency request at once and hashes one of a mirrored request
+// in the background, so failing to identify a request never affects the reference.
 type egressReference struct {
 	queue    *egressQueue
 	protocol model.Protocol
@@ -777,10 +810,10 @@ func newEgressReference(queue *egressQueue, protocol model.Protocol) *egressRefe
 	return &egressReference{queue: queue, protocol: protocol}
 }
 
-func (r *egressReference) ProcessRequest(ctx context.Context, _ Option[RequestID], route model.Route, _ Option[string],
+func (r *egressReference) ProcessRequest(ctx context.Context, requestID Option[RequestID], route model.Route, _ Option[string],
 	request func(ctx context.Context) (Message, error),
 ) (Decision, error) {
-	return r.queue.forward(ctx, r.protocol, route, request), nil
+	return r.queue.forward(ctx, requestID, r.protocol, route, request), nil
 }
 
 func (r *egressReference) ProcessResponse(ctx context.Context, exchange Exchange, response Response) {
@@ -804,8 +837,8 @@ func (r *egressReference) Unable(ctx context.Context, exchange Exchange, reason 
 	}
 }
 
-// egressCandidate answers each dependency request with an equivalent reference
-// response. A request that cannot be matched quarantines the candidate.
+// egressCandidate answers each dependency request with an equivalent reference response
+// from the same mirrored request. A request that cannot be matched quarantines the candidate.
 type egressCandidate struct {
 	queue    *egressQueue
 	protocol model.Protocol
@@ -815,10 +848,10 @@ func newEgressCandidate(queue *egressQueue, protocol model.Protocol) *egressCand
 	return &egressCandidate{queue: queue, protocol: protocol}
 }
 
-func (c *egressCandidate) ProcessRequest(ctx context.Context, _ Option[RequestID], route model.Route, _ Option[string],
+func (c *egressCandidate) ProcessRequest(ctx context.Context, requestID Option[RequestID], route model.Route, _ Option[string],
 	request func(ctx context.Context) (Message, error),
 ) (Decision, error) {
-	return c.queue.intercept(ctx, c.protocol, route, request)
+	return c.queue.intercept(ctx, requestID, c.protocol, route, request)
 }
 
 // ProcessResponse is a server error: candidate requests are never forwarded.

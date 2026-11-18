@@ -11,8 +11,8 @@ import (
 // Acceptor receives the requests and responses at one ingress or egress point,
 // so servers never know whether they carry reference or candidate traffic.
 type Acceptor interface {
-	// ProcessRequest decides what a server does with a request. ignored explains why
-	// ingress never compares its responses. An error means the request must not be sent.
+	// ProcessRequest decides what to do with a request of the mirrored request requestID, if any.
+	// ignored explains why ingress never compares its responses. An error means it must not be sent.
 	ProcessRequest(ctx context.Context, requestID Option[RequestID], route model.Route, ignored Option[string],
 		request func(ctx context.Context) (Message, error)) (Decision, error)
 	// ProcessResponse reports the response to a forwarded request. The engine owns

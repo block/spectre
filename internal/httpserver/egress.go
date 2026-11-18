@@ -203,6 +203,11 @@ func (e *Egress) serveReference(writer http.ResponseWriter, request *http.Reques
 		return
 	}
 	ctx := request.Context()
+	// Taking the ID before the request is copied keeps it from the dependency and from hashing.
+	requestID, err := takeRequestID(request.Header)
+	if err != nil {
+		logger.FromContext(ctx).WarnContext(ctx, "Reference request is not paired", "error", err)
+	}
 	upstream := e.upstream(request)
 	// Snapshot the request now, because the engine may decode it after the handler returns.
 	snapshot := newMessageRequest(request)
@@ -229,7 +234,7 @@ func (e *Egress) serveReference(writer http.ResponseWriter, request *http.Reques
 		return errors.WithStack2(e.decoder.Request(snapshot))
 	}
 	route := e.route(request)
-	decision, err := e.referencePoint.process(ctx, None[protocol.RequestID](), route, None[string](), payload)
+	decision, err := e.referencePoint.process(ctx, requestID, route, None[string](), payload)
 	if err != nil {
 		logger.FromContext(ctx).ErrorContext(ctx, "Reference request was not recorded", "error", err)
 		if destination, ok := upstream.Get(); ok {
@@ -309,6 +314,17 @@ func (e *Egress) serveCandidate(writer http.ResponseWriter, request *http.Reques
 		return
 	}
 	defer e.candidates.Finish(run)
+	route := e.route(request)
+	requestID, err := takeRequestID(request.Header)
+	if err != nil {
+		e.candidates.Quarantine(ctx, model.QuarantineReason{
+			Kind:    model.QuarantinePairing,
+			Traffic: Some(model.Traffic{Direction: model.Egress, Protocol: model.ProtocolHTTP, Route: route}),
+			Detail:  err.Error(),
+		})
+		http.Error(writer, "request ID is invalid", http.StatusBadGateway)
+		return
+	}
 	payload := func(context.Context) (protocol.Message, error) {
 		if _, configured := e.destination(request.Host); !configured {
 			return protocol.Message{}, errors.Errorf("candidate request to unconfigured host %q", request.Host)
@@ -322,8 +338,7 @@ func (e *Egress) serveCandidate(writer http.ResponseWriter, request *http.Reques
 		captured.Body, captured.Overflow = body[:min(len(body), limit)], len(body) > limit
 		return errors.WithStack2(e.decoder.Request(captured))
 	}
-	route := e.route(request)
-	decision, err := e.candidatePoint.process(ctx, None[protocol.RequestID](), route, None[string](), payload)
+	decision, err := e.candidatePoint.process(ctx, requestID, route, None[string](), payload)
 	if err != nil {
 		http.Error(writer, "no matching reference response", http.StatusBadGateway)
 		return

@@ -95,10 +95,10 @@ The engine creates one acceptor per point, so servers never know whether they ca
 | --- | --- | --- |
 | Ingress reference | Assigns a RequestID; forwards. Never reads the payload. | Stored without blocking the reference. |
 | Ingress candidate | Requires the reference's RequestID, passed along by the server; forwards. | Paired by RequestID, normalised, and diffed. Ignored routes are not compared. |
-| Egress reference | Forwards immediately, then hashes route and normalised payload in the background. | Stored for candidates with the same hash. |
-| Egress candidate | Hashes, claims the earliest unused reference with the same hash, waits for its response, and intercepts with its `Raw`. A replacing endpoint can also be answered from a source reference. | Never called. |
+| Egress reference | Forwards immediately. With a RequestID, hashes route and normalised payload in the background; without one, never hashes. | Stored for candidates with the same RequestID and hash, or released at once without a RequestID. |
+| Egress candidate | Requires a RequestID. Hashes, claims the earliest unused reference with the same RequestID and hash, waits for its response, and intercepts with its `Raw`. A replacing endpoint can also be answered from a source reference. | Never called. |
 
-Egress pairs in arrival order. Each request is numbered when it arrives, before hashing, and both unused references and waiting candidates are kept in that order. A reference that is still being hashed is not waited for, so a candidate can claim a later reference of the same hash that finished hashing first.
+At egress, the RequestID is the one the service carried from its ingress request. Egress pairs only within one RequestID, so requests made for different mirrored requests never answer each other. This includes source references. Egress pairs in arrival order. Each request is numbered when it arrives, before hashing, and both unused references and waiting candidates are kept in that order. A reference that is still being hashed is not waited for, so a candidate can claim a later reference of the same hash that finished hashing first.
 
 ### Replacing endpoints
 
@@ -132,7 +132,9 @@ Divergence, `Unable`, an unidentifiable request, an unmatched egress candidate, 
 - An egress reference that ends `Unable` with a cancelled context gave up on the request, most likely because its own ingress request was cancelled. A candidate request matching it, or answered from it as a source reference, is refused without quarantine. A failed reference otherwise quarantines a candidate that matches it.
 - An egress candidate that gives up before it is answered is quarantined, because the reference's call was not mirrored. Giving up while no reference request matches its own is unmatched, because the reference made no such request. Giving up at any later step, such as waiting for the reference response, is unable.
 - Egress work the proxy stops, cancelled with `ErrCandidateStopped`, never quarantines. The proxy stops candidate work only when it shuts down or quarantines the candidate.
-- An egress reference that expires unclaimed and unused by any replacement is quarantined as unmatched, because the candidate left that request out. This holds for every protocol, and for reference requests that no mirrored ingress request caused. A reference to an optional endpoint is logged instead.
+- An egress reference that expires unclaimed and unused by any replacement is quarantined as unmatched, because the candidate left that request out. This holds for every protocol. A reference to an optional endpoint is logged instead.
+- An egress candidate without a RequestID is quarantined as pairing, because no reference request can answer it.
+- An egress reference without a RequestID belongs to no mirrored request, such as one for an ingress request that was not mirrored or for work no request started. It is forwarded but never paired, so it never quarantines.
 - A server tells the engine when it starts stopping candidate work, so references that expire during shutdown never quarantine. One that expires after quarantine changes nothing, because only the first reason is kept.
 - Ignored routes never quarantine, even when the candidate fails. Their candidate responses are reported as skipped without waiting for the reference.
 - Streaming RPCs cannot be compared yet, so ingress quarantines the candidate as unable when one arrives, before sending it to the candidate. Rules that match a streaming RPC do not change this; only rules that ignore it do.
@@ -154,10 +156,12 @@ Only assembly differs:
 - Ingress is unready, and answers every request with 503, until both backends accept connections and its schema is set up, so every request it serves is mirrored. A candidate that does not accept within its startup timeout, or whose schema cannot be set up, is quarantined as `Unable`, and ingress stays unready.
 - Ingress classifies each request when it arrives. Undeclared requests without a content type are compared only as Connect GET requests. Any other undeclared request whose content type is unrecognised quarantines the candidate, because it is a gap in the comparison scripts.
 - Egress: two listeners, one point each. The reference selects its upstream by host. The candidate has no upstream, so even a wrong `Forward` cannot reach a dependency. The request decoder is built at startup, so a schema that cannot decode the declared endpoints fails startup.
+- The RequestID travels as the `spectre_request_id` member of the W3C `baggage` header, as [context propagation](002-context-propagation.md) decides. Ingress removes any member a client sent, then adds the RequestID to both copies of a mirrored request. Egress removes the member before it hashes or forwards a request. A malformed or conflicting member quarantines a candidate request as pairing, and leaves a reference request unpaired.
 
 ## Consequences
 
-- Until RequestIDs are [propagated](002-context-propagation.md), egress pairs on hashes alone. Egress therefore also quarantines for reference requests made while the candidate is starting, after ingress quarantined it, or for ingress routes it does not mirror, such as those of pending migration state nodes.
+- Egress pairing relies on both services passing `baggage` on from each ingress request to its dependency requests. A candidate that drops it is quarantined. A reference that drops it is not paired, so the candidate's matching request is quarantined as unmatched.
+- Identical requests within one mirrored request still pair in arrival order, which may not be the order each service made them in.
 
 ### Packages
 

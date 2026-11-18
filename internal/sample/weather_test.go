@@ -68,11 +68,15 @@ func TestWeatherFetchesForecastsFromProvider(t *testing.T) {
 		"remote-only": {"forecast": {"location": "remote-only"}}
 	}`))
 	assert.NoError(t, err)
-	hosts := make(chan string, 10)
+	type received struct {
+		host    string
+		baggage []string
+	}
+	requests := make(chan received, 10)
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/forecasts/{location}", provider.FetchForecast)
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		hosts <- request.Host
+		requests <- received{host: request.Host, baggage: request.Header.Values("Baggage")}
 		mux.ServeHTTP(writer, request)
 	}))
 	t.Cleanup(server.Close)
@@ -91,9 +95,12 @@ func TestWeatherFetchesForecastsFromProvider(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			response := httptest.NewRecorder()
-			test.handler(response, httptest.NewRequest(http.MethodGet, "/?"+test.query, nil))
+			request := httptest.NewRequest(http.MethodGet, "/?"+test.query, nil)
+			request.Header.Add("Baggage", "spectre_request_id=request_1")
+			request.Header.Add("Baggage", "tenant=a")
+			test.handler(response, request)
 			assertJSONResponse(t, response, test.status, test.expected)
-			assert.Equal(t, "forecasts.example", <-hosts)
+			assert.Equal(t, received{host: "forecasts.example", baggage: []string{"spectre_request_id=request_1", "tenant=a"}}, <-requests)
 		})
 	}
 }

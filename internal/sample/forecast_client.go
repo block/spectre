@@ -34,10 +34,10 @@ func NewForecastClient(target *url.URL, host string, transport http.RoundTripper
 	}
 }
 
-// Fetch returns the forecast for a location, or the status to report instead.
-// A provider failure other than an unknown location is reported as a bad gateway.
-func (c *ForecastClient) Fetch(ctx context.Context, location string) (forecast Option[Forecast], status int) {
-	forecast, status, err := c.fetch(ctx, location)
+// Fetch returns the forecast for a location, passing on baggage from the request it serves, or the
+// status to report instead. A provider failure other than an unknown location is a bad gateway.
+func (c *ForecastClient) Fetch(ctx context.Context, baggage []string, location string) (forecast Option[Forecast], status int) {
+	forecast, status, err := c.fetch(ctx, baggage, location)
 	if err != nil {
 		logger.FromContext(ctx).ErrorContext(ctx, "Forecast provider request failed", "location", location, "error", err)
 		return None[Forecast](), http.StatusBadGateway
@@ -45,7 +45,7 @@ func (c *ForecastClient) Fetch(ctx context.Context, location string) (forecast O
 	return forecast, status
 }
 
-func (c *ForecastClient) fetch(ctx context.Context, location string) (forecast Option[Forecast], status int, err error) {
+func (c *ForecastClient) fetch(ctx context.Context, baggage []string, location string) (forecast Option[Forecast], status int, err error) {
 	target := *c.target
 	target.Path = "/v1/forecasts/" + location
 	target.RawPath = "/v1/forecasts/" + url.PathEscape(location)
@@ -54,6 +54,9 @@ func (c *ForecastClient) fetch(ctx context.Context, location string) (forecast O
 		return None[Forecast](), 0, errors.Wrap(err, "build forecast request")
 	}
 	request.Host = c.host
+	for _, value := range baggage {
+		request.Header.Add("Baggage", value)
+	}
 	response, err := c.client.Do(request)
 	if err != nil {
 		return None[Forecast](), 0, errors.Wrap(err, "send forecast request")

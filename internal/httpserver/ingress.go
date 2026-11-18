@@ -270,6 +270,8 @@ func (i *Ingress) serveProxy(writer http.ResponseWriter, request *http.Request) 
 	}
 	referenceRequest := request.Clone(request.Context())
 	referenceRequest.GetBody = nil
+	// Only ingress assigns request IDs, so egress pairs only the calls of mirrored requests.
+	removeRequestID(referenceRequest.Header)
 	if !i.mirrors(request) {
 		i.referenceProxy.ServeHTTP(writer, referenceRequest)
 		return
@@ -295,7 +297,8 @@ func (i *Ingress) serveProxy(writer http.ResponseWriter, request *http.Request) 
 	}
 	reference, err := i.reference.process(request.Context(), None[protocol.RequestID](), route, ignored, unreadRequest)
 	forward, forwarded := reference.(protocol.DecisionForward)
-	if err != nil || !forwarded {
+	requestID, assigned := forward.RequestID.Get()
+	if err != nil || !forwarded || !assigned {
 		logger.FromContext(request.Context()).ErrorContext(request.Context(), "Reference request was not paired", "error", err)
 		cancel()
 		i.candidates.Finish(run)
@@ -303,7 +306,7 @@ func (i *Ingress) serveProxy(writer http.ResponseWriter, request *http.Request) 
 		return
 	}
 	// The candidate joins its pair before the reference is sent, as the engine requires.
-	candidate, err := i.candidate.process(candidateContext, forward.RequestID, route, ignored, unreadRequest)
+	candidate, err := i.candidate.process(candidateContext, Some(requestID), route, ignored, unreadRequest)
 	if err != nil {
 		cancel()
 		i.candidates.Finish(run)
@@ -312,6 +315,7 @@ func (i *Ingress) serveProxy(writer http.ResponseWriter, request *http.Request) 
 		candidateRequest := request.Clone(candidateContext)
 		candidateRequest.Body = body
 		candidateRequest.GetBody = nil
+		setRequestID(candidateRequest.Header, requestID)
 		go func() {
 			defer cancel()
 			defer i.candidates.Finish(run)
@@ -319,6 +323,8 @@ func (i *Ingress) serveProxy(writer http.ResponseWriter, request *http.Request) 
 			i.serveCandidate(candidateRequest, candidate, decode)
 		}()
 	}
+	// Both services pass the ID on to their dependency calls, so egress pairs them within the request.
+	setRequestID(referenceRequest.Header, requestID)
 	// A cancelled reference has no response to compare, so the candidate's run is
 	// discarded too. An aborted response panics, and the engine counts it as cancelled.
 	referenceCancelled := true
