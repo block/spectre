@@ -114,21 +114,38 @@ func TestPassesOneRequestIDToBothBackends(t *testing.T) {
 	t.Cleanup(candidate.Close)
 	reference := httptest.NewServer(http.HandlerFunc(backend))
 	t.Cleanup(reference.Close)
-	handler := newTestHandler(t, reference.URL, candidate.URL)
-	serveIngress(t.Context(), t, handler)
-	request := httptest.NewRequest(http.MethodGet, "http://proxy.example/v1/items", nil)
-	request.Header.Add("Baggage", "tenant=a, "+clientRequestBaggage)
-	request.Header.Add("Baggage", "user=b")
+	for name, test := range map[string]struct {
+		header http.Header
+		others []string
+	}{
+		"KeepsOtherMembers": {
+			header: http.Header{"Baggage": {"tenant=a, " + clientRequestBaggage, "user=b"}},
+			others: []string{"tenant=a", "user=b"},
+		},
+		// A client may name baggage as hop-by-hop, which drops its own members but never the ID.
+		"ConnectionNamesBaggage": {
+			header: http.Header{"Baggage": {"tenant=a, " + clientRequestBaggage}, "Connection": {"baggage"}},
+			others: []string{},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			// The request is undeclared, so its comparison quarantines the candidate, and each needs its own ingress.
+			handler := newTestHandler(t, reference.URL, candidate.URL)
+			serveIngress(t.Context(), t, handler)
+			request := httptest.NewRequest(http.MethodGet, "http://proxy.example/v1/items", nil)
+			request.Header = test.header
 
-	handler.ServeHTTP(httptest.NewRecorder(), request)
+			handler.ServeHTTP(httptest.NewRecorder(), request)
 
-	first, second := <-baggage, <-baggage
-	assert.Equal(t, first, second)
-	assert.Equal(t, 1, len(first))
-	members := strings.Split(first[0], ",")
-	assert.Equal(t, []string{"tenant=a", "user=b"}, members[:2])
-	assert.True(t, strings.HasPrefix(members[2], "spectre_request_id=srid_"))
-	assert.NotEqual(t, clientRequestBaggage, members[2])
+			first, second := <-baggage, <-baggage
+			assert.Equal(t, first, second)
+			assert.Equal(t, 1, len(first))
+			members := strings.Split(first[0], ",")
+			assert.Equal(t, test.others, members[:len(members)-1])
+			assert.True(t, strings.HasPrefix(members[len(members)-1], "spectre_request_id=srid_"))
+			assert.NotEqual(t, clientRequestBaggage, members[len(members)-1])
+		})
+	}
 }
 
 func TestUsesConfiguredH2CProtocol(t *testing.T) {

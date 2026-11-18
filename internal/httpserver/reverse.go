@@ -37,6 +37,8 @@ func NewReverseProxy(ctx context.Context, target *netaddr.Endpoint, transport ht
 				}
 			}
 			request.Out.Header.Del("X-Real-IP")
+			// Only a forwarding point adds a request ID, so no sender ever chooses one.
+			removeRequestID(request.Out.Header)
 			request.SetXForwarded()
 			// Drop X-Forwarded-Host so the inbound host is never forwarded as a hint.
 			request.Out.Header.Del("X-Forwarded-Host")

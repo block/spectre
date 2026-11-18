@@ -116,8 +116,8 @@ type Content struct {
 //sumtype:decl
 type Decision interface{ decision() }
 
-// DecisionForward sends the request on. The server reports the response under
-// Exchange, and passes RequestID to a candidate when one is assigned.
+// DecisionForward sends the request on, carrying RequestID when one is assigned, so the
+// service passes it on to its dependency requests. The server reports the response under Exchange.
 type DecisionForward struct {
 	RequestID Option[RequestID]
 	Exchange  Exchange

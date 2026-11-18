@@ -203,7 +203,7 @@ func (e *Egress) serveReference(writer http.ResponseWriter, request *http.Reques
 		return
 	}
 	ctx := request.Context()
-	// Taking the ID before the request is copied keeps it from the dependency and from hashing.
+	// Taking the ID before the request is copied keeps it out of hashing.
 	requestID, err := takeRequestID(request.Header)
 	if err != nil {
 		logger.FromContext(ctx).WarnContext(ctx, "Reference request is not paired", "error", err)

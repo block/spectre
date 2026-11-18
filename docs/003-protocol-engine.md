@@ -53,7 +53,7 @@ type Content struct {
 
 type Decision interface{ decision() }
 type DecisionForward struct {
-	RequestID Option[RequestID] // set only at the ingress reference
+	RequestID Option[RequestID] // set only at ingress
 	Exchange  Exchange
 }
 type DecisionIntercept struct{ Raw Raw }
