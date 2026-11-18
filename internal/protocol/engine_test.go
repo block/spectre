@@ -17,6 +17,7 @@ import (
 	"github.com/alecthomas/assert/v2"
 	"github.com/alecthomas/errors"
 	. "github.com/alecthomas/types/optional"
+	"go.jetify.com/typeid"
 
 	"github.com/block/spectre/internal/comparison/javascript"
 	"github.com/block/spectre/internal/logger"
@@ -109,6 +110,8 @@ type harness struct {
 	logs       *lockedBuffer
 	// rules are the fake script's ingress rules in declaration order.
 	rules []javascript.Rule
+	// requestID is the mirrored request that egress requests belong to, unless a test says otherwise.
+	requestID protocol.RequestID
 }
 
 func newHarness(t *testing.T, window time.Duration) *harness {
@@ -127,7 +130,10 @@ func newScriptHarness(t *testing.T, script string, window time.Duration) *harnes
 		//nolint:exhaustive // the engine is tested with fake protocols, not real ones
 		map[model.Protocol]protocol.Matcher{fake: &recordingMatcher{}, model.ProtocolHTTP: rules}, quarantine, Some[protocol.CallCounter](calls))
 	assert.NoError(t, err)
-	return &harness{ctx: ctx, engine: engine, quarantine: quarantine, calls: calls, logs: logs, rules: rules.rules}
+	return &harness{
+		ctx: ctx, engine: engine, quarantine: quarantine, calls: calls, logs: logs, rules: rules.rules,
+		requestID: newRequestID(),
+	}
 }
 
 // records returns every log record with msg, without its timestamp.
@@ -249,4 +255,8 @@ func (b *lockedBuffer) Bytes() []byte {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return bytes.Clone(b.buffer.Bytes())
+}
+
+func newRequestID() protocol.RequestID {
+	return typeid.Must(typeid.New[protocol.RequestID]())
 }

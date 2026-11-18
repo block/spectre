@@ -32,7 +32,7 @@ func NewWeather(data []byte, revision string, forecasts Option[*ForecastClient])
 
 // GetForecast serves GET /api/v1/forecast for a location.
 func (w *Weather) GetForecast(writer http.ResponseWriter, request *http.Request) {
-	forecast, status := w.forecast(request.Context(), request.URL.Query().Get("location"))
+	forecast, status := w.forecast(request.Context(), request.Header.Values("Baggage"), request.URL.Query().Get("location"))
 	if status != http.StatusOK {
 		writeWeatherError(writer, status)
 		return
@@ -43,7 +43,7 @@ func (w *Weather) GetForecast(writer http.ResponseWriter, request *http.Request)
 // GetForecastV2 serves GET /v2/forecast for a location, including its alerts.
 func (w *Weather) GetForecastV2(writer http.ResponseWriter, request *http.Request) {
 	name := request.URL.Query().Get("location")
-	forecast, status := w.forecast(request.Context(), name)
+	forecast, status := w.forecast(request.Context(), request.Header.Values("Baggage"), name)
 	if status != http.StatusOK {
 		writeWeatherError(writer, status)
 		return
@@ -63,12 +63,13 @@ func (w *Weather) GetStatus(writer http.ResponseWriter, _ *http.Request) {
 	writeJSON(writer, http.StatusOK, &GetStatusResponse{Status: "ok", Revision: w.revision})
 }
 
-func (w *Weather) forecast(ctx context.Context, name string) (forecast Option[Forecast], status int) {
+// forecast passes the request's baggage on to the provider, as services under SPECTRE must.
+func (w *Weather) forecast(ctx context.Context, baggage []string, name string) (forecast Option[Forecast], status int) {
 	if name == "" {
 		return None[Forecast](), http.StatusBadRequest
 	}
 	if forecasts, ok := w.forecasts.Get(); ok {
-		return forecasts.Fetch(ctx, name)
+		return forecasts.Fetch(ctx, baggage, name)
 	}
 	location, known := w.locations[name]
 	if !known {

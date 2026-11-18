@@ -100,6 +100,54 @@ func TestForwardsRequestToBothBackends(t *testing.T) {
 	assert.Equal(t, "reference response", string(responseBody))
 }
 
+// clientRequestBaggage is a request ID a client sends, which ingress never trusts.
+const clientRequestBaggage = "spectre_request_id=srid_01jx0000000000000000000000"
+
+func TestPassesOneRequestIDToBothBackends(t *testing.T) {
+	baggage := make(chan []string, 2)
+	backend := func(writer http.ResponseWriter, request *http.Request) {
+		baggage <- request.Header.Values("Baggage")
+		_, _ = io.Copy(io.Discard, request.Body)
+		writer.WriteHeader(http.StatusOK)
+	}
+	candidate := httptest.NewServer(http.HandlerFunc(backend))
+	t.Cleanup(candidate.Close)
+	reference := httptest.NewServer(http.HandlerFunc(backend))
+	t.Cleanup(reference.Close)
+	for name, test := range map[string]struct {
+		header http.Header
+		others []string
+	}{
+		"KeepsOtherMembers": {
+			header: http.Header{"Baggage": {"tenant=a, " + clientRequestBaggage, "user=b"}},
+			others: []string{"tenant=a", "user=b"},
+		},
+		// A client may name baggage as hop-by-hop, which drops its own members but never the ID.
+		"ConnectionNamesBaggage": {
+			header: http.Header{"Baggage": {"tenant=a, " + clientRequestBaggage}, "Connection": {"baggage"}},
+			others: []string{},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			// The request is undeclared, so its comparison quarantines the candidate, and each needs its own ingress.
+			handler := newTestHandler(t, reference.URL, candidate.URL)
+			serveIngress(t.Context(), t, handler)
+			request := httptest.NewRequest(http.MethodGet, "http://proxy.example/v1/items", nil)
+			request.Header = test.header
+
+			handler.ServeHTTP(httptest.NewRecorder(), request)
+
+			first, second := <-baggage, <-baggage
+			assert.Equal(t, first, second)
+			assert.Equal(t, 1, len(first))
+			members := strings.Split(first[0], ",")
+			assert.Equal(t, test.others, members[:len(members)-1])
+			assert.True(t, strings.HasPrefix(members[len(members)-1], "spectre_request_id=srid_"))
+			assert.NotEqual(t, clientRequestBaggage, members[len(members)-1])
+		})
+	}
+}
+
 func TestUsesConfiguredH2CProtocol(t *testing.T) {
 	referenceProtocol := make(chan int, 1)
 	listener, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
@@ -1400,6 +1448,7 @@ func TestMirrorsOnlyRoutesOfMigratedNodes(t *testing.T) {
 	candidateAddress := acceptingAddress(t)
 	candidatePaths := make(chan string, 8)
 	var referencePaths []string
+	referenceBaggage := map[string][]string{}
 	var referenceMu sync.Mutex
 	transport := roundTripperFunc(func(request *http.Request) (*http.Response, error) {
 		if request.URL.Host == candidateAddress {
@@ -1407,6 +1456,7 @@ func TestMirrorsOnlyRoutesOfMigratedNodes(t *testing.T) {
 		} else {
 			referenceMu.Lock()
 			referencePaths = append(referencePaths, request.URL.Path)
+			referenceBaggage[request.URL.Path] = request.Header.Values("Baggage")
 			referenceMu.Unlock()
 		}
 		return jsonResponse(request, `{"value":"same"}`), nil
@@ -1429,7 +1479,9 @@ status = "migrated"
 	serveIngress(t.Context(), t, handler)
 
 	serve := func(method, path string) {
-		handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(method, "http://proxy.example"+path, nil))
+		request := httptest.NewRequest(method, "http://proxy.example"+path, nil)
+		request.Header.Set("Baggage", clientRequestBaggage)
+		handler.ServeHTTP(httptest.NewRecorder(), request)
 	}
 	serve(http.MethodGet, "/pending/a")
 	serve(http.MethodGet, "/ignored/a")
@@ -1459,6 +1511,15 @@ status = "migrated"
 	referenceMu.Lock()
 	defer referenceMu.Unlock()
 	assert.Equal(t, []string{"/pending/a", "/ignored/a", "/grpc.reflection.v1.ServerReflection/ServerReflectionInfo", "/test.Echo/Get", "/unlisted"}, referencePaths)
+	// Only a mirrored request has an ID, so egress expects candidate calls for no others.
+	mirrored := referenceBaggage["/test.Echo/Get"]
+	delete(referenceBaggage, "/test.Echo/Get")
+	assert.Equal(t, map[string][]string{
+		"/pending/a": nil, "/ignored/a": nil, "/grpc.reflection.v1.ServerReflection/ServerReflectionInfo": nil, "/unlisted": nil,
+	}, referenceBaggage)
+	assert.Equal(t, 1, len(mirrored))
+	assert.True(t, strings.HasPrefix(mirrored[0], "spectre_request_id=srid_"))
+	assert.NotEqual(t, clientRequestBaggage, mirrored[0])
 }
 
 func TestQuarantineNamesNodeOfRoute(t *testing.T) {

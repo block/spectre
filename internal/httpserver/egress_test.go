@@ -219,11 +219,76 @@ func TestQuarantinesUnmatchedCandidateThatGivesUp(t *testing.T) {
 	assert.NoError(t, err)
 	request.Host = dependencyHost
 	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Baggage", requestBaggage)
 
 	_, err = (&http.Client{Transport: &http.Transport{DisableKeepAlives: true}}).Do(request)
 
 	assert.True(t, errors.Is(err, context.DeadlineExceeded))
 	assert.Contains(t, harness.QuarantineReason(t), "no matching reference request before the candidate gave up after")
+}
+
+func TestRemovesRequestIDFromBaggageBeforeDependency(t *testing.T) {
+	received := make(chan []string, 1)
+	upstream := newUpstream(t, func(writer http.ResponseWriter, request *http.Request) {
+		received <- request.Header.Values("Baggage")
+		_, _ = io.WriteString(writer, "reference")
+	})
+	for name, test := range map[string]struct {
+		baggage  []string
+		expected []string
+	}{
+		"OnlyRequestID":   {baggage: []string{requestBaggage}},
+		"OtherMembers":    {baggage: []string{"tenant=a, " + requestBaggage + ";origin=ingress", "user=b"}, expected: []string{"tenant=a,user=b"}},
+		"NoRequestID":     {baggage: []string{"tenant=a"}, expected: []string{"tenant=a"}},
+		"MalformedMember": {baggage: []string{"tenant=a,spectre_request_id=unknown"}, expected: []string{"tenant=a"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			harness := newHarness(t, upstream)
+			harness.Start(t)
+
+			sendWithBaggage(t, harness.Reference, dependencyHost, london, test.baggage...)
+
+			assert.Equal(t, test.expected, <-received)
+		})
+	}
+}
+
+func TestForwardsReferenceRequestWithoutRequestIDUnpaired(t *testing.T) {
+	upstream := newUpstream(t, func(writer http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(writer, "reference")
+	})
+	harness := newHarness(t, upstream)
+	harness.Engine.MatchWindow = 50 * time.Millisecond
+	harness.Start(t)
+
+	assert.Equal(t, "reference", sendWithBaggage(t, harness.Reference, dependencyHost, london).Body)
+
+	// A reference request the candidate would have left out quarantines once its window ends.
+	time.Sleep(150 * time.Millisecond)
+	assert.False(t, strings.Contains(harness.Logs.String(), "Candidate quarantined"))
+}
+
+func TestQuarantinesCandidateWithoutValidRequestID(t *testing.T) {
+	upstream := newUpstream(t, func(http.ResponseWriter, *http.Request) {})
+	for name, test := range map[string]struct {
+		baggage []string
+		reason  string
+	}{
+		"Missing":     {reason: "candidate request carries no SPECTRE request ID"},
+		"OtherOnly":   {baggage: []string{"tenant=a"}, reason: "candidate request carries no SPECTRE request ID"},
+		"Malformed":   {baggage: []string{"spectre_request_id=unknown"}, reason: "baggage carries a malformed SPECTRE request ID"},
+		"Conflicting": {baggage: []string{requestBaggage, "spectre_request_id=srid_01jx0000000000000000000001"}, reason: "baggage carries conflicting SPECTRE request IDs"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			harness := newHarness(t, upstream)
+			harness.Start(t)
+
+			response := sendWithBaggage(t, harness.Candidate, dependencyHost, london, test.baggage...)
+
+			assert.Equal(t, http.StatusBadGateway, response.Status)
+			assert.Contains(t, harness.QuarantineReason(t), test.reason)
+		})
+	}
 }
 
 func TestPairsDuplicateRequestsOneToOne(t *testing.T) {
@@ -635,12 +700,24 @@ func waitReady(t *testing.T, listener net.Listener) {
 	t.Fatal("egress did not become ready")
 }
 
+// requestBaggage puts requests in one mirrored request, as ingress would.
+const requestBaggage = "spectre_request_id=srid_01jx0000000000000000000000"
+
 // send makes a raw JSON request for host through one egress listener.
 func send(t *testing.T, listener net.Listener, host string, body string) responseView {
+	t.Helper()
+	return sendWithBaggage(t, listener, host, body, requestBaggage)
+}
+
+// sendWithBaggage makes a raw JSON request for host with a baggage header line for each of baggage.
+func sendWithBaggage(t *testing.T, listener net.Listener, host string, body string, baggage ...string) responseView {
 	t.Helper()
 	request, err := http.NewRequest(http.MethodPost, "http://"+listener.Addr().String()+forecastPath, strings.NewReader(body))
 	assert.NoError(t, err)
 	request.Header.Set("Content-Type", "application/json")
+	for _, line := range baggage {
+		request.Header.Add("Baggage", line)
+	}
 	return do(t, request, host)
 }
 
@@ -649,6 +726,7 @@ func getPath(t *testing.T, listener net.Listener, requestPath string) responseVi
 	t.Helper()
 	request, err := http.NewRequest(http.MethodGet, "http://"+listener.Addr().String()+requestPath, nil)
 	assert.NoError(t, err)
+	request.Header.Set("Baggage", requestBaggage)
 	return do(t, request, dependencyHost)
 }
 

@@ -207,6 +207,20 @@ A `HOST` may be a glob, such as `--destination="*.example=http://127.0.0.1:50053
 where `*` also matches dots. A host takes the first destination, in pattern order,
 that matches it. A reference call to a host no destination matches gets a `502`.
 
+Egress pairs a candidate call only with a reference call made for the same
+mirrored request. Ingress gives each mirrored request an ID, and adds it to the
+copies the reference and candidate receive as a `spectre_request_id` member of
+the W3C `baggage` header. Both services must pass `baggage` on from each request
+to the dependency calls they make for it, as OpenTelemetry's `baggage`
+propagator does. Egress removes the member before a call reaches a dependency,
+and ingress replaces any that a client sends.
+
+A candidate call without a request ID gets a `502` and quarantines the candidate
+as `pairing`, as does one whose ID is malformed. A reference call without one
+belongs to no mirrored request, such as a call for a request ingress did not
+mirror or for work no request started. It is forwarded but never paired, so it
+never quarantines.
+
 Scripts declare dependency endpoints with `egress.http(pattern).match<Type>()`.
 Types come from `--schema-dir`; descriptors are only needed for protobuf traffic. A candidate call waits up to `--match-window` (5s by default) for an
 equivalent reference call and receives its recorded response. A candidate call
@@ -219,13 +233,9 @@ reference call. Giving up before a match is `unmatched`, and giving up later, su
 as while waiting for the reference's response, is `unable`. Calls SPECTRE cancels
 itself, while shutting down or after a quarantine, never quarantine.
 
-A reference call that no candidate call matches within `--match-window` also
-quarantines the candidate, because the candidate left it out. Egress cannot yet
-tell which reference calls belong to mirrored requests. So it also quarantines
-for reference calls made while the candidate is starting, after ingress
-quarantined it, and for routes ingress does not mirror, such as those of pending
-migration state nodes. Reference calls left unmatched during shutdown never
-quarantine.
+A reference call for a mirrored request that no candidate call matches within
+`--match-window` also quarantines the candidate, because the candidate left it
+out. Reference calls left unmatched during shutdown never quarantine.
 
 When the candidate legitimately makes fewer calls to an endpoint than the
 reference, for example because it reads data the reference fetched again from a

@@ -131,5 +131,6 @@ func sendProto(t *testing.T, address, path string, message proto.Message) respon
 	request, err := http.NewRequest(http.MethodPost, "http://"+address+path, bytes.NewReader(body))
 	assert.NoError(t, err)
 	request.Header.Set("Content-Type", "application/x-protobuf")
+	request.Header.Set("Baggage", requestBaggage)
 	return do(t, request, usersHost)
 }

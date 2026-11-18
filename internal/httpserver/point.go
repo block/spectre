@@ -63,7 +63,7 @@ func (p *point) respond(writer http.ResponseWriter, request *http.Request, decis
 ) (cancelled bool) {
 	switch decision := decision.(type) {
 	case protocol.DecisionForward:
-		return p.forward(writer, request, decision.Exchange, upstream, decode)
+		return p.forward(writer, request, decision, upstream, decode)
 	case protocol.DecisionIntercept:
 		p.replay(writer, request, decision.Raw)
 	case protocol.DecisionAnswer:
@@ -76,10 +76,11 @@ func (p *point) respond(writer http.ResponseWriter, request *http.Request, decis
 
 // forward reports whether the request ended cancelled. An aborted response panics
 // instead of returning, after reporting it.
-func (p *point) forward(writer http.ResponseWriter, request *http.Request, exchange protocol.Exchange,
+func (p *point) forward(writer http.ResponseWriter, request *http.Request, decision protocol.DecisionForward,
 	upstream Option[*httputil.ReverseProxy], decode decodeFunc,
 ) (cancelled bool) {
 	ctx := request.Context()
+	exchange := decision.Exchange
 	destination, ok := upstream.Get()
 	if !ok {
 		cancelled = ctx.Err() != nil
@@ -103,7 +104,7 @@ func (p *point) forward(writer http.ResponseWriter, request *http.Request, excha
 		}
 		p.report(reportContext, exchange, recorded, decode)
 	}()
-	recordingProxy(destination, recorded).ServeHTTP(writer, request)
+	recordingProxy(destination, recorded, decision.RequestID).ServeHTTP(writer, request)
 	// The transport may never run, so the handler guarantees the recording completes.
 	recorded.finish(nil, errors.New("request ended without a response"))
 	reported = true
@@ -146,11 +147,19 @@ func (p *point) replay(writer http.ResponseWriter, request *http.Request, raw pr
 	newReplayProxy(replayed.Context(), recorded).ServeHTTP(writer, replayed)
 }
 
-// recordingProxy copies a destination's reverse proxy so that one request's
-// response is recorded. The copy shares the destination's forwarding setup.
-func recordingProxy(destination *httputil.ReverseProxy, recorded *recording) *httputil.ReverseProxy {
+// recordingProxy copies a destination's reverse proxy so that one request's response is recorded,
+// and it carries requestID. The copy shares the destination's forwarding setup.
+func recordingProxy(destination *httputil.ReverseProxy, recorded *recording, requestID Option[protocol.RequestID]) *httputil.ReverseProxy {
 	forward := *destination
 	forward.Transport = newRecordingTransport(destination.Transport, recorded)
+	if id, ok := requestID.Get(); ok {
+		// Rewrite runs after hop-by-hop headers are removed, so a Connection header cannot drop the ID.
+		rewrite := destination.Rewrite
+		forward.Rewrite = func(request *httputil.ProxyRequest) {
+			rewrite(request)
+			setRequestID(request.Out.Header, id)
+		}
+	}
 	return &forward
 }
 

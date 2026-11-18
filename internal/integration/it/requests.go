@@ -29,7 +29,7 @@ func (i IngressEndpoint) URL() string {
 // Get fetches path through ingress.
 func (i IngressEndpoint) Get(path string) *Response {
 	i.t.Helper()
-	return get(i.t, i.client, i.base+path, "")
+	return get(i.t, i.client, i.base+path, "", http.Header{})
 }
 
 // EgressEndpoint is where a service reaches its dependencies.
@@ -43,10 +43,21 @@ func newEgressEndpoint(t *testing.T, client *http.Client, base string) EgressEnd
 	return EgressEndpoint{t: t, client: client, base: base}
 }
 
-// Get fetches path from the dependency at host through egress.
+// testRequestBaggage puts a test's direct egress calls in one mirrored request, as ingress would.
+const testRequestBaggage = "spectre_request_id=srid_01jx0000000000000000000000"
+
+// Get fetches path from the dependency at host through egress, as a call of the one
+// mirrored request the test stands in for.
 func (e EgressEndpoint) Get(host, path string) *Response {
 	e.t.Helper()
-	return get(e.t, e.client, e.base+path, host)
+	return get(e.t, e.client, e.base+path, host, http.Header{"Baggage": []string{testRequestBaggage}})
+}
+
+// GetUnmirrored fetches path from the dependency at host through egress, as a call
+// that belongs to no mirrored request.
+func (e EgressEndpoint) GetUnmirrored(host, path string) *Response {
+	e.t.Helper()
+	return get(e.t, e.client, e.base+path, host, http.Header{})
 }
 
 func (e EgressEndpoint) url() string {
@@ -78,11 +89,12 @@ func (r *Response) ExpectBodyContains(text string) *Response {
 	return r
 }
 
-// get fetches url, with host in the Host header unless it is empty.
-func get(t *testing.T, client *http.Client, url, host string) *Response {
+// get fetches url with header, and with host in the Host header unless it is empty.
+func get(t *testing.T, client *http.Client, url, host string, header http.Header) *Response {
 	t.Helper()
 	request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, url, nil)
 	assert.NoError(t, err)
+	request.Header = header
 	if host != "" {
 		request.Host = host
 	}
