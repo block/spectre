@@ -78,7 +78,8 @@ func (s *session) selected(command normaliser.Command) (database string, selects
 	case normaliser.UseDatabase:
 		return command.Name, true
 	case normaliser.Query:
-		match := s.use.FindStringSubmatch(command.SQL)
+		// Comments do not change which database a USE statement selects.
+		match := s.use.FindStringSubmatch(withoutComments(command.SQL))
 		if match == nil {
 			return "", false
 		}

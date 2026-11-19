@@ -81,6 +81,11 @@ func (f *framer) write(data []byte) {
 	f.buffered = append(f.buffered, data...)
 }
 
+// pending is how many bytes are held for payloads that have not arrived in full.
+func (f *framer) pending() int {
+	return len(f.buffered) + len(f.partial)
+}
+
 // next returns the next whole payload, once all of it has arrived.
 func (f *framer) next() (payload []byte, ok bool) {
 	for len(f.buffered) >= 4 {

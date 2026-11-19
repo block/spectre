@@ -97,6 +97,7 @@ func relay(ctx context.Context, threads *threads, observer *observer, reference 
 	_ = reference.Close()
 	_ = upstream.Close()
 	<-done
+	observer.close()
 }
 
 // deliver passes the database's bytes to the reference as they arrive, and hands
@@ -129,6 +130,8 @@ func forward(ctx context.Context, threads *threads, observer *observer, from io.
 			return err
 		}
 		whole := len(sent.payload) < maxPayload
+		// The observer sees the statement the reference sent, as the candidate sends it.
+		observed := sent.payload
 		if sent.sequence == 0 && len(sent.payload) > 0 && whole {
 			payload, refusal := threads.command(ctx, sent.payload)
 			if refusal != nil {
@@ -140,7 +143,7 @@ func forward(ctx context.Context, threads *threads, observer *observer, from io.
 			sent.payload = payload
 		}
 		if sent.sequence == 0 {
-			observer.sent(sent.payload, whole)
+			observer.sent(observed, whole)
 		}
 		if err := writePacket(upstream, sent.sequence, sent.payload); err != nil {
 			return err

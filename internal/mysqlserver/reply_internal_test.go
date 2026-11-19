@@ -9,6 +9,8 @@ import (
 	. "github.com/alecthomas/types/optional"
 	"github.com/go-mysql-org/go-mysql/mysql"
 
+	"github.com/block/spectre/internal/model"
+	"github.com/block/spectre/internal/mysqlserver/exact"
 	"github.com/block/spectre/internal/mysqlserver/normaliser"
 	"github.com/block/spectre/internal/proxy"
 )
@@ -36,6 +38,10 @@ func TestRepliesAreReadFromTheirPackets(t *testing.T) {
 				reader := readerOf(deprecateEOF)
 				assert.Equal(t, Some(test.reply), readByteByByte(t, reader, packetsOf(test.reply, 0, deprecateEOF)))
 				assert.True(t, reader.offerable())
+				if rows, ok := test.reply.(normaliser.Rows); ok {
+					// Reading holds the budget that saving the reply takes over.
+					assert.Equal(t, replySize(rows), reader.size())
+				}
 			})
 		}
 	}
@@ -108,6 +114,40 @@ func TestLongPayloadsContinueInTheNextPacket(t *testing.T) {
 	assert.False(t, ok)
 }
 
+func TestRepliesBeyondTheBudgetQuarantineAndReturnIt(t *testing.T) {
+	server, budget := budgetedServer()
+	observer := newObserver(t.Context(), server, exact.New().NewSession(), mysql.CLIENT_PROTOCOL_41|mysql.CLIENT_DEPRECATE_EOF)
+	long := normaliser.Rows{Columns: items.Columns}
+	for range 20 {
+		long.Rows = append(long.Rows, items.Rows[0])
+	}
+
+	observer.sent(append([]byte{mysql.COM_QUERY}, "SELECT id, sku FROM items"...), true)
+	for _, b := range packetsOf(long, 0, true) {
+		observer.received([]byte{b})()
+	}
+	quarantine, quarantined := server.candidates.QuarantineStatus().Get()
+	assert.True(t, quarantined)
+	assert.Equal(t, model.QuarantineReason{
+		Kind:    model.QuarantineCapacity,
+		Traffic: Some(model.Traffic{Direction: model.Egress, Protocol: Protocol, Route: "SELECT"}),
+		Detail:  "saved reference replies exceed the MySQL saved replies size",
+	}, quarantine.Reason)
+	assert.True(t, budget.Reserve(budget.Limit()))
+}
+
+func TestRepliesBeingReadHoldTheBudgetUntilTheConnectionEnds(t *testing.T) {
+	server, budget := budgetedServer()
+	observer := newObserver(t.Context(), server, exact.New().NewSession(), mysql.CLIENT_PROTOCOL_41|mysql.CLIENT_DEPRECATE_EOF)
+	packets := packetsOf(items, 0, true)
+
+	observer.sent(append([]byte{mysql.COM_QUERY}, "SELECT id, sku FROM items"...), true)
+	observer.received(packets[:len(packets)-12])()
+	assert.False(t, budget.Reserve(budget.Limit()))
+	observer.close()
+	assert.True(t, budget.Reserve(budget.Limit()))
+}
+
 func TestSavedRepliesHoldTheirSizeUntilReleased(t *testing.T) {
 	budget := proxy.NewBudget(replyBytes + rowBytes + valueBytes + len("apple"))
 	saved, reserved := reserveReply(budget, normaliser.Rows{Rows: [][]normaliser.Value{{Some("apple")}}})
@@ -118,6 +158,12 @@ func TestSavedRepliesHoldTheirSizeUntilReleased(t *testing.T) {
 	saved.Release()
 	_, reserved = reserveReply(budget, normaliser.OK{})
 	assert.True(t, reserved)
+}
+
+// budgetedServer is a server with room to save one reply of items, and no engine.
+func budgetedServer() (*Server, *proxy.Budget) {
+	budget := proxy.NewBudget(replySize(items) + 100)
+	return &Server{budget: budget, candidates: proxy.NewCandidates(proxy.CandidatesConfig{CandidateMaxInFlight: 1})}, budget
 }
 
 func readerOf(deprecateEOF bool) *replyReader {

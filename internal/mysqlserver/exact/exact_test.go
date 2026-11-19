@@ -79,7 +79,10 @@ func TestUseStatementsSelectTheDatabase(t *testing.T) {
 		return normaliser.OK{}, nil
 	}
 
-	for _, use := range []string{"USE tenant_a", "use `tenant``b`;", " USE  shop "} {
+	for _, use := range []string{
+		"USE tenant_a", "use `tenant``b`;", " USE  shop ",
+		"USE /* setup */ tenant_c", "USE tenant_d; -- trailing\n", "/* tag */ USE `tenant/*e*/` # note",
+	} {
 		units, err := reference.Reference(t.Context(), normaliser.Query{SQL: use}, normaliser.OK{})
 		assert.NoError(t, err)
 		assert.Equal(t, []normaliser.Unit(nil), units)
@@ -93,11 +96,19 @@ func TestUseStatementsSelectTheDatabase(t *testing.T) {
 		assert.NoError(t, err)
 	}
 	expected := []any{}
-	for _, database := range []string{"tenant_a", "tenant`b", "shop"} {
+	for _, database := range []string{"tenant_a", "tenant`b", "shop", "tenant_c", "tenant_d", "tenant/*e*/"} {
 		key := map[string]any{"database": database, "statement": "SELECT 1"}
 		expected = append(expected, key, key)
 	}
 	assert.Equal(t, expected, keys)
+}
+
+func TestStatementsArePairedWithTheirComments(t *testing.T) {
+	session := exact.New().NewSession()
+
+	units, err := session.Reference(t.Context(), normaliser.Query{SQL: "SELECT 1 /* request=7 */"}, normaliser.OK{})
+	assert.NoError(t, err)
+	assert.Equal(t, any(map[string]any{"database": "", "statement": "SELECT 1 /* request=7 */"}), units[0].Key)
 }
 
 func TestFailedUseStatementsKeepTheDatabase(t *testing.T) {

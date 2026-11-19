@@ -24,7 +24,8 @@ type observer struct {
 	reading Option[*replyReader]
 	command normaliser.Command
 	framer  *framer
-	size    int
+	// held is what the reply being read holds of the saved replies budget.
+	held int
 }
 
 func newObserver(ctx context.Context, server *Server, session normaliser.Session, capability uint32) *observer {
@@ -36,7 +37,7 @@ func newObserver(ctx context.Context, server *Server, session normaliser.Session
 func (o *observer) sent(payload []byte, whole bool) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	o.reading, o.framer, o.size = None[*replyReader](), newFramer(), 0
+	o.stop()
 	if !whole || len(payload) == 0 || !o.server.offering() {
 		return
 	}
@@ -57,36 +58,68 @@ func (o *observer) received(data []byte) (deliver func()) {
 	if !reading {
 		return func() {}
 	}
-	o.size += len(data)
-	if o.size > o.server.savedLimit() {
-		o.stop()
-		return o.units(o.command, normaliser.Rows{}, o.server.exceed)
-	}
 	o.framer.write(data)
 	for {
 		payload, framed := o.framer.next()
+		reply := None[normaliser.Reply]()
+		if framed {
+			var err error
+			if reply, err = reader.read(payload); err != nil {
+				o.stop()
+				logger.FromContext(o.ctx).WarnContext(o.ctx, "MySQL reply is not offered", "event", logger.EventCorrelation, "reason", err)
+				return func() {}
+			}
+			if !reader.offerable() {
+				o.stop()
+				return func() {}
+			}
+		}
+		if !o.hold(reader.size() + o.framer.pending()) {
+			o.stop()
+			return o.units(o.command, normaliser.Rows{}, o.server.exceed)
+		}
+		finished, ok := reply.Get()
 		if !framed {
 			return func() {}
 		}
-		reply, err := reader.read(payload)
-		if err != nil {
-			o.stop()
-			logger.FromContext(o.ctx).WarnContext(o.ctx, "MySQL reply is not offered", "event", logger.EventCorrelation, "reason", err)
-			return func() {}
+		if !ok {
+			continue
 		}
-		if finished, ok := reply.Get(); ok {
-			o.stop()
-			if !reader.offerable() {
-				return func() {}
-			}
-			return o.units(o.command, finished, o.server.offer)
-		}
+		// The saved reply takes over what the reply held once it is offered.
+		held := o.held
+		o.held = 0
+		o.stop()
+		return o.units(o.command, finished, func(ctx context.Context, units []normaliser.Unit) {
+			o.server.release(held)
+			o.server.offer(ctx, units)
+		})
 	}
 }
 
-// stop ignores the rest of the command's reply.
+// hold keeps size bytes of the budget for the reply being read, and reports whether
+// they fit.
+func (o *observer) hold(size int) (held bool) {
+	switch {
+	case size > o.held && !o.server.reserve(size-o.held):
+		return false
+	case size < o.held:
+		o.server.release(o.held - size)
+	}
+	o.held = size
+	return true
+}
+
+// close stops observing when the connection ends.
+func (o *observer) close() {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.stop()
+}
+
+// stop ignores the rest of the command's reply, and returns what it held.
 func (o *observer) stop() {
-	o.reading, o.framer = None[*replyReader](), newFramer()
+	o.server.release(o.held)
+	o.reading, o.framer, o.held = None[*replyReader](), newFramer(), 0
 }
 
 // units turns a finished command into units now, so the session sees commands in

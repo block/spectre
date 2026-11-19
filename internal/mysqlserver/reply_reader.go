@@ -30,6 +30,8 @@ type replyReader struct {
 	part         replyPart
 	remaining    uint64
 	rows         normaliser.Rows
+	// held is the estimated memory of rows, as a saved reply would hold it.
+	held int
 	// unofferable is set by replies a normaliser cannot hold, such as several
 	// result sets or a local file upload.
 	unofferable bool
@@ -37,6 +39,11 @@ type replyReader struct {
 
 func newReplyReader(capability uint32) *replyReader {
 	return &replyReader{deprecateEOF: capability&mysql.CLIENT_DEPRECATE_EOF != 0}
+}
+
+// size is the estimated memory of the rows read so far.
+func (r *replyReader) size() int {
+	return r.held
 }
 
 // offerable reports whether the reply read so far can be offered to the candidate.
@@ -57,7 +64,9 @@ func (r *replyReader) read(payload []byte) (Option[normaliser.Reply], error) {
 		if err != nil {
 			return None[normaliser.Reply](), errors.Wrap(err, "read a MySQL column")
 		}
-		r.rows.Columns = append(r.rows.Columns, columnOf(field))
+		column := columnOf(field)
+		r.rows.Columns = append(r.rows.Columns, column)
+		r.held += columnBytes + len(column.Schema) + len(column.Table) + len(column.OrgTable) + len(column.Name) + len(column.OrgName)
 		r.remaining--
 		if r.remaining == 0 {
 			r.part = rowPackets
@@ -98,7 +107,7 @@ func (r *replyReader) first(payload []byte) (Option[normaliser.Reply], error) {
 	if err != nil || count == 0 {
 		return None[normaliser.Reply](), errors.New("MySQL reply has no column count")
 	}
-	r.part, r.remaining, r.rows = columnPackets, count, normaliser.Rows{}
+	r.part, r.remaining, r.rows, r.held = columnPackets, count, normaliser.Rows{}, replyBytes
 	return None[normaliser.Reply](), nil
 }
 
@@ -121,6 +130,7 @@ func (r *replyReader) row(payload []byte) (Option[normaliser.Reply], error) {
 	for range r.rows.Columns {
 		if len(rest) > 0 && rest[0] == 0xfb {
 			values, rest = append(values, None[string]()), rest[1:]
+			r.held += valueBytes
 			continue
 		}
 		value, after, err := lengthEncoded(rest)
@@ -128,8 +138,10 @@ func (r *replyReader) row(payload []byte) (Option[normaliser.Reply], error) {
 			return None[normaliser.Reply](), errors.Wrap(err, "read a MySQL row")
 		}
 		values, rest = append(values, Some(string(value))), after
+		r.held += valueBytes + len(value)
 	}
 	r.rows.Rows = append(r.rows.Rows, values)
+	r.held += rowBytes
 	return None[normaliser.Reply](), nil
 }
 
@@ -139,7 +151,7 @@ func (r *replyReader) end(reply normaliser.Reply, status uint16) (Option[normali
 		return Some(reply), nil
 	}
 	r.unofferable = true
-	r.part, r.rows = firstPacket, normaliser.Rows{}
+	r.part, r.rows, r.held = firstPacket, normaliser.Rows{}, 0
 	return None[normaliser.Reply](), nil
 }
 

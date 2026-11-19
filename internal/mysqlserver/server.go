@@ -297,9 +297,14 @@ func (s *Server) offering() bool {
 	return !s.candidates.QuarantineStatus().Ok()
 }
 
-// savedLimit is the most bytes of reference replies the proxy saves.
-func (s *Server) savedLimit() int {
-	return s.budget.Limit()
+// reserve claims size bytes of the saved replies budget, and reports whether they fit.
+func (s *Server) reserve(size int) (reserved bool) {
+	return s.budget.Reserve(size)
+}
+
+// release returns size bytes that reserve claimed.
+func (s *Server) release(size int) {
+	s.budget.Release(size)
 }
 
 // offer hands the units of one reference command to the engine, which keeps them
