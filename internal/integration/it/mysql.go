@@ -16,6 +16,7 @@ import (
 
 	"github.com/alecthomas/assert/v2"
 	. "github.com/alecthomas/types/optional"
+	"github.com/go-mysql-org/go-mysql/client"
 	"github.com/go-sql-driver/mysql"
 
 	"github.com/block/spectre/internal/model"
@@ -84,6 +85,7 @@ type Database struct {
 	// authorities is the file of the certificate authorities that the server generated.
 	authorities string
 	server      *sql.DB
+	watch       *watch
 	// seeded counts the statements that set the database up.
 	seeded map[string]uint64
 }
@@ -115,7 +117,7 @@ func newDatabase(t *testing.T, w *watch, statements []string) *Database {
 		assert.NoError(t, err, "run %s", statement)
 	}
 	return &Database{
-		Name: database, t: t, address: address, authorities: authorities(t), server: server, user: database,
+		Name: database, t: t, address: address, authorities: authorities(t), server: server, watch: w, user: database,
 		passwordFile: filepath.Join(t.TempDir(), "password"),
 		seeded:       digests(t, server, database),
 	}
@@ -201,6 +203,32 @@ func (d *Database) RotatePassword(password string) {
 // the reference does, as a user the database does not know. It is closed when the test ends.
 func (d *Database) OpenReference() *sql.DB {
 	return openMySQLAs(d.t, d.referenceListen, d.Name, "anyone", "anything")
+}
+
+// ConnectReference opens a protocol connection to the proxy as the reference, as a user
+// the database does not know. It is closed when the test ends.
+func (d *Database) ConnectReference(options ...client.Option) *client.Conn {
+	d.t.Helper()
+	conn, err := client.ConnectWithContext(d.t.Context(), d.referenceListen, "anyone", "anything", d.Name, waitTimeout, options...)
+	assert.NoError(d.t, err)
+	d.t.Cleanup(func() { _ = conn.Close() })
+	return conn
+}
+
+// Server is a handle to the server itself, bypassing the proxy.
+func (d *Database) Server() *sql.DB {
+	return d.server
+}
+
+// AwaitRunning waits until the server runs statement.
+func (d *Database) AwaitRunning(statement string) {
+	d.t.Helper()
+	d.watch.await(d.t, waitTimeout, "MySQL to run "+statement, func() bool {
+		running := 0
+		err := d.server.QueryRowContext(d.t.Context(),
+			"SELECT COUNT(*) FROM information_schema.processlist WHERE info = ?", statement).Scan(&running)
+		return err == nil && running > 0
+	})
 }
 
 // openMySQL opens a handle to database at address, closed when the test ends.

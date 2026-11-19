@@ -1,10 +1,12 @@
 package mysqlserver
 
 import (
+	"bufio"
 	"context"
 	"crypto/tls"
 	"net"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -14,6 +16,7 @@ import (
 	"github.com/go-mysql-org/go-mysql/client"
 	"github.com/go-mysql-org/go-mysql/mysql"
 	"github.com/go-mysql-org/go-mysql/server"
+	"github.com/pingcap/tidb/pkg/parser/charset"
 
 	"github.com/block/spectre/internal/logger"
 	"github.com/block/spectre/internal/model"
@@ -26,8 +29,8 @@ const Protocol model.Protocol = "mysql"
 // dialTimeout limits connecting to the database when a reference connection authenticates.
 const dialTimeout = 10 * time.Second
 
-// serverVersion is the MySQL version the proxy reports to the services.
-const serverVersion = "8.4.0"
+// fallbackVersion is the MySQL version the proxy reports while it cannot reach the database.
+const fallbackVersion = "8.0.0"
 
 // Server serves reference and candidate MySQL connections on separate listeners.
 // Candidate statements never reach a database under any condition.
@@ -37,10 +40,12 @@ type Server struct {
 	// user and passwordFile are the proxy's credentials for the database.
 	user         string
 	passwordFile string
-	// candidateWire accepts any candidate credentials. Reference connections each get their own.
-	candidateWire *server.Server
-	upstreamTLS   Option[*tls.Config]
-	candidates    *proxy.Candidates
+	upstreamTLS  Option[*tls.Config]
+	candidates   *proxy.Candidates
+	threads      *threads
+	// version is the database's version once the proxy has connected to it.
+	versionMu sync.Mutex
+	version   Option[string]
 }
 
 // New returns a MySQL proxy that quarantines candidates as the server that owns
@@ -57,12 +62,12 @@ func New(config Config, candidates *proxy.Candidates) (*Server, error) {
 		return nil, err
 	}
 	return &Server{
-		upstream:      config.Upstream,
-		user:          config.UpstreamUser,
-		passwordFile:  config.UpstreamPasswordFile,
-		candidateWire: newWire(acceptAny{}),
-		upstreamTLS:   upstreamTLS,
-		candidates:    candidates,
+		upstream:     config.Upstream,
+		user:         config.UpstreamUser,
+		passwordFile: config.UpstreamPasswordFile,
+		upstreamTLS:  upstreamTLS,
+		candidates:   candidates,
+		threads:      newThreads(),
 	}, nil
 }
 
@@ -108,28 +113,99 @@ func (s *Server) accept(ctx context.Context, listener net.Listener, connections 
 	}
 }
 
-// newWire returns the wire protocol of connections that provider authenticates.
-// Native passwords need neither TLS nor a key pair on the local listeners.
-func newWire(provider server.AuthenticationProvider) *server.Server {
-	return server.NewServerWithAuth(serverVersion, mysql.DEFAULT_COLLATION_ID, mysql.AUTH_NATIVE_PASSWORD, nil, nil, provider)
-}
-
-// serveReference accepts a reference connection with any credentials, and connects
-// to the database with the proxy's own.
+// serveReference accepts a reference connection with any credentials, connects to
+// the database with the proxy's own, and then relays between them.
 func (s *Server) serveReference(ctx context.Context, conn net.Conn) {
-	handler := newReferenceConn(ctx, s)
-	defer handler.close()
-	s.serve(ctx, conn, newWire(handler), anyUser{}, handler)
+	from := bufio.NewReader(conn)
+	thread := s.threads.reserve()
+	asked, err := greet(conn, from, s.serverVersion(ctx), thread)
+	if err != nil {
+		if ctx.Err() == nil {
+			logger.FromContext(ctx).WarnContext(ctx, "MySQL reference handshake failed", "error", err)
+		}
+		return
+	}
+	upstream, err := s.connect(ctx, asked)
+	if err != nil {
+		logger.FromContext(ctx).WarnContext(ctx, "Reference connection has no database", "error", err)
+		if err := writePacket(conn, asked.sequence, errorPayload(refusedConnection(err))); err != nil {
+			logger.FromContext(ctx).DebugContext(ctx, "Reference left before its refusal", "error", err)
+		}
+		return
+	}
+	defer upstream.Close()
+	if err := writePacket(conn, asked.sequence, okPayload(asked.capability)); err != nil {
+		return
+	}
+	release := s.threads.connect(thread, upstream.GetConnectionID())
+	defer release()
+	relay(ctx, s.threads, conn, from, upstream.Conn.Conn)
 }
 
-// connect connects to the database with the proxy's credentials, and selects database
+// refusedConnection is the error a reference gets when the proxy cannot connect it:
+// the database's own, or one that says the proxy failed.
+func refusedConnection(err error) error {
+	if reported, ok := errors.AsType[*mysql.MyError](err); ok {
+		return reported
+	}
+	return mysql.NewError(mysql.ER_UNKNOWN_ERROR, "SPECTRE: the proxy cannot connect to the database")
+}
+
+// connect connects to the database with the reference's collation, database and
+// features, and checks that the database uses the same features.
+func (s *Server) connect(ctx context.Context, login login) (*client.Conn, error) {
+	collation, err := charset.GetCollationByID(int(login.collation))
+	if err != nil {
+		return nil, errors.Errorf("the proxy does not know MySQL collation %d", login.collation)
+	}
+	upstream, err := s.dial(ctx, login.database, func(c *client.Conn) error {
+		for feature := uint32(1); feature != 0; feature <<= 1 {
+			switch {
+			case passedCapabilities&feature == 0:
+			case login.capability&feature == 0:
+				c.UnsetCapability(feature)
+			case feature != mysql.CLIENT_DEPRECATE_EOF:
+				// The client asks for end-of-file deprecation unless it is unset.
+				if err := c.SetCapability(feature); err != nil {
+					return errors.Wrapf(err, "ask for MySQL capability %s", mysql.CapNames[feature])
+				}
+			}
+		}
+		c.UnsetCapability(heldBackCapabilities)
+		c.SetAttributes(login.attributes)
+		return errors.WithStack(c.SetCollation(collation.Name))
+	})
+	if err != nil {
+		return nil, err
+	}
+	used := negotiated(upstream) & (passedCapabilities | heldBackCapabilities)
+	if used != login.capability&passedCapabilities {
+		_ = upstream.Close()
+		return nil, errors.Errorf("the database uses MySQL capabilities %#x where the reference asked for %#x",
+			used, login.capability&passedCapabilities)
+	}
+	return upstream, nil
+}
+
+// negotiated returns the capabilities that a database connection uses.
+func negotiated(upstream *client.Conn) uint32 {
+	used := uint32(0)
+	names := strings.Split(upstream.CapabilityString(), "|")
+	for capability, name := range mysql.CapNames {
+		if slices.Contains(names, name) {
+			used |= capability
+		}
+	}
+	return used
+}
+
+// dial connects to the database with the proxy's credentials, and selects database
 // if one is named. The password file is read for every connection, so it can be rotated.
-func (s *Server) connect(ctx context.Context, database string) (*client.Conn, error) {
+func (s *Server) dial(ctx context.Context, database string, options ...client.Option) (*client.Conn, error) {
 	password, err := os.ReadFile(s.passwordFile)
 	if err != nil {
 		return nil, errors.Wrap(err, "read the MySQL password file")
 	}
-	options := []client.Option{}
 	if config, ok := s.upstreamTLS.Get(); ok {
 		options = append(options, func(c *client.Conn) error {
 			c.SetTLSConfig(config)
@@ -141,10 +217,28 @@ func (s *Server) connect(ctx context.Context, database string) (*client.Conn, er
 	return upstream, errors.WithStack(err)
 }
 
-// serveCandidate answers a candidate connection without a database.
+// serverVersion returns the database's version, which clients adapt their statements
+// to. It connects once to read it, and reports a fallback while it cannot.
+func (s *Server) serverVersion(ctx context.Context) string {
+	s.versionMu.Lock()
+	defer s.versionMu.Unlock()
+	if version, ok := s.version.Get(); ok {
+		return version
+	}
+	upstream, err := s.dial(ctx, "")
+	if err != nil {
+		return fallbackVersion
+	}
+	defer upstream.Close()
+	s.version = Some(upstream.GetServerVersion())
+	return upstream.GetServerVersion()
+}
+
+// serveCandidate answers a candidate connection without a database. It accepts any
+// credentials, and reports the version the reference sees.
 func (s *Server) serveCandidate(ctx context.Context, conn net.Conn) {
-	handler := newCandidateConn(ctx, s)
-	s.serve(ctx, conn, s.candidateWire, anyUser{}, handler)
+	wire := server.NewServerWithAuth(s.serverVersion(ctx), mysql.DEFAULT_COLLATION_ID, mysql.AUTH_NATIVE_PASSWORD, nil, nil, acceptAny{})
+	s.serve(ctx, conn, wire, anyUser{}, newCandidateConn(ctx, s))
 }
 
 // serve runs the wire protocol on a connection until it closes.

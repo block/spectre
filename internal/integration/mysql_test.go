@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"testing"
@@ -13,6 +14,8 @@ import (
 	"github.com/alecthomas/assert/v2"
 	"github.com/alecthomas/errors"
 	. "github.com/alecthomas/types/optional"
+	"github.com/go-mysql-org/go-mysql/client"
+	gomysql "github.com/go-mysql-org/go-mysql/mysql"
 
 	"github.com/block/spectre/internal/integration/it"
 	"github.com/block/spectre/internal/model"
@@ -110,6 +113,99 @@ func TestMySQLReferencePreparedStatementsReachTheDatabase(t *testing.T) {
 	var sku string
 	assert.NoError(t, prepared.QueryRowContext(t.Context(), 3).Scan(&sku))
 	assert.Equal(t, "pear", sku)
+}
+
+func TestMySQLReferencePingReachesTheDatabase(t *testing.T) {
+	m := startOrdersMirror(t)
+	conn := m.MySQL().ConnectReference()
+	assert.NoError(t, conn.Ping())
+
+	result, err := conn.Execute("SELECT CONNECTION_ID()")
+	assert.NoError(t, err)
+	thread, err := result.GetUint(0, 0)
+	assert.NoError(t, err)
+	_, err = m.MySQL().Server().ExecContext(t.Context(), fmt.Sprintf("KILL %d", thread))
+	assert.NoError(t, err)
+	assert.Error(t, conn.Ping())
+}
+
+func TestMySQLReferenceCommandsReachTheDatabase(t *testing.T) {
+	m := startOrdersMirror(t)
+	conn := m.MySQL().ConnectReference()
+
+	_, err := conn.Execute("SET @mark = 1")
+	assert.NoError(t, err)
+	assert.Equal(t, gomysql.OK_HEADER, command(t, conn, gomysql.COM_RESET_CONNECTION))
+	result, err := conn.Execute("SELECT @mark")
+	assert.NoError(t, err)
+	mark, err := result.GetString(0, 0)
+	assert.NoError(t, err)
+	assert.Equal(t, "", mark)
+	assert.Equal(t, gomysql.EOF_HEADER, command(t, conn, gomysql.COM_SET_OPTION, 0, 0))
+}
+
+func TestMySQLReferenceKillsItsOwnQuery(t *testing.T) {
+	m := startOrdersMirror(t)
+	sleeping := m.MySQL().ConnectReference()
+	done := make(chan *gomysql.Result, 1)
+	go func() {
+		result, _ := sleeping.Execute("SELECT SLEEP(60)")
+		done <- result
+	}()
+	m.MySQL().AwaitRunning("SELECT SLEEP(60)")
+
+	// The thread the proxy reported names the query's own database thread.
+	_, err := m.MySQL().ConnectReference().Execute(fmt.Sprintf("KILL QUERY %d", sleeping.GetConnectionID()))
+	assert.NoError(t, err)
+	// A killed sleep ends early and returns 1.
+	interrupted, err := (<-done).GetInt(0, 0)
+	assert.NoError(t, err)
+	assert.Equal(t, int64(1), interrupted)
+}
+
+func TestMySQLReferenceCannotKillAThreadTheProxyNeverGave(t *testing.T) {
+	m := startOrdersMirror(t)
+
+	_, err := m.MySQL().ConnectReference().Execute("KILL QUERY 3999999999")
+	assert.EqualError(t, err, "ERROR 1094 (HY000): Unknown thread id: 3999999999")
+}
+
+func TestMySQLReferenceSeesTheDatabaseVersion(t *testing.T) {
+	m := startOrdersMirror(t)
+
+	version := ""
+	assert.NoError(t, m.MySQL().Server().QueryRowContext(t.Context(), "SELECT VERSION()").Scan(&version))
+	assert.Equal(t, version, m.MySQL().ConnectReference().GetServerVersion())
+}
+
+func TestMySQLReferenceConnectsWithItsOwnCollationAndFeatures(t *testing.T) {
+	m := startOrdersMirror(t)
+	for _, test := range []struct {
+		name      string
+		foundRows bool
+		affected  uint64
+	}{
+		{name: "ChangedRows", affected: 0},
+		{name: "FoundRows", foundRows: true, affected: 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			conn := m.MySQL().ConnectReference(func(c *client.Conn) error {
+				if test.foundRows {
+					assert.NoError(t, c.SetCapability(gomysql.CLIENT_FOUND_ROWS))
+				}
+				return c.SetCollation("utf8mb4_bin")
+			})
+			result, err := conn.Execute("SELECT @@collation_connection")
+			assert.NoError(t, err)
+			collation, err := result.GetString(0, 0)
+			assert.NoError(t, err)
+			assert.Equal(t, "utf8mb4_bin", collation)
+			// The update matches a row without changing it.
+			result, err = conn.Execute("UPDATE items SET quantity = quantity WHERE id = 3")
+			assert.NoError(t, err)
+			assert.Equal(t, test.affected, result.AffectedRows)
+		})
+	}
 }
 
 func TestMySQLCandidatePreparedStatementQuarantines(t *testing.T) {
@@ -224,4 +320,14 @@ func selectItemsOf(ctx context.Context, database *sql.DB, orderID int64) ([]item
 		items = append(items, read)
 	}
 	return items, errors.Wrap(rows.Err(), "read items")
+}
+
+// command sends a command without a statement on conn, and returns the first byte of the reply.
+func command(t *testing.T, conn *client.Conn, code byte, arguments ...byte) byte {
+	t.Helper()
+	conn.ResetSequence()
+	assert.NoError(t, conn.WritePacket(append([]byte{0, 0, 0, 0, code}, arguments...)))
+	reply, err := conn.ReadPacket()
+	assert.NoError(t, err)
+	return reply[0]
 }

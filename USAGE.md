@@ -322,8 +322,22 @@ Set `--mysql-upstream-ca=FILE` to connect to the server with TLS. The proxy
 verifies that the server's certificate chains to an authority in the PEM file,
 but not the host name, because services often reach a database by an alias.
 
-Reference commands, including prepared statements, reach the server and their
-replies come back unchanged. Candidate commands never reach it. The candidate
+Once a reference connection logs in, the proxy relays it to the server packet
+by packet. Every command reaches the server, including pings, prepared
+statements and session resets, and replies stream back as the server sends
+them. The connection to the server uses the reference's database, collation
+and protocol features, such as found rows and multiple statements, and the
+listener reports the server's version. The listener offers no TLS,
+compression or query attributes.
+
+The listener reports its own thread ID for each connection, so a `KILL` or
+`KILL QUERY` of that ID is sent with the server's thread ID instead. The
+reported IDs start at 3000000000, and one the proxy no longer knows gets
+`Unknown thread id`. A `KILL` of a server thread ID, such as one read with
+`CONNECTION_ID()`, is sent unchanged. Changing the user of a connection is
+refused, because the proxy always connects with its own credentials.
+
+Candidate commands never reach the server. The candidate
 may connect and select a database, but every other command gets an error and
 quarantines the candidate as `unable`, with the route `command`. MySQL
 quarantines are egress quarantines with the protocol `mysql`, and never include
