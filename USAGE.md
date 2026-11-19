@@ -327,6 +327,11 @@ statement text in the same default database: its rows, its affected rows and
 insert ID, or its error. A candidate that repeats the reference's writes and
 transaction statements is therefore answered without writing anything.
 
+Statement text is compared without its comments, so request tags such as
+`-- speleo-trace-id=...` or sqlcommenter comments do not stop statements from
+pairing. Executable comments (`/*! ... */`) and optimiser hints (`/*+ ... */`)
+are part of the text.
+
 The candidate can send only text statements and select a database. A prepared
 statement, a column listing, or any other command gets an error and quarantines
 the candidate as `unable`. Reference prepared statements are only forwarded.

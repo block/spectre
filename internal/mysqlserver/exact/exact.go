@@ -1,6 +1,7 @@
-// Package exact pairs MySQL statements by their exact text and default database. A
-// candidate statement replays the whole reply of the same reference statement, so
-// identical writes and transaction statements are answered without the database.
+// Package exact pairs MySQL statements by their text without comments and their
+// default database. A candidate statement replays the whole reply of the same
+// reference statement, so identical writes and transaction statements are answered
+// without the database.
 package exact
 
 import (
@@ -41,7 +42,8 @@ func newSession() *session {
 func (s *session) Reference(_ context.Context, command normaliser.Command, reply normaliser.Reply) ([]normaliser.Unit, error) {
 	switch command := command.(type) {
 	case normaliser.Query:
-		return []normaliser.Unit{{Route: route(command.SQL), Key: s.key(command.SQL), Reply: reply}}, nil
+		statement := withoutComments(command.SQL)
+		return []normaliser.Unit{{Route: route(statement), Key: s.key(statement), Reply: reply}}, nil
 	case normaliser.UseDatabase:
 		if _, ok := reply.(normaliser.OK); ok {
 			s.database = command.Name
@@ -56,7 +58,8 @@ func (s *session) Candidate(ctx context.Context, command normaliser.Command, cla
 ) (normaliser.Reply, error) { //nolint:ireturn // Replies are the contract's sum type.
 	switch command := command.(type) {
 	case normaliser.Query:
-		return claim(ctx, route(command.SQL), s.key(command.SQL))
+		statement := withoutComments(command.SQL)
+		return claim(ctx, route(statement), s.key(statement))
 	case normaliser.UseDatabase:
 		s.database = command.Name
 		return normaliser.OK{}, nil
@@ -64,7 +67,8 @@ func (s *session) Candidate(ctx context.Context, command normaliser.Command, cla
 	return nil, normaliser.UnsupportedError{Route: statementRoute, Reason: "command is not supported"}
 }
 
-// key is what pairs a statement: its text and the database that unqualified names are in.
+// key is what pairs a statement: its text without comments, which carry request
+// tags, and the database that unqualified names are in.
 func (s *session) key(sql string) map[string]any {
 	return map[string]any{"database": s.database, "statement": sql}
 }
