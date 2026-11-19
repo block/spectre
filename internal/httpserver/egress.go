@@ -168,6 +168,11 @@ func (e *Egress) Candidates() *proxy.Candidates {
 	return e.candidates
 }
 
+// Engine is the engine that pairs egress traffic, which other egress protocols share.
+func (e *Egress) Engine() *protocol.Engine {
+	return e.engine
+}
+
 // Health reports the egress readiness.
 func (e *Egress) Health() *health.Handler {
 	return e.health

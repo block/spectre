@@ -337,11 +337,43 @@ reported IDs start at 3000000000, and one the proxy no longer knows gets
 `CONNECTION_ID()`, is sent unchanged. Changing the user of a connection is
 refused, because the proxy always connects with its own credentials.
 
-Candidate commands never reach the server. The candidate
-may connect and select a database, but every other command gets an error and
-quarantines the candidate as `unable`, with the route `command`. MySQL
-quarantines are egress quarantines with the protocol `mysql`, and never include
-a statement or its values.
+Candidate commands never reach the server. Each candidate text statement is
+answered with the reply that the reference got for the same statement text in
+the same default database: its rows, its affected rows and insert ID, or its
+error. A candidate that repeats the reference's writes and transaction
+statements is therefore answered without writing anything. Statement text is
+compared exactly, comments included.
+
+A connection's default database is the one it connected with, or the last one
+it selected with `USE` or the select database command. The proxy answers the
+candidate's selections itself, and follows the reference's once the server
+accepts them. Selections are not paired.
+
+The candidate can send only text statements and select a database. A prepared
+statement, a column listing, or any other command gets an error and quarantines
+the candidate as `unable`, with the route `command`. Reference prepared
+statements, pings and other commands are only forwarded. So are reference
+statements with several results, such as multiple statements or stored
+procedure calls, and `LOAD DATA LOCAL INFILE`, which offer the candidate
+nothing to match. A statement that fails part way through its rows offers its
+error.
+
+Statements carry no request ID, so statements pair across all requests by text
+alone, within `--match-window`. Each reference statement answers one candidate
+statement. A candidate statement that no reference statement matches gets an
+error, and quarantines the candidate as `unmatched`, as does a reference
+statement that no candidate statement claims. Every text statement the
+reference sends through the proxy must therefore be one that the mirrored
+candidate also sends.
+
+Saved replies wait for the candidate in memory. When they exceed
+`--mysql-saved-replies-bytes`, the reference is still answered in full, and the
+candidate is quarantined as `capacity`.
+
+MySQL quarantines are egress quarantines with the protocol `mysql`. Their route
+is the statement's first keyword, such as `SELECT` or `COMMIT`, or `statement`
+when it starts with none, or `command` for a command that is not a statement.
+They never include a statement or its values.
 
 ### Quarantine
 

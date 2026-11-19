@@ -80,17 +80,16 @@ func (t *threads) rewriteKill(statement []byte) (rewritten []byte, changed bool,
 	return fmt.Appendf(nil, "KILL %s%d", match[1], database), true, nil
 }
 
-// relay passes packets between the reference and the database unchanged, except
-// for KILL statements and refused commands, until either side closes.
-func relay(ctx context.Context, threads *threads, reference net.Conn, fromReference io.Reader, upstream net.Conn) {
+// relay passes packets between the reference and the database, rewriting KILL and
+// refusing some commands, until either side closes. The observer sees both ways.
+func relay(ctx context.Context, threads *threads, observer *observer, reference net.Conn, fromReference io.Reader, upstream net.Conn) {
 	toReference := newLockedWriter(reference)
 	done := make(chan error, 2)
 	go func() {
-		_, err := io.Copy(toReference, upstream)
-		done <- err
+		done <- deliver(observer, upstream, toReference)
 	}()
 	go func() {
-		done <- forward(ctx, threads, fromReference, upstream, toReference)
+		done <- forward(ctx, threads, observer, fromReference, upstream, toReference)
 	}()
 	if err := <-done; err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) {
 		logger.FromContext(ctx).DebugContext(ctx, "MySQL relay ended", "error", err)
@@ -100,15 +99,37 @@ func relay(ctx context.Context, threads *threads, reference net.Conn, fromRefere
 	<-done
 }
 
+// deliver passes the database's bytes to the reference as they arrive, and hands
+// each finished reply to the observer's server once the reference has it.
+func deliver(observer *observer, upstream io.Reader, toReference io.Writer) error {
+	buffer := make([]byte, 32*1024)
+	for {
+		read, err := upstream.Read(buffer)
+		if read > 0 {
+			offer := observer.received(buffer[:read])
+			if _, err := toReference.Write(buffer[:read]); err != nil {
+				return errors.WithStack(err)
+			}
+			offer()
+		}
+		if err != nil {
+			return errors.WithStack(err)
+		}
+	}
+}
+
 // forward passes the reference's packets to the database. A command starts with
 // sequence number zero, and the packets that continue it never do.
-func forward(ctx context.Context, threads *threads, from io.Reader, upstream io.Writer, toReference io.Writer) error {
+func forward(ctx context.Context, threads *threads, observer *observer, from io.Reader, upstream io.Writer,
+	toReference io.Writer,
+) error {
 	for {
 		sent, err := readPacket(from)
 		if err != nil {
 			return err
 		}
-		if sent.sequence == 0 && len(sent.payload) > 0 && len(sent.payload) < maxPayload {
+		whole := len(sent.payload) < maxPayload
+		if sent.sequence == 0 && len(sent.payload) > 0 && whole {
 			payload, refusal := threads.command(ctx, sent.payload)
 			if refusal != nil {
 				if err := writePacket(toReference, 1, errorPayload(refusal)); err != nil {
@@ -117,6 +138,9 @@ func forward(ctx context.Context, threads *threads, from io.Reader, upstream io.
 				continue
 			}
 			sent.payload = payload
+		}
+		if sent.sequence == 0 {
+			observer.sent(sent.payload, whole)
 		}
 		if err := writePacket(upstream, sent.sequence, sent.payload); err != nil {
 			return err

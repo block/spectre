@@ -17,10 +17,14 @@ import (
 	"github.com/go-mysql-org/go-mysql/mysql"
 	"github.com/go-mysql-org/go-mysql/server"
 	"github.com/pingcap/tidb/pkg/parser/charset"
+	"go.jetify.com/typeid"
 
 	"github.com/block/spectre/internal/logger"
 	"github.com/block/spectre/internal/model"
+	"github.com/block/spectre/internal/mysqlserver/normaliser"
+	"github.com/block/spectre/internal/protocol"
 	"github.com/block/spectre/internal/proxy"
+	"github.com/block/spectre/internal/schema"
 )
 
 // Protocol is the protocol of MySQL servers.
@@ -43,14 +47,20 @@ type Server struct {
 	upstreamTLS  Option[*tls.Config]
 	candidates   *proxy.Candidates
 	threads      *threads
+	reference    protocol.Acceptor
+	candidate    protocol.Acceptor
+	budget       *proxy.Budget
+	normaliser   normaliser.Normaliser
+	// scope pairs every unit with every other, because statements carry no request ID.
+	scope protocol.RequestID
 	// version is the database's version once the proxy has connected to it.
 	versionMu sync.Mutex
 	version   Option[string]
 }
 
-// New returns a MySQL proxy that quarantines candidates as the server that owns
-// candidates.
-func New(config Config, candidates *proxy.Candidates) (*Server, error) {
+// New returns a MySQL proxy that pairs the units of normaliser in engine, and shares
+// candidates with the server that owns the engine.
+func New(config Config, normaliser normaliser.Normaliser, engine *protocol.Engine, candidates *proxy.Candidates) (*Server, error) {
 	if err := config.Validate(); err != nil {
 		return nil, err
 	}
@@ -61,6 +71,10 @@ func New(config Config, candidates *proxy.Candidates) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	scope, err := typeid.New[protocol.RequestID]()
+	if err != nil {
+		return nil, errors.Wrap(err, "name the pairing scope")
+	}
 	return &Server{
 		upstream:     config.Upstream,
 		user:         config.UpstreamUser,
@@ -68,6 +82,11 @@ func New(config Config, candidates *proxy.Candidates) (*Server, error) {
 		upstreamTLS:  upstreamTLS,
 		candidates:   candidates,
 		threads:      newThreads(),
+		reference:    engine.EgressReference(Protocol),
+		candidate:    engine.EgressCandidate(Protocol),
+		budget:       proxy.NewBudget(config.SavedRepliesBytes),
+		normaliser:   normaliser,
+		scope:        scope,
 	}, nil
 }
 
@@ -145,7 +164,14 @@ func (s *Server) serveReference(ctx context.Context, conn net.Conn) {
 	}
 	release := s.threads.connect(thread, upstream.GetConnectionID())
 	defer release()
-	relay(ctx, s.threads, conn, from, upstream.Conn.Conn)
+	session := s.normaliser.NewSession()
+	if asked.database != "" {
+		// The database accepted the login's database, so it is the default.
+		if _, err := session.Reference(ctx, normaliser.UseDatabase{Name: asked.database}, normaliser.OK{}); err != nil {
+			logger.FromContext(ctx).WarnContext(ctx, "Reference database is not followed", "error", err)
+		}
+	}
+	relay(ctx, s.threads, newObserver(ctx, s, session, asked.capability), conn, from, upstream.Conn.Conn)
 }
 
 // refusedConnection is the error a reference gets when the proxy cannot connect it:
@@ -244,7 +270,7 @@ func (s *Server) serverVersion(ctx context.Context) string {
 // credentials, and reports the version the reference sees.
 func (s *Server) serveCandidate(ctx context.Context, conn net.Conn) {
 	wire := server.NewServerWithAuth(s.serverVersion(ctx), mysql.DEFAULT_COLLATION_ID, mysql.AUTH_NATIVE_PASSWORD, nil, nil, acceptAny{})
-	s.serve(ctx, conn, wire, anyUser{}, newCandidateConn(ctx, s))
+	s.serve(ctx, conn, wire, anyUser{}, newCandidateConn(ctx, s, s.normaliser.NewSession()))
 }
 
 // serve runs the wire protocol on a connection until it closes.
@@ -265,11 +291,102 @@ func (s *Server) serve(ctx context.Context, conn net.Conn, wireServer *server.Se
 	}
 }
 
-// unable quarantines the candidate for a command that cannot be answered.
+// offering reports whether the candidate still takes units, so reference replies
+// are worth reading.
+func (s *Server) offering() bool {
+	return !s.candidates.QuarantineStatus().Ok()
+}
+
+// savedLimit is the most bytes of reference replies the proxy saves.
+func (s *Server) savedLimit() int {
+	return s.budget.Limit()
+}
+
+// offer hands the units of one reference command to the engine, which keeps them
+// for candidate claims. Replies beyond the budget quarantine the candidate.
+func (s *Server) offer(ctx context.Context, units []normaliser.Unit) {
+	if !s.offering() {
+		return
+	}
+	for _, unit := range units {
+		saved, reserved := reserveReply(s.budget, unit.Reply)
+		if !reserved {
+			s.exceed(ctx, []normaliser.Unit{unit})
+			return
+		}
+		decision, err := s.reference.ProcessRequest(ctx, Some(s.scope), unit.Route, None[string](), request(unit.Key))
+		forward, ok := decision.(protocol.DecisionForward)
+		if err != nil || !ok {
+			saved.Release()
+			logger.FromContext(ctx).ErrorContext(ctx, "Reference unit was not recorded", "route", unit.Route, "error", err)
+			continue
+		}
+		s.reference.ProcessResponse(ctx, forward.Exchange, protocol.Response{Raw: saved, Decode: undecoded})
+	}
+}
+
+// exceed quarantines the candidate for units whose replies are beyond the budget.
+func (s *Server) exceed(ctx context.Context, units []normaliser.Unit) {
+	for _, unit := range units {
+		s.candidates.Quarantine(ctx, model.QuarantineReason{
+			Kind:    model.QuarantineCapacity,
+			Traffic: Some(model.Traffic{Direction: model.Egress, Protocol: Protocol, Route: unit.Route}),
+			Detail:  "saved reference replies exceed the MySQL saved replies size",
+		})
+	}
+}
+
+// admit starts a candidate command that stop cancels, unless candidate work is
+// refused. finish ends an admitted command.
+func (s *Server) admit(ctx context.Context, stop context.CancelFunc) (finish func(), admitted bool) {
+	run, ok := s.candidates.Start(ctx, stop).Get()
+	if !ok {
+		return func() {}, false
+	}
+	return func() { s.candidates.Finish(run) }, true
+}
+
+// claim waits for the reply of an equivalent reference unit, and keeps it in claimed
+// until released. The engine quarantines the candidate when there is none.
+func (s *Server) claim(ctx context.Context, claimed *[]*savedReply, route model.Route, key any) (normaliser.Reply, error) { //nolint:ireturn // Replies are a sum type.
+	decision, err := s.candidate.ProcessRequest(ctx, Some(s.scope), route, None[string](), request(key))
+	if err != nil {
+		return nil, errors.WithStack(err)
+	}
+	intercept, ok := decision.(protocol.DecisionIntercept)
+	if !ok {
+		return nil, errors.Errorf("engine decided %T for a candidate unit", decision)
+	}
+	saved, ok := intercept.Raw.(*savedReply)
+	if !ok {
+		intercept.Raw.Release()
+		return nil, errors.Errorf("engine replayed %T for a candidate unit", intercept.Raw)
+	}
+	*claimed = append(*claimed, saved)
+	return saved.value(), nil
+}
+
+// unable quarantines the candidate for a command that cannot be answered, unless
+// the proxy stopped the candidate itself.
 func (s *Server) unable(ctx context.Context, route model.Route, reason string) {
+	if errors.Is(context.Cause(ctx), protocol.ErrCandidateStopped) {
+		return
+	}
 	s.candidates.Quarantine(ctx, model.QuarantineReason{
 		Kind:    model.QuarantineUnable,
 		Traffic: Some(model.Traffic{Direction: model.Egress, Protocol: Protocol, Route: route}),
 		Detail:  reason,
 	})
+}
+
+// request is the payload egress hashes for a unit's key.
+func request(key any) func(ctx context.Context) (protocol.Message, error) {
+	return func(context.Context) (protocol.Message, error) {
+		return protocol.Message{Type: None[schema.TypeRef](), Value: key}, nil
+	}
+}
+
+// undecoded is the content of saved replies, which only replay and are never compared.
+func undecoded(context.Context) protocol.Content {
+	return protocol.Content{Failure: Some(errors.New("MySQL replies are not decoded"))}
 }
