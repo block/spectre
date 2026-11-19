@@ -301,6 +301,48 @@ reference within `--match-window` gets a `502` and quarantines the candidate, as
 does one whose source reference failed or did not succeed. Replace only
 read-only endpoints, because the candidate's call is never sent.
 
+### MySQL
+
+Set `--mysql-upstream=HOST:PORT` to proxy a MySQL server as well. The
+reference connects to `--mysql-reference-listen` and the candidate to
+`--mysql-candidate-listen`, both without TLS. Both listeners must be on a
+loopback address or a unix socket.
+
+Both listeners accept any user and password with `mysql_native_password`, so
+services need no secret and no TLS to reach them. The proxy connects each
+reference connection to the server as `--mysql-upstream-user=USER`, with the
+password in `--mysql-upstream-password-file=FILE`. The file is read for every
+connection, so it can be rotated.
+
+The server's own error, such as access denied, is the reference's answer.
+Because the reference listener connects any client with the proxy's
+credentials, only the reference may be able to reach it.
+
+Set `--mysql-upstream-ca=FILE` to connect to the server with TLS. The proxy
+verifies that the server's certificate chains to an authority in the PEM file,
+but not the host name, because services often reach a database by an alias.
+
+Once a reference connection logs in, the proxy relays it to the server packet
+by packet. Every command reaches the server, including pings, prepared
+statements and session resets, and replies stream back as the server sends
+them. The connection to the server uses the reference's database, collation
+and protocol features, such as found rows and multiple statements, and the
+listener reports the server's version. The listener offers no TLS,
+compression or query attributes.
+
+The listener reports its own thread ID for each connection, so a `KILL` or
+`KILL QUERY` of that ID is sent with the server's thread ID instead. The
+reported IDs start at 3000000000, and one the proxy no longer knows gets
+`Unknown thread id`. A `KILL` of a server thread ID, such as one read with
+`CONNECTION_ID()`, is sent unchanged. Changing the user of a connection is
+refused, because the proxy always connects with its own credentials.
+
+Candidate commands never reach the server. The candidate
+may connect and select a database, but every other command gets an error and
+quarantines the candidate as `unable`, with the route `command`. MySQL
+quarantines are egress quarantines with the protocol `mysql`, and never include
+a statement or its values.
+
 ### Quarantine
 
 A mirror quarantines its candidate for one of these reasons:

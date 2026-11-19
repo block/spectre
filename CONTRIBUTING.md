@@ -112,6 +112,25 @@ and check the responses, the requests each service and dependency received, and
 the calls and quarantines the proxy reports to the server. The sample's schema
 and descriptors and a 500ms match window are the defaults.
 
+A test whose services read MySQL passes `it.MySQL` with the statements that
+create its database. The services get a handle to it through the proxy in
+`Backend.MySQL`, and `m.MySQL()` checks the statements that reached the server:
+
+```go
+m := it.Start(t,
+	it.MySQL("CREATE TABLE orders (id BIGINT PRIMARY KEY, label VARCHAR(32) NOT NULL)"),
+	it.Reference(ordersService()),
+	it.Candidate(ordersService()),
+)
+m.MySQL().ExpectStatements(map[string]uint64{"SELECT `id` , `label` FROM `orders`": 1})
+```
+
+The first such test starts a `mysql:8.4` container with `docker`, later ones
+reuse it, and each test creates a database of its own in it. `TestMain`
+removes the container once all tests have run. It also stops itself after 15
+minutes, in case the process dies first. Without a running Docker daemon only
+the MySQL tests fail.
+
 Every file in both packages carries the `integration` build tag, so `bit test`
 leaves them out and CI runs them in a separate job. Run them with
 `bit test-integration`, or with
