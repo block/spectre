@@ -121,6 +121,18 @@ func TestMySQLCandidateReplaysTheReferenceDatabaseError(t *testing.T) {
 	m.MySQL().ExpectStatements(map[string]uint64{"SELECT `id` FROM `missing`": 1})
 }
 
+func TestMySQLStatementsPairWhateverTheirCommentsAndSpacing(t *testing.T) {
+	m := startOrdersMirror(t)
+
+	sku := ""
+	assert.NoError(t, m.MySQL().Reference.QueryRowContext(t.Context(), "SELECT sku FROM items WHERE id = 3 /* reference */").Scan(&sku))
+	assert.Equal(t, "pear", sku)
+	sku = ""
+	assert.NoError(t, m.MySQL().Candidate.QueryRowContext(t.Context(), "select sku\n  from items where id=3 -- candidate").Scan(&sku))
+	assert.Equal(t, "pear", sku)
+	m.MySQL().ExpectStatements(map[string]uint64{"SELECT `sku` FROM `items` WHERE `id` = ?": 1})
+}
+
 func TestMySQLCandidateUsesTheDatabaseItSelected(t *testing.T) {
 	m := startOrdersMirror(t)
 	reference := m.MySQL().ConnectReference()

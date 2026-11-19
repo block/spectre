@@ -338,11 +338,19 @@ reported IDs start at 3000000000, and one the proxy no longer knows gets
 refused, because the proxy always connects with its own credentials.
 
 Candidate commands never reach the server. Each candidate text statement is
-answered with the reply that the reference got for the same statement text in
-the same default database: its rows, its affected rows and insert ID, or its
-error. A candidate that repeats the reference's writes and transaction
-statements is therefore answered without writing anything. Statement text is
-compared exactly, comments included.
+answered with the reply that the reference got for the same statement in the
+same default database: its rows, its affected rows and insert ID, or its error.
+A candidate that repeats the reference's writes and transaction statements is
+therefore answered without writing anything.
+
+Statements are the same when they parse alike. Comments, spacing, keyword case,
+quoting and optional keywords such as `AS` do not matter, so request tags such
+as `-- speleo-trace-id=...` or sqlcommenter comments do not stop statements from
+pairing. Every value matters, and so do optimiser hints (`/*+ ... */`). The text
+in executable comments (`/*! ... */`) is part of the statement whatever version
+it names. A statement the parser does not understand pairs only with the same
+text. Double-quoted text is read as a string, as it is unless `ANSI_QUOTES` is
+set.
 
 A connection's default database is the one it connected with, or the last one
 it selected with `USE` or the select database command. The proxy answers the
