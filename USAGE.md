@@ -301,6 +301,34 @@ reference within `--match-window` gets a `502` and quarantines the candidate, as
 does one whose source reference failed or did not succeed. Replace only
 read-only endpoints, because the candidate's call is never sent.
 
+### MySQL
+
+Set `--mysql-upstream=HOST:PORT` to proxy a MySQL server as well. The
+reference connects to `--mysql-reference-listen` and the candidate to
+`--mysql-candidate-listen`, both without TLS. Both listeners must be on a
+loopback address or a unix socket.
+
+Both listeners accept any user and password with `mysql_native_password`, so
+services need no secret and no TLS to reach them. The proxy connects each
+reference connection to the server as `--mysql-upstream-user=USER`, with the
+password in `--mysql-upstream-password-file=FILE`. The file is read for every
+connection, so it can be rotated.
+
+The server's own error, such as access denied, is the reference's answer.
+Because the reference listener connects any client with the proxy's
+credentials, only the reference may be able to reach it.
+
+Set `--mysql-upstream-ca=FILE` to connect to the server with TLS. The proxy
+verifies that the server's certificate chains to an authority in the PEM file,
+but not the host name, because services often reach a database by an alias.
+
+Reference commands, including prepared statements, reach the server and their
+replies come back unchanged. Candidate commands never reach it. The candidate
+may connect and select a database, but every other command gets an error and
+quarantines the candidate as `unable`, with the route `command`. MySQL
+quarantines are egress quarantines with the protocol `mysql`, and never include
+a statement or its values.
+
 ### Quarantine
 
 A mirror quarantines its candidate for one of these reasons:
