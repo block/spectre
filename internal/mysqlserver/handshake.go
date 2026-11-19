@@ -138,11 +138,8 @@ func parseLogin(payload []byte) (parsed login, plugin string, err error) {
 func skipAuthData(rest []byte, requested uint32) ([]byte, error) {
 	switch {
 	case requested&mysql.CLIENT_PLUGIN_AUTH_LENENC_CLIENT_DATA != 0:
-		length, _, read := mysql.LengthEncodedInt(rest)
-		if read == 0 || uint64(len(rest)-read) < length {
-			return nil, errors.New("MySQL login has a truncated password")
-		}
-		return rest[read+int(length):], nil //nolint:gosec // The length is within rest.
+		_, after, err := lengthEncoded(rest)
+		return after, errors.Wrap(err, "read the MySQL password")
 	case requested&mysql.CLIENT_SECURE_CONNECTION != 0:
 		if len(rest) == 0 || len(rest)-1 < int(rest[0]) {
 			return nil, errors.New("MySQL login has a truncated password")
@@ -156,25 +153,51 @@ func skipAuthData(rest []byte, requested uint32) ([]byte, error) {
 
 // parseAttributes reads the connection attributes, such as the client's name.
 func parseAttributes(rest []byte) (map[string]string, error) {
-	length, _, read := mysql.LengthEncodedInt(rest)
-	if read == 0 || uint64(len(rest)-read) < length {
-		return nil, errors.New("MySQL login has truncated attributes")
+	encoded, _, err := lengthEncoded(rest)
+	if err != nil {
+		return nil, errors.Wrap(err, "read the MySQL attributes")
 	}
-	encoded := rest[read : read+int(length)] //nolint:gosec // The length is within rest.
 	attributes := map[string]string{}
 	for len(encoded) > 0 {
-		key, _, keyLength, err := mysql.LengthEncodedString(encoded)
+		key, afterKey, err := lengthEncoded(encoded)
 		if err != nil {
 			return nil, errors.Wrap(err, "read a MySQL attribute")
 		}
-		value, _, valueLength, err := mysql.LengthEncodedString(encoded[keyLength:])
+		value, afterValue, err := lengthEncoded(afterKey)
 		if err != nil {
 			return nil, errors.Wrap(err, "read a MySQL attribute")
 		}
 		attributes[string(key)] = string(value)
-		encoded = encoded[keyLength+valueLength:]
+		encoded = afterValue
 	}
 	return attributes, nil
+}
+
+// lengthEncoded splits off a string whose length precedes it, checking that both
+// the length and the string are within data.
+func lengthEncoded(data []byte) (value, rest []byte, err error) {
+	if len(data) == 0 {
+		return nil, nil, errors.New("length is missing")
+	}
+	width := map[byte]int{0xfc: 2, 0xfd: 3, 0xfe: 8}[data[0]]
+	if data[0] == 0xfb || data[0] == 0xff {
+		return nil, nil, errors.Errorf("length starts with %#x", data[0])
+	}
+	if len(data) <= width {
+		return nil, nil, errors.New("length is truncated")
+	}
+	length := uint64(data[0])
+	if width > 0 {
+		length = 0
+		for i := width; i >= 1; i-- {
+			length = length<<8 | uint64(data[i])
+		}
+	}
+	data = data[1+width:]
+	if length > uint64(len(data)) {
+		return nil, nil, errors.Errorf("%d bytes are announced where %d remain", length, len(data))
+	}
+	return data[:length], data[length:], nil
 }
 
 // nulTerminated splits off a string that ends with a zero byte.

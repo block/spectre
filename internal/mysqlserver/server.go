@@ -108,6 +108,12 @@ func (s *Server) accept(ctx context.Context, listener net.Listener, connections 
 			stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
 			defer stop()
 			defer conn.Close()
+			// A malformed packet ends its own connection, never the proxy.
+			defer func() {
+				if failure := recover(); failure != nil {
+					logger.FromContext(ctx).ErrorContext(ctx, "MySQL connection failed", "panic", failure)
+				}
+			}()
 			serve(ctx, conn)
 		})
 	}
