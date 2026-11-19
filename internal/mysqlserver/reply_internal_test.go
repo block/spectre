@@ -163,7 +163,10 @@ func TestSavedRepliesHoldTheirSizeUntilReleased(t *testing.T) {
 // budgetedServer is a server with room to save one reply of items, and no engine.
 func budgetedServer() (*Server, *proxy.Budget) {
 	budget := proxy.NewBudget(replySize(items) + 100)
-	return &Server{budget: budget, candidates: proxy.NewCandidates(proxy.CandidatesConfig{CandidateMaxInFlight: 1})}, budget
+	return &Server{
+		budget: budget, parser: normaliser.NewParser(),
+		candidates: proxy.NewCandidates(proxy.CandidatesConfig{CandidateMaxInFlight: 1}),
+	}, budget
 }
 
 func readerOf(deprecateEOF bool) *replyReader {

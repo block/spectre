@@ -20,9 +20,9 @@ type observer struct {
 	capability uint32
 	mu         sync.Mutex
 	session    normaliser.Session
-	// reading is the reply of command, if it is being observed.
+	// reading is the reply of the command sent, if it is being observed.
 	reading Option[*replyReader]
-	command normaliser.Command
+	pending sentCommand
 	framer  *framer
 	// held is what the reply being read holds of the saved replies budget.
 	held int
@@ -41,11 +41,8 @@ func (o *observer) sent(payload []byte, whole bool) {
 	if !whole || len(payload) == 0 || !o.server.offering() {
 		return
 	}
-	switch payload[0] {
-	case mysql.COM_QUERY:
-		o.reading, o.command = Some(newReplyReader(o.capability)), normaliser.Query{SQL: string(payload[1:])}
-	case mysql.COM_INIT_DB:
-		o.reading, o.command = Some(newReplyReader(o.capability)), normaliser.UseDatabase{Name: string(payload[1:])}
+	if payload[0] == mysql.COM_QUERY || payload[0] == mysql.COM_INIT_DB {
+		o.reading, o.pending = Some(newReplyReader(o.capability)), sentCommand{code: payload[0], text: string(payload[1:])}
 	}
 }
 
@@ -76,7 +73,7 @@ func (o *observer) received(data []byte) (deliver func()) {
 		}
 		if !o.hold(reader.size() + o.framer.pending()) {
 			o.stop()
-			return o.units(o.command, normaliser.Rows{}, o.server.exceed)
+			return o.units(o.pending, normaliser.Rows{}, o.server.exceed)
 		}
 		finished, ok := reply.Get()
 		if !framed {
@@ -89,7 +86,7 @@ func (o *observer) received(data []byte) (deliver func()) {
 		held := o.held
 		o.held = 0
 		o.stop()
-		return o.units(o.command, finished, func(ctx context.Context, units []normaliser.Unit) {
+		return o.units(o.pending, finished, func(ctx context.Context, units []normaliser.Unit) {
 			o.server.release(held)
 			o.server.offer(ctx, units)
 		})
@@ -122,15 +119,24 @@ func (o *observer) stop() {
 	o.reading, o.framer, o.held = None[*replyReader](), newFramer(), 0
 }
 
-// units turns a finished command into units now, so the session sees commands in
-// order, and hands them to use later.
-func (o *observer) units(command normaliser.Command, reply normaliser.Reply,
+// units returns what turns a finished command into units, and hands them to use.
+// The relay runs it once the reference has the reply, so parsing never delays it.
+func (o *observer) units(sent sentCommand, reply normaliser.Reply,
 	use func(ctx context.Context, units []normaliser.Unit),
 ) (deliver func()) {
-	units, err := o.session.Reference(o.ctx, command, reply)
-	if err != nil {
-		logger.FromContext(o.ctx).WarnContext(o.ctx, "Reference command is not offered", "event", logger.EventCorrelation, "reason", err)
-		return func() {}
+	return func() {
+		// Replies are delivered in order on one goroutine, so the session sees commands in order.
+		units, err := o.session.Reference(o.ctx, o.server.command(sent.code, sent.text), reply)
+		if err != nil {
+			logger.FromContext(o.ctx).WarnContext(o.ctx, "Reference command is not offered", "event", logger.EventCorrelation, "reason", err)
+			return
+		}
+		use(o.ctx, units)
 	}
-	return func() { use(o.ctx, units) }
+}
+
+// sentCommand is a command the reference sent, before it is parsed.
+type sentCommand struct {
+	code byte
+	text string
 }

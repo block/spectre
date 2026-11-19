@@ -3,14 +3,20 @@
 // quarantine. A normaliser turns reference statements and their replies into units
 // that egress pairs, and answers candidate statements by claiming those units.
 //
-// Statements and replies are plain values, so a normaliser never touches the wire.
+// Text statements arrive parsed by TiDB's MySQL parser, and replies are plain
+// values, so a normaliser never touches the wire or parses SQL itself.
 package normaliser
 
 import (
 	"context"
 	"fmt"
+	"slices"
+	"sync"
 
 	. "github.com/alecthomas/types/optional"
+	"github.com/pingcap/tidb/pkg/parser"
+	"github.com/pingcap/tidb/pkg/parser/ast"
+	_ "github.com/pingcap/tidb/pkg/parser/test_driver" // Literal values for the parser, without the rest of TiDB.
 
 	"github.com/block/spectre/internal/model"
 )
@@ -57,12 +63,22 @@ type Command interface {
 	command()
 }
 
-// Query is a text statement.
+// Query is a text statement, and what it parsed to: several statements when the
+// text holds several. A normaliser must not change them.
 type Query struct {
-	SQL string
+	SQL        string
+	Statements []ast.StmtNode
 }
 
 func (Query) command() {}
+
+// UnparsedQuery is a text statement that the parser could not read.
+type UnparsedQuery struct {
+	SQL    string
+	Reason string
+}
+
+func (UnparsedQuery) command() {}
 
 // UseDatabase selects the default database.
 type UseDatabase struct {
@@ -115,3 +131,32 @@ type Error struct {
 }
 
 func (Error) reply() {}
+
+// Parser reads text statements into commands. It is safe for concurrent use.
+type Parser struct {
+	// parsers are reused, because each holds buffers and none can parse concurrently.
+	parsers *sync.Pool
+}
+
+// NewParser returns a parser of MySQL statements in the default SQL mode.
+func NewParser() *Parser {
+	return &Parser{parsers: &sync.Pool{New: func() any { return parser.New() }}}
+}
+
+// Parse returns the Query that sql parses to, or an UnparsedQuery.
+func (p *Parser) Parse(sql string) Command { //nolint:ireturn // Commands are a sum type.
+	sqlParser, ok := p.parsers.Get().(*parser.Parser)
+	if !ok {
+		sqlParser = parser.New()
+	}
+	defer p.parsers.Put(sqlParser)
+	statements, _, err := sqlParser.Parse(sql, "", "")
+	switch {
+	case err != nil:
+		return UnparsedQuery{SQL: sql, Reason: err.Error()}
+	case len(statements) == 0:
+		return UnparsedQuery{SQL: sql, Reason: "no statement"}
+	}
+	// The parser reuses the slice it returns for its next statement.
+	return Query{SQL: sql, Statements: slices.Clone(statements)}
+}

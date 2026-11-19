@@ -41,7 +41,8 @@ func (c *candidateConn) UseDB(database string) error {
 // HandleQuery answers a statement through the normaliser. One that cannot be
 // answered quarantines the candidate.
 func (c *candidateConn) HandleQuery(query string) (*mysql.Result, error) {
-	return c.answer(normaliser.Query{SQL: strings.Clone(query)})
+	// The statement outlives the wire library's buffer, as do the parts parsed from it.
+	return c.answer(c.server.command(mysql.COM_QUERY, strings.Clone(query)))
 }
 
 // HandleFieldList is refused, because it reads the database's schema.

@@ -25,7 +25,7 @@ func TestReferenceOffersTheReplyUnderTheStatementAndDatabase(t *testing.T) {
 	units, err := session.Reference(t.Context(), normaliser.UseDatabase{Name: "shop"}, normaliser.OK{})
 	assert.NoError(t, err)
 	assert.Equal(t, []normaliser.Unit(nil), units)
-	units, err = session.Reference(t.Context(), normaliser.Query{SQL: " select id FROM orders"}, rows)
+	units, err = session.Reference(t.Context(), statement(" select id FROM orders"), rows)
 	assert.NoError(t, err)
 	assert.Equal(t, []normaliser.Unit{{
 		Route: "SELECT",
@@ -39,7 +39,7 @@ func TestReferenceKeepsTheDatabaseThatCouldNotBeSelected(t *testing.T) {
 
 	_, err := session.Reference(t.Context(), normaliser.UseDatabase{Name: "missing"}, normaliser.Error{Code: 1049})
 	assert.NoError(t, err)
-	units, err := session.Reference(t.Context(), normaliser.Query{SQL: "COMMIT"}, normaliser.OK{})
+	units, err := session.Reference(t.Context(), statement("COMMIT"), normaliser.OK{})
 	assert.NoError(t, err)
 	assert.Equal(t, []normaliser.Unit{{
 		Route: "COMMIT",
@@ -59,10 +59,10 @@ func TestCandidateReplaysTheClaimedReply(t *testing.T) {
 	reply, err := session.Candidate(t.Context(), normaliser.UseDatabase{Name: "shop"}, replay)
 	assert.NoError(t, err)
 	assert.Equal(t, normaliser.Reply(normaliser.OK{}), reply)
-	reply, err = session.Candidate(t.Context(), normaliser.Query{SQL: "(SELECT 1)"}, replay)
+	reply, err = session.Candidate(t.Context(), statement("(SELECT 1)"), replay)
 	assert.NoError(t, err)
 	assert.Equal(t, normaliser.Reply(normaliser.OK{AffectedRows: 1}), reply)
-	reply, err = session.Candidate(t.Context(), normaliser.Query{SQL: "/* tag */ SELECT 1"}, replay)
+	reply, err = session.Candidate(t.Context(), statement("/* tag */ SELECT 1"), replay)
 	assert.NoError(t, err)
 	assert.Equal(t, normaliser.Reply(normaliser.OK{AffectedRows: 1}), reply)
 	assert.Equal(t, []claim{
@@ -83,16 +83,16 @@ func TestUseStatementsSelectTheDatabase(t *testing.T) {
 		"USE tenant_a", "use `tenant``b`;", " USE  shop ",
 		"USE /* setup */ tenant_c", "USE tenant_d; -- trailing\n", "/* tag */ USE `tenant/*e*/` # note",
 	} {
-		units, err := reference.Reference(t.Context(), normaliser.Query{SQL: use}, normaliser.OK{})
+		units, err := reference.Reference(t.Context(), statement(use), normaliser.OK{})
 		assert.NoError(t, err)
 		assert.Equal(t, []normaliser.Unit(nil), units)
-		units, err = reference.Reference(t.Context(), normaliser.Query{SQL: "SELECT 1"}, normaliser.OK{})
+		units, err = reference.Reference(t.Context(), statement("SELECT 1"), normaliser.OK{})
 		assert.NoError(t, err)
 		keys = append(keys, units[0].Key)
-		reply, err := candidate.Candidate(t.Context(), normaliser.Query{SQL: use}, replay)
+		reply, err := candidate.Candidate(t.Context(), statement(use), replay)
 		assert.NoError(t, err)
 		assert.Equal(t, normaliser.Reply(normaliser.OK{}), reply)
-		_, err = candidate.Candidate(t.Context(), normaliser.Query{SQL: "SELECT 1"}, replay)
+		_, err = candidate.Candidate(t.Context(), statement("SELECT 1"), replay)
 		assert.NoError(t, err)
 	}
 	expected := []any{}
@@ -156,9 +156,9 @@ func TestFailedUseStatementsKeepTheDatabase(t *testing.T) {
 
 	_, err := session.Reference(t.Context(), normaliser.UseDatabase{Name: "shop"}, normaliser.OK{})
 	assert.NoError(t, err)
-	_, err = session.Reference(t.Context(), normaliser.Query{SQL: "USE missing"}, normaliser.Error{Code: 1049})
+	_, err = session.Reference(t.Context(), statement("USE missing"), normaliser.Error{Code: 1049})
 	assert.NoError(t, err)
-	units, err := session.Reference(t.Context(), normaliser.Query{SQL: "SELECT 1"}, normaliser.OK{})
+	units, err := session.Reference(t.Context(), statement("SELECT 1"), normaliser.OK{})
 	assert.NoError(t, err)
 	assert.Equal(t, any(map[string]any{"database": "shop", "statement": "SELECT 1"}), units[0].Key)
 }
@@ -166,8 +166,13 @@ func TestFailedUseStatementsKeepTheDatabase(t *testing.T) {
 // keyOf is the key a reference statement offers its reply under.
 func keyOf(t *testing.T, sql string) any {
 	t.Helper()
-	units, err := exact.New().NewSession().Reference(t.Context(), normaliser.Query{SQL: sql}, normaliser.OK{})
+	units, err := exact.New().NewSession().Reference(t.Context(), statement(sql), normaliser.OK{})
 	assert.NoError(t, err)
 	assert.Equal(t, 1, len(units))
 	return units[0].Key
+}
+
+// statement is a text statement as the proxy hands it over, parsed.
+func statement(sql string) normaliser.Command { //nolint:ireturn // Commands are a sum type.
+	return normaliser.NewParser().Parse(sql)
 }

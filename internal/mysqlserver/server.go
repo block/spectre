@@ -51,6 +51,7 @@ type Server struct {
 	candidate    protocol.Acceptor
 	budget       *proxy.Budget
 	normaliser   normaliser.Normaliser
+	parser       *normaliser.Parser
 	// scope pairs every unit with every other, because statements carry no request ID.
 	scope protocol.RequestID
 	// version is the database's version once the proxy has connected to it.
@@ -58,9 +59,9 @@ type Server struct {
 	version   Option[string]
 }
 
-// New returns a MySQL proxy that pairs the units of normaliser in engine, and shares
+// New returns a MySQL proxy that pairs the units of statements in engine, and shares
 // candidates with the server that owns the engine.
-func New(config Config, normaliser normaliser.Normaliser, engine *protocol.Engine, candidates *proxy.Candidates) (*Server, error) {
+func New(config Config, statements normaliser.Normaliser, engine *protocol.Engine, candidates *proxy.Candidates) (*Server, error) {
 	if err := config.Validate(); err != nil {
 		return nil, err
 	}
@@ -85,7 +86,8 @@ func New(config Config, normaliser normaliser.Normaliser, engine *protocol.Engin
 		reference:    engine.EgressReference(Protocol),
 		candidate:    engine.EgressCandidate(Protocol),
 		budget:       proxy.NewBudget(config.SavedRepliesBytes),
-		normaliser:   normaliser,
+		normaliser:   statements,
+		parser:       normaliser.NewParser(),
 		scope:        scope,
 	}, nil
 }
@@ -295,6 +297,14 @@ func (s *Server) serve(ctx context.Context, conn net.Conn, wireServer *server.Se
 // are worth reading.
 func (s *Server) offering() bool {
 	return !s.candidates.QuarantineStatus().Ok()
+}
+
+// command is what a normaliser sees of a text statement or database selection.
+func (s *Server) command(code byte, text string) normaliser.Command { //nolint:ireturn // Commands are a sum type.
+	if code == mysql.COM_INIT_DB {
+		return normaliser.UseDatabase{Name: text}
+	}
+	return s.parser.Parse(text)
 }
 
 // reserve claims size bytes of the saved replies budget, and reports whether they fit.
