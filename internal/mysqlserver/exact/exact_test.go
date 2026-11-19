@@ -29,7 +29,7 @@ func TestReferenceOffersTheReplyUnderTheStatementAndDatabase(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, []normaliser.Unit{{
 		Route: "SELECT",
-		Key:   map[string]any{"database": "shop", "statement": " select id FROM orders"},
+		Key:   map[string]any{"database": "shop", "statement": "SELECT `id` FROM `orders`"},
 		Reply: rows,
 	}}, units)
 }
@@ -67,7 +67,7 @@ func TestCandidateReplaysTheClaimedReply(t *testing.T) {
 	assert.Equal(t, normaliser.Reply(normaliser.OK{AffectedRows: 1}), reply)
 	assert.Equal(t, []claim{
 		{route: "SELECT", key: map[string]any{"database": "shop", "statement": "(SELECT 1)"}},
-		{route: "statement", key: map[string]any{"database": "shop", "statement": "/* tag */ SELECT 1"}},
+		{route: "SELECT", key: map[string]any{"database": "shop", "statement": "SELECT 1"}},
 	}, claims)
 }
 
@@ -103,12 +103,52 @@ func TestUseStatementsSelectTheDatabase(t *testing.T) {
 	assert.Equal(t, expected, keys)
 }
 
-func TestStatementsArePairedWithTheirComments(t *testing.T) {
-	session := exact.New().NewSession()
+func TestStatementsPairWhenTheyParseAlike(t *testing.T) {
+	for _, test := range []struct {
+		name                 string
+		reference, candidate string
+	}{
+		{name: "Comments", reference: "SELECT id FROM items /* request=7 */", candidate: "/* app:x */ SELECT /* inner */ id FROM items -- tail"},
+		{name: "HashComments", reference: "SELECT 1 # tail", candidate: "SELECT 1"},
+		{name: "Spacing", reference: "select  id\n\tfrom items where id=1", candidate: "SELECT id FROM items WHERE id = 1"},
+		{name: "Quoting", reference: "SELECT `id` FROM `items` WHERE sku = \"fig\"", candidate: "SELECT id FROM items WHERE sku = 'fig'"},
+		{name: "Aliases", reference: "SELECT sku s FROM items i", candidate: "SELECT sku AS s FROM items AS i"},
+		{name: "Semicolon", reference: "COMMIT;", candidate: "commit"},
+		{name: "Escapes", reference: "SELECT 'it''s'", candidate: "SELECT 'it\\'s'"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			assert.Equal(t, keyOf(t, test.reference), keyOf(t, test.candidate))
+		})
+	}
+}
 
-	units, err := session.Reference(t.Context(), normaliser.Query{SQL: "SELECT 1 /* request=7 */"}, normaliser.OK{})
-	assert.NoError(t, err)
-	assert.Equal(t, any(map[string]any{"database": "", "statement": "SELECT 1 /* request=7 */"}), units[0].Key)
+func TestStatementsThatDifferDoNotPair(t *testing.T) {
+	for _, test := range []struct {
+		name                 string
+		reference, candidate string
+	}{
+		{name: "Values", reference: "SELECT id FROM items WHERE id = 1", candidate: "SELECT id FROM items WHERE id = 2"},
+		{name: "Decimals", reference: "SELECT 1.50", candidate: "SELECT 1.5"},
+		{name: "Strings", reference: "SELECT 'fig'", candidate: "SELECT 'Fig'"},
+		{name: "StringSpacing", reference: "SELECT 'a  b'", candidate: "SELECT 'a b'"},
+		{name: "CommentInString", reference: "SELECT 'a/*b*/'", candidate: "SELECT 'a'"},
+		{name: "Null", reference: "SELECT NULL", candidate: "SELECT 'NULL'"},
+		{name: "Hex", reference: "SELECT 0x0A", candidate: "SELECT 10"},
+		{name: "Negation", reference: "SELECT 1--1", candidate: "SELECT 1"},
+		{name: "QuotedName", reference: "SELECT `a``b` FROM t", candidate: "SELECT `a` `b` FROM t"},
+		{name: "Names", reference: "SELECT id FROM items", candidate: "SELECT id FROM Items"},
+		{name: "Hints", reference: "SELECT /*+ MAX_EXECUTION_TIME(10) */ id FROM items", candidate: "SELECT id FROM items"},
+		{name: "Locks", reference: "SELECT id FROM items FOR UPDATE", candidate: "SELECT id FROM items"},
+		{name: "Statements", reference: "SELECT 1; SELECT 2", candidate: "SELECT 1"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			assert.NotEqual(t, keyOf(t, test.reference), keyOf(t, test.candidate))
+		})
+	}
+}
+
+func TestStatementsThatDoNotParsePairByTheirText(t *testing.T) {
+	assert.Equal(t, any(map[string]any{"database": "", "statement": "SELEKT 1 /* x */"}), keyOf(t, "SELEKT 1 /* x */"))
 }
 
 func TestFailedUseStatementsKeepTheDatabase(t *testing.T) {
@@ -121,4 +161,13 @@ func TestFailedUseStatementsKeepTheDatabase(t *testing.T) {
 	units, err := session.Reference(t.Context(), normaliser.Query{SQL: "SELECT 1"}, normaliser.OK{})
 	assert.NoError(t, err)
 	assert.Equal(t, any(map[string]any{"database": "shop", "statement": "SELECT 1"}), units[0].Key)
+}
+
+// keyOf is the key a reference statement offers its reply under.
+func keyOf(t *testing.T, sql string) any {
+	t.Helper()
+	units, err := exact.New().NewSession().Reference(t.Context(), normaliser.Query{SQL: sql}, normaliser.OK{})
+	assert.NoError(t, err)
+	assert.Equal(t, 1, len(units))
+	return units[0].Key
 }

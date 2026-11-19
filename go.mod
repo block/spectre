@@ -58,6 +58,7 @@ require (
 	github.com/microsoft/TypeScript/tsc v0.0.0-20261114002809-6bdcb54d23f4 // indirect
 	github.com/pelletier/go-toml v1.9.5 // indirect
 	github.com/pingcap/errors v0.11.5-0.20260310054046-9c8b3586e4b2 // indirect
+	github.com/pingcap/failpoint v0.0.0-20260406204437-bbc9d102c19e // indirect
 	github.com/pingcap/log v1.1.1-0.20260227082333-572e590d08f1 // indirect
 	github.com/shopspring/decimal v1.4.0 // indirect
 	github.com/yuin/gopher-lua v1.1.1 // indirect
