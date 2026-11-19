@@ -24,6 +24,6 @@ func Apply(ctx context.Context, config Config) error {
 	for _, redirect := range config.Redirects {
 		redirects = append(redirects, redirect.String())
 	}
-	logger.FromContext(ctx).InfoContext(ctx, "Rejecting IP traffic", "uid", config.UID, "redirects", redirects, "table", tableName)
+	logger.FromContext(ctx).InfoContext(ctx, "Rejecting IP traffic", "candidate_uid", config.CandidateUID, "redirects", redirects, "table", tableName)
 	return nil
 }

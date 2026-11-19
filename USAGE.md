@@ -161,11 +161,12 @@ must make it group-writable too.
 
 A candidate in its own container must reach dependencies only through its
 egress socket. Run it as a user of its own, and run `spectre contain
---uid=<candidate uid>` in an init container with root and `NET_ADMIN`. It
-installs Linux packet filter rules that reject that user's IPv4 and IPv6
-traffic, including loopback and DNS, since the pod's containers share one
-network. Replies on connections other containers open to the candidate still
-pass, and unix sockets are unaffected. Running it again replaces the rules.
+--candidate-uid=<candidate uid>` in an init container with root and
+`NET_ADMIN`. It installs Linux packet filter rules that reject that user's
+IPv4 and IPv6 traffic, including loopback and DNS, since the pod's containers
+share one network. Replies on connections other containers open to the
+candidate still pass, and unix sockets are unaffected. Running it again
+replaces the rules.
 
 Some clients cannot use a unix socket, such as Java services' MySQL
 connections, which always reach the database's host on port 3306. Add
@@ -175,7 +176,7 @@ and port. To send the reference's and candidate's MySQL connections to the
 MySQL proxy's default listeners:
 
 ```
-spectre contain --uid=1002 \
+spectre contain --candidate-uid=1002 \
   --redirect=1002:3306=50071 \
   --redirect=1000:3306=50070
 ```

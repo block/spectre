@@ -74,7 +74,7 @@ func rules(config Config) [][]expr.Any {
 	established := binaryutil.NativeEndian.PutUint32(expr.CtStateBitESTABLISHED | expr.CtStateBitRELATED)
 	none := binaryutil.NativeEndian.PutUint32(0)
 	accepted := [][]expr.Any{
-		append(owner(config.UID),
+		append(owner(config.CandidateUID),
 			&expr.Ct{Register: 1, Key: expr.CtKeySTATE},
 			&expr.Bitwise{SourceRegister: 1, DestRegister: 1, Len: 4, Mask: established, Xor: none},
 			&expr.Cmp{Op: expr.CmpOpNeq, Register: 1, Data: none},
@@ -82,11 +82,11 @@ func rules(config Config) [][]expr.Any {
 		),
 	}
 	for _, redirect := range config.Redirects {
-		if redirect.UID != config.UID {
+		if redirect.UID != config.CandidateUID {
 			continue
 		}
 		// Only connections that a redirect rewrote pass, so the user reaches no other local port.
-		accepted = append(accepted, append(tcpOf(config.UID, redirect.LocalPort),
+		accepted = append(accepted, append(tcpOf(config.CandidateUID, redirect.LocalPort),
 			&expr.Ct{Register: 1, Key: expr.CtKeySTATUS},
 			&expr.Bitwise{SourceRegister: 1, DestRegister: 1, Len: 4, Mask: binaryutil.NativeEndian.PutUint32(destinationNAT), Xor: none},
 			&expr.Cmp{Op: expr.CmpOpNeq, Register: 1, Data: none},
@@ -94,7 +94,7 @@ func rules(config Config) [][]expr.Any {
 		))
 	}
 	return append(accepted,
-		append(owner(config.UID), &expr.Reject{Type: unix.NFT_REJECT_ICMPX_UNREACH, Code: unix.NFT_REJECT_ICMPX_PORT_UNREACH}))
+		append(owner(config.CandidateUID), &expr.Reject{Type: unix.NFT_REJECT_ICMPX_UNREACH, Code: unix.NFT_REJECT_ICMPX_PORT_UNREACH}))
 }
 
 // owner matches the packets of uid's sockets.

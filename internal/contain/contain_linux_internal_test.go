@@ -15,7 +15,7 @@ import (
 )
 
 // candidate is contained, and its and the reference's MySQL connections redirected.
-var candidate = Config{UID: 1002, Redirects: []Redirect{
+var candidate = Config{CandidateUID: 1002, Redirects: []Redirect{
 	{UID: 1002, Port: 3306, LocalPort: 50071},
 	{UID: 1000, Port: 3306, LocalPort: 50070},
 }}
@@ -49,7 +49,7 @@ func TestRedirectReachesTheLocalPort(t *testing.T) {
 		}
 		defer listener.Close()
 		local := uint16(listener.Addr().(*net.TCPAddr).Port) //nolint:forcetypeassert,gosec // A TCP listener's port.
-		if err := install(Config{UID: 1002, Redirects: []Redirect{{UID: 0, Port: 3306, LocalPort: local}}}); err != nil {
+		if err := install(Config{CandidateUID: 1002, Redirects: []Redirect{{UID: 0, Port: 3306, LocalPort: local}}}); err != nil {
 			return false, err
 		}
 		conn, err := net.Dial("tcp", "127.0.0.2:3306")

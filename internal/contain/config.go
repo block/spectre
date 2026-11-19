@@ -14,8 +14,8 @@ import (
 // Config contains the command-line configuration of the user to contain, and of the
 // connections to redirect.
 type Config struct {
-	// UID is the user whose IP traffic is rejected, such as the candidate's.
-	UID uint32 `name:"uid" required:"" placeholder:"UID" help:"User ID whose IPv4 and IPv6 traffic is rejected, such as the candidate container's. Only replies on connections opened to it, and its redirected connections, still pass; unix sockets are unaffected."`
+	// CandidateUID is the user whose IP traffic is rejected, such as the candidate's.
+	CandidateUID uint32 `name:"candidate-uid" required:"" placeholder:"UID" help:"User ID whose IPv4 and IPv6 traffic is rejected, such as the candidate container's. Only replies on connections opened to it, and its redirected connections, still pass; unix sockets are unaffected."`
 	// Redirects send connections that would leave the pod to local listeners instead.
 	Redirects []Redirect `name:"redirect" placeholder:"UID:PORT=LOCAL_PORT" help:"Send user UID's TCP connections to PORT on any address to LOCAL_PORT on loopback instead, such as the reference's and candidate's MySQL connections to the SPECTRE proxy. Repeat it for each user and port."`
 }
@@ -64,8 +64,8 @@ func (r Redirect) String() string {
 // Validate checks that no rule names root, which would contain or redirect every
 // process running as root, and that each user's port is redirected once.
 func (c Config) Validate() error {
-	if c.UID == 0 {
-		return errors.New("uid must not be 0, which would contain every process running as root")
+	if c.CandidateUID == 0 {
+		return errors.New("candidate uid must not be 0, which would contain every process running as root")
 	}
 	redirected := map[[2]uint32]bool{}
 	for _, redirect := range c.Redirects {

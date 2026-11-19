@@ -9,8 +9,8 @@ import (
 )
 
 func TestApplyRefusesRoot(t *testing.T) {
-	err := contain.Apply(t.Context(), contain.Config{UID: 0})
-	assert.EqualError(t, err, "uid must not be 0, which would contain every process running as root")
+	err := contain.Apply(t.Context(), contain.Config{CandidateUID: 0})
+	assert.EqualError(t, err, "candidate uid must not be 0, which would contain every process running as root")
 }
 
 func TestRedirectParses(t *testing.T) {
@@ -52,7 +52,7 @@ func TestApplyRefusesInvalidRedirects(t *testing.T) {
 			err: "redirect 1000:3306=50071 repeats a user's port"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			err := contain.Apply(t.Context(), contain.Config{UID: 1002, Redirects: test.redirects})
+			err := contain.Apply(t.Context(), contain.Config{CandidateUID: 1002, Redirects: test.redirects})
 			assert.EqualError(t, err, test.err)
 		})
 	}
