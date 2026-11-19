@@ -303,10 +303,22 @@ read-only endpoints, because the candidate's call is never sent.
 
 ### MySQL
 
-Set `--mysql-upstream=HOST:PORT` to proxy a MySQL server as well, with the
-`--mysql-user` and `--mysql-password` that the services use. The reference
-connects to `--mysql-reference-listen` and the candidate to
-`--mysql-candidate-listen`, both without TLS and with `mysql_native_password`.
+Set `--mysql-upstream=HOST:PORT` to proxy a MySQL server as well. The
+reference connects to `--mysql-reference-listen` and the candidate to
+`--mysql-candidate-listen`, both without TLS. Both listeners must be on a
+loopback address or a unix socket.
+
+The proxy asks the reference for its password in clear text, with
+`mysql_clear_password`, and connects to the server with the reference's own
+user and password. The reference's client must allow clear text passwords,
+such as `enable_cleartext_plugin` in Ruby's `mysql2` or
+`allowCleartextPasswords` in Go's MySQL driver. The server's own error, such as
+access denied, is the reference's answer. The candidate connects with
+`mysql_native_password` and any user and password.
+
+Set `--mysql-upstream-ca=FILE` to connect to the server with TLS. The proxy
+verifies that the server's certificate chains to an authority in the PEM file,
+but not the host name, because services often reach a database by an alias.
 
 Reference commands, including prepared statements, reach the server and their
 replies come back unchanged. Candidate commands never reach it. Each candidate

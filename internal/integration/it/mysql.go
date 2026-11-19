@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -45,7 +46,7 @@ func startMySQL(t *testing.T, w *watch) string {
 	name := mysqlContainer()
 	run := exec.CommandContext(t.Context(), "docker", "run", "--detach", "--rm", "--name", name,
 		"--env", "MYSQL_ROOT_PASSWORD="+mysqlPassword, "--publish", "127.0.0.1::3306", "--tmpfs", "/var/lib/mysql",
-		"--entrypoint", "timeout", mysqlImage, mysqlLifetime, "docker-entrypoint.sh", "mysqld")
+		"--entrypoint", "timeout", mysqlImage, mysqlLifetime, "docker-entrypoint.sh", "mysqld", "--require-secure-transport=ON")
 	if output, err := run.CombinedOutput(); err != nil && !strings.Contains(string(output), "is already in use") {
 		t.Fatalf("start MySQL; is Docker running? %v: %s", err, output)
 	}
@@ -74,7 +75,11 @@ type Database struct {
 	Candidate *sql.DB
 	t         *testing.T
 	address   string
-	server    *sql.DB
+	// referenceListen is where the reference reaches the proxy.
+	referenceListen string
+	// authorities is the file of the certificate authorities that the server generated.
+	authorities string
+	server      *sql.DB
 	// seeded counts the statements that set the database up.
 	seeded map[string]uint64
 }
@@ -99,15 +104,30 @@ func newDatabase(t *testing.T, w *watch, statements []string) *Database {
 		_, err := seed.ExecContext(t.Context(), statement)
 		assert.NoError(t, err, "run %s", statement)
 	}
-	return &Database{Name: database, t: t, address: address, server: server, seeded: digests(t, server, database)}
+	return &Database{
+		Name: database, t: t, address: address, authorities: authorities(t), server: server,
+		seeded: digests(t, server, database),
+	}
+}
+
+// authorities copies the certificate authorities that the shared server generated
+// into a file of the test's own.
+func authorities(t *testing.T) string {
+	t.Helper()
+	output, err := exec.CommandContext(t.Context(), "docker", "exec", mysqlContainer(), "cat", "/var/lib/mysql/ca.pem").Output()
+	assert.NoError(t, err)
+	path := filepath.Join(t.TempDir(), "ca.pem")
+	assert.NoError(t, os.WriteFile(path, output, 0o600))
+	return path
 }
 
 // connect opens the handles that reach the database through the proxy's listeners.
 func (d *Database) connect(reference, candidate net.Listener) mysqlserver.Config {
-	d.Reference = openMySQL(d.t, reference.Addr().String(), d.Name)
+	d.referenceListen = reference.Addr().String()
+	d.Reference = openMySQL(d.t, d.referenceListen, d.Name)
 	d.Candidate = openMySQL(d.t, candidate.Addr().String(), d.Name)
 	config := mysqlserver.NewConfig()
-	config.Upstream, config.User, config.Password = d.address, mysqlUser, mysqlPassword
+	config.Upstream, config.UpstreamCA = d.address, d.authorities
 	config.ReferenceListen, config.CandidateListen = reference.Addr().String(), candidate.Addr().String()
 	return config
 }
@@ -153,13 +173,28 @@ func MySQLQuarantine(kind model.QuarantineKind, route string, detail string) mod
 	}
 }
 
-// openMySQL opens a handle to database at address, closed when the test ends. Values
-// are written into the statement text, because the proxy answers only text statements.
+// OpenReference opens a handle that reaches the database through the proxy, as the
+// reference does, as user with password. It is closed when the test ends.
+func (d *Database) OpenReference(user, password string) *sql.DB {
+	return openMySQLAs(d.t, d.referenceListen, d.Name, user, password)
+}
+
+// openMySQL opens a handle to database at address, closed when the test ends.
 func openMySQL(t *testing.T, address, database string) *sql.DB {
 	t.Helper()
+	return openMySQLAs(t, address, database, mysqlUser, mysqlPassword)
+}
+
+// openMySQLAs opens a handle to database at address as user. Values are written into
+// the statement text, because the proxy answers only text statements.
+func openMySQLAs(t *testing.T, address, database, user, password string) *sql.DB {
+	t.Helper()
 	config := mysql.NewConfig()
-	config.User, config.Passwd, config.Net, config.Addr, config.DBName = mysqlUser, mysqlPassword, "tcp", address, database
+	config.User, config.Passwd, config.Net, config.Addr, config.DBName = user, password, "tcp", address, database
 	config.InterpolateParams = true
+	// The server requires TLS, which the proxy's local listeners do not offer. The proxy
+	// asks for passwords in clear text.
+	config.TLSConfig, config.AllowCleartextPasswords = "preferred", true
 	// The driver logs every failed attempt while the server starts.
 	config.Logger = &mysql.NopLogger{}
 	connector, err := mysql.NewConnector(config)

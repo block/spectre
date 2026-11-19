@@ -2,8 +2,10 @@ package mysqlserver
 
 import (
 	"context"
+	"crypto/tls"
 	"net"
 	"sync"
+	"time"
 
 	"github.com/alecthomas/errors"
 	. "github.com/alecthomas/types/optional"
@@ -23,20 +25,25 @@ import (
 // Protocol is the protocol of MySQL servers. Its normaliser names the routes.
 const Protocol model.Protocol = "mysql"
 
+// dialTimeout limits connecting to the database when a reference connection authenticates.
+const dialTimeout = 10 * time.Second
+
 // serverVersion is the MySQL version the proxy reports to the services.
 const serverVersion = "8.4.0"
 
 // Server serves reference and candidate MySQL connections on separate listeners.
 // Candidate statements never reach a database under any condition.
 type Server struct {
-	config     Config
-	wire       *server.Server
-	users      *server.InMemoryAuthenticationHandler
-	reference  protocol.Acceptor
-	candidate  protocol.Acceptor
-	candidates *proxy.Candidates
-	budget     *proxy.Budget
-	normaliser normaliser.Normaliser
+	// upstream is the database that reference connections reach.
+	upstream string
+	// candidateWire accepts any candidate credentials. Reference connections each get their own.
+	candidateWire *server.Server
+	upstreamTLS   Option[*tls.Config]
+	reference     protocol.Acceptor
+	candidate     protocol.Acceptor
+	candidates    *proxy.Candidates
+	budget        *proxy.Budget
+	normaliser    normaliser.Normaliser
 	// scope pairs every unit with every other, because statements carry no request ID.
 	scope protocol.RequestID
 }
@@ -54,21 +61,20 @@ func New(config Config, normaliser normaliser.Normaliser, engine *protocol.Engin
 	if err != nil {
 		return nil, errors.Wrap(err, "name the pairing scope")
 	}
-	// Native passwords need neither TLS nor a key pair on the loopback listeners.
-	users := server.NewInMemoryAuthenticationHandler(mysql.AUTH_NATIVE_PASSWORD)
-	if err := users.AddUser(config.User, config.Password); err != nil {
-		return nil, errors.Wrap(err, "register the MySQL user")
+	upstreamTLS, err := upstreamTLS(config.UpstreamCA)
+	if err != nil {
+		return nil, err
 	}
 	return &Server{
-		config:     config,
-		users:      users,
-		wire:       server.NewServer(serverVersion, mysql.DEFAULT_COLLATION_ID, mysql.AUTH_NATIVE_PASSWORD, nil, nil),
-		reference:  engine.EgressReference(Protocol),
-		candidate:  engine.EgressCandidate(Protocol),
-		candidates: candidates,
-		budget:     proxy.NewBudget(config.SavedRepliesBytes),
-		normaliser: normaliser,
-		scope:      scope,
+		upstream:      config.Upstream,
+		candidateWire: newWire(acceptAny{}),
+		upstreamTLS:   upstreamTLS,
+		reference:     engine.EgressReference(Protocol),
+		candidate:     engine.EgressCandidate(Protocol),
+		candidates:    candidates,
+		budget:        proxy.NewBudget(config.SavedRepliesBytes),
+		normaliser:    normaliser,
+		scope:         scope,
 	}, nil
 }
 
@@ -114,26 +120,44 @@ func (s *Server) accept(ctx context.Context, listener net.Listener, connections 
 	}
 }
 
-// serveReference gives a reference connection its own connection to the database.
+// newWire returns the wire protocol of connections that provider authenticates.
+// Native passwords need neither TLS nor a key pair on the local listeners.
+func newWire(provider server.AuthenticationProvider) *server.Server {
+	return server.NewServerWithAuth(serverVersion, mysql.DEFAULT_COLLATION_ID, mysql.AUTH_NATIVE_PASSWORD, nil, nil, provider)
+}
+
+// serveReference asks a reference connection for its password in clear text, and
+// connects to the database with the reference's own credentials.
 func (s *Server) serveReference(ctx context.Context, conn net.Conn) {
-	upstream, err := client.Connect(s.config.Upstream, s.config.User, s.config.Password, "")
-	if err != nil {
-		logger.FromContext(ctx).ErrorContext(ctx, "Reference connection has no database", "error", err)
-		return
-	}
-	handler := newReferenceConn(ctx, s, upstream, s.normaliser.NewSession())
+	handler := newReferenceConn(ctx, s, s.normaliser.NewSession())
 	defer handler.close()
-	s.serve(ctx, conn, handler)
+	s.serve(ctx, conn, newWire(handler), newAnyUser(mysql.AUTH_CLEAR_PASSWORD), handler)
+}
+
+// dial connects to the database as user, with the database selected if one is named.
+func (s *Server) dial(ctx context.Context, user, password, database string) (*client.Conn, error) {
+	options := []client.Option{}
+	if config, ok := s.upstreamTLS.Get(); ok {
+		options = append(options, func(c *client.Conn) error {
+			c.SetTLSConfig(config)
+			return nil
+		})
+	}
+	upstream, err := client.ConnectWithContext(ctx, s.upstream, user, password, database, dialTimeout, options...)
+	return upstream, errors.WithStack(err)
 }
 
 // serveCandidate answers a candidate connection without a database.
 func (s *Server) serveCandidate(ctx context.Context, conn net.Conn) {
-	s.serve(ctx, conn, newCandidateConn(ctx, s, s.normaliser.NewSession()))
+	handler := newCandidateConn(ctx, s, s.normaliser.NewSession())
+	s.serve(ctx, conn, s.candidateWire, newAnyUser(mysql.AUTH_NATIVE_PASSWORD), handler)
 }
 
 // serve runs the wire protocol on a connection until it closes.
-func (s *Server) serve(ctx context.Context, conn net.Conn, handler server.Handler) {
-	wire, err := s.wire.NewCustomizedConn(conn, s.users, handler)
+func (s *Server) serve(ctx context.Context, conn net.Conn, wireServer *server.Server, users server.AuthenticationHandler,
+	handler server.Handler,
+) {
+	wire, err := wireServer.NewCustomizedConn(conn, users, handler)
 	if err != nil {
 		if ctx.Err() == nil {
 			logger.FromContext(ctx).WarnContext(ctx, "MySQL handshake failed", "error", err)

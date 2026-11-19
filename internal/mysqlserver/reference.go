@@ -1,12 +1,15 @@
 package mysqlserver
 
 import (
+	"bytes"
 	"context"
 	"strings"
 
 	"github.com/alecthomas/errors"
+	. "github.com/alecthomas/types/optional"
 	"github.com/go-mysql-org/go-mysql/client"
 	"github.com/go-mysql-org/go-mysql/mysql"
+	"github.com/go-mysql-org/go-mysql/server"
 
 	"github.com/block/spectre/internal/logger"
 	"github.com/block/spectre/internal/mysqlserver/normaliser"
@@ -15,20 +18,53 @@ import (
 // referenceConn forwards one reference connection's commands to the database on a
 // connection of its own, and offers the replies of text commands to the candidate.
 type referenceConn struct {
-	ctx      context.Context //nolint:containedctx // The wire library's handler methods take no context.
-	server   *Server
-	upstream *client.Conn
+	ctx    context.Context //nolint:containedctx // The wire library's handler methods take no context.
+	server *Server
+	// upstream is connected when the reference authenticates, with its own credentials.
+	upstream Option[*client.Conn]
+	// database is the one the reference selected while connecting.
+	database string
 	session  normaliser.Session
 }
 
-func newReferenceConn(ctx context.Context, server *Server, upstream *client.Conn, session normaliser.Session) *referenceConn {
-	return &referenceConn{ctx: ctx, server: server, upstream: upstream, session: session}
+func newReferenceConn(ctx context.Context, server *Server, session normaliser.Session) *referenceConn {
+	return &referenceConn{ctx: ctx, server: server, session: session}
 }
 
-// UseDB selects the database on the connection to the database server.
+// Validate supports the native passwords the handshake starts with, and the clear
+// passwords that it switches to.
+func (r *referenceConn) Validate(plugin string) bool {
+	return plugin == mysql.AUTH_NATIVE_PASSWORD || plugin == mysql.AUTH_CLEAR_PASSWORD
+}
+
+// Authenticate connects to the database with the reference's credentials, so the
+// database decides. A refusal is the database's own error.
+func (r *referenceConn) Authenticate(conn *server.Conn, plugin string, password []byte) error {
+	if plugin != mysql.AUTH_CLEAR_PASSWORD {
+		return server.ErrAccessDenied
+	}
+	upstream, err := r.server.dial(r.ctx, conn.GetUser(), string(bytes.TrimSuffix(password, []byte{0})), r.database)
+	if err != nil {
+		logger.FromContext(r.ctx).WarnContext(r.ctx, "Reference connection has no database", "user", conn.GetUser(), "error", err)
+		return databaseError(err)
+	}
+	r.upstream = Some(upstream)
+	if r.database != "" {
+		r.offer(normaliser.UseDatabase{Name: r.database})(normaliser.OK{}, true)
+	}
+	return nil
+}
+
+// UseDB selects the database on the connection to the database server. A database
+// selected while connecting is selected once the reference authenticates.
 func (r *referenceConn) UseDB(database string) error {
+	upstream, ok := r.upstream.Get()
+	if !ok {
+		r.database = strings.Clone(database)
+		return nil
+	}
 	command := normaliser.UseDatabase{Name: strings.Clone(database)}
-	if err := r.upstream.UseDB(database); err != nil {
+	if err := upstream.UseDB(database); err != nil {
 		r.offer(command)(errorReply(err))
 		return databaseError(err)
 	}
@@ -39,8 +75,12 @@ func (r *referenceConn) UseDB(database string) error {
 // HandleQuery forwards a statement and returns the database's own answer. Offering
 // it to the candidate never changes that answer.
 func (r *referenceConn) HandleQuery(query string) (*mysql.Result, error) {
+	upstream, err := r.connection()
+	if err != nil {
+		return nil, err
+	}
 	command := normaliser.Query{SQL: strings.Clone(query)}
-	result, err := r.upstream.Execute(query)
+	result, err := upstream.Execute(query)
 	if err != nil {
 		r.offer(command)(errorReply(err))
 		return nil, databaseError(err)
@@ -51,7 +91,11 @@ func (r *referenceConn) HandleQuery(query string) (*mysql.Result, error) {
 
 // HandleFieldList forwards a column listing.
 func (r *referenceConn) HandleFieldList(table string, wildcard string) ([]*mysql.Field, error) {
-	fields, err := r.upstream.FieldList(table, wildcard)
+	upstream, err := r.connection()
+	if err != nil {
+		return nil, err
+	}
+	fields, err := upstream.FieldList(table, wildcard)
 	if err != nil {
 		return nil, databaseError(err)
 	}
@@ -61,7 +105,11 @@ func (r *referenceConn) HandleFieldList(table string, wildcard string) ([]*mysql
 // HandleStmtPrepare prepares a statement on the database. Prepared statements are
 // only forwarded.
 func (r *referenceConn) HandleStmtPrepare(query string) (params int, columns int, prepared any, err error) {
-	statement, err := r.upstream.Prepare(query)
+	upstream, err := r.connection()
+	if err != nil {
+		return 0, 0, nil, err
+	}
+	statement, err := upstream.Prepare(query)
 	if err != nil {
 		return 0, 0, nil, databaseError(err)
 	}
@@ -111,9 +159,20 @@ func (r *referenceConn) offer(command normaliser.Command) func(reply normaliser.
 	}
 }
 
-// close closes the connection to the database server.
+// connection is the connection to the database that authentication opened.
+func (r *referenceConn) connection() (*client.Conn, error) {
+	upstream, ok := r.upstream.Get()
+	if !ok {
+		return nil, mysql.NewError(mysql.ER_UNKNOWN_ERROR, "SPECTRE: the connection is not authenticated")
+	}
+	return upstream, nil
+}
+
+// close closes the connection to the database server, if there is one.
 func (r *referenceConn) close() {
-	_ = r.upstream.Close()
+	if upstream, ok := r.upstream.Get(); ok {
+		_ = upstream.Close()
+	}
 }
 
 // databaseError returns the database's own error when there is one, so the wire

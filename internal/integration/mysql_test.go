@@ -118,6 +118,13 @@ func TestMySQLCandidateReplaysTheReferenceDatabaseError(t *testing.T) {
 	m.MySQL().ExpectStatements(map[string]uint64{"SELECT `id` FROM `missing`": 1})
 }
 
+func TestMySQLReferenceAuthenticatesWithTheDatabase(t *testing.T) {
+	m := startOrdersMirror(t)
+
+	err := m.MySQL().OpenReference("root", "wrong").PingContext(t.Context())
+	assert.Contains(t, err.Error(), "Error 1045 (28000): Access denied for user 'root'")
+}
+
 func TestMySQLReferencePreparedStatementsOnlyReachTheDatabase(t *testing.T) {
 	m := startOrdersMirror(t)
 
