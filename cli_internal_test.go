@@ -104,14 +104,14 @@ func TestProxyCommandReadsFlagsFromEnvironment(t *testing.T) {
 	assert.Equal(t, expected, command.Proxy.Proxy)
 }
 
-func TestContainCommandReadsUIDFromEnvironment(t *testing.T) {
-	t.Setenv("SPECTRE_UID", "1002")
+func TestContainCommandReadsCandidateUIDFromEnvironment(t *testing.T) {
+	t.Setenv("SPECTRE_CANDIDATE_UID", "1002")
 	command := &cli.CommandLine{}
 	parser, err := newParser(command)
 	assert.NoError(t, err)
 	_, err = parser.Parse([]string{"contain"})
 	assert.NoError(t, err)
-	assert.Equal(t, contain.Config{UID: 1002}, command.Contain.Contain)
+	assert.Equal(t, contain.Config{CandidateUID: 1002}, command.Contain.Contain)
 }
 
 func TestVersionFlagIgnoresEnvironment(t *testing.T) {
