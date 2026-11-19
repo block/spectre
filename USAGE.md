@@ -26,7 +26,7 @@ restarts, and reports why to the server.
 | --- | --- |
 | `spectre init` | Set a service checkout up for a migration from a template. |
 | `spectre proxy` | Run the proxies in front of services that run elsewhere. |
-| `spectre contain` | Block a candidate container's IP traffic. |
+| `spectre contain` | Block a candidate container's IP traffic, and redirect connections to local ports. |
 | `spectre serve` | Run the SPECTRE server. |
 | `spectre status` | List mirrors and divergences, or clear divergences. |
 | `spectre state` | Describe and validate a migration state file. |
@@ -166,6 +166,26 @@ installs Linux packet filter rules that reject that user's IPv4 and IPv6
 traffic, including loopback and DNS, since the pod's containers share one
 network. Replies on connections other containers open to the candidate still
 pass, and unix sockets are unaffected. Running it again replaces the rules.
+
+Some clients cannot use a unix socket, such as Java services' MySQL
+connections, which always reach the database's host on port 3306. Add
+`--redirect=UID:PORT=LOCAL_PORT` to send a user's TCP connections to `PORT`,
+on any address, to `LOCAL_PORT` on loopback instead. Repeat it for each user
+and port. To send the reference's and candidate's MySQL connections to the
+MySQL proxy's default listeners:
+
+```
+spectre contain --uid=1002 \
+  --redirect=1002:3306=50071 \
+  --redirect=1000:3306=50070
+```
+
+The contained user reaches a local port only through its own redirects, so
+the candidate cannot reach the reference's listener. Redirects run before any
+other address rewriting in the pod, such as a service mesh's, so a redirected
+connection never reaches it. Run the proxy as a user that no redirect names,
+or its own connections to the database are redirected back to it. Redirecting
+uid 0 is refused.
 
 ## What a mirror does
 

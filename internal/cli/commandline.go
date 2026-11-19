@@ -28,7 +28,7 @@ type CommandLine struct {
 	Version kong.VersionFlag `env:"-" help:"Print the version and exit."`
 
 	Proxy   proxyCommand   `cmd:"" help:"Run the embedded proxies in front of a candidate and a reference that run elsewhere, such as in other containers of the same pod."`
-	Contain containCommand `cmd:"" help:"Reject a user's IPv4 and IPv6 traffic, such as a candidate's in its own container, so it reaches dependencies only through unix sockets. Needs Linux, root and NET_ADMIN."`
+	Contain containCommand `cmd:"" help:"Reject a user's IPv4 and IPv6 traffic, such as a candidate's in its own container, so it reaches dependencies only through unix sockets and redirected ports. Needs Linux, root and NET_ADMIN."`
 	Serve   serveCommand   `cmd:"" help:"Run the SPECTRE server, which mirrors stream their states to."`
 	Gen     genCommand     `cmd:"" help:"Generate TypeScript schema declarations and the script API."`
 	Status  statusCommand  `cmd:"" help:"List the mirrors reporting to the SPECTRE server and the divergences they reported, or clear divergences."`

@@ -11,15 +11,19 @@ import (
 // tableName names the packet filter table that holds every rule contain installs.
 const tableName = "spectre"
 
-// Apply rejects the configured user's IP traffic, replacing any rules a previous
-// run installed, so running it again gives the same result.
+// Apply rejects the configured user's IP traffic and redirects the configured
+// connections, replacing any rules a previous run installed.
 func Apply(ctx context.Context, config Config) error {
 	if err := config.Validate(); err != nil {
 		return err
 	}
-	if err := install(config.UID); err != nil {
+	if err := install(config); err != nil {
 		return errors.WithStack(err)
 	}
-	logger.FromContext(ctx).InfoContext(ctx, "Rejecting IP traffic", "uid", config.UID, "table", tableName)
+	redirects := make([]string, 0, len(config.Redirects))
+	for _, redirect := range config.Redirects {
+		redirects = append(redirects, redirect.String())
+	}
+	logger.FromContext(ctx).InfoContext(ctx, "Rejecting IP traffic", "uid", config.UID, "redirects", redirects, "table", tableName)
 	return nil
 }
