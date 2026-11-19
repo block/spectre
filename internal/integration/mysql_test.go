@@ -118,11 +118,29 @@ func TestMySQLCandidateReplaysTheReferenceDatabaseError(t *testing.T) {
 	m.MySQL().ExpectStatements(map[string]uint64{"SELECT `id` FROM `missing`": 1})
 }
 
-func TestMySQLReferenceAuthenticatesWithTheDatabase(t *testing.T) {
+func TestMySQLReferenceConnectsWithTheProxyCredentials(t *testing.T) {
 	m := startOrdersMirror(t)
 
-	err := m.MySQL().OpenReference("root", "wrong").PingContext(t.Context())
-	assert.Contains(t, err.Error(), "Error 1045 (28000): Access denied for user 'root'")
+	// The proxy accepts credentials the database does not know, which never reach it.
+	assert.NoError(t, m.MySQL().OpenReference().PingContext(t.Context()))
+}
+
+func TestMySQLReferenceGetsTheDatabaseRefusal(t *testing.T) {
+	m := startOrdersMirror(t)
+
+	m.MySQL().SetProxyPassword("wrong")
+	err := m.MySQL().OpenReference().PingContext(t.Context())
+	assert.Contains(t, err.Error(), "Error 1045 (28000): Access denied for user 'it_")
+}
+
+func TestMySQLProxyReadsTheRotatedPassword(t *testing.T) {
+	m := startOrdersMirror(t)
+
+	m.MySQL().RotatePassword("rotated")
+	err := m.MySQL().OpenReference().PingContext(t.Context())
+	assert.Contains(t, err.Error(), "Error 1045 (28000): Access denied for user 'it_")
+	m.MySQL().SetProxyPassword("rotated")
+	assert.NoError(t, m.MySQL().OpenReference().PingContext(t.Context()))
 }
 
 func TestMySQLReferencePreparedStatementsOnlyReachTheDatabase(t *testing.T) {

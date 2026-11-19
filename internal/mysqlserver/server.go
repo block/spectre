@@ -39,6 +39,7 @@ type Server struct {
 	// candidateWire accepts any candidate credentials. Reference connections each get their own.
 	candidateWire *server.Server
 	upstreamTLS   Option[*tls.Config]
+	credentials   credentialSource
 	reference     protocol.Acceptor
 	candidate     protocol.Acceptor
 	candidates    *proxy.Candidates
@@ -69,6 +70,7 @@ func New(config Config, normaliser normaliser.Normaliser, engine *protocol.Engin
 		upstream:      config.Upstream,
 		candidateWire: newWire(acceptAny{}),
 		upstreamTLS:   upstreamTLS,
+		credentials:   newCredentialSource(config),
 		reference:     engine.EgressReference(Protocol),
 		candidate:     engine.EgressCandidate(Protocol),
 		candidates:    candidates,
@@ -126,12 +128,31 @@ func newWire(provider server.AuthenticationProvider) *server.Server {
 	return server.NewServerWithAuth(serverVersion, mysql.DEFAULT_COLLATION_ID, mysql.AUTH_NATIVE_PASSWORD, nil, nil, provider)
 }
 
-// serveReference asks a reference connection for its password in clear text, and
-// connects to the database with the reference's own credentials.
+// serveReference accepts a reference connection with any credentials, and connects
+// to the database with the proxy's own.
 func (s *Server) serveReference(ctx context.Context, conn net.Conn) {
 	handler := newReferenceConn(ctx, s, s.normaliser.NewSession())
 	defer handler.close()
-	s.serve(ctx, conn, newWire(handler), newAnyUser(mysql.AUTH_CLEAR_PASSWORD), handler)
+	s.serve(ctx, conn, newWire(handler), anyUser{}, handler)
+}
+
+// connect connects to the database with the proxy's credentials, reading them again
+// once when the database refuses them, as it does after they rotate.
+func (s *Server) connect(ctx context.Context, database string) (*client.Conn, error) {
+	upstream, err := s.dialWith(ctx, false, database)
+	if reported, ok := errors.AsType[*mysql.MyError](err); !ok || reported.Code != mysql.ER_ACCESS_DENIED_ERROR {
+		return upstream, err
+	}
+	return s.dialWith(ctx, true, database)
+}
+
+// dialWith connects to the database with the credentials, read again when stale.
+func (s *Server) dialWith(ctx context.Context, stale bool, database string) (*client.Conn, error) {
+	login, err := s.credentials(ctx, stale)
+	if err != nil {
+		return nil, err
+	}
+	return s.dial(ctx, login.user, login.password, database)
 }
 
 // dial connects to the database as user, with the database selected if one is named.
@@ -150,7 +171,7 @@ func (s *Server) dial(ctx context.Context, user, password, database string) (*cl
 // serveCandidate answers a candidate connection without a database.
 func (s *Server) serveCandidate(ctx context.Context, conn net.Conn) {
 	handler := newCandidateConn(ctx, s, s.normaliser.NewSession())
-	s.serve(ctx, conn, s.candidateWire, newAnyUser(mysql.AUTH_NATIVE_PASSWORD), handler)
+	s.serve(ctx, conn, s.candidateWire, anyUser{}, handler)
 }
 
 // serve runs the wire protocol on a connection until it closes.

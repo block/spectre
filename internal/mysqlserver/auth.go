@@ -11,20 +11,14 @@ import (
 	"github.com/go-mysql-org/go-mysql/server"
 )
 
-// anyUser asks every user for a password with its plugin, and leaves checking the
-// password to the server's authentication provider.
-type anyUser struct {
-	plugin string
-}
-
-func newAnyUser(plugin string) anyUser {
-	return anyUser{plugin: plugin}
-}
+// anyUser asks every user for a native password, and leaves checking it to the
+// server's authentication provider.
+type anyUser struct{}
 
 // GetCredential finds every user.
-func (a anyUser) GetCredential(_ string) (credential server.Credential, found bool, err error) {
+func (anyUser) GetCredential(_ string) (credential server.Credential, found bool, err error) {
 	// The wire library needs a password, which the provider never compares.
-	return server.Credential{Passwords: []string{"unused"}, AuthPluginName: a.plugin}, true, nil
+	return server.Credential{Passwords: []string{"unused"}, AuthPluginName: mysql.AUTH_NATIVE_PASSWORD}, true, nil
 }
 
 // OnAuthSuccess accepts every authenticated connection.
@@ -35,7 +29,8 @@ func (anyUser) OnAuthSuccess(_ *server.Conn) error {
 // OnAuthFailure leaves reporting failures to the provider.
 func (anyUser) OnAuthFailure(_ *server.Conn, _ error) {}
 
-// acceptAny authenticates every candidate connection, which never reaches a database.
+// acceptAny authenticates every connection. A reference reaches the database with
+// the proxy's credentials, and a candidate never does.
 type acceptAny struct{}
 
 // Authenticate accepts any password.

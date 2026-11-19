@@ -1,7 +1,6 @@
 package mysqlserver
 
 import (
-	"bytes"
 	"context"
 	"strings"
 
@@ -20,7 +19,7 @@ import (
 type referenceConn struct {
 	ctx    context.Context //nolint:containedctx // The wire library's handler methods take no context.
 	server *Server
-	// upstream is connected when the reference authenticates, with its own credentials.
+	// upstream is connected when the reference authenticates, with the proxy's credentials.
 	upstream Option[*client.Conn]
 	// database is the one the reference selected while connecting.
 	database string
@@ -31,22 +30,21 @@ func newReferenceConn(ctx context.Context, server *Server, session normaliser.Se
 	return &referenceConn{ctx: ctx, server: server, session: session}
 }
 
-// Validate supports the native passwords the handshake starts with, and the clear
-// passwords that it switches to.
+// Validate supports native passwords, which need neither TLS nor a key pair.
 func (r *referenceConn) Validate(plugin string) bool {
-	return plugin == mysql.AUTH_NATIVE_PASSWORD || plugin == mysql.AUTH_CLEAR_PASSWORD
+	return plugin == mysql.AUTH_NATIVE_PASSWORD
 }
 
-// Authenticate connects to the database with the reference's credentials, so the
-// database decides. A refusal is the database's own error.
-func (r *referenceConn) Authenticate(conn *server.Conn, plugin string, password []byte) error {
-	if plugin != mysql.AUTH_CLEAR_PASSWORD {
-		return server.ErrAccessDenied
-	}
-	upstream, err := r.server.dial(r.ctx, conn.GetUser(), string(bytes.TrimSuffix(password, []byte{0})), r.database)
+// Authenticate accepts any credentials, and connects to the database with the
+// proxy's own. A refusal is the database's own error.
+func (r *referenceConn) Authenticate(_ *server.Conn, _ string, _ []byte) error {
+	upstream, err := r.server.connect(r.ctx, r.database)
 	if err != nil {
-		logger.FromContext(r.ctx).WarnContext(r.ctx, "Reference connection has no database", "user", conn.GetUser(), "error", err)
-		return databaseError(err)
+		logger.FromContext(r.ctx).WarnContext(r.ctx, "Reference connection has no database", "error", err)
+		if reported, ok := errors.AsType[*mysql.MyError](err); ok {
+			return reported
+		}
+		return mysql.NewError(mysql.ER_UNKNOWN_ERROR, "SPECTRE: the proxy cannot connect to the database")
 	}
 	r.upstream = Some(upstream)
 	if r.database != "" {

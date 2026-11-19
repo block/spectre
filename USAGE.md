@@ -308,13 +308,21 @@ reference connects to `--mysql-reference-listen` and the candidate to
 `--mysql-candidate-listen`, both without TLS. Both listeners must be on a
 loopback address or a unix socket.
 
-The proxy asks the reference for its password in clear text, with
-`mysql_clear_password`, and connects to the server with the reference's own
-user and password. The reference's client must allow clear text passwords,
-such as `enable_cleartext_plugin` in Ruby's `mysql2` or
-`allowCleartextPasswords` in Go's MySQL driver. The server's own error, such as
-access denied, is the reference's answer. The candidate connects with
-`mysql_native_password` and any user and password.
+Both listeners accept any user and password with `mysql_native_password`, so
+services need no secret and no TLS to reach them. The proxy connects each
+reference connection to the server with its own credentials, set one of two
+ways:
+
+- `--mysql-upstream-user=USER` with `--mysql-upstream-password-file=FILE`. The
+  file is read for every connection, so it can be rotated.
+- `--mysql-upstream-secret=ID`, an AWS Secrets Manager secret holding JSON with
+  `username` and `password`, as kept for RDS databases. The proxy reads it with
+  the AWS credentials and region of its environment, keeps it, and reads it
+  again when the server refuses it, as it does after rotation.
+
+The server's own error, such as access denied, is the reference's answer. The
+candidate never reaches the server. Because the reference listener connects any
+client with the proxy's credentials, only the reference may be able to reach it.
 
 Set `--mysql-upstream-ca=FILE` to connect to the server with TLS. The proxy
 verifies that the server's certificate chains to an authority in the PEM file,
