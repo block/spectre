@@ -68,9 +68,8 @@ func redirectRules(redirects []Redirect) [][]expr.Any {
 	return rules
 }
 
-// rules accept the user's packets on established connections, such as replies to
-// connections opened to it, and on its redirected connections, and reject the rest
-// as if nothing were listening.
+// rules accept the user's packets on established and redirected connections, and
+// reject the rest as if nothing were listening.
 func rules(config Config) [][]expr.Any {
 	established := binaryutil.NativeEndian.PutUint32(expr.CtStateBitESTABLISHED | expr.CtStateBitRELATED)
 	none := binaryutil.NativeEndian.PutUint32(0)
