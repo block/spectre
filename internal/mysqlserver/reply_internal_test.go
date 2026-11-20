@@ -2,10 +2,12 @@ package mysqlserver
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"testing"
 
 	"github.com/alecthomas/assert/v2"
+	"github.com/alecthomas/errors"
 	. "github.com/alecthomas/types/optional"
 	"github.com/go-mysql-org/go-mysql/mysql"
 
@@ -146,6 +148,29 @@ func TestRepliesBeingReadHoldTheBudgetUntilTheConnectionEnds(t *testing.T) {
 	assert.False(t, budget.Reserve(budget.Limit()))
 	observer.close()
 	assert.True(t, budget.Reserve(budget.Limit()))
+}
+
+// A script fails to split the reference's reply, so nothing is offered, and the reply
+// gives back what it held of the budget.
+func TestRepliesThatAreNotOfferedReturnTheBudget(t *testing.T) {
+	server, budget := budgetedServer()
+	observer := newObserver(t.Context(), server, failingSession{}, mysql.CLIENT_PROTOCOL_41|mysql.CLIENT_DEPRECATE_EOF)
+
+	observer.sent(append([]byte{mysql.COM_QUERY}, "SELECT id, sku FROM items"...), true)
+	receive(observer, packetsOf(items, 0, true))
+
+	assert.True(t, budget.Reserve(budget.Limit()))
+}
+
+// failingSession cannot offer any reference reply.
+type failingSession struct{}
+
+func (failingSession) Reference(context.Context, normaliser.Command, normaliser.Reply) ([]normaliser.Unit, error) {
+	return nil, errors.New("script threw")
+}
+
+func (failingSession) Candidate(context.Context, normaliser.Command, normaliser.Claim) (normaliser.Reply, error) { //nolint:ireturn // Replies are a sum type.
+	return nil, errors.New("failing sessions only follow the reference")
 }
 
 func TestSavedRepliesHoldTheirSizeUntilReleased(t *testing.T) {

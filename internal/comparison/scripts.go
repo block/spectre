@@ -155,11 +155,11 @@ func (s *Scripts) StatementReplacements() []javascript.StatementReplacement {
 func (s *Scripts) CombineStatements(ctx context.Context, replacement javascript.StatementReplacement, values []Option[string],
 	claims []javascript.Claim,
 ) ([]javascript.Row, error) {
-	evaluator, err := s.program.NewEvaluator(ctx)
+	evaluator, closer, err := s.statementEvaluator(ctx)
 	if err != nil {
-		return nil, errors.Wrap(err, "initialise JavaScript evaluator")
+		return nil, err
 	}
-	defer evaluator.Close()
+	defer closer()
 	return errors.WithStack2(evaluator.CombineStatements(s.timeout, replacement, values, claims))
 }
 
@@ -167,12 +167,32 @@ func (s *Scripts) CombineStatements(ctx context.Context, replacement javascript.
 func (s *Scripts) SplitStatement(ctx context.Context, replacement javascript.StatementReplacement, values []Option[string],
 	rows []javascript.Row, offer javascript.Offer,
 ) error {
-	evaluator, err := s.program.NewEvaluator(ctx)
+	evaluator, closer, err := s.statementEvaluator(ctx)
 	if err != nil {
-		return errors.Wrap(err, "initialise JavaScript evaluator")
+		return err
 	}
-	defer evaluator.Close()
+	defer closer()
 	return errors.WithStack(evaluator.SplitStatement(s.timeout, replacement, values, rows, offer))
+}
+
+// statementEvaluator starts an evaluator within the comparison timeout, and returns it
+// with what closes it. Only a slow start ends its context, so claims are never interrupted.
+func (s *Scripts) statementEvaluator(ctx context.Context) (evaluator *javascript.Evaluator, closer func(), err error) {
+	ctx, cancel := context.WithCancel(ctx)
+	limit := time.AfterFunc(s.timeout, cancel)
+	evaluator, err = s.program.NewEvaluator(ctx)
+	if !limit.Stop() && err == nil {
+		evaluator.Close()
+		err = context.DeadlineExceeded
+	}
+	if err != nil {
+		cancel()
+		return nil, nil, errors.Wrap(err, "initialise JavaScript evaluator")
+	}
+	return evaluator, func() {
+		evaluator.Close()
+		cancel()
+	}, nil
 }
 
 // SelectRule returns the first rule that selects a response. rules must be in

@@ -129,7 +129,8 @@ func (o *observer) units(sent sentCommand, reply normaliser.Reply,
 		units, err := o.session.Reference(o.ctx, o.server.command(sent.code, sent.text), reply)
 		if err != nil {
 			logger.FromContext(o.ctx).WarnContext(o.ctx, "Reference command is not offered", "event", logger.EventCorrelation, "reason", err)
-			return
+			// use still gets no units, so the reply's hold on the budget is returned.
+			units = nil
 		}
 		use(o.ctx, units)
 	}
