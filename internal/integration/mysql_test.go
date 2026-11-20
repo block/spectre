@@ -162,7 +162,7 @@ const unusedJoinScript = `
 	import { egress } from "spectre";
 
 	egress.mysql
-	  .statements(
+	  .statement(
 	    "SELECT o.id, o.label, i.id AS item, i.sku, i.quantity FROM orders o " +
 	      "LEFT JOIN items i ON i.order_id = o.id WHERE o.merchant_id = ? ORDER BY o.id, i.id",
 	  )
@@ -220,20 +220,27 @@ func TestMySQLCandidateJoinReplacesTheReferenceStatements(t *testing.T) {
 	m := startOrdersMirror(t, it.Candidate(joinedOrdersService()), it.Scripts(`
 		import { egress } from "spectre";
 
+		interface Order { id: string; label: string }
+		interface Item { id: string; sku: string | null; quantity: string }
+
 		egress.mysql
-		  .statements(
+		  .statement(
 		    "SELECT o.id, o.label, i.id AS item, i.sku, i.quantity FROM orders o " +
 		      "LEFT JOIN items i ON i.order_id = o.id WHERE o.merchant_id = ? ORDER BY o.id, i.id",
 		  )
-		  .replaces("SELECT id, label FROM orders WHERE merchant_id = ? ORDER BY id", "SELECT id, sku, quantity FROM items WHERE order_id = ? ORDER BY id")
-		  .using(([merchant], [orders, items]) =>
-		    orders([merchant]).flatMap((order) => {
-		      const columns = { "o.id": order.id, "o.label": order.label };
-		      const found = items([order.id]);
-		      if (found.length === 0) return [{ ...columns, item: null, "i.sku": null, "i.quantity": null }];
-		      return found.map((item) => ({ ...columns, item: item.id, "i.sku": item.sku, "i.quantity": item.quantity }));
-		    }),
-		  );
+		  .replaces<[Order, Item]>(
+		    "SELECT id, label FROM orders WHERE merchant_id = ? ORDER BY id",
+		    "SELECT id, sku, quantity FROM items WHERE order_id = ? ORDER BY id",
+		  )
+		  .using(([merchant], [orders, items]) => {
+		    const rows = [];
+		    for (const order of orders(merchant)) {
+		      const found = items(order.id);
+		      if (found.length === 0) rows.push({ id: order.id, label: order.label, item: null, sku: null, quantity: null });
+		      for (const item of found) rows.push({ id: order.id, label: order.label, item: item.id, sku: item.sku, quantity: item.quantity });
+		    }
+		    return rows;
+		  });
 	`))
 
 	m.Ingress.Get("/merchants/1/orders").ExpectStatus(http.StatusOK).ExpectBodyContains(merchantOneOrders)
@@ -247,26 +254,32 @@ func TestMySQLCandidateJoinReplacesTheReferenceStatements(t *testing.T) {
 // reads the orders, then each order's items (N+1).
 func TestMySQLCandidateStatementsReplaceTheReferenceJoin(t *testing.T) {
 	m := startOrdersMirror(t, it.Reference(joinedOrdersService()), it.Scripts(`
-		import { egress, type Row } from "spectre";
+		import { egress } from "spectre";
+
+		interface Order { id: string; label: string }
+		interface Item { id: string; sku: string | null; quantity: string }
+		interface OrderItem { id: string; label: string; item: string | null; sku: string | null; quantity: string | null }
 
 		egress.mysql
-		  .statements("SELECT id, label FROM orders WHERE merchant_id = ? ORDER BY id", "SELECT id, sku, quantity FROM items WHERE order_id = ? ORDER BY id")
-		  .replaces(
+		  .statements<[Order, Item]>(
+		    "SELECT id, label FROM orders WHERE merchant_id = ? ORDER BY id",
+		    "SELECT id, sku, quantity FROM items WHERE order_id = ? ORDER BY id",
+		  )
+		  .replaces<OrderItem>(
 		    "SELECT o.id, o.label, i.id AS item, i.sku, i.quantity FROM orders o " +
 		      "LEFT JOIN items i ON i.order_id = o.id WHERE o.merchant_id = ? ORDER BY o.id, i.id",
 		  )
 		  .using(([merchant], rows, [orders, items]) => {
-		    const labels = new Map<string, string | null>();
-		    const found = new Map<string, Row[]>();
+		    const labels = new Map<string, string>();
+		    const found = new Map<string, Item[]>();
 		    for (const row of rows) {
-		      const order = row["o.id"]!;
-		      labels.set(order, row["o.label"]);
-		      const list = found.get(order) ?? [];
-		      if (row.item !== null) list.push({ id: row.item, sku: row["i.sku"], quantity: row["i.quantity"] });
-		      found.set(order, list);
+		      labels.set(row.id, row.label);
+		      const list = found.get(row.id) ?? [];
+		      if (row.item !== null) list.push({ id: row.item, sku: row.sku, quantity: row.quantity! });
+		      found.set(row.id, list);
 		    }
-		    orders([merchant], [...labels].map(([id, label]) => ({ id, label })));
-		    for (const [order, list] of found) items([order], list);
+		    orders(merchant, [...labels].map(([id, label]) => ({ id, label })));
+		    for (const [order, list] of found) items(order, list);
 		  });
 	`))
 
@@ -287,23 +300,26 @@ func TestMySQLCandidateGroupByReplacesTheReferenceRows(t *testing.T) {
 
 			ingress.http("GET /merchants/{merchant}/totals").match<MerchantTotals>();
 
+			interface Quantity { order_id: string; quantity: string }
+			interface Total { order_id: string; line_count: string; total: string }
+
 			egress.mysql
-			  .statements(
+			  .statement<Total>(
 			    "SELECT i.order_id, COUNT(*) AS line_count, SUM(i.quantity) AS total FROM items i " +
 			      "JOIN orders o ON o.id = i.order_id WHERE o.merchant_id = ? GROUP BY i.order_id ORDER BY i.order_id",
 			  )
-			  .replaces("SELECT i.order_id, i.quantity FROM items i JOIN orders o ON o.id = i.order_id WHERE o.merchant_id = ?")
+			  .replaces<[Quantity]>("SELECT i.order_id, i.quantity FROM items i JOIN orders o ON o.id = i.order_id WHERE o.merchant_id = ?")
 			  .using(([merchant], [quantitiesOf]) => {
 			    const groups = new Map<string, { lines: number; total: number }>();
-			    for (const row of quantitiesOf([merchant])) {
-			      const group = groups.get(row["i.order_id"]!) ?? { lines: 0, total: 0 };
+			    for (const row of quantitiesOf(merchant)) {
+			      const group = groups.get(row.order_id) ?? { lines: 0, total: 0 };
 			      group.lines += 1;
-			      group.total += Number(row["i.quantity"]);
-			      groups.set(row["i.order_id"]!, group);
+			      group.total += Number(row.quantity);
+			      groups.set(row.order_id, group);
 			    }
 			    return [...groups]
 			      .sort(([left], [right]) => Number(left) - Number(right))
-			      .map(([order, { lines, total }]) => ({ "i.order_id": order, line_count: String(lines), total: String(total) }));
+			      .map(([order, { lines, total }]) => ({ order_id: order, line_count: String(lines), total: String(total) }));
 			  });
 		`))
 
@@ -326,23 +342,23 @@ func TestMySQLCandidateGroupByGetsTheReplyTheDatabaseWouldSend(t *testing.T) {
 		import { egress, type Row } from "spectre";
 
 		egress.mysql
-		  .statements("`+grouped+`")
+		  .statement("`+grouped+`")
 		  .replaces("`+items+`")
 		  .using(([merchant], [itemsOf]) => {
 		    const groups = new Map<string, Row[]>();
-		    for (const row of itemsOf([merchant])) groups.set(row["i.order_id"]!, [...(groups.get(row["i.order_id"]!) ?? []), row]);
+		    for (const row of itemsOf(merchant)) groups.set(row.order_id!, [...(groups.get(row.order_id!) ?? []), row]);
 		    return [...groups]
 		      .sort(([left], [right]) => Number(left) - Number(right))
 		      .map(([order, rows]) => {
-		        const total = rows.reduce((sum, row) => sum + Number(row["i.quantity"]), 0);
-		        const skus = rows.flatMap((row) => (row["i.sku"] === null ? [] : [row["i.sku"]])).sort();
+		        const total = rows.reduce((sum, row) => sum + Number(row.quantity), 0);
+		        const skus = rows.flatMap((row) => (row.sku === null ? [] : [row.sku!])).sort();
 		        return {
-		          "i.order_id": order,
+		          order_id: order,
 		          line_count: String(rows.length),
 		          total: String(total),
 		          average: (total / rows.length).toFixed(4),
 		          first_sku: skus[0] ?? null,
-		          last_item: String(Math.max(...rows.map((row) => Number(row["i.id"])))),
+		          last_item: String(Math.max(...rows.map((row) => Number(row.id)))),
 		        };
 		      });
 		  });
@@ -381,23 +397,25 @@ func TestMySQLCandidateSelfJoinGetsTheReplyTheDatabaseWouldSend(t *testing.T) {
 	m := startStaffMirror(t, `
 		import { egress } from "spectre";
 
+		interface Employee { id: string; name: string; manager_id: string | null }
+		interface Department { name: string }
+		interface Staff { id: string; name: string; manager_id: string | null; manager: string | null; department: string }
+
 		egress.mysql
-		  .statements("`+staff+`")
-		  .replaces("`+employees+`", "`+department+`", "`+employee+`")
+		  .statement<Staff>("`+staff+`")
+		  .replaces<[Employee, Department, Pick<Employee, "id" | "name">]>("`+employees+`", "`+department+`", "`+employee+`")
 		  .using(([department], [inDepartment, departmentNamed, employee]) => {
-		    const employees = inDepartment([department]);
-		    const [named] = departmentNamed([department]);
+		    const employees = inDepartment(department);
+		    const [named] = departmentNamed(department);
 		    const managers = new Map<string, string | null>();
 		    for (const row of employees) {
 		      if (row.manager_id !== null && !managers.has(row.manager_id)) {
-		        managers.set(row.manager_id, employee([row.manager_id])[0]?.name ?? null);
+		        managers.set(row.manager_id, employee(row.manager_id)[0]?.name ?? null);
 		      }
 		    }
 		    if (!named) return [];
 		    return employees.map((row) => ({
-		      "e.id": row.id,
-		      "e.name": row.name,
-		      "e.manager_id": row.manager_id,
+		      ...row,
 		      manager: row.manager_id === null ? null : managers.get(row.manager_id)!,
 		      department: named.name,
 		    }));
@@ -445,16 +463,20 @@ func TestMySQLCandidateStatementsGetTheRepliesTheDatabaseWouldSendFromASelfJoin(
 	m := startStaffMirror(t, `
 		import { egress } from "spectre";
 
+		interface Employee { id: string; name: string; manager_id: string | null }
+		interface Department { name: string }
+		interface Staff { id: string; name: string; manager_id: string | null; manager: string | null; department: string }
+
 		egress.mysql
-		  .statements("`+employees+`", "`+department+`", "`+employee+`")
-		  .replaces("`+staff+`")
+		  .statements<[Employee, Department, Pick<Employee, "id" | "name">]>("`+employees+`", "`+department+`", "`+employee+`")
+		  .replaces<Staff>("`+staff+`")
 		  .using(([department], rows, [inDepartment, departmentNamed, employee]) => {
-		    inDepartment([department], rows.map((row) => ({ id: row["e.id"], name: row["e.name"], manager_id: row["e.manager_id"] })));
-		    if (rows.length > 0) departmentNamed([department], [{ name: rows[0]!.department }]);
+		    inDepartment(department, rows.map(({ id, name, manager_id }) => ({ id, name, manager_id })));
+		    if (rows.length > 0) departmentNamed(department, [{ name: rows[0]!.department }]);
 		    const managers = new Map<string, string | null>();
-		    for (const row of rows) if (row["e.manager_id"] !== null) managers.set(row["e.manager_id"], row.manager);
+		    for (const row of rows) if (row.manager_id !== null) managers.set(row.manager_id, row.manager);
 		    // name is NOT NULL, so a NULL manager name means the manager row doesn't exist.
-		    for (const [id, name] of managers) employee([id], name === null ? [] : [{ id, name }]);
+		    for (const [id, name] of managers) employee(id, name === null ? [] : [{ id, name }]);
 		  });
 	`)
 

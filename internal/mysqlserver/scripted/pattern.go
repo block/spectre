@@ -46,7 +46,7 @@ func newPattern(statements *normaliser.Parser, text string) (pattern, error) {
 			return pattern{}, errors.Wrapf(err, "pattern %q", text)
 		}
 		if labels[resolved.label()] {
-			return pattern{}, errors.Errorf("pattern %q selects two columns labelled %q, so script rows cannot hold both", text, resolved.label())
+			return pattern{}, errors.Errorf("pattern %q selects two columns named %q, so script rows cannot hold both; name one with AS", text, resolved.label())
 		}
 		labels[resolved.label()] = true
 		fields = append(fields, resolved)
@@ -133,9 +133,8 @@ func (p pattern) definitions(columns []normaliser.Column) []normaliser.Column {
 
 // field is one selected column of a pattern.
 type field struct {
-	// labelled names the column in script rows: the AS name, or the column as written.
-	labelled string
-	// name and table name the column in replies.
+	// name names the column in replies and script rows: the AS name, or the column's own.
+	// table is the table it is from, as the statement calls it.
 	name, table string
 	// origin is the table and column it was selected from, when it is a column.
 	origin Option[origin]
@@ -156,20 +155,16 @@ func newField(selected *ast.SelectField, tables map[string]table) (field, error)
 		if selected.AsName.O != "" {
 			name = selected.AsName.O
 		}
-		resolved := field{labelled: name, name: name}
+		resolved := field{name: name}
 		if function, ok := selected.Expr.(*ast.AggregateFuncExpr); ok {
 			resolved.aggregate = Some(newAggregate(function, tables))
 		}
 		return resolved, nil
 	}
 	source, from := originOf(column, tables)
-	qualifier, name := column.Name.Table.O, column.Name.Name.O
-	resolved := field{labelled: name, name: name, table: from.alias, origin: Some(source), nullable: from.outer}
-	if qualifier != "" {
-		resolved.labelled = qualifier + "." + name
-	}
+	resolved := field{name: column.Name.Name.O, table: from.alias, origin: Some(source), nullable: from.outer}
 	if selected.AsName.O != "" {
-		resolved.labelled, resolved.name = selected.AsName.O, selected.AsName.O
+		resolved.name = selected.AsName.O
 	}
 	return resolved, nil
 }
@@ -179,9 +174,9 @@ func (f field) outerJoined() bool {
 	return f.nullable
 }
 
-// label names the column in script rows.
+// label names the column in script rows, as MySQL names it in replies.
 func (f field) label() string {
-	return f.labelled
+	return f.name
 }
 
 // column is the definition of the field's column: the source column it was selected from,

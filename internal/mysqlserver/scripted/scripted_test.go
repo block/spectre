@@ -27,29 +27,36 @@ const (
 	joinStatement     = "SELECT o.id, o.label, i.id AS item, i.sku FROM orders o LEFT JOIN items i ON i.order_id = o.id WHERE o.merchant_id = ? ORDER BY o.id, i.id"
 )
 
-const combineScript = `
-	egress.mysql.statements("` + joinStatement + `").replaces("` + ordersStatement + `", "` + itemsStatement + `").using(
-		([merchant], [orders, items]) => orders([merchant]).flatMap((order) => {
-			const found = items([order.id]);
-			if (found.length === 0) return [{ "o.id": order.id, "o.label": order.label, item: null, "i.sku": null }];
-			return found.map((item) => ({ "o.id": order.id, "o.label": order.label, item: item.id, "i.sku": item.sku }));
+// rowTypes are the rows of the orders, items and join statements.
+const rowTypes = `
+	interface Order { id: string; label: string | null }
+	interface Item { id: string; sku: string | null }
+	interface Joined { id: string; label: string | null; item: string | null; sku: string | null }
+`
+
+const combineScript = rowTypes + `
+	egress.mysql.statement<Joined>("` + joinStatement + `").replaces<[Order, Item]>("` + ordersStatement + `", "` + itemsStatement + `").using(
+		([merchant], [orders, items]) => orders(merchant).flatMap((order): Joined[] => {
+			const found = items(order.id);
+			if (found.length === 0) return [{ id: order.id, label: order.label, item: null, sku: null }];
+			return found.map((item) => ({ id: order.id, label: order.label, item: item.id, sku: item.sku }));
 		}),
 	);
 `
 
-const splitScript = `
-	egress.mysql.statements("` + ordersStatement + `", "` + itemsStatement + `").replaces("` + joinStatement + `").using(
+const splitScript = rowTypes + `
+	egress.mysql.statements<[Order, Item]>("` + ordersStatement + `", "` + itemsStatement + `").replaces<Joined>("` + joinStatement + `").using(
 		([merchant], rows, [orders, items]) => {
 			const labels = new Map<string, string | null>();
-			const found = new Map<string, Row[]>();
+			const found = new Map<string, Item[]>();
 			for (const row of rows) {
-				labels.set(row["o.id"]!, row["o.label"]);
-				const list = found.get(row["o.id"]!) ?? [];
-				if (row.item !== null) list.push({ id: row.item, sku: row["i.sku"] });
-				found.set(row["o.id"]!, list);
+				labels.set(row.id, row.label);
+				const list = found.get(row.id) ?? [];
+				if (row.item !== null) list.push({ id: row.item, sku: row.sku });
+				found.set(row.id, list);
 			}
-			orders([merchant], [...labels].map(([id, label]) => ({ id, label })));
-			for (const [order, list] of found) items([order], list);
+			orders(merchant, [...labels].map(([id, label]) => ({ id, label })));
+			for (const [order, list] of found) items(order, list);
 		},
 	);
 `
@@ -150,7 +157,7 @@ func TestOtherStatementsPairExactly(t *testing.T) {
 // The script throws while answering the candidate's JOIN.
 func TestScriptFailuresCannotBeAnswered(t *testing.T) {
 	statements := newNormaliser(t, `
-		egress.mysql.statements("`+joinStatement+`").replaces("`+ordersStatement+`").using(() => { throw new Error("boom"); });
+		egress.mysql.statement("`+joinStatement+`").replaces("`+ordersStatement+`").using(() => { throw new Error("boom"); });
 	`)
 
 	_, err := statements.NewSession().Candidate(t.Context(), parse(joinOfMerchantOne), newEngine().claim)
@@ -168,13 +175,13 @@ func TestPatternsMustNameTheirColumns(t *testing.T) {
 		"Wildcard":  {statement: "SELECT * FROM orders WHERE id = ?", message: "selects *, so its columns are unknown"},
 		"NotSelect": {statement: "DELETE FROM orders WHERE id = ?", message: "is not a SELECT statement"},
 		"Several":   {statement: "SELECT 1; SELECT 2", message: "is not one statement"},
-		"SameLabel": {
+		"SameName": {
 			statement: "SELECT e.name AS name, m.name AS name FROM employees e JOIN employees m ON m.id = e.manager_id WHERE e.id = ?",
-			message:   `selects two columns labelled "name"`,
+			message:   `selects two columns named "name"`,
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, err := scripted.New(scripts(t, `egress.mysql.statements("`+test.statement+`").replaces("SELECT 1").using(() => []);`), exact.New())
+			_, err := scripted.New(scripts(t, `egress.mysql.statement("`+test.statement+`").replaces("SELECT 1").using(() => []);`), exact.New())
 			assert.Error(t, err)
 			assert.Contains(t, err.Error(), test.message)
 		})
@@ -191,10 +198,10 @@ func TestAggregatesAreTypedAsMySQLTypesThem(t *testing.T) {
 			"FROM items i JOIN orders o ON o.id = i.order_id WHERE o.merchant_id = ? GROUP BY i.order_id"
 	)
 	statements := newNormaliser(t, `
-		egress.mysql.statements("`+totals+`").replaces("`+quantities+`").using(([merchant], [quantitiesOf]) =>
-		  quantitiesOf([merchant]).map((row) => ({
-		    "i.order_id": row["i.order_id"], line_count: "1", total: row["i.quantity"], average: row["i.quantity"] + ".0000",
-		    first_sku: row["i.sku"], last_item: row["i.id"], sku_sum: "0",
+		egress.mysql.statement("`+totals+`").replaces("`+quantities+`").using(([merchant], [quantitiesOf]) =>
+		  quantitiesOf(merchant).map((row) => ({
+		    order_id: row.order_id, line_count: "1", total: row.quantity, average: row.quantity + ".0000",
+		    first_sku: row.sku, last_item: row.id, sku_sum: "0",
 		  })));
 	`)
 	// The columns MySQL 8 sends for the quantities statement.
@@ -274,12 +281,12 @@ func TestOuterJoinedColumnsMayBeNull(t *testing.T) {
 			"LEFT JOIN employees m ON m.id = e.manager_id JOIN departments d ON d.id = e.department_id WHERE e.department_id = ? ORDER BY e.id"
 	)
 	statements := newNormaliser(t, `
-		egress.mysql.statements("`+joined+`").replaces("`+employees+`", "`+department+`", "`+employee+`").using(
+		egress.mysql.statement("`+joined+`").replaces("`+employees+`", "`+department+`", "`+employee+`").using(
 		  ([id], [inDepartment, named, byID]) => {
-		    const [{ name }] = named([id]);
-		    return inDepartment([id]).map((row) => ({
-		      "e.id": row.id, "e.name": row.name, department: name,
-		      manager: row.manager_id === null ? null : byID([row.manager_id])[0]!.name,
+		    const [{ name }] = named(id);
+		    return inDepartment(id).map((row) => ({
+		      id: row.id, name: row.name, department: name,
+		      manager: row.manager_id === null ? null : byID(row.manager_id)[0]!.name,
 		    }));
 		  });
 	`)
@@ -319,8 +326,8 @@ func TestSplitRepliesDefineColumnsAsTheirTables(t *testing.T) {
 	)
 	statements := newNormaliser(t, `
 		egress.mysql.statements("`+employees+`", "`+managers+`").replaces("`+joined+`").using(([id], rows, [inDepartment, byID]) => {
-		  inDepartment([id], rows.map((row) => ({ id: row["e.id"], name: row["e.name"] })));
-		  for (const row of rows) if (row.manager_id !== null) byID([row.manager_id], [{ id: row.manager_id, name: row.manager }]);
+		  inDepartment(id, rows.map((row) => ({ id: row.id, name: row.name })));
+		  for (const row of rows) if (row.manager_id !== null) byID(row.manager_id, [{ id: row.manager_id, name: row.manager }]);
 		});
 	`)
 	engine := newEngine()

@@ -377,7 +377,7 @@ candidate also sends.
 
 When the candidate reads the same data with different statements, for example
 one JOIN where the reference ran a statement per row, a script can declare that
-the candidate's `statements` replace the reference's. Each statement is a
+the candidate's statements replace the reference's. Each statement is a
 `SELECT` pattern with `?` in place of each value, and it must name its columns
 rather than select `*`. A statement matches a pattern when the two normalise
 alike: values, comments, spacing and case do not matter. A statement that
@@ -385,23 +385,36 @@ matches any pattern pairs by pattern and values, whichever side runs it, so the
 candidate can still run one of the reference's statements unchanged. Statements
 that match no pattern pair as before.
 
-Scripts see values and rows as text, with `null` for NULL. A row is labelled
-by each column's `AS` name, or by the column as the pattern writes it, such as
-`o.id`, so a self join keeps its tables apart by their aliases. A pattern that
-gives two columns the same label fails to load. One side lists a single statement, and that decides where `using` runs:
+Scripts see values and rows as text, with `null` for NULL. A row's fields are
+named as MySQL names the reply's columns: by each column's `AS` name, or by the
+column's own name, so `o.id` is `id`. A pattern that gives two columns the same
+name, as a self join can, fails to load until `AS` renames one. One side has a
+single statement, and that decides where `using` runs:
 
-- With one candidate statement, `using` runs for each candidate statement that
-  matches it. It receives the statement's values and one claim per reference
-  statement. A claim waits for the reference statement with the values it is
-  given, as a candidate statement would, and returns its rows. `using` returns
-  the candidate's rows.
-- With one reference statement, `using` runs for each reference statement that
-  matches it. It receives the statement's values and rows, and one offer per
-  candidate statement. An offer saves rows as the reply to the candidate
-  statement with the values it is given.
+- `egress.mysql.statement(...).replaces(...)` replaces the reference's
+  statements with one candidate statement. `using` runs for each candidate
+  statement that matches it. It receives the statement's values and one claim
+  per reference statement. A claim waits for the reference statement with the
+  values it is given, as a candidate statement would, and returns its rows.
+  `using` returns the candidate's rows.
+- `egress.mysql.statements(...).replaces(...)` replaces one reference statement
+  with the candidate's statements. `using` runs for each reference statement
+  that matches it. It receives the statement's values and rows, and one offer
+  per candidate statement. An offer saves the rows given last as the reply to
+  the candidate statement with the values given before them.
+
+Type arguments name each statement's rows: one row type for the single
+statement, and a tuple with one row type per statement for the other side.
+Without them, rows are `Row`, a record of text or `null`. Row types may only
+hold `string` and `null` fields, and a tuple must have one type per statement.
+SPECTRE does not check a row type's fields against its statement's columns.
 
 ```ts
-import { egress, type Row } from "spectre";
+import { egress } from "spectre";
+
+interface Order { id: string; label: string }
+interface Item { id: string; sku: string | null }
+interface OrderItem { id: string; label: string; item: string | null; sku: string | null }
 
 const orders = "SELECT id, label FROM orders WHERE merchant_id = ? ORDER BY id";
 const items = "SELECT id, sku FROM items WHERE order_id = ? ORDER BY id";
@@ -410,32 +423,33 @@ const join = `SELECT o.id, o.label, i.id AS item, i.sku FROM orders o
 
 // The reference reads the orders, then each order's items; the candidate joins them.
 egress.mysql
-  .statements(join)
-  .replaces(orders, items)
-  .using(([merchant], [ordersOf, itemsOf]) =>
-    ordersOf([merchant]).flatMap((order) => {
-      const columns = { "o.id": order.id, "o.label": order.label };
-      const found = itemsOf([order.id]);
-      if (found.length === 0) return [{ ...columns, item: null, "i.sku": null }];
-      return found.map((item) => ({ ...columns, item: item.id, "i.sku": item.sku }));
-    }),
-  );
+  .statement<OrderItem>(join)
+  .replaces<[Order, Item]>(orders, items)
+  .using(([merchant], [ordersOf, itemsOf]) => {
+    const rows: OrderItem[] = [];
+    for (const order of ordersOf(merchant)) {
+      const found = itemsOf(order.id);
+      if (found.length === 0) rows.push({ ...order, item: null, sku: null });
+      for (const item of found) rows.push({ ...order, item: item.id, sku: item.sku });
+    }
+    return rows;
+  });
 
 // Or the other way around: the reference joins, and the candidate reads each order's items.
 egress.mysql
-  .statements(orders, items)
-  .replaces(join)
+  .statements<[Order, Item]>(orders, items)
+  .replaces<OrderItem>(join)
   .using(([merchant], rows, [ordersOf, itemsOf]) => {
-    const labels = new Map<string, string | null>();
-    const found = new Map<string, Row[]>();
+    const labels = new Map<string, string>();
+    const found = new Map<string, Item[]>();
     for (const row of rows) {
-      labels.set(row["o.id"]!, row["o.label"]);
-      const list = found.get(row["o.id"]!) ?? [];
-      if (row.item !== null) list.push({ id: row.item, sku: row["i.sku"] });
-      found.set(row["o.id"]!, list);
+      labels.set(row.id, row.label);
+      const list = found.get(row.id) ?? [];
+      if (row.item !== null) list.push({ id: row.item, sku: row.sku });
+      found.set(row.id, list);
     }
-    ordersOf([merchant], [...labels].map(([id, label]) => ({ id, label })));
-    for (const [order, list] of found) itemsOf([order], list);
+    ordersOf(merchant, [...labels].map(([id, label]) => ({ id, label })));
+    for (const [order, list] of found) itemsOf(order, list);
   });
 ```
 

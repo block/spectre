@@ -250,7 +250,7 @@ func (e *Evaluator) CombineStatements(limit time.Duration, replacement Statement
 	functions := make([]any, 0, len(claims))
 	for _, claim := range claims {
 		functions = append(functions, func(call sobek.FunctionCall) sobek.Value {
-			claimed, err := e.statementValues(call.Argument(0))
+			claimed, err := e.statementValues(call.Arguments)
 			var rows []Row
 			if err == nil {
 				clock.pause()
@@ -288,10 +288,14 @@ func (e *Evaluator) SplitStatement(limit time.Duration, replacement StatementRep
 	functions := make([]any, 0, len(replacement.Statements()))
 	for index := range replacement.Statements() {
 		functions = append(functions, func(call sobek.FunctionCall) sobek.Value {
-			offered, err := e.statementValues(call.Argument(0))
+			var offered []Option[string]
 			var offeredRows []Row
-			if err == nil {
-				offeredRows, err = e.rows(call.Argument(1))
+			err := errors.New("offer requires rows after its values")
+			if last := len(call.Arguments) - 1; last >= 0 {
+				offered, err = e.statementValues(call.Arguments[:last])
+				if err == nil {
+					offeredRows, err = e.rows(call.Arguments[last])
+				}
 			}
 			if err == nil {
 				err = offer(index, offered, offeredRows)
@@ -340,15 +344,11 @@ func (e *Evaluator) nullable(value Option[string]) sobek.Value {
 	return sobek.Null()
 }
 
-// statementValues reads a script's array of statement values.
-func (e *Evaluator) statementValues(value sobek.Value) ([]Option[string], error) {
-	array, ok := value.Export().([]any)
-	if !ok {
-		return nil, errors.New("statement values must be an array")
-	}
-	values := make([]Option[string], 0, len(array))
-	for _, element := range array {
-		text, err := sqlText(element)
+// statementValues reads the statement values a script passes as arguments.
+func (e *Evaluator) statementValues(arguments []sobek.Value) ([]Option[string], error) {
+	values := make([]Option[string], 0, len(arguments))
+	for _, argument := range arguments {
+		text, err := sqlText(argument.Export())
 		if err != nil {
 			return nil, err
 		}

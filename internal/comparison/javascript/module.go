@@ -183,7 +183,8 @@ func newCallbackRegistry(runtime *sobek.Runtime, variables map[string]string) *c
 	egress := runtime.NewObject()
 	registry.defineMethod(egress, "egress."+string(model.ProtocolHTTP), string(model.ProtocolHTTP), registry.egressRule)
 	mysql := runtime.NewObject()
-	registry.defineMethod(mysql, "egress."+mysqlProperty+"."+statementsMethod, statementsMethod, registry.mysqlStatements)
+	registry.defineMethod(mysql, "egress."+mysqlProperty+"."+statementMethod, statementMethod, registry.mysqlStatement(true))
+	registry.defineMethod(mysql, "egress."+mysqlProperty+"."+statementsMethod, statementsMethod, registry.mysqlStatement(false))
 	if err := egress.Set(mysqlProperty, mysql); err != nil {
 		panic(runtime.NewTypeError("define spectre.egress.%s: %v", mysqlProperty, err))
 	}
@@ -227,9 +228,12 @@ const (
 	// replacesMethod and usingMethod declare a replacement; each takes two type arguments.
 	replacesMethod = "replaces"
 	usingMethod    = "using"
-	// mysqlProperty and statementsMethod start a MySQL statement replacement.
+	// mysqlProperty, statementMethod and statementsMethod start a MySQL statement replacement.
 	mysqlProperty    = "mysql"
+	statementMethod  = "statement"
 	statementsMethod = "statements"
+	// mysqlOwner prefixes the declarations of the MySQL script API, whose type arguments only check scripts.
+	mysqlOwner = "EgressMySQL"
 	// textTypeName is the type name compile inserts for the spectre Text type.
 	textTypeName = "spectre.Text"
 	// variableFunction reads a script variable and takes no type arguments.
@@ -317,32 +321,39 @@ func (r *callbackRegistry) replaceUsing(pattern string, optional bool, source st
 	r.replacers = append(r.replacers, replacementCallbacks{request: requestFunction, response: responseFunction})
 }
 
-// mysqlStatements starts a MySQL statement replacement from the candidate's statements.
-func (r *callbackRegistry) mysqlStatements(call sobek.FunctionCall) sobek.Value {
-	statements := r.patterns(call, "egress."+mysqlProperty+"."+statementsMethod)
-	object := r.runtime.NewObject()
-	r.defineMethod(object, "EgressMySQLStatements."+replacesMethod, replacesMethod, func(call sobek.FunctionCall) sobek.Value {
-		sources := r.patterns(call, "EgressMySQLStatements."+replacesMethod)
-		if len(statements) > 1 && len(sources) > 1 {
-			panic(r.runtime.NewTypeError("spectre.EgressMySQLStatements.%s needs one statement on one side", replacesMethod))
-		}
-		replacement := r.runtime.NewObject()
-		r.defineMethod(replacement, "EgressMySQLReplacement."+usingMethod, usingMethod, func(call sobek.FunctionCall) sobek.Value {
-			using, ok := sobek.AssertFunction(call.Argument(0))
-			if len(call.Arguments) != 1 || !ok {
-				panic(r.runtime.NewTypeError("spectre.EgressMySQLReplacement.%s requires a function", usingMethod))
-			}
-			r.statements = append(r.statements, newStatementReplacement(len(r.statements), statements, sources))
-			r.statementUsers = append(r.statementUsers, using)
-			return sobek.Undefined()
+// mysqlStatement starts a MySQL statement replacement. One candidate statement combines
+// the reference statements it replaces; otherwise one reference statement is split.
+func (r *callbackRegistry) mysqlStatement(combines bool) func(sobek.FunctionCall) sobek.Value {
+	method, owner := statementsMethod, "EgressMySQLStatements"
+	if combines {
+		method, owner = statementMethod, "EgressMySQLStatement"
+	}
+	return func(call sobek.FunctionCall) sobek.Value {
+		statements := r.patterns(call, "egress."+mysqlProperty+"."+method, combines)
+		object := r.runtime.NewObject()
+		r.defineMethod(object, owner+"."+replacesMethod, replacesMethod, func(call sobek.FunctionCall) sobek.Value {
+			sources := r.patterns(call, owner+"."+replacesMethod, !combines)
+			replacement := r.runtime.NewObject()
+			r.defineMethod(replacement, "EgressMySQLReplacement."+usingMethod, usingMethod, func(call sobek.FunctionCall) sobek.Value {
+				using, ok := sobek.AssertFunction(call.Argument(0))
+				if len(call.Arguments) != 1 || !ok {
+					panic(r.runtime.NewTypeError("spectre.EgressMySQLReplacement.%s requires a function", usingMethod))
+				}
+				r.statements = append(r.statements, newStatementReplacement(len(r.statements), statements, sources, combines))
+				r.statementUsers = append(r.statementUsers, using)
+				return sobek.Undefined()
+			})
+			return replacement
 		})
-		return replacement
-	})
-	return object
+		return object
+	}
 }
 
-// patterns reads a call's statement patterns, of which there must be at least one.
-func (r *callbackRegistry) patterns(call sobek.FunctionCall, qualified string) []string {
+// patterns reads a call's statement patterns: exactly one if single, otherwise at least one.
+func (r *callbackRegistry) patterns(call sobek.FunctionCall, qualified string, single bool) []string {
+	if single && len(call.Arguments) != 1 {
+		panic(r.runtime.NewTypeError("spectre.%s requires one statement", qualified))
+	}
 	if len(call.Arguments) == 0 {
 		panic(r.runtime.NewTypeError("spectre.%s requires statements", qualified))
 	}
