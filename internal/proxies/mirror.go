@@ -15,6 +15,7 @@ import (
 	"github.com/block/spectre/internal/model"
 	"github.com/block/spectre/internal/mysqlserver"
 	"github.com/block/spectre/internal/mysqlserver/exact"
+	"github.com/block/spectre/internal/mysqlserver/scripted"
 	"github.com/block/spectre/internal/netaddr"
 	"github.com/block/spectre/internal/protocol"
 	"github.com/block/spectre/internal/server/client"
@@ -202,8 +203,12 @@ func (m *Mirror) startMySQL(ctx context.Context, referenceListener, candidateLis
 	if !hasReference || !hasCandidate {
 		return errors.New("MySQL is proxied, but its listeners are not open")
 	}
+	statements, err := scripted.New(m.egress.Engine().Scripts(), exact.New())
+	if err != nil {
+		return errors.Wrap(err, "configure MySQL statement replacements")
+	}
 	// It pairs statements in the egress proxy's engine, and its quarantines are the egress proxy's.
-	server, err := mysqlserver.New(config, exact.New(), m.egress.Engine(), m.egress.Candidates())
+	server, err := mysqlserver.New(config, statements, m.egress.Engine(), m.egress.Candidates())
 	if err != nil {
 		return errors.Wrap(err, "configure MySQL")
 	}

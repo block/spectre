@@ -145,6 +145,56 @@ func (s *Scripts) replace(ctx context.Context, typeName schema.TypeRef, function
 	return translated, nil
 }
 
+// StatementReplacements returns the MySQL statement replacements in declaration order.
+func (s *Scripts) StatementReplacements() []javascript.StatementReplacement {
+	return s.program.StatementReplacements()
+}
+
+// CombineStatements answers a candidate statement from the reference statements it claims.
+// Waiting in claims does not count against the comparison timeout.
+func (s *Scripts) CombineStatements(ctx context.Context, replacement javascript.StatementReplacement, values []Option[string],
+	claims []javascript.Claim,
+) ([]javascript.Row, error) {
+	evaluator, closer, err := s.statementEvaluator(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer closer()
+	return errors.WithStack2(evaluator.CombineStatements(s.timeout, replacement, values, claims))
+}
+
+// SplitStatement offers the replies that a reference statement's reply splits into.
+func (s *Scripts) SplitStatement(ctx context.Context, replacement javascript.StatementReplacement, values []Option[string],
+	rows []javascript.Row, offer javascript.Offer,
+) error {
+	evaluator, closer, err := s.statementEvaluator(ctx)
+	if err != nil {
+		return err
+	}
+	defer closer()
+	return errors.WithStack(evaluator.SplitStatement(s.timeout, replacement, values, rows, offer))
+}
+
+// statementEvaluator starts an evaluator within the comparison timeout, and returns it
+// with what closes it. Only a slow start ends its context, so claims are never interrupted.
+func (s *Scripts) statementEvaluator(ctx context.Context) (evaluator *javascript.Evaluator, closer func(), err error) {
+	ctx, cancel := context.WithCancel(ctx)
+	limit := time.AfterFunc(s.timeout, cancel)
+	evaluator, err = s.program.NewEvaluator(ctx)
+	if !limit.Stop() && err == nil {
+		evaluator.Close()
+		err = context.DeadlineExceeded
+	}
+	if err != nil {
+		cancel()
+		return nil, nil, errors.Wrap(err, "initialise JavaScript evaluator")
+	}
+	return evaluator, func() {
+		evaluator.Close()
+		cancel()
+	}, nil
+}
+
 // SelectRule returns the first rule that selects a response. rules must be in
 // declaration order, and the request must match each rule's pattern, if it has one.
 func (s *Scripts) SelectRule(ctx context.Context, rules []javascript.Rule, request javascript.Request, response javascript.Response) (Option[javascript.Rule], error) {

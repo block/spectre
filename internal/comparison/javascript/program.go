@@ -37,6 +37,7 @@ type Program struct {
 	endpoints    []Endpoint
 	rules        []Rule
 	replacements []Replacement
+	statements   []StatementReplacement
 	fields       []FieldTarget
 	messages     []schema.TypeRef
 }
@@ -78,6 +79,7 @@ func NewProgram(ctx context.Context, evaluationTimeout time.Duration, declaratio
 		endpoints:    registered.endpoints,
 		rules:        registered.rules,
 		replacements: registered.replacements,
+		statements:   registered.statements,
 		fields:       registered.fields,
 		messages:     registered.messages,
 	}, nil
@@ -136,6 +138,11 @@ func (p *Program) Replacements() []Replacement {
 	return slices.Clone(p.replacements)
 }
 
+// StatementReplacements returns the MySQL statement replacements in declaration order.
+func (p *Program) StatementReplacements() []StatementReplacement {
+	return slices.Clone(p.statements)
+}
+
 // Fields returns the declared type names and JSON field paths, sorted by type then path.
 func (p *Program) Fields() []FieldTarget {
 	return slices.Clone(p.fields)
@@ -156,6 +163,7 @@ func (p *Program) NewEvaluator(ctx context.Context) (*Evaluator, error) {
 	if !slices.Equal(registered.endpoints, p.endpoints) ||
 		!reflect.DeepEqual(registered.rules, p.rules) ||
 		!slices.Equal(registered.replacements, p.replacements) ||
+		!reflect.DeepEqual(registered.statements, p.statements) ||
 		!slices.Equal(registered.fields, p.fields) ||
 		!slices.Equal(registered.messages, p.messages) {
 		evaluator.Close()

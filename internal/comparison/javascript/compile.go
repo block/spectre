@@ -118,9 +118,13 @@ func typeArguments(checker *ts.Checker, loaded *schema.Schema, call *ts.Node) (O
 		return None[insertion](), nil // Only generic spectre functions take type arguments at runtime.
 	}
 	function := declaration.Name().Text()
+	owner := ts.MemberOwnerName(declaration)
+	if strings.HasPrefix(owner, mysqlOwner) {
+		return None[insertion](), nil // MySQL row types only check scripts.
+	}
 	// display names the call the way a script writes it, e.g. "IngressHTTPRule.match".
 	display := function
-	if owner := ts.MemberOwnerName(declaration); owner != "" {
+	if owner != "" {
 		display = owner + "." + function
 	}
 	types := call.TypeArguments()

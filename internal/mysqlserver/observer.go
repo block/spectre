@@ -46,14 +46,14 @@ func (o *observer) sent(payload []byte, whole bool) {
 	}
 }
 
-// received reads data the database sent, before the relay passes it on. Its result
-// hands a finished reply to the server once the reference has it too.
-func (o *observer) received(data []byte) (deliver func()) {
+// received reads data the database sent, before the relay passes it on. When the data
+// finishes a reply, it returns the offer to run once the reference has it too.
+func (o *observer) received(data []byte) (offer Option[func()]) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	reader, reading := o.reading.Get()
 	if !reading {
-		return func() {}
+		return None[func()]()
 	}
 	o.framer.write(data)
 	for {
@@ -64,20 +64,20 @@ func (o *observer) received(data []byte) (deliver func()) {
 			if reply, err = reader.read(payload); err != nil {
 				o.stop()
 				logger.FromContext(o.ctx).WarnContext(o.ctx, "MySQL reply is not offered", "event", logger.EventCorrelation, "reason", err)
-				return func() {}
+				return None[func()]()
 			}
 			if !reader.offerable() {
 				o.stop()
-				return func() {}
+				return None[func()]()
 			}
 		}
 		if !o.hold(reader.size() + o.framer.pending()) {
 			o.stop()
-			return o.units(o.pending, normaliser.Rows{}, o.server.exceed)
+			return Some(o.units(o.pending, normaliser.Rows{}, o.server.exceed))
 		}
 		finished, ok := reply.Get()
 		if !framed {
-			return func() {}
+			return None[func()]()
 		}
 		if !ok {
 			continue
@@ -86,10 +86,10 @@ func (o *observer) received(data []byte) (deliver func()) {
 		held := o.held
 		o.held = 0
 		o.stop()
-		return o.units(o.pending, finished, func(ctx context.Context, units []normaliser.Unit) {
+		return Some(o.units(o.pending, finished, func(ctx context.Context, units []normaliser.Unit) {
 			o.server.release(held)
 			o.server.offer(ctx, units)
-		})
+		}))
 	}
 }
 
@@ -120,16 +120,17 @@ func (o *observer) stop() {
 }
 
 // units returns what turns a finished command into units, and hands them to use.
-// The relay runs it once the reference has the reply, so parsing never delays it.
+// The relay queues it once the reference has the reply, so normalising never delays it.
 func (o *observer) units(sent sentCommand, reply normaliser.Reply,
 	use func(ctx context.Context, units []normaliser.Unit),
 ) (deliver func()) {
 	return func() {
-		// Replies are delivered in order on one goroutine, so the session sees commands in order.
+		// A connection's offers run in order on one goroutine, so the session sees commands in order.
 		units, err := o.session.Reference(o.ctx, o.server.command(sent.code, sent.text), reply)
 		if err != nil {
 			logger.FromContext(o.ctx).WarnContext(o.ctx, "Reference command is not offered", "event", logger.EventCorrelation, "reason", err)
-			return
+			// use still gets no units, so the reply's hold on the budget is returned.
+			units = nil
 		}
 		use(o.ctx, units)
 	}
