@@ -325,7 +325,8 @@ but not the host name, because services often reach a database by an alias.
 Once a reference connection logs in, the proxy relays it to the server packet
 by packet. Every command reaches the server, including pings, prepared
 statements and session resets, and replies stream back as the server sends
-them. The connection to the server uses the reference's database, collation
+them. Pairing a reply, including any script that splits it, happens after the
+reference has it and never delays the connection's next reply. The connection to the server uses the reference's database, collation
 and protocol features, such as found rows and multiple statements, and the
 listener reports the server's version. The listener offers no TLS,
 compression or query attributes.
@@ -337,11 +338,151 @@ reported IDs start at 3000000000, and one the proxy no longer knows gets
 `CONNECTION_ID()`, is sent unchanged. Changing the user of a connection is
 refused, because the proxy always connects with its own credentials.
 
-Candidate commands never reach the server. The candidate
-may connect and select a database, but every other command gets an error and
-quarantines the candidate as `unable`, with the route `command`. MySQL
-quarantines are egress quarantines with the protocol `mysql`, and never include
-a statement or its values.
+Candidate commands never reach the server. Each candidate text statement is
+answered with the reply that the reference got for the same statement in the
+same default database: its rows, its affected rows and insert ID, or its error.
+A candidate that repeats the reference's writes and transaction statements is
+therefore answered without writing anything.
+
+Statements are the same when they parse alike. Comments, spacing, keyword case,
+quoting and optional keywords such as `AS` do not matter, so request tags such
+as `-- speleo-trace-id=...` or sqlcommenter comments do not stop statements from
+pairing. Every value matters, and so do optimiser hints (`/*+ ... */`). The text
+in executable comments (`/*! ... */`) is part of the statement whatever version
+it names. A statement the parser does not understand pairs only with the same
+text. Double-quoted text is read as a string, as it is unless `ANSI_QUOTES` is
+set.
+
+A connection's default database is the one it connected with, or the last one
+it selected with `USE` or the select database command. The proxy answers the
+candidate's selections itself, and follows the reference's once the server
+accepts them. Selections are not paired.
+
+The candidate can send only text statements and select a database. A prepared
+statement, a column listing, or any other command gets an error and quarantines
+the candidate as `unable`, with the route `command`. Reference prepared
+statements, pings and other commands are only forwarded. So are reference
+statements with several results, such as multiple statements or stored
+procedure calls, and `LOAD DATA LOCAL INFILE`, which offer the candidate
+nothing to match. A statement that fails part way through its rows offers its
+error.
+
+Statements carry no request ID, so statements pair across all requests by text
+alone, within `--match-window`. Each reference statement answers one candidate
+statement. A candidate statement that no reference statement matches gets an
+error, and quarantines the candidate as `unmatched`, as does a reference
+statement that no candidate statement claims. Every text statement the
+reference sends through the proxy must therefore be one that the mirrored
+candidate also sends.
+
+When the candidate reads the same data with different statements, for example
+one JOIN where the reference ran a statement per row, a script can declare that
+the candidate's statements replace the reference's. Each statement is a
+`SELECT` pattern with `?` in place of each value, and it must name its columns
+rather than select `*`. A statement matches a pattern when the two normalise
+alike: values, comments, spacing and case do not matter. A statement that
+matches any pattern pairs by pattern and values, whichever side runs it, so the
+candidate can still run one of the reference's statements unchanged. Statements
+that match no pattern pair as before.
+
+Scripts see values and rows as text, with `null` for NULL. A row's fields are
+named as MySQL names the reply's columns: by each column's `AS` name, or by the
+column's own name, so `o.id` is `id`. A pattern that gives two columns the same
+name, as a self join can, fails to load until `AS` renames one. One side has a
+single statement, and that decides where `using` runs:
+
+- `egress.mysql.statement(...).replaces(...)` replaces the reference's
+  statements with one candidate statement. `using` runs for each candidate
+  statement that matches it. It receives the statement's values and one claim
+  per reference statement. A claim waits for the reference statement with the
+  values it is given, as a candidate statement would, and returns its rows.
+  `using` returns the candidate's rows.
+- `egress.mysql.statements(...).replaces(...)` replaces one reference statement
+  with the candidate's statements. `using` runs for each reference statement
+  that matches it. It receives the statement's values and rows, and one offer
+  per candidate statement. An offer saves the rows given last as the reply to
+  the candidate statement with the values given before them.
+
+Type arguments name each statement's rows: one row type for the single
+statement, and a tuple with one row type per statement for the other side.
+Without them, rows are `Row`, a record of text or `null`. Row types may only
+hold `string` and `null` fields, and a tuple must have one type per statement.
+SPECTRE does not check a row type's fields against its statement's columns.
+
+```ts
+import { egress } from "spectre";
+
+interface Order { id: string; label: string }
+interface Item { id: string; sku: string | null }
+interface OrderItem { id: string; label: string; item: string | null; sku: string | null }
+
+const orders = "SELECT id, label FROM orders WHERE merchant_id = ? ORDER BY id";
+const items = "SELECT id, sku FROM items WHERE order_id = ? ORDER BY id";
+const join = `SELECT o.id, o.label, i.id AS item, i.sku FROM orders o
+              LEFT JOIN items i ON i.order_id = o.id WHERE o.merchant_id = ? ORDER BY o.id, i.id`;
+
+// The reference reads the orders, then each order's items; the candidate joins them.
+egress.mysql
+  .statement<OrderItem>(join)
+  .replaces<[Order, Item]>(orders, items)
+  .using(([merchant], [ordersOf, itemsOf]) => {
+    const rows: OrderItem[] = [];
+    for (const order of ordersOf(merchant)) {
+      const found = itemsOf(order.id);
+      if (found.length === 0) rows.push({ ...order, item: null, sku: null });
+      for (const item of found) rows.push({ ...order, item: item.id, sku: item.sku });
+    }
+    return rows;
+  });
+
+// Or the other way around: the reference joins, and the candidate reads each order's items.
+egress.mysql
+  .statements<[Order, Item]>(orders, items)
+  .replaces<OrderItem>(join)
+  .using(([merchant], rows, [ordersOf, itemsOf]) => {
+    const labels = new Map<string, string>();
+    const found = new Map<string, Item[]>();
+    for (const row of rows) {
+      labels.set(row.id, row.label);
+      const list = found.get(row.id) ?? [];
+      if (row.item !== null) list.push({ id: row.item, sku: row.sku });
+      found.set(row.id, list);
+    }
+    ordersOf(merchant, [...labels].map(([id, label]) => ({ id, label })));
+    for (const [order, list] of found) itemsOf(order, list);
+  });
+```
+
+A built reply's columns are defined like the reference columns they were
+selected from, matched by their original table and column names. Columns of a
+table on the outer side of a `LEFT` or `RIGHT JOIN` are nullable, as MySQL sends
+them. A reply split from a join defines a column of such a table as the join
+sent it, which only knows that a primary key is `NOT NULL`, so select the column
+from an inner table too where the join has one. `COUNT`, `SUM`, `AVG`, `MIN` and
+`MAX` of such a column get the types MySQL gives them when it groups through a
+temporary table. Without `GROUP BY`, or grouping by an index, MySQL sets some
+column flags differently, but not their types or nullability. Name aggregates
+with `AS` and format their values as MySQL does, such as `AVG` with four
+decimals. Other columns are text. Each reference reply still answers one statement, so a claimed reply
+is used up and each offered reply answers one candidate statement. The script
+decides what the candidate receives, including the order of its rows, and
+SPECTRE does not check it against the candidate's statement. A candidate
+statement that finds no reply quarantines the candidate as `unmatched`, as does
+a reply that nothing claims. A script fails when it throws, builds a row
+without one of the statement's columns, or runs for longer than a second, not
+counting time spent waiting in claims. A failure
+while answering a candidate statement quarantines the candidate as `unable`. A
+failure while splitting a reference reply offers nothing, so the candidate's
+statements quarantine it as `unmatched`.
+
+Saved replies wait for the candidate in memory. When they exceed
+`--mysql-saved-replies-bytes`, the reference is still answered in full, and the
+candidate is quarantined as `capacity`.
+
+MySQL quarantines are egress quarantines with the protocol `mysql`. Their route
+is the statement's first keyword, such as `SELECT` or `COMMIT`, or `statement`
+when it starts with none, or `command` for a command that is not a statement.
+They never include a statement or its values.
 
 ### Quarantine
 

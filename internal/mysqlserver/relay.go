@@ -80,17 +80,22 @@ func (t *threads) rewriteKill(statement []byte) (rewritten []byte, changed bool,
 	return fmt.Appendf(nil, "KILL %s%d", match[1], database), true, nil
 }
 
-// relay passes packets between the reference and the database unchanged, except
-// for KILL statements and refused commands, until either side closes.
-func relay(ctx context.Context, threads *threads, reference net.Conn, fromReference io.Reader, upstream net.Conn) {
+// relay passes packets between the reference and the database, rewriting KILL and
+// refusing some commands, until either side closes. The observer sees both ways.
+func relay(ctx context.Context, threads *threads, observer *observer, reference net.Conn, fromReference io.Reader, upstream net.Conn) {
 	toReference := newLockedWriter(reference)
+	queue := newOffers()
+	offered := make(chan struct{})
+	go func() {
+		defer close(offered)
+		queue.run()
+	}()
 	done := make(chan error, 2)
 	go func() {
-		_, err := io.Copy(toReference, upstream)
-		done <- err
+		done <- deliver(observer, upstream, toReference, queue)
 	}()
 	go func() {
-		done <- forward(ctx, threads, fromReference, upstream, toReference)
+		done <- forward(ctx, threads, observer, fromReference, upstream, toReference)
 	}()
 	if err := <-done; err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) {
 		logger.FromContext(ctx).DebugContext(ctx, "MySQL relay ended", "error", err)
@@ -98,17 +103,99 @@ func relay(ctx context.Context, threads *threads, reference net.Conn, fromRefere
 	_ = reference.Close()
 	_ = upstream.Close()
 	<-done
+	// The reference has every queued reply, so they are still offered.
+	queue.close()
+	<-offered
+	observer.close()
+}
+
+// deliver passes the database's bytes to the reference as they arrive, and queues
+// each finished reply's offer once the reference has it.
+func deliver(observer *observer, upstream io.Reader, toReference io.Writer, queue *offers) error {
+	buffer := make([]byte, 32*1024)
+	for {
+		read, err := upstream.Read(buffer)
+		if read > 0 {
+			offer := observer.received(buffer[:read])
+			if _, err := toReference.Write(buffer[:read]); err != nil {
+				return errors.WithStack(err)
+			}
+			if offer, finished := offer.Get(); finished {
+				queue.add(offer)
+			}
+		}
+		if err != nil {
+			return errors.WithStack(err)
+		}
+	}
+}
+
+// offers runs a connection's offers in order, away from the relay, so normalising a
+// reply never delays the next. Their saved replies hold the budget while they wait.
+type offers struct {
+	mu      sync.Mutex
+	pending []func()
+	closed  bool
+	wake    chan struct{}
+}
+
+func newOffers() *offers {
+	return &offers{wake: make(chan struct{}, 1)}
+}
+
+// add queues an offer without waiting.
+func (o *offers) add(offer func()) {
+	o.mu.Lock()
+	o.pending = append(o.pending, offer)
+	o.mu.Unlock()
+	o.signal()
+}
+
+// close lets run return once it has run every queued offer.
+func (o *offers) close() {
+	o.mu.Lock()
+	o.closed = true
+	o.mu.Unlock()
+	o.signal()
+}
+
+func (o *offers) signal() {
+	select {
+	case o.wake <- struct{}{}:
+	default:
+	}
+}
+
+// run runs queued offers in the order they were added, until closed.
+func (o *offers) run() {
+	for range o.wake {
+		o.mu.Lock()
+		pending, closed := o.pending, o.closed
+		o.pending = nil
+		o.mu.Unlock()
+		for _, offer := range pending {
+			offer()
+		}
+		if closed {
+			return
+		}
+	}
 }
 
 // forward passes the reference's packets to the database. A command starts with
 // sequence number zero, and the packets that continue it never do.
-func forward(ctx context.Context, threads *threads, from io.Reader, upstream io.Writer, toReference io.Writer) error {
+func forward(ctx context.Context, threads *threads, observer *observer, from io.Reader, upstream io.Writer,
+	toReference io.Writer,
+) error {
 	for {
 		sent, err := readPacket(from)
 		if err != nil {
 			return err
 		}
-		if sent.sequence == 0 && len(sent.payload) > 0 && len(sent.payload) < maxPayload {
+		whole := len(sent.payload) < maxPayload
+		// The observer sees the statement the reference sent, as the candidate sends it.
+		observed := sent.payload
+		if sent.sequence == 0 && len(sent.payload) > 0 && whole {
 			payload, refusal := threads.command(ctx, sent.payload)
 			if refusal != nil {
 				if err := writePacket(toReference, 1, errorPayload(refusal)); err != nil {
@@ -117,6 +204,9 @@ func forward(ctx context.Context, threads *threads, from io.Reader, upstream io.
 				continue
 			}
 			sent.payload = payload
+		}
+		if sent.sequence == 0 {
+			observer.sent(observed, whole)
 		}
 		if err := writePacket(upstream, sent.sequence, sent.payload); err != nil {
 			return err

@@ -82,6 +82,11 @@ func (e *Engine) SelectRule(ctx context.Context, rules []javascript.Rule, reques
 	return errors.WithStack2(e.scripts.SelectRule(ctx, rules, request, response))
 }
 
+// Scripts returns the scripts that the engine compares with.
+func (e *Engine) Scripts() *comparison.Scripts {
+	return e.scripts
+}
+
 // Schema returns the types that servers decode messages as.
 func (e *Engine) Schema() *schema.Schema {
 	return e.schema
