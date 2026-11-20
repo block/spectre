@@ -124,7 +124,7 @@ func TestRepliesBeyondTheBudgetQuarantineAndReturnIt(t *testing.T) {
 
 	observer.sent(append([]byte{mysql.COM_QUERY}, "SELECT id, sku FROM items"...), true)
 	for _, b := range packetsOf(long, 0, true) {
-		observer.received([]byte{b})()
+		receive(observer, []byte{b})
 	}
 	quarantine, quarantined := server.candidates.QuarantineStatus().Get()
 	assert.True(t, quarantined)
@@ -142,7 +142,7 @@ func TestRepliesBeingReadHoldTheBudgetUntilTheConnectionEnds(t *testing.T) {
 	packets := packetsOf(items, 0, true)
 
 	observer.sent(append([]byte{mysql.COM_QUERY}, "SELECT id, sku FROM items"...), true)
-	observer.received(packets[:len(packets)-12])()
+	receive(observer, packets[:len(packets)-12])
 	assert.False(t, budget.Reserve(budget.Limit()))
 	observer.close()
 	assert.True(t, budget.Reserve(budget.Limit()))
@@ -158,6 +158,13 @@ func TestSavedRepliesHoldTheirSizeUntilReleased(t *testing.T) {
 	saved.Release()
 	_, reserved = reserveReply(budget, normaliser.OK{})
 	assert.True(t, reserved)
+}
+
+// receive passes data to the observer, and runs the offer of a reply it finishes.
+func receive(observer *observer, data []byte) {
+	if offer, finished := observer.received(data).Get(); finished {
+		offer()
+	}
 }
 
 // budgetedServer is a server with room to save one reply of items, and no engine.

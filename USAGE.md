@@ -325,7 +325,8 @@ but not the host name, because services often reach a database by an alias.
 Once a reference connection logs in, the proxy relays it to the server packet
 by packet. Every command reaches the server, including pings, prepared
 statements and session resets, and replies stream back as the server sends
-them. The connection to the server uses the reference's database, collation
+them. Pairing a reply, including any script that splits it, happens after the
+reference has it and never delays the connection's next reply. The connection to the server uses the reference's database, collation
 and protocol features, such as found rows and multiple statements, and the
 listener reports the server's version. The listener offers no TLS,
 compression or query attributes.
