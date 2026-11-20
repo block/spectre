@@ -3,7 +3,9 @@ package mysqlserver
 import (
 	"bufio"
 	"context"
+	"crypto/tls"
 	"net"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -37,15 +39,19 @@ const fallbackVersion = "8.0.0"
 // Server serves reference and candidate MySQL connections on separate listeners.
 // Candidate statements never reach a database under any condition.
 type Server struct {
-	// database is the database that reference connections reach.
-	database   *Database
-	candidates *proxy.Candidates
-	threads    *threads
-	reference  protocol.Acceptor
-	candidate  protocol.Acceptor
-	budget     *proxy.Budget
-	normaliser normaliser.Normaliser
-	parser     *normaliser.Parser
+	// upstream is the database that reference connections reach.
+	upstream string
+	// user and passwordFile are the proxy's credentials for the database.
+	user         string
+	passwordFile string
+	upstreamTLS  Option[*tls.Config]
+	candidates   *proxy.Candidates
+	threads      *threads
+	reference    protocol.Acceptor
+	candidate    protocol.Acceptor
+	budget       *proxy.Budget
+	normaliser   normaliser.Normaliser
+	parser       *normaliser.Parser
 	// scope pairs every unit with every other, because statements carry no request ID.
 	scope protocol.RequestID
 	// version is the database's version once the proxy has connected to it.
@@ -56,7 +62,13 @@ type Server struct {
 // New returns a MySQL proxy that pairs the units of statements in engine, and shares
 // candidates with the server that owns the engine.
 func New(config Config, statements normaliser.Normaliser, engine *protocol.Engine, candidates *proxy.Candidates) (*Server, error) {
-	database, err := NewDatabase(config)
+	if err := config.Validate(); err != nil {
+		return nil, err
+	}
+	if !config.Enabled() {
+		return nil, errors.New("MySQL upstream is required")
+	}
+	upstreamTLS, err := upstreamTLS(config.UpstreamCA)
 	if err != nil {
 		return nil, err
 	}
@@ -65,15 +77,18 @@ func New(config Config, statements normaliser.Normaliser, engine *protocol.Engin
 		return nil, errors.Wrap(err, "name the pairing scope")
 	}
 	return &Server{
-		database:   database,
-		candidates: candidates,
-		threads:    newThreads(),
-		reference:  engine.EgressReference(Protocol),
-		candidate:  engine.EgressCandidate(Protocol),
-		budget:     proxy.NewBudget(config.SavedRepliesBytes),
-		normaliser: statements,
-		parser:     normaliser.NewParser(),
-		scope:      scope,
+		upstream:     config.Upstream,
+		user:         config.UpstreamUser,
+		passwordFile: config.UpstreamPasswordFile,
+		upstreamTLS:  upstreamTLS,
+		candidates:   candidates,
+		threads:      newThreads(),
+		reference:    engine.EgressReference(Protocol),
+		candidate:    engine.EgressCandidate(Protocol),
+		budget:       proxy.NewBudget(config.SavedRepliesBytes),
+		normaliser:   statements,
+		parser:       normaliser.NewParser(),
+		scope:        scope,
 	}, nil
 }
 
@@ -177,7 +192,7 @@ func (s *Server) connect(ctx context.Context, login login) (*client.Conn, error)
 	if err != nil {
 		return nil, errors.Errorf("the proxy does not know MySQL collation %d", login.collation)
 	}
-	upstream, err := s.database.dial(ctx, login.database, func(c *client.Conn) error {
+	upstream, err := s.dial(ctx, login.database, func(c *client.Conn) error {
 		for feature := uint32(1); feature != 0; feature <<= 1 {
 			switch {
 			case passedCapabilities&feature == 0:
@@ -218,6 +233,24 @@ func negotiated(upstream *client.Conn) uint32 {
 	return used
 }
 
+// dial connects to the database with the proxy's credentials, and selects database
+// if one is named. The password file is read for every connection, so it can be rotated.
+func (s *Server) dial(ctx context.Context, database string, options ...client.Option) (*client.Conn, error) {
+	password, err := os.ReadFile(s.passwordFile)
+	if err != nil {
+		return nil, errors.Wrap(err, "read the MySQL password file")
+	}
+	if config, ok := s.upstreamTLS.Get(); ok {
+		options = append(options, func(c *client.Conn) error {
+			c.SetTLSConfig(config)
+			return nil
+		})
+	}
+	upstream, err := client.ConnectWithContext(ctx, s.upstream, s.user, strings.TrimRight(string(password), "\r\n"), database,
+		dialTimeout, options...)
+	return upstream, errors.WithStack(err)
+}
+
 // serverVersion returns the database's version, which clients adapt their statements
 // to. It connects once to read it, and reports a fallback while it cannot.
 func (s *Server) serverVersion(ctx context.Context) string {
@@ -226,7 +259,7 @@ func (s *Server) serverVersion(ctx context.Context) string {
 	if version, ok := s.version.Get(); ok {
 		return version
 	}
-	upstream, err := s.database.dial(ctx, "")
+	upstream, err := s.dial(ctx, "")
 	if err != nil {
 		return fallbackVersion
 	}
