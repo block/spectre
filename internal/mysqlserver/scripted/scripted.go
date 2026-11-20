@@ -7,11 +7,13 @@
 //   - One reference statement that several candidate statements replace has its reply
 //     split by the script into one reply per candidate statement.
 //
-// Every other statement pairs as its fallback normaliser pairs it.
+// Any other statement that matches a pattern pairs by pattern and values, whichever side
+// runs it. Every other statement pairs as its fallback normaliser pairs it.
 package scripted
 
 import (
 	"context"
+	"slices"
 
 	"github.com/alecthomas/errors"
 	. "github.com/alecthomas/types/optional"
@@ -94,8 +96,8 @@ func newSession(scripts Scripts, rules []rule, fallback normaliser.Session) *ses
 	return &session{scripts: scripts, rules: rules, fallback: fallback}
 }
 
-// Reference offers the reply of a statement that a candidate statement claims through a
-// script under its pattern, and splits one that several candidate statements replace.
+// Reference splits the reply of a statement that several candidate statements replace,
+// and offers that of any other statement that matches a pattern under its pattern.
 func (s *session) Reference(ctx context.Context, command normaliser.Command, reply normaliser.Reply) ([]normaliser.Unit, error) {
 	if database, selects := normaliser.SelectedDatabase(command); selects {
 		if _, ok := reply.(normaliser.OK); ok {
@@ -104,14 +106,11 @@ func (s *session) Reference(ctx context.Context, command normaliser.Command, rep
 	}
 	if matched, ok := s.match(command); ok {
 		for _, rule := range s.rules {
-			for _, source := range rule.sources {
-				if !source.matches(matched.digest) {
-					continue
-				}
-				if rule.replacement.Combines() {
-					return []normaliser.Unit{{Route: route, Key: source.key(s.database, matched.values), Reply: reply}}, nil
-				}
+			if !rule.replacement.Combines() && rule.sources[0].matches(matched.digest) {
 				return s.split(ctx, rule, matched.values, reply)
+			}
+			if found, named := patternOf(rule, matched.digest); named {
+				return []normaliser.Unit{{Route: route, Key: found.key(s.database, matched.values), Reply: reply}}, nil
 			}
 		}
 	}
@@ -143,8 +142,8 @@ func (s *session) split(ctx context.Context, rule rule, values []normaliser.Valu
 	return units, errors.WithStack(err)
 }
 
-// Candidate answers a statement that replaces reference statements from their replies,
-// and a statement that a reference statement was split for from its split reply.
+// Candidate answers a statement that replaces several reference statements from their
+// replies, and claims the reply of any other statement that matches a pattern by its pattern.
 func (s *session) Candidate(ctx context.Context, command normaliser.Command, claim normaliser.Claim,
 ) (normaliser.Reply, error) { //nolint:ireturn // Replies are the contract's sum type.
 	if database, selects := normaliser.SelectedDatabase(command); selects {
@@ -152,14 +151,11 @@ func (s *session) Candidate(ctx context.Context, command normaliser.Command, cla
 	}
 	if matched, ok := s.match(command); ok {
 		for _, rule := range s.rules {
-			for _, statement := range rule.statements {
-				if !statement.matches(matched.digest) {
-					continue
-				}
-				if rule.replacement.Combines() {
-					return s.combine(ctx, rule, matched.values, claim)
-				}
-				return errors.WithStack2(claim(ctx, route, statement.key(s.database, matched.values)))
+			if rule.replacement.Combines() && rule.statements[0].matches(matched.digest) {
+				return s.combine(ctx, rule, matched.values, claim)
+			}
+			if found, named := patternOf(rule, matched.digest); named {
+				return errors.WithStack2(claim(ctx, route, found.key(s.database, matched.values)))
 			}
 		}
 	}
@@ -201,6 +197,16 @@ func (s *session) combine(ctx context.Context, rule rule, values []normaliser.Va
 	}
 	// The script failed, so the candidate statement cannot be answered.
 	return nil, normaliser.UnsupportedError{Route: route, Reason: err.Error()}
+}
+
+// patternOf returns the pattern of a rule, on either side, that a statement with the digest matches.
+func patternOf(rule rule, digest string) (pattern, bool) {
+	for _, named := range slices.Concat(rule.statements, rule.sources) {
+		if named.matches(digest) {
+			return named, true
+		}
+	}
+	return pattern{}, false
 }
 
 // matched is a single statement's pattern digest and its values.

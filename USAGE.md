@@ -379,8 +379,10 @@ one JOIN where the reference ran a statement per row, a script can declare that
 the candidate's `statements` replace the reference's. Each statement is a
 `SELECT` pattern with `?` in place of each value, and it must name its columns
 rather than select `*`. A statement matches a pattern when the two normalise
-alike: values, comments, spacing and case do not matter. Statements that match
-no pattern pair as before.
+alike: values, comments, spacing and case do not matter. A statement that
+matches any pattern pairs by pattern and values, whichever side runs it, so the
+candidate can still run one of the reference's statements unchanged. Statements
+that match no pattern pair as before.
 
 Scripts see values and rows as text, with `null` for NULL. A row is labelled
 by each column's `AS` name, or by the column as the pattern writes it, such as
@@ -436,8 +438,10 @@ egress.mysql
 ```
 
 A built reply's columns are defined like the reference columns they were
-selected from, matched by their original table and column names. Other columns
-are text. Each reference reply still answers one statement, so a claimed reply
+selected from, matched by their original table and column names. `COUNT`,
+`SUM`, `AVG`, `MIN` and `MAX` of such a column get the types MySQL gives them,
+so name aggregates with `AS` and format their values as MySQL does, such as
+`AVG` with four decimals. Other columns are text. Each reference reply still answers one statement, so a claimed reply
 is used up and each offered reply answers one candidate statement. The script
 decides what the candidate receives, including the order of its rows, and
 SPECTRE does not check it against the candidate's statement. A candidate

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/alecthomas/assert/v2"
@@ -74,6 +75,8 @@ var (
 	}}
 )
 
+// The reference reads a merchant's orders, then each order's items; the candidate reads
+// them with one JOIN, answered from the reference's replies with their column types.
 func TestCandidateJoinCombinesReferenceStatements(t *testing.T) {
 	statements := newNormaliser(t, combineScript)
 	engine := newEngine()
@@ -90,6 +93,8 @@ func TestCandidateJoinCombinesReferenceStatements(t *testing.T) {
 	assert.Equal(t, 0, len(engine.units))
 }
 
+// The reference reads a merchant's orders and items with one JOIN; the candidate reads the
+// orders, then each order's items, each answered from the split JOIN.
 func TestReferenceJoinSplitsForCandidateStatements(t *testing.T) {
 	statements := newNormaliser(t, splitScript)
 	engine := newEngine()
@@ -115,6 +120,7 @@ func TestReferenceJoinSplitsForCandidateStatements(t *testing.T) {
 	assert.Equal(t, 0, len(engine.units))
 }
 
+// The candidate reads the items of an order the reference's JOIN did not include.
 func TestStatementsWithOtherValuesDoNotPair(t *testing.T) {
 	statements := newNormaliser(t, splitScript)
 	engine := newEngine()
@@ -125,6 +131,7 @@ func TestStatementsWithOtherValuesDoNotPair(t *testing.T) {
 	assert.IsError(t, err, errUnmatched)
 }
 
+// The services run a statement that no script names, alongside a replacement.
 func TestOtherStatementsPairExactly(t *testing.T) {
 	statements := newNormaliser(t, splitScript)
 	engine := newEngine()
@@ -136,6 +143,7 @@ func TestOtherStatementsPairExactly(t *testing.T) {
 	assert.Equal(t, normaliser.Reply(normaliser.OK{}), reply)
 }
 
+// The script throws while answering the candidate's JOIN.
 func TestScriptFailuresCannotBeAnswered(t *testing.T) {
 	statements := newNormaliser(t, `
 		egress.mysql.statements("`+joinStatement+`").replaces("`+ordersStatement+`").using(() => { throw new Error("boom"); });
@@ -147,6 +155,7 @@ func TestScriptFailuresCannotBeAnswered(t *testing.T) {
 	assert.True(t, unsupported)
 }
 
+// A script names a statement whose reply columns SPECTRE cannot know.
 func TestPatternsMustNameTheirColumns(t *testing.T) {
 	for name, test := range map[string]struct {
 		statement string
@@ -160,6 +169,88 @@ func TestPatternsMustNameTheirColumns(t *testing.T) {
 			_, err := scripted.New(scripts(t, `egress.mysql.statements("`+test.statement+`").replaces("SELECT 1").using(() => []);`), exact.New())
 			assert.Error(t, err)
 			assert.Contains(t, err.Error(), test.message)
+		})
+	}
+}
+
+// The reference reads every item of a merchant and totals them in code; the candidate runs a
+// GROUP BY, whose aggregates get the column types MySQL would give them.
+func TestAggregatesAreTypedAsMySQLTypesThem(t *testing.T) {
+	const (
+		quantities = "SELECT i.order_id, i.id, i.sku, i.quantity FROM items i JOIN orders o ON o.id = i.order_id WHERE o.merchant_id = ?"
+		totals     = "SELECT i.order_id, COUNT(*) AS line_count, SUM(i.quantity) AS total, AVG(i.quantity) AS average, " +
+			"MIN(i.sku) AS first_sku, MAX(i.id) AS last_item, SUM(i.sku) AS sku_sum " +
+			"FROM items i JOIN orders o ON o.id = i.order_id WHERE o.merchant_id = ? GROUP BY i.order_id"
+	)
+	statements := newNormaliser(t, `
+		egress.mysql.statements("`+totals+`").replaces("`+quantities+`").using(([merchant], [quantitiesOf]) =>
+		  quantitiesOf([merchant]).map((row) => ({
+		    "i.order_id": row["i.order_id"], line_count: "1", total: row["i.quantity"], average: row["i.quantity"] + ".0000",
+		    first_sku: row["i.sku"], last_item: row["i.id"], sku_sum: "0",
+		  })));
+	`)
+	// The columns MySQL 8 sends for the quantities statement.
+	noDefault := uint16(4096)
+	orderID := normaliser.Column{Schema: "shop", Table: "i", OrgTable: "items", Name: "order_id", OrgName: "order_id", Charset: 63, Length: 20,
+		Type: mysql.MYSQL_TYPE_LONGLONG, Flags: mysql.NOT_NULL_FLAG | noDefault}
+	columns := []normaliser.Column{
+		orderID,
+		renamed(itemColumns[0], "i", "id"),
+		renamed(itemColumns[1], "i", "sku"),
+		{Schema: "shop", Table: "i", OrgTable: "items", Name: "quantity", OrgName: "quantity", Charset: 63, Length: 11,
+			Type: mysql.MYSQL_TYPE_LONG, Flags: mysql.NOT_NULL_FLAG | noDefault},
+	}
+	columns[1].Flags |= noDefault
+	engine := newEngine()
+	engine.offer(t, statements.NewSession(), strings.ReplaceAll(quantities, "?", "1"), normaliser.Rows{Columns: columns,
+		Rows: [][]normaliser.Value{{Some("7"), Some("1"), Some("apple"), Some("2")}}})
+
+	reply, err := statements.NewSession().Candidate(t.Context(), parse(strings.ReplaceAll(totals, "?", "1")), engine.claim)
+	assert.NoError(t, err)
+
+	rows, ok := reply.(normaliser.Rows)
+	assert.True(t, ok)
+	// As MySQL describes the same GROUP BY: aggregates name no table, and MIN and MAX drop key flags.
+	assert.Equal(t, []normaliser.Column{
+		orderID,
+		{Name: "line_count", Charset: 63, Length: 21, Type: mysql.MYSQL_TYPE_LONGLONG, Flags: mysql.NOT_NULL_FLAG},
+		{Name: "total", Charset: 63, Length: 33, Type: mysql.MYSQL_TYPE_NEWDECIMAL},
+		{Name: "average", Charset: 63, Length: 16, Type: mysql.MYSQL_TYPE_NEWDECIMAL, Flags: mysql.BINARY_FLAG, Decimals: 4},
+		{Name: "first_sku", Charset: 255, Length: 512, Type: mysql.MYSQL_TYPE_VAR_STRING},
+		{Name: "last_item", Charset: 63, Length: 20, Type: mysql.MYSQL_TYPE_LONGLONG, Flags: noDefault},
+		{Name: "sku_sum", Charset: 255, Type: mysql.MYSQL_TYPE_VAR_STRING},
+	}, rows.Columns)
+}
+
+// The candidate also runs, verbatim, a statement that a replacement names on the other
+// side, such as the reference's per-order items statement on another endpoint.
+func TestStatementsOfAPatternPairOnEitherSide(t *testing.T) {
+	for name, test := range map[string]struct {
+		script string
+		sql    string
+		reply  normaliser.Rows
+	}{
+		"ReferenceStatementOfACombination": {
+			script: combineScript,
+			sql:    "SELECT id, label FROM orders WHERE merchant_id = 1 ORDER BY id",
+			reply:  orders,
+		},
+		"CandidateStatementOfASplit": {
+			script: splitScript,
+			sql:    "SELECT id, sku FROM items WHERE order_id = 7 ORDER BY id",
+			reply:  normaliser.Rows{Columns: itemColumns, Rows: [][]normaliser.Value{{Some("1"), Some("apple")}}},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			statements := newNormaliser(t, test.script)
+			engine := newEngine()
+			engine.offer(t, statements.NewSession(), test.sql, test.reply)
+
+			reply, err := statements.NewSession().Candidate(t.Context(), parse(strings.ToLower(test.sql)+" -- candidate"), engine.claim)
+			assert.NoError(t, err)
+
+			assert.Equal(t, normaliser.Reply(test.reply), reply)
+			assert.Equal(t, 0, len(engine.units))
 		})
 	}
 }

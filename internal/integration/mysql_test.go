@@ -7,8 +7,11 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
+	"slices"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/alecthomas/assert/v2"
@@ -60,6 +63,28 @@ const (
 	selectItemsStatement  = "SELECT id, sku, quantity FROM items WHERE order_id = ? ORDER BY id"
 	selectJoinStatement   = "SELECT o.id, o.label, i.id AS item, i.sku, i.quantity FROM orders o " +
 		"LEFT JOIN items i ON i.order_id = o.id WHERE o.merchant_id = ? ORDER BY o.id, i.id"
+
+	// Merchant 1's orders 7 and 9 have items; order 8 has none, so it has no totals.
+	merchantOneTotalsRoute = "GET /merchants/1/totals"
+	merchantOneTotals      = `{"totals":[{"order":7,"lines":2,"quantity":3},{"order":9,"lines":1,"quantity":5}]}`
+	totalsSchema           = `
+		declare module "totals" {
+		  export interface MerchantTotals {
+		    totals?: OrderTotal[];
+		  }
+
+		  export interface OrderTotal {
+		    order: number;
+		    lines: number;
+		    quantity: number;
+		  }
+		}
+	`
+
+	selectQuantitiesStatement = "SELECT i.order_id, i.quantity FROM items i JOIN orders o ON o.id = i.order_id WHERE o.merchant_id = ?"
+	selectQuantitiesDigest    = "SELECT `i` . `order_id` , `i` . `quantity` FROM `items` `i` JOIN `orders` `o` ON `o` . `id` = `i` . `order_id` WHERE `o` . `merchant_id` = ?"
+	selectTotalsStatement     = "SELECT i.order_id, COUNT(*) AS line_count, SUM(i.quantity) AS total FROM items i " +
+		"JOIN orders o ON o.id = i.order_id WHERE o.merchant_id = ? GROUP BY i.order_id ORDER BY i.order_id"
 )
 
 func TestMySQLIdenticalStatementsReplayTheReferenceRows(t *testing.T) {
@@ -140,6 +165,8 @@ func TestMySQLStatementsPairWhateverTheirCommentsAndSpacing(t *testing.T) {
 	m.MySQL().ExpectStatements(map[string]uint64{"SELECT `sku` FROM `items` WHERE `id` = ?": 1})
 }
 
+// The reference reads a merchant's orders, then each order's items (N+1); the rewritten
+// candidate reads the same data with one JOIN.
 func TestMySQLCandidateJoinReplacesTheReferenceStatements(t *testing.T) {
 	m := startOrdersMirror(t, it.Candidate(joinedOrdersService()), it.Scripts(`
 		import { egress } from "spectre";
@@ -164,6 +191,8 @@ func TestMySQLCandidateJoinReplacesTheReferenceStatements(t *testing.T) {
 	m.MySQL().ExpectStatements(map[string]uint64{selectOrdersDigest: 1, selectItemsDigest: 3})
 }
 
+// The reference reads a merchant's orders and items with one JOIN; the rewritten candidate
+// reads the orders, then each order's items (N+1).
 func TestMySQLCandidateStatementsReplaceTheReferenceJoin(t *testing.T) {
 	m := startOrdersMirror(t, it.Reference(joinedOrdersService()), it.Scripts(`
 		import { egress, type Row } from "spectre";
@@ -190,6 +219,105 @@ func TestMySQLCandidateStatementsReplaceTheReferenceJoin(t *testing.T) {
 	// Each of the candidate's statements claimed a reply split from the reference's JOIN.
 	m.ExpectCalls(it.Calls{merchantOneOrdersRoute: 1})
 	m.MySQL().ExpectStatements(map[string]uint64{selectJoinDigest: 1})
+}
+
+// The reference reads every item of a merchant and totals them by order in code; the
+// rewritten candidate has the database total them with GROUP BY.
+func TestMySQLCandidateGroupByReplacesTheReferenceRows(t *testing.T) {
+	m := startOrdersMirror(t,
+		it.Reference(totalsService(totalsGroupedInCode)), it.Candidate(totalsService(totalsGroupedInSQL)),
+		it.Schema(totalsSchema), it.Scripts(`
+			import { egress, ingress } from "spectre";
+			import type { MerchantTotals } from "totals";
+
+			ingress.http("GET /merchants/{merchant}/totals").match<MerchantTotals>();
+
+			egress.mysql
+			  .statements("`+selectTotalsStatement+`")
+			  .replaces("`+selectQuantitiesStatement+`")
+			  .using(([merchant], [quantitiesOf]) => {
+			    const groups = new Map<string, { lines: number; total: number }>();
+			    for (const row of quantitiesOf([merchant])) {
+			      const group = groups.get(row["i.order_id"]!) ?? { lines: 0, total: 0 };
+			      group.lines += 1;
+			      group.total += Number(row["i.quantity"]);
+			      groups.set(row["i.order_id"]!, group);
+			    }
+			    return [...groups]
+			      .sort(([left], [right]) => Number(left) - Number(right))
+			      .map(([order, { lines, total }]) => ({ "i.order_id": order, line_count: String(lines), total: String(total) }));
+			  });
+		`))
+
+	m.Ingress.Get("/merchants/1/totals").ExpectStatus(http.StatusOK).ExpectBodyContains(merchantOneTotals)
+	// The candidate's GROUP BY was answered by grouping the rows the reference grouped itself.
+	m.ExpectCalls(it.Calls{merchantOneTotalsRoute: 1})
+	m.MySQL().ExpectStatements(map[string]uint64{selectQuantitiesDigest: 1})
+}
+
+// The candidate's GROUP BY reads its aggregates with a driver that converts values by
+// column type, so its reply must look exactly like the database's own.
+func TestMySQLCandidateGroupByGetsTheReplyTheDatabaseWouldSend(t *testing.T) {
+	const (
+		items   = "SELECT i.order_id, i.id, i.sku, i.quantity FROM items i JOIN orders o ON o.id = i.order_id WHERE o.merchant_id = ?"
+		grouped = "SELECT i.order_id, COUNT(*) AS line_count, SUM(i.quantity) AS total, AVG(i.quantity) AS average, " +
+			"MIN(i.sku) AS first_sku, MAX(i.id) AS last_item FROM items i JOIN orders o ON o.id = i.order_id " +
+			"WHERE o.merchant_id = ? GROUP BY i.order_id ORDER BY i.order_id"
+	)
+	m := startOrdersMirror(t, it.Scripts(`
+		import { egress, type Row } from "spectre";
+
+		egress.mysql
+		  .statements("`+grouped+`")
+		  .replaces("`+items+`")
+		  .using(([merchant], [itemsOf]) => {
+		    const groups = new Map<string, Row[]>();
+		    for (const row of itemsOf([merchant])) groups.set(row["i.order_id"]!, [...(groups.get(row["i.order_id"]!) ?? []), row]);
+		    return [...groups]
+		      .sort(([left], [right]) => Number(left) - Number(right))
+		      .map(([order, rows]) => {
+		        const total = rows.reduce((sum, row) => sum + Number(row["i.quantity"]), 0);
+		        const skus = rows.flatMap((row) => (row["i.sku"] === null ? [] : [row["i.sku"]])).sort();
+		        return {
+		          "i.order_id": order,
+		          line_count: String(rows.length),
+		          total: String(total),
+		          average: (total / rows.length).toFixed(4),
+		          first_sku: skus[0] ?? null,
+		          last_item: String(Math.max(...rows.map((row) => Number(row["i.id"])))),
+		        };
+		      });
+		  });
+	`))
+	server, err := m.MySQL().Server().Conn(t.Context())
+	assert.NoError(t, err)
+	defer server.Close()
+	_, err = server.ExecContext(t.Context(), "USE `"+m.MySQL().Name+"`")
+	assert.NoError(t, err)
+
+	reference, err := m.MySQL().Reference.QueryContext(t.Context(), items, 1)
+	assert.NoError(t, err)
+	_, _ = described(t, reference)
+	candidate, err := m.MySQL().Candidate.QueryContext(t.Context(), grouped, 1)
+	assert.NoError(t, err)
+	candidateColumns, candidateRows := described(t, candidate)
+	database, err := server.QueryContext(t.Context(), strings.ReplaceAll(grouped, "?", "1"))
+	assert.NoError(t, err)
+	databaseColumns, databaseRows := described(t, database)
+
+	assert.Equal(t, [][]Option[string]{
+		{Some("7"), Some("2"), Some("3"), Some("1.5000"), Some("apple"), Some("2")},
+		{Some("9"), Some("1"), Some("5"), Some("5.0000"), Some("pear"), Some("3")},
+	}, databaseRows)
+	assert.Equal(t, databaseRows, candidateRows)
+	assert.Equal(t, databaseColumns, candidateColumns)
+	// The GROUP BY reached the database once, from the test itself, not from the candidate.
+	m.MySQL().ExpectStatements(map[string]uint64{
+		"SELECT `i` . `order_id` , `i` . `id` , `i` . `sku` , `i` . `quantity` FROM `items` `i` JOIN `orders` `o` ON `o` . `id` = `i` . `order_id` WHERE `o` . `merchant_id` = ?": 1,
+		"SELECT `i` . `order_id` , COUNT ( * ) AS `line_count` , SUM ( `i` . `quantity` ) AS `total` , AVG ( `i` . `quantity` ) AS `average` , " +
+			"MIN ( `i` . `sku` ) AS `first_sku` , MAX ( `i` . `id` ) AS `last_item` FROM `items` `i` JOIN `orders` `o` ON `o` . `id` = `i` . `order_id` " +
+			"WHERE `o` . `merchant_id` = ? GROUP BY `i` . `order_id` ORDER BY `i` . `order_id`": 1,
+	})
 }
 
 func TestMySQLCandidateUsesTheDatabaseItSelected(t *testing.T) {
@@ -487,6 +615,118 @@ func selectJoinedOrders(ctx context.Context, database *sql.DB, merchant string) 
 		}
 	}
 	return orders, errors.Wrap(rows.Err(), "read orders")
+}
+
+// columnType is what a driver learns of a reply column.
+type columnType struct {
+	Name, Type       string
+	Nullable         bool
+	Precision, Scale int64
+	Length           int64
+}
+
+// described reads every row of rows as text, and describes its columns.
+func described(t *testing.T, rows *sql.Rows) ([]columnType, [][]Option[string]) {
+	t.Helper()
+	defer rows.Close()
+	types, err := rows.ColumnTypes()
+	assert.NoError(t, err)
+	columns := []columnType{}
+	for _, column := range types {
+		nullable, _ := column.Nullable()
+		precision, scale, _ := column.DecimalSize()
+		length, _ := column.Length()
+		columns = append(columns, columnType{Name: column.Name(), Type: column.DatabaseTypeName(), Nullable: nullable,
+			Precision: precision, Scale: scale, Length: length})
+	}
+	read := [][]Option[string]{}
+	for rows.Next() {
+		values := make([]sql.NullString, len(types))
+		pointers := make([]any, len(types))
+		for index := range values {
+			pointers[index] = &values[index]
+		}
+		assert.NoError(t, rows.Scan(pointers...))
+		row := []Option[string]{}
+		for _, value := range values {
+			if value.Valid {
+				row = append(row, Some(value.String))
+			} else {
+				row = append(row, None[string]())
+			}
+		}
+		read = append(read, row)
+	}
+	assert.NoError(t, rows.Err())
+	return columns, read
+}
+
+// orderTotal is how many items an order has, and their total quantity.
+type orderTotal struct {
+	Order    int64 `json:"order"`
+	Lines    int64 `json:"lines"`
+	Quantity int64 `json:"quantity"`
+}
+
+// totalsService serves the totals of a merchant's orders that have items, read by totals.
+func totalsService(totals func(ctx context.Context, database *sql.DB, merchant string) ([]orderTotal, error)) it.Service {
+	return func(t *testing.T, backend it.Backend) {
+		t.Helper()
+		database := backend.MySQL.MustGet()
+		backend.HTTP.HandleFunc("GET /merchants/{merchant}/totals", func(writer http.ResponseWriter, request *http.Request) {
+			read, err := totals(request.Context(), database, request.PathValue("merchant"))
+			if err != nil {
+				http.Error(writer, "totals cannot be read", http.StatusInternalServerError)
+				return
+			}
+			writer.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(writer).Encode(map[string][]orderTotal{"totals": read})
+		})
+	}
+}
+
+// totalsGroupedInCode reads every item's quantity, and adds them up by order.
+func totalsGroupedInCode(ctx context.Context, database *sql.DB, merchant string) ([]orderTotal, error) {
+	rows, err := database.QueryContext(ctx, selectQuantitiesStatement, merchant)
+	if err != nil {
+		return nil, errors.Wrap(err, "select quantities")
+	}
+	defer rows.Close()
+	byOrder := map[int64]*orderTotal{}
+	for rows.Next() {
+		order, quantity := int64(0), int64(0)
+		if err := rows.Scan(&order, &quantity); err != nil {
+			return nil, errors.Wrap(err, "read quantity")
+		}
+		if _, ok := byOrder[order]; !ok {
+			byOrder[order] = &orderTotal{Order: order}
+		}
+		byOrder[order].Lines++
+		byOrder[order].Quantity += quantity
+	}
+	totals := []orderTotal{}
+	for _, order := range slices.Sorted(maps.Keys(byOrder)) {
+		totals = append(totals, *byOrder[order])
+	}
+	return totals, errors.Wrap(rows.Err(), "read quantities")
+}
+
+// totalsGroupedInSQL reads the totals grouped by the database.
+func totalsGroupedInSQL(ctx context.Context, database *sql.DB, merchant string) ([]orderTotal, error) {
+	rows, err := database.QueryContext(ctx, selectTotalsStatement, merchant)
+	if err != nil {
+		return nil, errors.Wrap(err, "select totals")
+	}
+	defer rows.Close()
+	totals := []orderTotal{}
+	for rows.Next() {
+		read := orderTotal{}
+		if err := rows.Scan(&read.Order, &read.Lines, &read.Quantity); err != nil {
+			return nil, errors.Wrap(err, "read total")
+		}
+		totals = append(totals, read)
+	}
+	return totals, errors.Wrap(rows.Err(), "read totals")
 }
 
 // selectOrders selects the orders, then the items of each order with a statement of its own.

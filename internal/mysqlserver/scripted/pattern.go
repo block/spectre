@@ -117,11 +117,8 @@ type field struct {
 	name, table string
 	// origin is the table and column it was selected from, when it is a column.
 	origin Option[origin]
-}
-
-// origin is a column in a table. The table is empty when the column's name does not say.
-type origin struct {
-	table, column string
+	// aggregate is the function that computes it, when it is an aggregate.
+	aggregate Option[aggregate]
 }
 
 func newField(selected *ast.SelectField, tables map[string]table) (field, error) {
@@ -135,22 +132,21 @@ func newField(selected *ast.SelectField, tables map[string]table) (field, error)
 		if selected.AsName.O != "" {
 			name = selected.AsName.O
 		}
-		return field{labelled: name, name: name}, nil
+		resolved := field{labelled: name, name: name}
+		if function, ok := selected.Expr.(*ast.AggregateFuncExpr); ok {
+			resolved.aggregate = Some(newAggregate(function, tables))
+		}
+		return resolved, nil
 	}
+	source, alias := originOf(column, tables)
 	qualifier, name := column.Name.Table.O, column.Name.Name.O
-	resolved := field{labelled: name, name: name, table: qualifier}
-	source := origin{column: name}
-	if found, ok := tables[strings.ToLower(qualifier)]; ok {
-		source.table = found.name
-		resolved.table = found.alias
-	}
+	resolved := field{labelled: name, name: name, table: alias, origin: Some(source)}
 	if qualifier != "" {
 		resolved.labelled = qualifier + "." + name
 	}
 	if selected.AsName.O != "" {
 		resolved.labelled, resolved.name = selected.AsName.O, selected.AsName.O
 	}
-	resolved.origin = Some(source)
 	return resolved, nil
 }
 
@@ -159,18 +155,48 @@ func (f field) label() string {
 	return f.labelled
 }
 
-// column is the definition of the field's column, taken from the source column it was
-// selected from. Any other column is defined as text.
+// column is the definition of the field's column: the source column it was selected from,
+// or the type MySQL gives its aggregate. Any other column is defined as text.
 func (f field) column(sources []normaliser.Column) normaliser.Column {
 	if source, ok := f.origin.Get(); ok {
-		for _, column := range sources {
-			if strings.EqualFold(column.OrgName, source.column) && (source.table == "" || strings.EqualFold(column.OrgTable, source.table)) {
-				column.Name, column.Table = f.name, f.table
-				return column
-			}
+		if column, found := source.find(sources); found {
+			column.Name, column.Table = f.name, f.table
+			return column
+		}
+	}
+	if function, ok := f.aggregate.Get(); ok {
+		if column, typed := function.column(sources); typed {
+			column.Name = f.name
+			return column
 		}
 	}
 	return normaliser.Column{Name: f.name, Table: f.table, Charset: utf8mb4, Type: mysql.MYSQL_TYPE_VAR_STRING}
+}
+
+// origin is a column in a table. The table is empty when the column's name does not say.
+type origin struct {
+	table, column string
+}
+
+// originOf resolves a column through the statement's tables, and returns the name the
+// statement calls its table by, if it says.
+func originOf(column *ast.ColumnNameExpr, tables map[string]table) (source origin, alias string) {
+	qualifier := column.Name.Table.O
+	source, alias = origin{column: column.Name.Name.O}, qualifier
+	if found, ok := tables[strings.ToLower(qualifier)]; ok {
+		source.table, alias = found.name, found.alias
+	}
+	return source, alias
+}
+
+// find returns the source column with the origin's table and column names.
+func (o origin) find(sources []normaliser.Column) (normaliser.Column, bool) {
+	for _, column := range sources {
+		if strings.EqualFold(column.OrgName, o.column) && (o.table == "" || strings.EqualFold(column.OrgTable, o.table)) {
+			return column, true
+		}
+	}
+	return normaliser.Column{}, false
 }
 
 // utf8mb4 is the default character set of MySQL 8.

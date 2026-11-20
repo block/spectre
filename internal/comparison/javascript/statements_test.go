@@ -42,6 +42,8 @@ const splitScript = `
 	);
 `
 
+// A script declares a candidate JOIN replacing the reference's N+1 statements, and the
+// reverse; each side with one statement decides which way its function runs.
 func TestRegistersStatementReplacements(t *testing.T) {
 	program, err := newProgram(t, combineScript+splitScript)
 	assert.NoError(t, err)
@@ -57,6 +59,8 @@ func TestRegistersStatementReplacements(t *testing.T) {
 		replacements[1].String())
 }
 
+// The candidate joins orders to items where the reference read the orders, then each
+// order's items: the function claims each reference statement and joins their rows.
 func TestCombiningClaimsEachSource(t *testing.T) {
 	program, err := newProgram(t, combineScript)
 	assert.NoError(t, err)
@@ -87,6 +91,8 @@ func TestCombiningClaimsEachSource(t *testing.T) {
 	}, rows)
 }
 
+// The reference joins orders to items where the candidate reads the orders, then each
+// order's items: the function splits the JOIN into one reply per candidate statement.
 func TestSplittingOffersEachReply(t *testing.T) {
 	program, err := newProgram(t, splitScript)
 	assert.NoError(t, err)
@@ -117,6 +123,8 @@ func TestSplittingOffersEachReply(t *testing.T) {
 	}, offers)
 }
 
+// The reference never ran a statement that the script claims, and the script catches the
+// failure; the candidate still cannot be answered with what the script returns.
 func TestClaimFailuresEndTheCombinationEvenWhenCaught(t *testing.T) {
 	unmatched := errors.New("no reference reply")
 	program, err := newProgram(t, `spectre.egress.mysql.statements("SELECT 1").replaces("SELECT 2").using(
@@ -132,6 +140,8 @@ func TestClaimFailuresEndTheCombinationEvenWhenCaught(t *testing.T) {
 	assert.IsError(t, err, unmatched)
 }
 
+// A script that is broken, returns rows MySQL cannot send, or loops forever, cannot
+// answer the candidate.
 func TestStatementReplacementFailures(t *testing.T) {
 	for name, test := range map[string]struct {
 		using string
@@ -164,6 +174,7 @@ func TestStatementReplacementFailures(t *testing.T) {
 	}
 }
 
+// A script declares a replacement that SPECTRE cannot run, so the scripts fail to load.
 func TestRejectsInvalidStatementReplacements(t *testing.T) {
 	for name, test := range map[string]struct {
 		body    string
