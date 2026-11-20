@@ -7,8 +7,9 @@
 //   - One reference statement that several candidate statements replace has its reply
 //     split by the script into one reply per candidate statement.
 //
-// Any other statement that matches a pattern pairs by pattern and values, whichever side
-// runs it. Every other statement pairs as its fallback normaliser pairs it.
+// Built replies have the columns the database describes for the pattern. Any other statement
+// that matches a pattern pairs by pattern and values, whichever side runs it. Every other
+// statement pairs as its fallback normaliser pairs it.
 package scripted
 
 import (
@@ -40,6 +41,7 @@ type Scripts interface {
 type Normaliser struct {
 	scripts  Scripts
 	rules    []rule
+	columns  *columns
 	fallback normaliser.Normaliser
 }
 
@@ -50,8 +52,8 @@ type rule struct {
 	sources     []pattern
 }
 
-// New reads the patterns of the scripts' statement replacements.
-func New(scripts Scripts, fallback normaliser.Normaliser) (*Normaliser, error) {
+// New reads the patterns of the scripts' statement replacements, whose columns database describes.
+func New(scripts Scripts, database Database, fallback normaliser.Normaliser) (*Normaliser, error) {
 	parser := normaliser.NewParser()
 	read := func(texts []string) ([]pattern, error) {
 		patterns := make([]pattern, 0, len(texts))
@@ -76,24 +78,25 @@ func New(scripts Scripts, fallback normaliser.Normaliser) (*Normaliser, error) {
 		}
 		rules = append(rules, rule{replacement: replacement, statements: statements, sources: sources})
 	}
-	return &Normaliser{scripts: scripts, rules: rules, fallback: fallback}, nil
+	return &Normaliser{scripts: scripts, rules: rules, columns: newColumns(database), fallback: fallback}, nil
 }
 
 // NewSession starts a session with no default database.
 func (n *Normaliser) NewSession() normaliser.Session { //nolint:ireturn // Sessions are the contract's interface.
-	return newSession(n.scripts, n.rules, n.fallback.NewSession())
+	return newSession(n.scripts, n.rules, n.columns, n.fallback.NewSession())
 }
 
 // session tracks the default database of one connection, as its fallback session does.
 type session struct {
 	scripts  Scripts
 	rules    []rule
+	columns  *columns
 	fallback normaliser.Session
 	database string
 }
 
-func newSession(scripts Scripts, rules []rule, fallback normaliser.Session) *session {
-	return &session{scripts: scripts, rules: rules, fallback: fallback}
+func newSession(scripts Scripts, rules []rule, described *columns, fallback normaliser.Session) *session {
+	return &session{scripts: scripts, rules: rules, columns: described, fallback: fallback}
 }
 
 // Reference splits the reply of a statement that several candidate statements replace,
@@ -123,17 +126,24 @@ func (s *session) split(ctx context.Context, rule rule, values []normaliser.Valu
 	if !ok {
 		return nil, errors.Errorf("%s needs rows, not %T", rule.replacement, reply)
 	}
-	source := rule.sources[0]
-	labelled, err := source.rows(rows)
+	labelled, err := rule.sources[0].rows(rows)
 	if err != nil {
 		return nil, err
 	}
-	columns := source.definitions(rows.Columns)
+	// Described before the script runs, so describing never counts against its time.
+	columns := make([][]normaliser.Column, 0, len(rule.statements))
+	for _, statement := range rule.statements {
+		described, err := statement.columns(ctx, s.database, s.columns)
+		if err != nil {
+			return nil, err
+		}
+		columns = append(columns, described)
+	}
 	units := []normaliser.Unit{}
 	err = s.scripts.SplitStatement(ctx, rule.replacement, values, labelled,
 		func(index int, values []Option[string], offered []javascript.Row) error {
 			statement := rule.statements[index]
-			split, err := statement.reply(offered, columns)
+			split, err := statement.reply(offered, columns[index])
 			if err != nil {
 				return err
 			}
@@ -167,7 +177,10 @@ func (s *session) Candidate(ctx context.Context, command normaliser.Command, cla
 // replies it claims. A claimed reply without rows answers the statement as it is.
 func (s *session) combine(ctx context.Context, rule rule, values []normaliser.Value, claim normaliser.Claim,
 ) (normaliser.Reply, error) { //nolint:ireturn // Replies are the contract's sum type.
-	columns := []normaliser.Column{}
+	columns, err := rule.statements[0].columns(ctx, s.database, s.columns)
+	if err != nil {
+		return nil, normaliser.UnsupportedError{Route: route, Reason: err.Error()}
+	}
 	claims := make([]javascript.Claim, 0, len(rule.sources))
 	for _, source := range rule.sources {
 		claims = append(claims, func(values []Option[string]) ([]javascript.Row, error) {
@@ -179,7 +192,6 @@ func (s *session) combine(ctx context.Context, rule rule, values []normaliser.Va
 			if !ok {
 				return nil, newRowlessError(reply)
 			}
-			columns = append(columns, rows.Columns...)
 			return source.rows(rows)
 		})
 	}

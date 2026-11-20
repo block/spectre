@@ -203,7 +203,11 @@ func (m *Mirror) startMySQL(ctx context.Context, referenceListener, candidateLis
 	if !hasReference || !hasCandidate {
 		return errors.New("MySQL is proxied, but its listeners are not open")
 	}
-	statements, err := scripted.New(m.egress.Engine().Scripts(), exact.New())
+	database, err := mysqlserver.NewDatabase(config)
+	if err != nil {
+		return errors.Wrap(err, "configure MySQL")
+	}
+	statements, err := scripted.New(m.egress.Engine().Scripts(), database, exact.New())
 	if err != nil {
 		return errors.Wrap(err, "configure MySQL statement replacements")
 	}

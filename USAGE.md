@@ -439,17 +439,13 @@ egress.mysql
   });
 ```
 
-A built reply's columns are defined like the reference columns they were
-selected from, matched by their original table and column names. Columns of a
-table on the outer side of a `LEFT` or `RIGHT JOIN` are nullable, as MySQL sends
-them. A reply split from a join defines a column of such a table as the join
-sent it, which only knows that a primary key is `NOT NULL`, so select the column
-from an inner table too where the join has one. `COUNT`, `SUM`, `AVG`, `MIN` and
-`MAX` of such a column get the types MySQL gives them when it groups through a
-temporary table. Without `GROUP BY`, or grouping by an index, MySQL sets some
-column flags differently, but not their types or nullability. Name aggregates
-with `AS` and format their values as MySQL does, such as `AVG` with four
-decimals. Other columns are text. Each reference reply still answers one statement, so a claimed reply
+A built reply has the columns MySQL describes for its statement. The proxy
+prepares each pattern without running it, with its own credentials, once for each
+default database it is used in. A pattern cannot select a `?`, whose type MySQL
+only knows once it runs. A few column flags that MySQL sets by query plan, such
+as on aggregates, can differ from the database's own reply, but not types,
+lengths or nullability. Format values as MySQL does, such as `AVG` with four
+decimals. Each reference reply still answers one statement, so a claimed reply
 is used up and each offered reply answers one candidate statement. The script
 decides what the candidate receives, including the order of its rows, and
 SPECTRE does not check it against the candidate's statement. A candidate
@@ -457,7 +453,8 @@ statement that finds no reply quarantines the candidate as `unmatched`, as does
 a reply that nothing claims. A script fails when it throws, builds a row
 without one of the statement's columns, or runs for longer than a second, not
 counting time spent waiting in claims. A failure
-while answering a candidate statement quarantines the candidate as `unable`. A
+while answering a candidate statement, including the database failing to
+describe its columns, quarantines the candidate as `unable`. A
 failure while splitting a reference reply offers nothing, so the candidate's
 statements quarantine it as `unmatched`.
 
