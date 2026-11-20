@@ -128,11 +128,12 @@ func (s *session) split(ctx context.Context, rule rule, values []normaliser.Valu
 	if err != nil {
 		return nil, err
 	}
+	columns := source.definitions(rows.Columns)
 	units := []normaliser.Unit{}
 	err = s.scripts.SplitStatement(ctx, rule.replacement, values, labelled,
 		func(index int, values []Option[string], offered []javascript.Row) error {
 			statement := rule.statements[index]
-			split, err := statement.reply(offered, rows.Columns)
+			split, err := statement.reply(offered, columns)
 			if err != nil {
 				return err
 			}

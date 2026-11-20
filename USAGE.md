@@ -386,7 +386,8 @@ that match no pattern pair as before.
 
 Scripts see values and rows as text, with `null` for NULL. A row is labelled
 by each column's `AS` name, or by the column as the pattern writes it, such as
-`o.id`. One side lists a single statement, and that decides where `using` runs:
+`o.id`, so a self join keeps its tables apart by their aliases. A pattern that
+gives two columns the same label fails to load. One side lists a single statement, and that decides where `using` runs:
 
 - With one candidate statement, `using` runs for each candidate statement that
   matches it. It receives the statement's values and one claim per reference
@@ -438,10 +439,16 @@ egress.mysql
 ```
 
 A built reply's columns are defined like the reference columns they were
-selected from, matched by their original table and column names. `COUNT`,
-`SUM`, `AVG`, `MIN` and `MAX` of such a column get the types MySQL gives them,
-so name aggregates with `AS` and format their values as MySQL does, such as
-`AVG` with four decimals. Other columns are text. Each reference reply still answers one statement, so a claimed reply
+selected from, matched by their original table and column names. Columns of a
+table on the outer side of a `LEFT` or `RIGHT JOIN` are nullable, as MySQL sends
+them. A reply split from a join defines a column of such a table as the join
+sent it, which only knows that a primary key is `NOT NULL`, so select the column
+from an inner table too where the join has one. `COUNT`, `SUM`, `AVG`, `MIN` and
+`MAX` of such a column get the types MySQL gives them when it groups through a
+temporary table. Without `GROUP BY`, or grouping by an index, MySQL sets some
+column flags differently, but not their types or nullability. Name aggregates
+with `AS` and format their values as MySQL does, such as `AVG` with four
+decimals. Other columns are text. Each reference reply still answers one statement, so a claimed reply
 is used up and each offered reply answers one candidate statement. The script
 decides what the candidate receives, including the order of its rows, and
 SPECTRE does not check it against the candidate's statement. A candidate

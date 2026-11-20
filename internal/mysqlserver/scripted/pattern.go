@@ -24,7 +24,7 @@ type pattern struct {
 	fields []field
 }
 
-// newPattern reads a script's pattern, whose columns must all be named.
+// newPattern reads a script's pattern, whose columns must all be named, each differently.
 func newPattern(statements *normaliser.Parser, text string) (pattern, error) {
 	query, ok := statements.Parse(text).(normaliser.Query)
 	if !ok || len(query.Statements) != 1 {
@@ -36,6 +36,7 @@ func newPattern(statements *normaliser.Parser, text string) (pattern, error) {
 	}
 	tables := tablesOf(selection)
 	fields := make([]field, 0, len(selection.Fields.Fields))
+	labels := map[string]bool{}
 	for _, selected := range selection.Fields.Fields {
 		if selected.WildCard != nil {
 			return pattern{}, errors.Errorf("pattern %q selects *, so its columns are unknown", text)
@@ -44,6 +45,10 @@ func newPattern(statements *normaliser.Parser, text string) (pattern, error) {
 		if err != nil {
 			return pattern{}, errors.Wrapf(err, "pattern %q", text)
 		}
+		if labels[resolved.label()] {
+			return pattern{}, errors.Errorf("pattern %q selects two columns labelled %q, so script rows cannot hold both", text, resolved.label())
+		}
+		labels[resolved.label()] = true
 		fields = append(fields, resolved)
 	}
 	return pattern{text: text, digest: digest(text), fields: fields}, nil
@@ -109,6 +114,23 @@ func (p pattern) reply(rows []javascript.Row, sources []normaliser.Column) (norm
 	return reply, nil
 }
 
+// definitions are a reply's columns as their tables define them, as far as the reply shows:
+// an outer-joined primary key is still NOT NULL. Columns of outer-joined tables come last.
+func (p pattern) definitions(columns []normaliser.Column) []normaliser.Column {
+	inner, outer := []normaliser.Column{}, []normaliser.Column{}
+	for index, column := range columns {
+		if index >= len(p.fields) || !p.fields[index].outerJoined() {
+			inner = append(inner, column)
+			continue
+		}
+		if column.Flags&mysql.PRI_KEY_FLAG != 0 {
+			column.Flags |= mysql.NOT_NULL_FLAG
+		}
+		outer = append(outer, column)
+	}
+	return append(inner, outer...)
+}
+
 // field is one selected column of a pattern.
 type field struct {
 	// labelled names the column in script rows: the AS name, or the column as written.
@@ -119,6 +141,8 @@ type field struct {
 	origin Option[origin]
 	// aggregate is the function that computes it, when it is an aggregate.
 	aggregate Option[aggregate]
+	// nullable is true for a column of an outer-joined table, which may be NULL.
+	nullable bool
 }
 
 func newField(selected *ast.SelectField, tables map[string]table) (field, error) {
@@ -138,9 +162,9 @@ func newField(selected *ast.SelectField, tables map[string]table) (field, error)
 		}
 		return resolved, nil
 	}
-	source, alias := originOf(column, tables)
+	source, from := originOf(column, tables)
 	qualifier, name := column.Name.Table.O, column.Name.Name.O
-	resolved := field{labelled: name, name: name, table: alias, origin: Some(source)}
+	resolved := field{labelled: name, name: name, table: from.alias, origin: Some(source), nullable: from.outer}
 	if qualifier != "" {
 		resolved.labelled = qualifier + "." + name
 	}
@@ -150,17 +174,25 @@ func newField(selected *ast.SelectField, tables map[string]table) (field, error)
 	return resolved, nil
 }
 
+// outerJoined reports whether the column is from an outer-joined table, so may be NULL.
+func (f field) outerJoined() bool {
+	return f.nullable
+}
+
 // label names the column in script rows.
 func (f field) label() string {
 	return f.labelled
 }
 
 // column is the definition of the field's column: the source column it was selected from,
-// or the type MySQL gives its aggregate. Any other column is defined as text.
+// nullable if outer-joined, or the type MySQL gives its aggregate. Any other is text.
 func (f field) column(sources []normaliser.Column) normaliser.Column {
 	if source, ok := f.origin.Get(); ok {
 		if column, found := source.find(sources); found {
 			column.Name, column.Table = f.name, f.table
+			if f.nullable {
+				column.Flags &^= mysql.NOT_NULL_FLAG
+			}
 			return column
 		}
 	}
@@ -178,15 +210,15 @@ type origin struct {
 	table, column string
 }
 
-// originOf resolves a column through the statement's tables, and returns the name the
-// statement calls its table by, if it says.
-func originOf(column *ast.ColumnNameExpr, tables map[string]table) (source origin, alias string) {
+// originOf resolves a column through the statement's tables, and returns its table as
+// the statement calls it, which has only the qualifier if the statement does not say.
+func originOf(column *ast.ColumnNameExpr, tables map[string]table) (source origin, from table) {
 	qualifier := column.Name.Table.O
-	source, alias = origin{column: column.Name.Name.O}, qualifier
+	source, from = origin{column: column.Name.Name.O}, table{alias: qualifier}
 	if found, ok := tables[strings.ToLower(qualifier)]; ok {
-		source.table, alias = found.name, found.alias
+		source.table, from = found.name, found
 	}
-	return source, alias
+	return source, from
 }
 
 // find returns the source column with the origin's table and column names.
@@ -205,6 +237,8 @@ const utf8mb4 = 255
 // table is a table that a statement reads, and the name the statement calls it by.
 type table struct {
 	name, alias string
+	// outer is true for a table on the outer side of a LEFT or RIGHT JOIN.
+	outer bool
 }
 
 // tablesOf maps the names a statement calls its tables by to the tables. With one
@@ -214,9 +248,7 @@ func tablesOf(selection *ast.SelectStmt) map[string]table {
 	if selection.From == nil {
 		return tables
 	}
-	collector := newTableCollector(tables)
-	selection.From.TableRefs.Accept(collector)
-	if collector.counted() == 1 {
+	if collectTables(selection.From.TableRefs, false, tables) == 1 {
 		for _, only := range tables {
 			tables[""] = only
 		}
@@ -224,41 +256,30 @@ func tablesOf(selection *ast.SelectStmt) map[string]table {
 	return tables
 }
 
-// tableCollector visits a FROM clause's tables.
-type tableCollector struct {
-	tables map[string]table
-	count  int
-}
-
-func newTableCollector(tables map[string]table) *tableCollector {
-	return &tableCollector{tables: tables}
-}
-
-// counted is how many tables the collector visited.
-func (c *tableCollector) counted() int {
-	return c.count
-}
-
-func (c *tableCollector) Enter(node ast.Node) (ast.Node, bool) {
-	source, ok := node.(*ast.TableSource)
-	if !ok {
-		return node, false
+// collectTables adds the named tables of a FROM clause to tables, and counts every table,
+// derived ones too. Tables an outer join can leave unmatched are outer.
+func collectTables(node ast.ResultSetNode, outer bool, tables map[string]table) (count int) {
+	switch joined := node.(type) {
+	case *ast.Join:
+		count = collectTables(joined.Left, outer || joined.Tp == ast.RightJoin, tables)
+		if joined.Right != nil {
+			count += collectTables(joined.Right, outer || joined.Tp == ast.LeftJoin, tables)
+		}
+		return count
+	case *ast.TableSource:
+		if nested, ok := joined.Source.(*ast.Join); ok {
+			return collectTables(nested, outer, tables)
+		}
+		if name, ok := joined.Source.(*ast.TableName); ok {
+			alias := name.Name.O
+			if joined.AsName.O != "" {
+				alias = joined.AsName.O
+			}
+			tables[strings.ToLower(alias)] = table{name: name.Name.O, alias: alias, outer: outer}
+		}
+		return 1
 	}
-	name, ok := source.Source.(*ast.TableName)
-	if !ok {
-		return node, false
-	}
-	alias := name.Name.O
-	if source.AsName.O != "" {
-		alias = source.AsName.O
-	}
-	c.tables[strings.ToLower(alias)] = table{name: name.Name.O, alias: alias}
-	c.count++
-	return node, true
-}
-
-func (c *tableCollector) Leave(node ast.Node) (ast.Node, bool) {
-	return node, true
+	return 0
 }
 
 // valuesOf returns a statement's literal values in the order they are written, as text.

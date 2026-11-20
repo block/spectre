@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"slices"
 	"strconv"
-	"strings"
 	"testing"
 
 	"github.com/alecthomas/assert/v2"
@@ -59,11 +58,6 @@ const (
 	selectJoinDigest   = "SELECT `o` . `id` , `o` . `label` , `i` . `id` AS `item` , `i` . `sku` , `i` . `quantity` " +
 		"FROM `orders` `o` LEFT JOIN `items` `i` ON `i` . `order_id` = `o` . `id` WHERE `o` . `merchant_id` = ? ORDER BY `o` . `id` , `i` . `id`"
 
-	selectOrdersStatement = "SELECT id, label FROM orders WHERE merchant_id = ? ORDER BY id"
-	selectItemsStatement  = "SELECT id, sku, quantity FROM items WHERE order_id = ? ORDER BY id"
-	selectJoinStatement   = "SELECT o.id, o.label, i.id AS item, i.sku, i.quantity FROM orders o " +
-		"LEFT JOIN items i ON i.order_id = o.id WHERE o.merchant_id = ? ORDER BY o.id, i.id"
-
 	// Merchant 1's orders 7 and 9 have items; order 8 has none, so it has no totals.
 	merchantOneTotalsRoute = "GET /merchants/1/totals"
 	merchantOneTotals      = `{"totals":[{"order":7,"lines":2,"quantity":3},{"order":9,"lines":1,"quantity":5}]}`
@@ -81,10 +75,7 @@ const (
 		}
 	`
 
-	selectQuantitiesStatement = "SELECT i.order_id, i.quantity FROM items i JOIN orders o ON o.id = i.order_id WHERE o.merchant_id = ?"
-	selectQuantitiesDigest    = "SELECT `i` . `order_id` , `i` . `quantity` FROM `items` `i` JOIN `orders` `o` ON `o` . `id` = `i` . `order_id` WHERE `o` . `merchant_id` = ?"
-	selectTotalsStatement     = "SELECT i.order_id, COUNT(*) AS line_count, SUM(i.quantity) AS total FROM items i " +
-		"JOIN orders o ON o.id = i.order_id WHERE o.merchant_id = ? GROUP BY i.order_id ORDER BY i.order_id"
+	selectQuantitiesDigest = "SELECT `i` . `order_id` , `i` . `quantity` FROM `items` `i` JOIN `orders` `o` ON `o` . `id` = `i` . `order_id` WHERE `o` . `merchant_id` = ?"
 )
 
 func TestMySQLIdenticalStatementsReplayTheReferenceRows(t *testing.T) {
@@ -172,8 +163,11 @@ func TestMySQLCandidateJoinReplacesTheReferenceStatements(t *testing.T) {
 		import { egress } from "spectre";
 
 		egress.mysql
-		  .statements("`+selectJoinStatement+`")
-		  .replaces("`+selectOrdersStatement+`", "`+selectItemsStatement+`")
+		  .statements(
+		    "SELECT o.id, o.label, i.id AS item, i.sku, i.quantity FROM orders o " +
+		      "LEFT JOIN items i ON i.order_id = o.id WHERE o.merchant_id = ? ORDER BY o.id, i.id",
+		  )
+		  .replaces("SELECT id, label FROM orders WHERE merchant_id = ? ORDER BY id", "SELECT id, sku, quantity FROM items WHERE order_id = ? ORDER BY id")
 		  .using(([merchant], [orders, items]) =>
 		    orders([merchant]).flatMap((order) => {
 		      const columns = { "o.id": order.id, "o.label": order.label };
@@ -198,8 +192,11 @@ func TestMySQLCandidateStatementsReplaceTheReferenceJoin(t *testing.T) {
 		import { egress, type Row } from "spectre";
 
 		egress.mysql
-		  .statements("`+selectOrdersStatement+`", "`+selectItemsStatement+`")
-		  .replaces("`+selectJoinStatement+`")
+		  .statements("SELECT id, label FROM orders WHERE merchant_id = ? ORDER BY id", "SELECT id, sku, quantity FROM items WHERE order_id = ? ORDER BY id")
+		  .replaces(
+		    "SELECT o.id, o.label, i.id AS item, i.sku, i.quantity FROM orders o " +
+		      "LEFT JOIN items i ON i.order_id = o.id WHERE o.merchant_id = ? ORDER BY o.id, i.id",
+		  )
 		  .using(([merchant], rows, [orders, items]) => {
 		    const labels = new Map<string, string | null>();
 		    const found = new Map<string, Row[]>();
@@ -233,8 +230,11 @@ func TestMySQLCandidateGroupByReplacesTheReferenceRows(t *testing.T) {
 			ingress.http("GET /merchants/{merchant}/totals").match<MerchantTotals>();
 
 			egress.mysql
-			  .statements("`+selectTotalsStatement+`")
-			  .replaces("`+selectQuantitiesStatement+`")
+			  .statements(
+			    "SELECT i.order_id, COUNT(*) AS line_count, SUM(i.quantity) AS total FROM items i " +
+			      "JOIN orders o ON o.id = i.order_id WHERE o.merchant_id = ? GROUP BY i.order_id ORDER BY i.order_id",
+			  )
+			  .replaces("SELECT i.order_id, i.quantity FROM items i JOIN orders o ON o.id = i.order_id WHERE o.merchant_id = ?")
 			  .using(([merchant], [quantitiesOf]) => {
 			    const groups = new Map<string, { lines: number; total: number }>();
 			    for (const row of quantitiesOf([merchant])) {
@@ -289,21 +289,10 @@ func TestMySQLCandidateGroupByGetsTheReplyTheDatabaseWouldSend(t *testing.T) {
 		      });
 		  });
 	`))
-	server, err := m.MySQL().Server().Conn(t.Context())
-	assert.NoError(t, err)
-	defer server.Close()
-	_, err = server.ExecContext(t.Context(), "USE `"+m.MySQL().Name+"`")
-	assert.NoError(t, err)
 
-	reference, err := m.MySQL().Reference.QueryContext(t.Context(), items, 1)
-	assert.NoError(t, err)
-	_, _ = described(t, reference)
-	candidate, err := m.MySQL().Candidate.QueryContext(t.Context(), grouped, 1)
-	assert.NoError(t, err)
-	candidateColumns, candidateRows := described(t, candidate)
-	database, err := server.QueryContext(t.Context(), strings.ReplaceAll(grouped, "?", "1"))
-	assert.NoError(t, err)
-	databaseColumns, databaseRows := described(t, database)
+	queried(t, m.MySQL().Reference, items, 1)
+	candidateColumns, candidateRows := queried(t, m.MySQL().Candidate, grouped, 1)
+	databaseColumns, databaseRows := queried(t, databaseOf(t, m), grouped, 1)
 
 	assert.Equal(t, [][]Option[string]{
 		{Some("7"), Some("2"), Some("3"), Some("1.5000"), Some("apple"), Some("2")},
@@ -317,6 +306,122 @@ func TestMySQLCandidateGroupByGetsTheReplyTheDatabaseWouldSend(t *testing.T) {
 		"SELECT `i` . `order_id` , COUNT ( * ) AS `line_count` , SUM ( `i` . `quantity` ) AS `total` , AVG ( `i` . `quantity` ) AS `average` , " +
 			"MIN ( `i` . `sku` ) AS `first_sku` , MAX ( `i` . `id` ) AS `last_item` FROM `items` `i` JOIN `orders` `o` ON `o` . `id` = `i` . `order_id` " +
 			"WHERE `o` . `merchant_id` = ? GROUP BY `i` . `order_id` ORDER BY `i` . `order_id`": 1,
+	})
+}
+
+// The reference reads a department's employees, its name, then each manager once; the
+// rewritten candidate joins employees to their managers and department in one statement.
+func TestMySQLCandidateSelfJoinGetsTheReplyTheDatabaseWouldSend(t *testing.T) {
+	const (
+		employees  = "SELECT id, name, manager_id FROM employees WHERE department_id = ? ORDER BY id"
+		department = "SELECT name FROM departments WHERE id = ?"
+		employee   = "SELECT id, name FROM employees WHERE id = ?"
+		// The self join finds each employee's manager, if they have one, and their department.
+		staff = "SELECT e.id, e.name, e.manager_id, m.name AS manager, d.name AS department FROM employees e " +
+			"LEFT JOIN employees m ON m.id = e.manager_id JOIN departments d ON d.id = e.department_id WHERE e.department_id = ? ORDER BY e.id"
+	)
+	m := startStaffMirror(t, `
+		import { egress } from "spectre";
+
+		egress.mysql
+		  .statements("`+staff+`")
+		  .replaces("`+employees+`", "`+department+`", "`+employee+`")
+		  .using(([department], [inDepartment, departmentNamed, employee]) => {
+		    const employees = inDepartment([department]);
+		    const [named] = departmentNamed([department]);
+		    const managers = new Map<string, string | null>();
+		    for (const row of employees) {
+		      if (row.manager_id !== null && !managers.has(row.manager_id)) {
+		        managers.set(row.manager_id, employee([row.manager_id])[0]?.name ?? null);
+		      }
+		    }
+		    if (!named) return [];
+		    return employees.map((row) => ({
+		      "e.id": row.id,
+		      "e.name": row.name,
+		      "e.manager_id": row.manager_id,
+		      manager: row.manager_id === null ? null : managers.get(row.manager_id)!,
+		      department: named.name,
+		    }));
+		  });
+	`)
+
+	queried(t, m.MySQL().Reference, employees, 1)
+	queried(t, m.MySQL().Reference, department, 1)
+	queried(t, m.MySQL().Reference, employee, 1)
+	queried(t, m.MySQL().Reference, employee, 2)
+	candidateColumns, candidateRows := queried(t, m.MySQL().Candidate, staff, 1)
+	databaseColumns, databaseRows := queried(t, databaseOf(t, m), staff, 1)
+
+	assert.Equal(t, [][]Option[string]{
+		{Some("1"), Some("Ada"), None[string](), None[string](), Some("Engineering")},
+		{Some("2"), Some("Grace"), Some("1"), Some("Ada"), Some("Engineering")},
+		{Some("3"), Some("Linus"), Some("2"), Some("Grace"), Some("Engineering")},
+	}, databaseRows)
+	assert.Equal(t, databaseRows, candidateRows)
+	// MySQL sends the manager's name, NOT NULL in its table, as nullable from the LEFT JOIN.
+	assert.Equal(t, databaseColumns, candidateColumns)
+	assert.True(t, candidateColumns[3].Nullable)
+	// The JOIN reached the database once, from the test itself, not from the candidate.
+	m.MySQL().ExpectStatements(map[string]uint64{
+		"SELECT `id` , NAME , `manager_id` FROM `employees` WHERE `department_id` = ? ORDER BY `id`": 1,
+		"SELECT NAME FROM `departments` WHERE `id` = ?":                                              1,
+		"SELECT `id` , NAME FROM `employees` WHERE `id` = ?":                                         2,
+		"SELECT `e` . `id` , `e` . `name` , `e` . `manager_id` , `m` . `name` AS `manager` , `d` . `name` AS `department` FROM `employees` `e` " +
+			"LEFT JOIN `employees` `m` ON `m` . `id` = `e` . `manager_id` JOIN `departments` `d` ON `d` . `id` = `e` . `department_id` " +
+			"WHERE `e` . `department_id` = ? ORDER BY `e` . `id`": 1,
+	})
+}
+
+// The reference reads a department's staff with one self join; the rewritten candidate reads
+// its employees, its name, then each manager once, from the database's point of view.
+func TestMySQLCandidateStatementsGetTheRepliesTheDatabaseWouldSendFromASelfJoin(t *testing.T) {
+	const (
+		employees  = "SELECT id, name, manager_id FROM employees WHERE department_id = ? ORDER BY id"
+		department = "SELECT name FROM departments WHERE id = ?"
+		employee   = "SELECT id, name FROM employees WHERE id = ?"
+		// The self join finds each employee's manager, if they have one, and their department.
+		staff = "SELECT e.id, e.name, e.manager_id, m.name AS manager, d.name AS department FROM employees e " +
+			"LEFT JOIN employees m ON m.id = e.manager_id JOIN departments d ON d.id = e.department_id WHERE e.department_id = ? ORDER BY e.id"
+	)
+	m := startStaffMirror(t, `
+		import { egress } from "spectre";
+
+		egress.mysql
+		  .statements("`+employees+`", "`+department+`", "`+employee+`")
+		  .replaces("`+staff+`")
+		  .using(([department], rows, [inDepartment, departmentNamed, employee]) => {
+		    inDepartment([department], rows.map((row) => ({ id: row["e.id"], name: row["e.name"], manager_id: row["e.manager_id"] })));
+		    if (rows.length > 0) departmentNamed([department], [{ name: rows[0]!.department }]);
+		    const managers = new Map<string, string | null>();
+		    for (const row of rows) if (row["e.manager_id"] !== null) managers.set(row["e.manager_id"], row.manager);
+		    // name is NOT NULL, so a NULL manager name means the manager row doesn't exist.
+		    for (const [id, name] of managers) employee([id], name === null ? [] : [{ id, name }]);
+		  });
+	`)
+
+	queried(t, m.MySQL().Reference, staff, 1)
+	database := databaseOf(t, m)
+	for _, statement := range []struct {
+		sql   string
+		value int
+	}{
+		{employees, 1}, {department, 1}, {employee, 1}, {employee, 2},
+	} {
+		candidateColumns, candidateRows := queried(t, m.MySQL().Candidate, statement.sql, statement.value)
+		databaseColumns, databaseRows := queried(t, database, statement.sql, statement.value)
+		assert.NotZero(t, databaseRows)
+		assert.Equal(t, databaseRows, candidateRows, statement.sql)
+		assert.Equal(t, databaseColumns, candidateColumns, statement.sql)
+	}
+	// Only the test itself ran the candidate's statements on the database.
+	m.MySQL().ExpectStatements(map[string]uint64{
+		"SELECT `id` , NAME , `manager_id` FROM `employees` WHERE `department_id` = ? ORDER BY `id`": 1,
+		"SELECT NAME FROM `departments` WHERE `id` = ?":                                              1,
+		"SELECT `id` , NAME FROM `employees` WHERE `id` = ?":                                         2,
+		"SELECT `e` . `id` , `e` . `name` , `e` . `manager_id` , `m` . `name` AS `manager` , `d` . `name` AS `department` FROM `employees` `e` " +
+			"LEFT JOIN `employees` `m` ON `m` . `id` = `e` . `manager_id` JOIN `departments` `d` ON `d` . `id` = `e` . `department_id` " +
+			"WHERE `e` . `department_id` = ? ORDER BY `e` . `id`": 1,
 	})
 }
 
@@ -592,7 +697,8 @@ func joinedOrdersService() it.Service {
 
 // selectJoinedOrders selects the orders with their items in one statement.
 func selectJoinedOrders(ctx context.Context, database *sql.DB, merchant string) ([]order, error) {
-	rows, err := database.QueryContext(ctx, selectJoinStatement, merchant)
+	rows, err := database.QueryContext(ctx, "SELECT o.id, o.label, i.id AS item, i.sku, i.quantity FROM orders o "+
+		"LEFT JOIN items i ON i.order_id = o.id WHERE o.merchant_id = ? ORDER BY o.id, i.id", merchant)
 	if err != nil {
 		return nil, errors.Wrap(err, "select orders")
 	}
@@ -615,6 +721,47 @@ func selectJoinedOrders(ctx context.Context, database *sql.DB, merchant string) 
 		}
 	}
 	return orders, errors.Wrap(rows.Err(), "read orders")
+}
+
+// startStaffMirror mirrors a database of employees, their managers, and their departments.
+// The services do nothing; the tests send each side's statements themselves.
+func startStaffMirror(t *testing.T, script string) *it.Mirror {
+	t.Helper()
+	idle := func(*testing.T, it.Backend) {}
+	return it.Start(t,
+		it.Scripts(script),
+		it.MySQL(
+			"CREATE TABLE departments (id BIGINT PRIMARY KEY, name VARCHAR(32) NOT NULL)",
+			"CREATE TABLE employees (id BIGINT PRIMARY KEY, name VARCHAR(32) NOT NULL, manager_id BIGINT, department_id BIGINT NOT NULL)",
+			"INSERT INTO departments VALUES (1, 'Engineering'), (2, 'Sales')",
+			"INSERT INTO employees VALUES (1, 'Ada', NULL, 1), (2, 'Grace', 1, 1), (3, 'Linus', 2, 1), (4, 'Mary', 1, 2)",
+		),
+		it.Reference(idle), it.Candidate(idle),
+	)
+}
+
+// querier runs statements, as a side's handle or a connection to the database does.
+type querier interface {
+	QueryContext(ctx context.Context, query string, arguments ...any) (*sql.Rows, error)
+}
+
+// queried runs a statement, and describes its reply.
+func queried(t *testing.T, database querier, statement string, arguments ...any) ([]columnType, [][]Option[string]) {
+	t.Helper()
+	rows, err := database.QueryContext(t.Context(), statement, arguments...)
+	assert.NoError(t, err)
+	return described(t, rows)
+}
+
+// databaseOf connects to the mirror's database itself, bypassing the proxy.
+func databaseOf(t *testing.T, m *it.Mirror) *sql.Conn {
+	t.Helper()
+	server, err := m.MySQL().Server().Conn(t.Context())
+	assert.NoError(t, err)
+	t.Cleanup(func() { _ = server.Close() })
+	_, err = server.ExecContext(t.Context(), "USE `"+m.MySQL().Name+"`")
+	assert.NoError(t, err)
+	return server
 }
 
 // columnType is what a driver learns of a reply column.
@@ -687,7 +834,8 @@ func totalsService(totals func(ctx context.Context, database *sql.DB, merchant s
 
 // totalsGroupedInCode reads every item's quantity, and adds them up by order.
 func totalsGroupedInCode(ctx context.Context, database *sql.DB, merchant string) ([]orderTotal, error) {
-	rows, err := database.QueryContext(ctx, selectQuantitiesStatement, merchant)
+	rows, err := database.QueryContext(ctx,
+		"SELECT i.order_id, i.quantity FROM items i JOIN orders o ON o.id = i.order_id WHERE o.merchant_id = ?", merchant)
 	if err != nil {
 		return nil, errors.Wrap(err, "select quantities")
 	}
@@ -713,7 +861,8 @@ func totalsGroupedInCode(ctx context.Context, database *sql.DB, merchant string)
 
 // totalsGroupedInSQL reads the totals grouped by the database.
 func totalsGroupedInSQL(ctx context.Context, database *sql.DB, merchant string) ([]orderTotal, error) {
-	rows, err := database.QueryContext(ctx, selectTotalsStatement, merchant)
+	rows, err := database.QueryContext(ctx, "SELECT i.order_id, COUNT(*) AS line_count, SUM(i.quantity) AS total FROM items i "+
+		"JOIN orders o ON o.id = i.order_id WHERE o.merchant_id = ? GROUP BY i.order_id ORDER BY i.order_id", merchant)
 	if err != nil {
 		return nil, errors.Wrap(err, "select totals")
 	}
