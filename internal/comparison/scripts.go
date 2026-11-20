@@ -145,6 +145,36 @@ func (s *Scripts) replace(ctx context.Context, typeName schema.TypeRef, function
 	return translated, nil
 }
 
+// StatementReplacements returns the MySQL statement replacements in declaration order.
+func (s *Scripts) StatementReplacements() []javascript.StatementReplacement {
+	return s.program.StatementReplacements()
+}
+
+// CombineStatements answers a candidate statement from the reference statements it claims.
+// Waiting in claims does not count against the comparison timeout.
+func (s *Scripts) CombineStatements(ctx context.Context, replacement javascript.StatementReplacement, values []Option[string],
+	claims []javascript.Claim,
+) ([]javascript.Row, error) {
+	evaluator, err := s.program.NewEvaluator(ctx)
+	if err != nil {
+		return nil, errors.Wrap(err, "initialise JavaScript evaluator")
+	}
+	defer evaluator.Close()
+	return errors.WithStack2(evaluator.CombineStatements(s.timeout, replacement, values, claims))
+}
+
+// SplitStatement offers the replies that a reference statement's reply splits into.
+func (s *Scripts) SplitStatement(ctx context.Context, replacement javascript.StatementReplacement, values []Option[string],
+	rows []javascript.Row, offer javascript.Offer,
+) error {
+	evaluator, err := s.program.NewEvaluator(ctx)
+	if err != nil {
+		return errors.Wrap(err, "initialise JavaScript evaluator")
+	}
+	defer evaluator.Close()
+	return errors.WithStack(evaluator.SplitStatement(s.timeout, replacement, values, rows, offer))
+}
+
 // SelectRule returns the first rule that selects a response. rules must be in
 // declaration order, and the request must match each rule's pattern, if it has one.
 func (s *Scripts) SelectRule(ctx context.Context, rules []javascript.Rule, request javascript.Request, response javascript.Response) (Option[javascript.Rule], error) {

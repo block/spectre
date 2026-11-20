@@ -3,7 +3,9 @@ package javascript
 import (
 	"context"
 	"encoding/json"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/alecthomas/errors"
 	. "github.com/alecthomas/types/optional"
@@ -225,6 +227,179 @@ func (e *Evaluator) replace(replacement Replacement, function string, callback s
 	}
 	value, err := e.result(result)
 	return value, errors.Wrapf(err, "%s function of %s", function, replacement)
+}
+
+// Claim returns the rows of the reference statement with values that a combining
+// replacement's using function claims from one of its sources.
+type Claim func(values []Option[string]) ([]Row, error)
+
+// Offer receives each reply that a splitting replacement's using function offers for
+// the candidate statement at index, with its values.
+type Offer func(index int, values []Option[string], rows []Row) error
+
+// CombineStatements answers a candidate statement with the rows a combining replacement's using
+// function builds from claims, one per source. Only time outside claims counts against limit.
+func (e *Evaluator) CombineStatements(limit time.Duration, replacement StatementReplacement, values []Option[string], claims []Claim) ([]Row, error) {
+	using, ok := e.registry.statementUser(replacement.Index())
+	if !ok {
+		return nil, errors.Errorf("JavaScript function of %s is unavailable", replacement)
+	}
+	clock := startStopwatch(e.runtime, limit)
+	defer clock.stop()
+	failure := None[error]()
+	functions := make([]any, 0, len(claims))
+	for _, claim := range claims {
+		functions = append(functions, func(call sobek.FunctionCall) sobek.Value {
+			claimed, err := e.statementValues(call.Argument(0))
+			var rows []Row
+			if err == nil {
+				clock.pause()
+				rows, err = claim(claimed)
+				clock.resume()
+			}
+			if err != nil {
+				failure = Some(err)
+				panic(e.runtime.NewGoError(err))
+			}
+			return e.rowsValue(rows)
+		})
+	}
+	result, err := using(sobek.Undefined(), e.valuesValue(values), e.runtime.ToValue(functions))
+	if failed, claimFailed := failure.Get(); claimFailed {
+		return nil, errors.WithStack(failed)
+	}
+	if err != nil {
+		return nil, scriptError(err, "JavaScript function of "+replacement.String()+" threw an exception")
+	}
+	rows, err := e.rows(result)
+	return rows, errors.Wrapf(err, "result of %s", replacement)
+}
+
+// SplitStatement passes the replies a splitting replacement's using function offers for
+// a reference statement's values and rows to offer.
+func (e *Evaluator) SplitStatement(limit time.Duration, replacement StatementReplacement, values []Option[string], rows []Row, offer Offer) error {
+	using, ok := e.registry.statementUser(replacement.Index())
+	if !ok {
+		return errors.Errorf("JavaScript function of %s is unavailable", replacement)
+	}
+	clock := startStopwatch(e.runtime, limit)
+	defer clock.stop()
+	failure := None[error]()
+	functions := make([]any, 0, len(replacement.Statements()))
+	for index := range replacement.Statements() {
+		functions = append(functions, func(call sobek.FunctionCall) sobek.Value {
+			offered, err := e.statementValues(call.Argument(0))
+			var offeredRows []Row
+			if err == nil {
+				offeredRows, err = e.rows(call.Argument(1))
+			}
+			if err == nil {
+				err = offer(index, offered, offeredRows)
+			}
+			if err != nil {
+				failure = Some(err)
+				panic(e.runtime.NewGoError(err))
+			}
+			return sobek.Undefined()
+		})
+	}
+	_, err := using(sobek.Undefined(), e.valuesValue(values), e.rowsValue(rows), e.runtime.ToValue(functions))
+	if failed, offerFailed := failure.Get(); offerFailed {
+		return errors.WithStack(failed)
+	}
+	if err != nil {
+		return scriptError(err, "JavaScript function of "+replacement.String()+" threw an exception")
+	}
+	return nil
+}
+
+func (e *Evaluator) valuesValue(values []Option[string]) sobek.Value {
+	array := make([]any, 0, len(values))
+	for _, value := range values {
+		array = append(array, e.nullable(value))
+	}
+	return e.runtime.ToValue(array)
+}
+
+func (e *Evaluator) rowsValue(rows []Row) sobek.Value {
+	array := make([]any, 0, len(rows))
+	for _, row := range rows {
+		object := e.runtime.NewObject()
+		for label, value := range row {
+			_ = object.Set(label, e.nullable(value)) //nolint:errcheck // Plain objects accept any property.
+		}
+		array = append(array, object)
+	}
+	return e.runtime.ToValue(array)
+}
+
+func (e *Evaluator) nullable(value Option[string]) sobek.Value {
+	if text, ok := value.Get(); ok {
+		return e.runtime.ToValue(text)
+	}
+	return sobek.Null()
+}
+
+// statementValues reads a script's array of statement values.
+func (e *Evaluator) statementValues(value sobek.Value) ([]Option[string], error) {
+	array, ok := value.Export().([]any)
+	if !ok {
+		return nil, errors.New("statement values must be an array")
+	}
+	values := make([]Option[string], 0, len(array))
+	for _, element := range array {
+		text, err := sqlText(element)
+		if err != nil {
+			return nil, err
+		}
+		values = append(values, text)
+	}
+	return values, nil
+}
+
+// rows reads a script's array of row objects.
+func (e *Evaluator) rows(value sobek.Value) ([]Row, error) {
+	array, ok := value.Export().([]any)
+	if !ok {
+		return nil, errors.New("rows must be an array")
+	}
+	rows := make([]Row, 0, len(array))
+	for _, element := range array {
+		object, isObject := element.(map[string]any)
+		if !isObject {
+			return nil, errors.New("each row must be an object")
+		}
+		row := Row{}
+		for label, field := range object {
+			text, err := sqlText(field)
+			if err != nil {
+				return nil, errors.Wrapf(err, "row field %q", label)
+			}
+			row[label] = text
+		}
+		rows = append(rows, row)
+	}
+	return rows, nil
+}
+
+// sqlText is a script value as MySQL's text protocol sends it, with null as NULL.
+func sqlText(value any) (Option[string], error) {
+	switch value := value.(type) {
+	case nil:
+		return None[string](), nil
+	case string:
+		return Some(value), nil
+	case int64:
+		return Some(strconv.FormatInt(value, 10)), nil
+	case float64:
+		return Some(strconv.FormatFloat(value, 'f', -1, 64)), nil
+	case bool:
+		if value {
+			return Some("1"), nil
+		}
+		return Some("0"), nil
+	}
+	return None[string](), errors.Errorf("value of type %T is not a string, number, boolean or null", value)
 }
 
 // normalise returns an undefined result as None so callers can remove the node.

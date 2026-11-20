@@ -10,7 +10,6 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/pingcap/tidb/pkg/parser/ast"
 	"github.com/pingcap/tidb/pkg/parser/format"
 
 	"github.com/block/spectre/internal/model"
@@ -70,15 +69,14 @@ func (s *session) Candidate(ctx context.Context, command normaliser.Command, cla
 // pairing returns the text a statement pairs by, or the database it selects. A
 // statement that does not parse pairs by the text it was sent as.
 func pairing(command normaliser.Command) (text, database string, selects bool) {
+	if selected, ok := normaliser.SelectedDatabase(command); ok {
+		return "", selected, true
+	}
 	switch command := command.(type) {
 	case normaliser.UseDatabase:
-		return "", command.Name, true
 	case normaliser.UnparsedQuery:
 		return command.SQL, "", false
 	case normaliser.Query:
-		if use, ok := command.Statements[0].(*ast.UseStmt); ok && len(command.Statements) == 1 {
-			return "", use.DBName, true
-		}
 		restored := make([]string, 0, len(command.Statements))
 		for _, statement := range command.Statements {
 			var text strings.Builder

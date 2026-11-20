@@ -53,6 +53,13 @@ const (
 
 	selectOrdersDigest = "SELECT `id` , `label` FROM `orders` WHERE `merchant_id` = ? ORDER BY `id`"
 	selectItemsDigest  = "SELECT `id` , `sku` , `quantity` FROM `items` WHERE `order_id` = ? ORDER BY `id`"
+	selectJoinDigest   = "SELECT `o` . `id` , `o` . `label` , `i` . `id` AS `item` , `i` . `sku` , `i` . `quantity` " +
+		"FROM `orders` `o` LEFT JOIN `items` `i` ON `i` . `order_id` = `o` . `id` WHERE `o` . `merchant_id` = ? ORDER BY `o` . `id` , `i` . `id`"
+
+	selectOrdersStatement = "SELECT id, label FROM orders WHERE merchant_id = ? ORDER BY id"
+	selectItemsStatement  = "SELECT id, sku, quantity FROM items WHERE order_id = ? ORDER BY id"
+	selectJoinStatement   = "SELECT o.id, o.label, i.id AS item, i.sku, i.quantity FROM orders o " +
+		"LEFT JOIN items i ON i.order_id = o.id WHERE o.merchant_id = ? ORDER BY o.id, i.id"
 )
 
 func TestMySQLIdenticalStatementsReplayTheReferenceRows(t *testing.T) {
@@ -131,6 +138,58 @@ func TestMySQLStatementsPairWhateverTheirCommentsAndSpacing(t *testing.T) {
 	assert.NoError(t, m.MySQL().Candidate.QueryRowContext(t.Context(), "select sku\n  from items where id=3 -- candidate").Scan(&sku))
 	assert.Equal(t, "pear", sku)
 	m.MySQL().ExpectStatements(map[string]uint64{"SELECT `sku` FROM `items` WHERE `id` = ?": 1})
+}
+
+func TestMySQLCandidateJoinReplacesTheReferenceStatements(t *testing.T) {
+	m := startOrdersMirror(t, it.Candidate(joinedOrdersService()), it.Scripts(`
+		import { egress } from "spectre";
+
+		egress.mysql
+		  .statements("`+selectJoinStatement+`")
+		  .replaces("`+selectOrdersStatement+`", "`+selectItemsStatement+`")
+		  .using(([merchant], [orders, items]) =>
+		    orders([merchant]).flatMap((order) => {
+		      const columns = { "o.id": order.id, "o.label": order.label };
+		      const found = items([order.id]);
+		      if (found.length === 0) return [{ ...columns, item: null, "i.sku": null, "i.quantity": null }];
+		      return found.map((item) => ({ ...columns, item: item.id, "i.sku": item.sku, "i.quantity": item.quantity }));
+		    }),
+		  );
+	`))
+
+	m.Ingress.Get("/merchants/1/orders").ExpectStatus(http.StatusOK).ExpectBodyContains(merchantOneOrders)
+	// The candidate's JOIN was answered from the reference's orders and items statements,
+	// and claimed every one of them, so ingress compared alike responses.
+	m.ExpectCalls(it.Calls{merchantOneOrdersRoute: 1})
+	m.MySQL().ExpectStatements(map[string]uint64{selectOrdersDigest: 1, selectItemsDigest: 3})
+}
+
+func TestMySQLCandidateStatementsReplaceTheReferenceJoin(t *testing.T) {
+	m := startOrdersMirror(t, it.Reference(joinedOrdersService()), it.Scripts(`
+		import { egress, type Row } from "spectre";
+
+		egress.mysql
+		  .statements("`+selectOrdersStatement+`", "`+selectItemsStatement+`")
+		  .replaces("`+selectJoinStatement+`")
+		  .using(([merchant], rows, [orders, items]) => {
+		    const labels = new Map<string, string | null>();
+		    const found = new Map<string, Row[]>();
+		    for (const row of rows) {
+		      const order = row["o.id"]!;
+		      labels.set(order, row["o.label"]);
+		      const list = found.get(order) ?? [];
+		      if (row.item !== null) list.push({ id: row.item, sku: row["i.sku"], quantity: row["i.quantity"] });
+		      found.set(order, list);
+		    }
+		    orders([merchant], [...labels].map(([id, label]) => ({ id, label })));
+		    for (const [order, list] of found) items([order], list);
+		  });
+	`))
+
+	m.Ingress.Get("/merchants/1/orders").ExpectStatus(http.StatusOK).ExpectBodyContains(merchantOneOrders)
+	// Each of the candidate's statements claimed a reply split from the reference's JOIN.
+	m.ExpectCalls(it.Calls{merchantOneOrdersRoute: 1})
+	m.MySQL().ExpectStatements(map[string]uint64{selectJoinDigest: 1})
 }
 
 func TestMySQLCandidateUsesTheDatabaseItSelected(t *testing.T) {
@@ -383,6 +442,51 @@ func ordersService() it.Service {
 			_ = json.NewEncoder(writer).Encode(map[string][]order{"orders": orders})
 		})
 	}
+}
+
+// joinedOrdersService serves a merchant's orders as ordersService does, read with one
+// statement that joins the orders to their items.
+func joinedOrdersService() it.Service {
+	return func(t *testing.T, backend it.Backend) {
+		t.Helper()
+		database := backend.MySQL.MustGet()
+		backend.HTTP.HandleFunc("GET /merchants/{merchant}/orders", func(writer http.ResponseWriter, request *http.Request) {
+			orders, err := selectJoinedOrders(request.Context(), database, request.PathValue("merchant"))
+			if err != nil {
+				http.Error(writer, "orders cannot be read", http.StatusInternalServerError)
+				return
+			}
+			writer.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(writer).Encode(map[string][]order{"orders": orders})
+		})
+	}
+}
+
+// selectJoinedOrders selects the orders with their items in one statement.
+func selectJoinedOrders(ctx context.Context, database *sql.DB, merchant string) ([]order, error) {
+	rows, err := database.QueryContext(ctx, selectJoinStatement, merchant)
+	if err != nil {
+		return nil, errors.Wrap(err, "select orders")
+	}
+	defer rows.Close()
+	orders := []order{}
+	for rows.Next() {
+		read, itemID, sku, quantity := order{}, sql.NullInt64{}, sql.NullString{}, sql.NullInt64{}
+		if err := rows.Scan(&read.ID, &read.Label, &itemID, &sku, &quantity); err != nil {
+			return nil, errors.Wrap(err, "read order")
+		}
+		if len(orders) == 0 || orders[len(orders)-1].ID != read.ID {
+			orders = append(orders, read)
+		}
+		if itemID.Valid {
+			found := item{ID: itemID.Int64, Quantity: quantity.Int64}
+			if sku.Valid {
+				found.SKU = Some(sku.String)
+			}
+			orders[len(orders)-1].Items = append(orders[len(orders)-1].Items, found)
+		}
+	}
+	return orders, errors.Wrap(rows.Err(), "read orders")
 }
 
 // selectOrders selects the orders, then the items of each order with a statement of its own.

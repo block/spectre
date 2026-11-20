@@ -87,6 +87,21 @@ type UseDatabase struct {
 
 func (UseDatabase) command() {}
 
+// SelectedDatabase returns the default database that a command selects, if all it
+// does is select one.
+func SelectedDatabase(command Command) (database string, selects bool) {
+	switch command := command.(type) {
+	case UseDatabase:
+		return command.Name, true
+	case Query:
+		if use, ok := command.Statements[0].(*ast.UseStmt); ok && len(command.Statements) == 1 {
+			return use.DBName, true
+		}
+	case UnparsedQuery:
+	}
+	return "", false
+}
+
 // Reply is what the database answered a command with.
 //
 //sumtype:decl

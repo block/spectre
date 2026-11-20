@@ -374,6 +374,81 @@ statement that no candidate statement claims. Every text statement the
 reference sends through the proxy must therefore be one that the mirrored
 candidate also sends.
 
+When the candidate reads the same data with different statements, for example
+one JOIN where the reference ran a statement per row, a script can declare that
+the candidate's `statements` replace the reference's. Each statement is a
+`SELECT` pattern with `?` in place of each value, and it must name its columns
+rather than select `*`. A statement matches a pattern when the two normalise
+alike: values, comments, spacing and case do not matter. Statements that match
+no pattern pair as before.
+
+Scripts see values and rows as text, with `null` for NULL. A row is labelled
+by each column's `AS` name, or by the column as the pattern writes it, such as
+`o.id`. One side lists a single statement, and that decides where `using` runs:
+
+- With one candidate statement, `using` runs for each candidate statement that
+  matches it. It receives the statement's values and one claim per reference
+  statement. A claim waits for the reference statement with the values it is
+  given, as a candidate statement would, and returns its rows. `using` returns
+  the candidate's rows.
+- With one reference statement, `using` runs for each reference statement that
+  matches it. It receives the statement's values and rows, and one offer per
+  candidate statement. An offer saves rows as the reply to the candidate
+  statement with the values it is given.
+
+```ts
+import { egress, type Row } from "spectre";
+
+const orders = "SELECT id, label FROM orders WHERE merchant_id = ? ORDER BY id";
+const items = "SELECT id, sku FROM items WHERE order_id = ? ORDER BY id";
+const join = `SELECT o.id, o.label, i.id AS item, i.sku FROM orders o
+              LEFT JOIN items i ON i.order_id = o.id WHERE o.merchant_id = ? ORDER BY o.id, i.id`;
+
+// The reference reads the orders, then each order's items; the candidate joins them.
+egress.mysql
+  .statements(join)
+  .replaces(orders, items)
+  .using(([merchant], [ordersOf, itemsOf]) =>
+    ordersOf([merchant]).flatMap((order) => {
+      const columns = { "o.id": order.id, "o.label": order.label };
+      const found = itemsOf([order.id]);
+      if (found.length === 0) return [{ ...columns, item: null, "i.sku": null }];
+      return found.map((item) => ({ ...columns, item: item.id, "i.sku": item.sku }));
+    }),
+  );
+
+// Or the other way around: the reference joins, and the candidate reads each order's items.
+egress.mysql
+  .statements(orders, items)
+  .replaces(join)
+  .using(([merchant], rows, [ordersOf, itemsOf]) => {
+    const labels = new Map<string, string | null>();
+    const found = new Map<string, Row[]>();
+    for (const row of rows) {
+      labels.set(row["o.id"]!, row["o.label"]);
+      const list = found.get(row["o.id"]!) ?? [];
+      if (row.item !== null) list.push({ id: row.item, sku: row["i.sku"] });
+      found.set(row["o.id"]!, list);
+    }
+    ordersOf([merchant], [...labels].map(([id, label]) => ({ id, label })));
+    for (const [order, list] of found) itemsOf([order], list);
+  });
+```
+
+A built reply's columns are defined like the reference columns they were
+selected from, matched by their original table and column names. Other columns
+are text. Each reference reply still answers one statement, so a claimed reply
+is used up and each offered reply answers one candidate statement. The script
+decides what the candidate receives, including the order of its rows, and
+SPECTRE does not check it against the candidate's statement. A candidate
+statement that finds no reply quarantines the candidate as `unmatched`, as does
+a reply that nothing claims. A script fails when it throws, builds a row
+without one of the statement's columns, or runs for longer than a second, not
+counting time spent waiting in claims. A failure
+while answering a candidate statement quarantines the candidate as `unable`. A
+failure while splitting a reference reply offers nothing, so the candidate's
+statements quarantine it as `unmatched`.
+
 Saved replies wait for the candidate in memory. When they exceed
 `--mysql-saved-replies-bytes`, the reference is still answered in full, and the
 candidate is quarantined as `capacity`.

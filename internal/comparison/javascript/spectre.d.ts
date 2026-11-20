@@ -121,10 +121,50 @@ declare module "spectre" {
       response: (request: T, reference: U) => R,
     ): void;
   }
+  /** A value of a MySQL statement or reply, as text, with NULL as null. */
+  export type SQLValue = string | null;
+  /** A row of a MySQL reply by column label: the AS name, or the column as written, such as "o.id". */
+  export type Row = Record<string, SQLValue>;
+  /** Claims the reply of a reference statement with these values, and returns its rows. */
+  export type Claim = (values: (SQLValue | number | boolean)[]) => Row[];
+  /** Offers rows as the reply to a candidate statement with these values. */
+  export type Offer = (values: (SQLValue | number | boolean)[], rows: Row[]) => void;
+  /** Names the reference's statements that one candidate statement replaces. */
+  export interface EgressMySQLStatement {
+    /** Patterns match statements with any values in place of each "?", whatever their comments or spacing. */
+    replaces(...statements: string[]): EgressMySQLCombination;
+  }
+  /** Names the one reference statement that several candidate statements replace. */
+  export interface EgressMySQLStatements {
+    replaces(statement: string): EgressMySQLSplit;
+  }
+  /** Answers a candidate statement from the reference statements it claims. */
+  export interface EgressMySQLCombination {
+    /**
+     * Runs for each candidate statement that matches, with its values and one claim per reference statement,
+     * and returns the candidate's rows. Each claimed reference reply answers no other statement.
+     */
+    using(combine: (values: SQLValue[], claims: Claim[]) => Row[]): void;
+  }
+  /** Splits a reference statement's reply into replies to the candidate's statements. */
+  export interface EgressMySQLSplit {
+    /**
+     * Runs for each reference statement that matches, with its values and rows, and offers replies through
+     * one offer per candidate statement. A matching candidate statement claims the reply offered with its values.
+     */
+    using(split: (values: SQLValue[], rows: Row[], offers: Offer[]) => void): void;
+  }
   /** The service's outbound calls to its dependencies. */
   export const egress: {
     /** Starts a rule for requests to a dependency matching "<METHOD> <host>/<path>". */
     http(pattern: string): EgressHTTPRule;
+    /** The service's MySQL statements. */
+    mysql: {
+      /** Starts a replacement by a candidate statement, written with "?" in place of each value. */
+      statements(statement: string): EgressMySQLStatement;
+      /** Starts a replacement by several candidate statements, each answered from one reference statement. */
+      statements(first: string, ...rest: string[]): EgressMySQLStatements;
+    };
   };
   /** Normalises field P of every T; returning undefined removes it. */
   export function field<T extends object, P extends FieldPath<T>>(normalise: Normaliser<FieldValue<T, P>>): void;
