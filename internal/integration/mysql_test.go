@@ -156,6 +156,64 @@ func TestMySQLStatementsPairWhateverTheirCommentsAndSpacing(t *testing.T) {
 	m.MySQL().ExpectStatements(map[string]uint64{"SELECT `sku` FROM `items` WHERE `id` = ?": 1})
 }
 
+// unusedJoinScript declares that a JOIN replaces the orders service's statements, though
+// neither service runs the JOIN.
+const unusedJoinScript = `
+	import { egress } from "spectre";
+
+	egress.mysql
+	  .statements(
+	    "SELECT o.id, o.label, i.id AS item, i.sku, i.quantity FROM orders o " +
+	      "LEFT JOIN items i ON i.order_id = o.id WHERE o.merchant_id = ? ORDER BY o.id, i.id",
+	  )
+	  .replaces("SELECT id, label FROM orders WHERE merchant_id = ? ORDER BY id", "SELECT id, sku, quantity FROM items WHERE order_id = ? ORDER BY id")
+	  .using(() => []);
+`
+
+// Scripts declare a replacement, but the candidate is unchanged: the replacement's own
+// statements, and statements it does not name, writes included, still pair exactly.
+func TestMySQLStatementsPairExactlyAlongsideReplacements(t *testing.T) {
+	m := startOrdersMirror(t, it.Scripts(unusedJoinScript))
+
+	m.Ingress.Get("/merchants/1/orders").ExpectStatus(http.StatusOK).ExpectBodyContains(merchantOneOrders)
+	m.ExpectCalls(it.Calls{merchantOneOrdersRoute: 1})
+	sku := ""
+	assert.NoError(t, m.MySQL().Reference.QueryRowContext(t.Context(), "SELECT sku FROM items WHERE id = 3 /* reference */").Scan(&sku))
+	assert.Equal(t, "pear", sku)
+	sku = ""
+	assert.NoError(t, m.MySQL().Candidate.QueryRowContext(t.Context(), "select sku\n  from items where id=3 -- candidate").Scan(&sku))
+	assert.Equal(t, "pear", sku)
+	reference, err := addItem(t.Context(), m.MySQL().Reference)
+	assert.NoError(t, err)
+	candidate, err := addItem(t.Context(), m.MySQL().Candidate)
+	assert.NoError(t, err)
+	assert.Equal(t, reference, candidate)
+	// Each statement reached the database once, from the reference.
+	m.MySQL().ExpectStatements(map[string]uint64{
+		selectOrdersDigest: 1, selectItemsDigest: 3,
+		"SELECT `sku` FROM `items` WHERE `id` = ?": 1,
+		"START TRANSACTION":                        1,
+		"INSERT INTO `items` ( `id` , `order_id` , `sku` , `quantity` ) VALUES (...)": 1,
+		"COMMIT": 1,
+	})
+}
+
+// Scripts declare a replacement, and the candidate reads the items of the order the
+// reference read, then of one it never read: a replacement's statement pairs by its values.
+func TestMySQLReplacementStatementWithOtherValuesQuarantines(t *testing.T) {
+	m := startOrdersMirror(t, it.Scripts(unusedJoinScript))
+
+	reference, err := selectItemsOf(t.Context(), m.MySQL().Reference, 7)
+	assert.NoError(t, err)
+	candidate, err := selectItemsOf(t.Context(), m.MySQL().Candidate, 7)
+	assert.NoError(t, err)
+	assert.Equal(t, reference, candidate)
+	_, err = selectItemsOf(t.Context(), m.MySQL().Candidate, 9)
+	assert.Contains(t, err.Error(), "SPECTRE: no matching reference reply")
+	m.ExpectQuarantine(it.MySQLQuarantine(model.QuarantineUnmatched, "SELECT", "no matching reference request within 500ms"))
+	m.MySQL().ExpectStatements(map[string]uint64{selectItemsDigest: 1})
+}
+
 // The reference reads a merchant's orders, then each order's items (N+1); the rewritten
 // candidate reads the same data with one JOIN.
 func TestMySQLCandidateJoinReplacesTheReferenceStatements(t *testing.T) {
