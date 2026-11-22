@@ -91,6 +91,8 @@ type setup struct {
 	matchWindow    time.Duration
 	// mysql holds the statements that set up the mirror's database, if it has one.
 	mysql Option[[]string]
+	// mysqlSavedRepliesSize overrides the bytes of reference replies the MySQL proxy saves.
+	mysqlSavedRepliesSize Option[int]
 }
 
 func newSetup() *setup {
@@ -131,6 +133,11 @@ func Schema(source string) Setting {
 // by statements, which they reach through the proxy.
 func MySQL(statements ...string) Setting {
 	return func(setup *setup) { setup.mysql = Some(statements) }
+}
+
+// MySQLSavedRepliesBytes sets how many bytes of reference replies the MySQL proxy saves.
+func MySQLSavedRepliesBytes(size int) Setting {
+	return func(setup *setup) { setup.mysqlSavedRepliesSize = Some(size) }
 }
 
 // ScriptsDir loads the comparison scripts in dir instead.
@@ -175,6 +182,7 @@ func (s *setup) createDatabase(t *testing.T, w *watch, listeners *proxies.Listen
 	reference, candidate := listen(t), listen(t)
 	listeners.MySQLReference, listeners.MySQLCandidate = Some(reference), Some(candidate)
 	config := database.connect(reference, candidate)
+	config.SavedRepliesBytes = s.mysqlSavedRepliesSize.Default(config.SavedRepliesBytes)
 	return config, Some(database)
 }
 

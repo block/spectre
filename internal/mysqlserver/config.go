@@ -1,6 +1,7 @@
 // Package mysqlserver proxies the MySQL connections of a mirror. Reference commands
-// reach the database. Candidate commands never do: each is refused, and the
-// candidate is quarantined.
+// reach the database, and the proxy reads their replies. Candidate commands never
+// do: a normaliser pairs each with a reference one and replays its reply, and a
+// command it cannot pair quarantines the candidate.
 package mysqlserver
 
 import (
@@ -24,6 +25,8 @@ type Config struct {
 	ReferenceListen string `default:"127.0.0.1:50070" help:"Address the reference sends its MySQL statements to, on a loopback IP or unix socket: host:port, or unix:<path|@abstract>."`
 	// CandidateListen receives candidate statements. It must stay local: a loopback IP or a unix socket.
 	CandidateListen string `default:"127.0.0.1:50071" help:"Address the candidate sends its MySQL statements to, on a loopback IP or unix socket: host:port, or unix:<path|@abstract>."`
+	// SavedRepliesBytes bounds the reference replies kept for candidate claims.
+	SavedRepliesBytes int `default:"33554432" help:"Maximum bytes of reference replies saved for candidate MySQL statements. Beyond it the candidate is quarantined."`
 }
 
 // NewConfig returns the default MySQL proxy configuration, which proxies nothing.
@@ -53,6 +56,9 @@ func (c Config) Validate() error {
 	}
 	if !isLocal(c.CandidateListen) {
 		return errors.New("MySQL candidate listener must use a loopback IP address or a unix socket")
+	}
+	if c.SavedRepliesBytes <= 0 {
+		return errors.New("MySQL saved replies size must be positive")
 	}
 	return nil
 }

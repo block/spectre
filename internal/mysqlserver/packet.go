@@ -64,3 +64,41 @@ func okPayload(capability uint32) []byte {
 	}
 	return payload
 }
+
+// framer splits a stream of packets into payloads, joining those that continue in
+// the next packet.
+type framer struct {
+	buffered []byte
+	partial  []byte
+}
+
+func newFramer() *framer {
+	return &framer{}
+}
+
+// write adds data from the stream.
+func (f *framer) write(data []byte) {
+	f.buffered = append(f.buffered, data...)
+}
+
+// pending is how many bytes are held for payloads that have not arrived in full.
+func (f *framer) pending() int {
+	return len(f.buffered) + len(f.partial)
+}
+
+// next returns the next whole payload, once all of it has arrived.
+func (f *framer) next() (payload []byte, ok bool) {
+	for len(f.buffered) >= 4 {
+		length := int(f.buffered[0]) | int(f.buffered[1])<<8 | int(f.buffered[2])<<16
+		if len(f.buffered) < 4+length {
+			return nil, false
+		}
+		f.partial = append(f.partial, f.buffered[4:4+length]...)
+		f.buffered = f.buffered[4+length:]
+		if length < maxPayload {
+			payload, f.partial = f.partial, nil
+			return payload, true
+		}
+	}
+	return nil, false
+}

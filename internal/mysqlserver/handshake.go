@@ -176,28 +176,36 @@ func parseAttributes(rest []byte) (map[string]string, error) {
 // lengthEncoded splits off a string whose length precedes it, checking that both
 // the length and the string are within data.
 func lengthEncoded(data []byte) (value, rest []byte, err error) {
-	if len(data) == 0 {
-		return nil, nil, errors.New("length is missing")
+	length, data, err := lengthEncodedInt(data)
+	if err != nil {
+		return nil, nil, err
 	}
-	width := map[byte]int{0xfc: 2, 0xfd: 3, 0xfe: 8}[data[0]]
-	if data[0] == 0xfb || data[0] == 0xff {
-		return nil, nil, errors.Errorf("length starts with %#x", data[0])
-	}
-	if len(data) <= width {
-		return nil, nil, errors.New("length is truncated")
-	}
-	length := uint64(data[0])
-	if width > 0 {
-		length = 0
-		for i := width; i >= 1; i-- {
-			length = length<<8 | uint64(data[i])
-		}
-	}
-	data = data[1+width:]
 	if length > uint64(len(data)) {
 		return nil, nil, errors.Errorf("%d bytes are announced where %d remain", length, len(data))
 	}
 	return data[:length], data[length:], nil
+}
+
+// lengthEncodedInt splits off an integer of one to nine bytes, checking that all of
+// it is within data.
+func lengthEncodedInt(data []byte) (value uint64, rest []byte, err error) {
+	if len(data) == 0 {
+		return 0, nil, errors.New("length is missing")
+	}
+	width := map[byte]int{0xfc: 2, 0xfd: 3, 0xfe: 8}[data[0]]
+	if data[0] == 0xfb || data[0] == 0xff {
+		return 0, nil, errors.Errorf("length starts with %#x", data[0])
+	}
+	if len(data) <= width {
+		return 0, nil, errors.New("length is truncated")
+	}
+	if width == 0 {
+		return uint64(data[0]), data[1:], nil
+	}
+	for i := width; i >= 1; i-- {
+		value = value<<8 | uint64(data[i])
+	}
+	return value, data[1+width:], nil
 }
 
 // nulTerminated splits off a string that ends with a zero byte.

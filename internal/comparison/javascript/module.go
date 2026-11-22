@@ -93,6 +93,7 @@ type registrations struct {
 	endpoints    []Endpoint
 	rules        []Rule
 	replacements []Replacement
+	statements   []StatementReplacement
 	fields       []FieldTarget
 	messages     []schema.TypeRef
 }
@@ -148,8 +149,11 @@ type callbackRegistry struct {
 	// replacements and replacers are indexed alike.
 	replacements []Replacement
 	replacers    []replacementCallbacks
-	fields       map[FieldTarget]sobek.Callable
-	messages     map[schema.TypeRef]sobek.Callable
+	// statements and statementUsers are indexed alike.
+	statements     []StatementReplacement
+	statementUsers []sobek.Callable
+	fields         map[FieldTarget]sobek.Callable
+	messages       map[schema.TypeRef]sobek.Callable
 }
 
 // ruleCallbacks are the script functions of one rule, indexed like the rules.
@@ -178,6 +182,12 @@ func newCallbackRegistry(runtime *sobek.Runtime, variables map[string]string) *c
 	registry.defineMethod(ingress, "ingress."+string(model.ProtocolHTTP), string(model.ProtocolHTTP), registry.httpRule)
 	egress := runtime.NewObject()
 	registry.defineMethod(egress, "egress."+string(model.ProtocolHTTP), string(model.ProtocolHTTP), registry.egressRule)
+	mysql := runtime.NewObject()
+	registry.defineMethod(mysql, "egress."+mysqlProperty+"."+statementMethod, statementMethod, registry.mysqlStatement(true))
+	registry.defineMethod(mysql, "egress."+mysqlProperty+"."+statementsMethod, statementsMethod, registry.mysqlStatement(false))
+	if err := egress.Set(mysqlProperty, mysql); err != nil {
+		panic(runtime.NewTypeError("define spectre.egress.%s: %v", mysqlProperty, err))
+	}
 	registry.functions = map[string]sobek.Value{
 		string(model.Ingress): ingress,
 		string(model.Egress):  egress,
@@ -218,6 +228,12 @@ const (
 	// replacesMethod and usingMethod declare a replacement; each takes two type arguments.
 	replacesMethod = "replaces"
 	usingMethod    = "using"
+	// mysqlProperty, statementMethod and statementsMethod start a MySQL statement replacement.
+	mysqlProperty    = "mysql"
+	statementMethod  = "statement"
+	statementsMethod = "statements"
+	// mysqlOwner prefixes the declarations of the MySQL script API, whose type arguments only check scripts.
+	mysqlOwner = "EgressMySQL"
 	// textTypeName is the type name compile inserts for the spectre Text type.
 	textTypeName = "spectre.Text"
 	// variableFunction reads a script variable and takes no type arguments.
@@ -303,6 +319,49 @@ func (r *callbackRegistry) replaceUsing(pattern string, optional bool, source st
 	r.endpoints = append(r.endpoints, newEndpoint(model.Egress, model.ProtocolHTTP, pattern, request, optional))
 	r.replacements = append(r.replacements, newReplacement(len(r.replacements), pattern, response, source, sourceRequest, sourceResponse))
 	r.replacers = append(r.replacers, replacementCallbacks{request: requestFunction, response: responseFunction})
+}
+
+// mysqlStatement starts a MySQL statement replacement. One candidate statement combines
+// the reference statements it replaces; otherwise one reference statement is split.
+func (r *callbackRegistry) mysqlStatement(combines bool) func(sobek.FunctionCall) sobek.Value {
+	method, owner := statementsMethod, "EgressMySQLStatements"
+	if combines {
+		method, owner = statementMethod, "EgressMySQLStatement"
+	}
+	return func(call sobek.FunctionCall) sobek.Value {
+		statements := r.patterns(call, "egress."+mysqlProperty+"."+method, combines)
+		object := r.runtime.NewObject()
+		r.defineMethod(object, owner+"."+replacesMethod, replacesMethod, func(call sobek.FunctionCall) sobek.Value {
+			sources := r.patterns(call, owner+"."+replacesMethod, !combines)
+			replacement := r.runtime.NewObject()
+			r.defineMethod(replacement, "EgressMySQLReplacement."+usingMethod, usingMethod, func(call sobek.FunctionCall) sobek.Value {
+				using, ok := sobek.AssertFunction(call.Argument(0))
+				if len(call.Arguments) != 1 || !ok {
+					panic(r.runtime.NewTypeError("spectre.EgressMySQLReplacement.%s requires a function", usingMethod))
+				}
+				r.statements = append(r.statements, newStatementReplacement(len(r.statements), statements, sources, combines))
+				r.statementUsers = append(r.statementUsers, using)
+				return sobek.Undefined()
+			})
+			return replacement
+		})
+		return object
+	}
+}
+
+// patterns reads a call's statement patterns: exactly one if single, otherwise at least one.
+func (r *callbackRegistry) patterns(call sobek.FunctionCall, qualified string, single bool) []string {
+	if single && len(call.Arguments) != 1 {
+		panic(r.runtime.NewTypeError("spectre.%s requires one statement", qualified))
+	}
+	if len(call.Arguments) == 0 {
+		panic(r.runtime.NewTypeError("spectre.%s requires statements", qualified))
+	}
+	patterns := make([]string, 0, len(call.Arguments))
+	for index := range call.Arguments {
+		patterns = append(patterns, r.stringArgument(call, index, qualified, "statement"))
+	}
+	return patterns
 }
 
 // matchEndpoint receives the type name compile inserts.
@@ -549,6 +608,14 @@ func (r *callbackRegistry) replacer(index int) (replacementCallbacks, bool) {
 	return r.replacers[index], true
 }
 
+// statementUser returns the using function of the statement replacement at index.
+func (r *callbackRegistry) statementUser(index int) (sobek.Callable, bool) {
+	if index < 0 || index >= len(r.statementUsers) {
+		return nil, false
+	}
+	return r.statementUsers[index], true
+}
+
 // rule returns the callbacks of the rule at index, or none for an unknown rule.
 func (r *callbackRegistry) rule(index int) ruleCallbacks {
 	if index < 0 || index >= len(r.callbacks) {
@@ -571,7 +638,7 @@ func (r *callbackRegistry) registrations() registrations {
 	messages := slices.Sorted(maps.Keys(r.messages))
 	return registrations{
 		endpoints: slices.Clone(r.endpoints), rules: slices.Clone(r.rules), replacements: slices.Clone(r.replacements),
-		fields: fields, messages: messages,
+		statements: slices.Clone(r.statements), fields: fields, messages: messages,
 	}
 }
 
