@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/alecthomas/errors"
@@ -54,6 +55,8 @@ type Server struct {
 	parser       *normaliser.Parser
 	// scope pairs every unit with every other, because statements carry no request ID.
 	scope protocol.RequestID
+	// transactions counts the reference transactions named.
+	transactions atomic.Uint64
 	// version is the database's version once the proxy has connected to it.
 	versionMu sync.Mutex
 	version   Option[string]
@@ -317,9 +320,9 @@ func (s *Server) release(size int) {
 	s.budget.Release(size)
 }
 
-// offer hands the units of one reference command to the engine, which keeps them
-// for candidate claims. Replies beyond the budget quarantine the candidate.
-func (s *Server) offer(ctx context.Context, units []normaliser.Unit) {
+// offer hands the units of one reference command to the engine, which keeps them for
+// candidate claims; names is the transaction the first names. Replies beyond the budget quarantine the candidate.
+func (s *Server) offer(ctx context.Context, units []normaliser.Unit, names Option[transactionID]) {
 	if !s.offering() {
 		return
 	}
@@ -329,6 +332,8 @@ func (s *Server) offer(ctx context.Context, units []normaliser.Unit) {
 			s.exceed(ctx, []normaliser.Unit{unit})
 			return
 		}
+		saved.name(names)
+		names = None[transactionID]()
 		decision, err := s.reference.ProcessRequest(ctx, Some(s.scope), unit.Route, None[string](), request(unit.Key))
 		forward, ok := decision.(protocol.DecisionForward)
 		if err != nil || !ok {
@@ -363,7 +368,7 @@ func (s *Server) admit(ctx context.Context, stop context.CancelFunc) (finish fun
 
 // claim waits for the reply of an equivalent reference unit, and keeps it in claimed
 // until released. The engine quarantines the candidate when there is none.
-func (s *Server) claim(ctx context.Context, claimed *[]*savedReply, route model.Route, key any) (normaliser.Reply, error) { //nolint:ireturn // Replies are a sum type.
+func (s *Server) claim(ctx context.Context, claimed *[]*savedReply, route model.Route, key any) (*savedReply, error) {
 	decision, err := s.candidate.ProcessRequest(ctx, Some(s.scope), route, None[string](), request(key))
 	if err != nil {
 		return nil, errors.WithStack(err)
@@ -378,7 +383,12 @@ func (s *Server) claim(ctx context.Context, claimed *[]*savedReply, route model.
 		return nil, errors.Errorf("engine replayed %T for a candidate unit", intercept.Raw)
 	}
 	*claimed = append(*claimed, saved)
-	return saved.value(), nil
+	return saved, nil
+}
+
+// newTransaction names a reference transaction.
+func (s *Server) newTransaction() transactionID {
+	return newTransactionID(s.transactions.Add(1))
 }
 
 // unable quarantines the candidate for a command that cannot be answered, unless
