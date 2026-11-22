@@ -26,6 +26,12 @@ func transactionKey(id transactionID, key any) map[string]any {
 	return map[string]any{"transaction": string(id), "key": key}
 }
 
+// openingKey pairs the first unit of a transaction only with the first unit of another,
+// never with a unit outside a transaction.
+func openingKey(key any) map[string]any {
+	return map[string]any{"opens": true, "key": key}
+}
+
 // transactions follows a connection's transactions through the statements it sends, as
 // MySQL starts and ends them. Statements that commit implicitly, such as DDL, are not followed.
 type transactions struct {
@@ -113,7 +119,7 @@ func (r *referenceTransactions) follow(command normaliser.Command) {
 }
 
 // scope follows a command, and keys its units by its transaction. The transaction's first
-// unit pairs as any other, and names the transaction to the candidate transaction that claims it.
+// unit pairs with any transaction's first, and names the transaction to the candidate that claims it.
 func (r *referenceTransactions) scope(command normaliser.Command, units func() []normaliser.Unit,
 ) (scoped []normaliser.Unit, names Option[transactionID]) {
 	started, inside := r.transactions.next(command)
@@ -130,6 +136,7 @@ func (r *referenceTransactions) scope(command normaliser.Command, units func() [
 	for index := range scoped {
 		if !r.named {
 			r.named, names = true, Some(id)
+			scoped[index].Key = openingKey(scoped[index].Key)
 			continue
 		}
 		scoped[index].Key = transactionKey(id, scoped[index].Key)
@@ -162,10 +169,13 @@ func (c *candidateTransactions) next(command normaliser.Command) {
 
 // key is the key to claim a unit of the current command by.
 func (c *candidateTransactions) key(key any) any {
-	if id, bound := c.claims.Get(); bound && c.inside {
+	if !c.inside {
+		return key
+	}
+	if id, bound := c.claims.Get(); bound {
 		return transactionKey(id, key)
 	}
-	return key
+	return openingKey(key)
 }
 
 // claimed pairs the rest of the transaction with the reference transaction a claimed reply names.

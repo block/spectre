@@ -176,6 +176,27 @@ func TestMySQLCandidateTransactionsReadTheirOwnReferenceTransaction(t *testing.T
 	m.ExpectCalls(it.Calls{})
 }
 
+// The reference reads merchant 1's orders on their own, then in a transaction; the
+// candidate runs its transaction first, which still pairs with the reference's transaction.
+func TestMySQLCandidateTransactionsPairOnlyWithReferenceTransactions(t *testing.T) {
+	const selectOrders = "SELECT id, label FROM orders WHERE merchant_id = 1 ORDER BY id"
+	m := startOrdersMirror(t, it.Reference(idleService), it.Candidate(idleService))
+	inTransaction := func(database *sql.DB) {
+		transaction, err := database.BeginTx(t.Context(), nil)
+		assert.NoError(t, err)
+		defer transaction.Rollback() //nolint:errcheck // Rolling back after a commit does nothing.
+		queried(t, transaction, selectOrders)
+		assert.NoError(t, transaction.Commit())
+	}
+
+	queried(t, m.MySQL().Reference, selectOrders)
+	inTransaction(m.MySQL().Reference)
+	inTransaction(m.MySQL().Candidate)
+	queried(t, m.MySQL().Candidate, selectOrders)
+
+	m.ExpectCalls(it.Calls{})
+}
+
 func TestMySQLCandidateReplaysTheReferenceDatabaseError(t *testing.T) {
 	m := startOrdersMirror(t)
 

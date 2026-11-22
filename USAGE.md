@@ -378,10 +378,10 @@ candidate also sends.
 A transaction's statements pair with one reference transaction's statements. A
 transaction runs from `BEGIN` or `START TRANSACTION` to `COMMIT` or `ROLLBACK`,
 or, with autocommit turned off, from any statement to the next commit or
-rollback. The first statement of a candidate transaction that pairs with a
-reference transaction's first statement chooses that transaction, and every
-later statement of the candidate transaction pairs only with the chosen
-transaction's statements. Two requests that run the same statement in their own
+rollback. The first statement of a candidate transaction pairs only with the
+first statement of a reference transaction, never with one outside a
+transaction, and so chooses that transaction. Every later statement of the
+candidate transaction pairs only with the chosen transaction's statements. Two requests that run the same statement in their own
 transactions, such as a read of rows that only one of them has written, each get
 their own transaction's reply. A candidate transaction must therefore start with
 the same statement as the reference transaction it mirrors. Statements that
