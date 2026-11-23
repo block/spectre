@@ -16,6 +16,7 @@ import (
 	. "github.com/alecthomas/types/optional"
 
 	"github.com/block/spectre/internal/comparison/javascript"
+	"github.com/block/spectre/internal/model"
 	"github.com/block/spectre/internal/protocol"
 	"github.com/block/spectre/internal/schema"
 )
@@ -219,7 +220,7 @@ func newContent(status Option[string], message Option[protocol.Message], err err
 	return protocol.Content{Status: status, Message: message}
 }
 
-func (p decoding) typed(payload any) Option[protocol.Message] {
+func (p decoding) typed(payload model.DynamicValue) Option[protocol.Message] {
 	return Some(protocol.Message{Type: Some(p.root.Name), Value: payload})
 }
 
@@ -293,11 +294,11 @@ func (p decoding) decodeTyped(response Response) (Option[protocol.Message], erro
 	return p.typed(payload), nil
 }
 
-func connectErrorPayload(body []byte) (any, error) {
+func connectErrorPayload(body []byte) (model.DynamicValue, error) {
 	if len(bytes.TrimSpace(body)) == 0 {
 		body = []byte("null")
 	}
-	var payload any
+	var payload model.DynamicValue
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return nil, errors.Wrap(jsonError(err), "decode Connect error JSON")
 	}

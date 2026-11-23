@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/alecthomas/errors"
+
+	"github.com/block/spectre/internal/model"
 )
 
 // defaultJSON is the --log-json value selecting defaultTemplate, which matches
@@ -22,7 +24,7 @@ const (
 // JSONTemplate is the JSON shape of SPECTRE's own log lines, so they match the logs
 // of the service SPECTRE stands in for. The zero value writes text instead.
 type JSONTemplate struct {
-	root map[string]any
+	root map[string]model.DynamicValue
 	// attrsPlaced records an <attrs> placeholder; without one, attributes go at the top level.
 	attrsPlaced bool
 }
@@ -35,7 +37,7 @@ func ParseJSONTemplate(text string) (JSONTemplate, error) {
 	}
 	decoder := json.NewDecoder(strings.NewReader(text))
 	decoder.UseNumber()
-	var root map[string]any
+	var root map[string]model.DynamicValue
 	if err := decoder.Decode(&root); err != nil {
 		return JSONTemplate{}, errors.Wrap(err, "log template must be a JSON object")
 	}
@@ -72,8 +74,8 @@ func (t *JSONTemplate) enabled() bool {
 
 // render fills in the template for record. Template keys take precedence over
 // top-level attributes with the same name.
-func (t *JSONTemplate) render(record slog.Record, attrs map[string]any) map[string]any {
-	line := map[string]any{}
+func (t *JSONTemplate) render(record slog.Record, attrs map[string]model.DynamicValue) map[string]model.DynamicValue {
+	line := map[string]model.DynamicValue{}
 	if !t.attrsPlaced {
 		maps.Copy(line, attrs)
 	}
@@ -93,7 +95,7 @@ type placeholder struct {
 
 // render returns the placeholder's value for record. parsePlaceholder admits only
 // msg, level, time and attrs.
-func (p placeholder) render(record slog.Record, attrs map[string]any) any {
+func (p placeholder) render(record slog.Record, attrs map[string]model.DynamicValue) model.DynamicValue {
 	switch p.name {
 	case "msg":
 		return record.Message
@@ -107,9 +109,9 @@ func (p placeholder) render(record slog.Record, attrs map[string]any) any {
 
 // compile replaces placeholder strings in a decoded template value, counting
 // <attrs> placeholders.
-func compile(value any, attrsCount *int) (any, error) {
+func compile(value model.DynamicValue, attrsCount *int) (model.DynamicValue, error) {
 	switch value := value.(type) {
-	case map[string]any:
+	case map[string]model.DynamicValue:
 		for key, member := range value {
 			compiled, err := compile(member, attrsCount)
 			if err != nil {
@@ -117,7 +119,7 @@ func compile(value any, attrsCount *int) (any, error) {
 			}
 			value[key] = compiled
 		}
-	case []any:
+	case []model.DynamicValue:
 		for i, element := range value {
 			compiled, err := compile(element, attrsCount)
 			if err != nil {
@@ -157,18 +159,18 @@ func parsePlaceholder(inner string, attrsCount *int) (placeholder, error) {
 }
 
 // render returns a template value with its placeholders filled in for record.
-func render(value any, record slog.Record, attrs map[string]any) any {
+func render(value model.DynamicValue, record slog.Record, attrs map[string]model.DynamicValue) model.DynamicValue {
 	switch value := value.(type) {
 	case placeholder:
 		return value.render(record, attrs)
-	case map[string]any:
-		rendered := make(map[string]any, len(value))
+	case map[string]model.DynamicValue:
+		rendered := make(map[string]model.DynamicValue, len(value))
 		for key, member := range value {
 			rendered[key] = render(member, record, attrs)
 		}
 		return rendered
-	case []any:
-		rendered := make([]any, len(value))
+	case []model.DynamicValue:
+		rendered := make([]model.DynamicValue, len(value))
 		for i, element := range value {
 			rendered[i] = render(element, record, attrs)
 		}
@@ -185,7 +187,7 @@ type levelNames []levelName
 // that write numeric levels.
 type levelName struct {
 	level slog.Level
-	name  any
+	name  model.DynamicValue
 }
 
 // parseLevelNames parses LEVEL=NAME pairs, such as warn=WARNING. When every name
@@ -224,7 +226,7 @@ func parseLevelNames(argument string) (levelNames, error) {
 
 // render returns the name of the highest mapped level at or below level, or the
 // lowest name when level is below them all.
-func (n levelNames) render(level slog.Level) any {
+func (n levelNames) render(level slog.Level) model.DynamicValue {
 	if len(n) == 0 {
 		return level.String()
 	}
@@ -239,7 +241,7 @@ func (n levelNames) render(level slog.Level) any {
 
 // formatTime formats at with a Go time layout or one of the names rfc3339,
 // rfc3339nano, unix, unixms and unixns; an empty format means rfc3339nano.
-func formatTime(at time.Time, format string) any {
+func formatTime(at time.Time, format string) model.DynamicValue {
 	switch format {
 	case "", "rfc3339nano":
 		return at.Format(time.RFC3339Nano)

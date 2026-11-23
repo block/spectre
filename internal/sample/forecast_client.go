@@ -83,7 +83,7 @@ func (c *ForecastClient) fetch(ctx context.Context, baggage []string, location s
 	if !ok {
 		return None[Forecast](), 0, errors.New("decode forecast response: expected an object")
 	}
-	if err := decoder.Decode(new(any)); !errors.Is(err, io.EOF) {
+	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
 		if err == nil {
 			return None[Forecast](), 0, errors.New("decode forecast response: unexpected trailing JSON value")
 		}

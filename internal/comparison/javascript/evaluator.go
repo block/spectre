@@ -11,6 +11,7 @@ import (
 	. "github.com/alecthomas/types/optional"
 	"github.com/grafana/sobek"
 
+	"github.com/block/spectre/internal/model"
 	"github.com/block/spectre/internal/schema"
 )
 
@@ -92,20 +93,20 @@ func (e *Evaluator) Close() {
 
 // NormaliseField invokes the normaliser registered for a JSON field path. None
 // stands for an absent field in both the argument and the result.
-func (e *Evaluator) NormaliseField(target FieldTarget, value Option[any]) (Option[any], error) {
+func (e *Evaluator) NormaliseField(target FieldTarget, value Option[model.DynamicValue]) (Option[model.DynamicValue], error) {
 	callback, ok := e.registry.field(target)
 	if !ok {
-		return None[any](), errors.Errorf("JavaScript field normaliser (%q, %q) is unavailable", target.Type(), target.Path())
+		return None[model.DynamicValue](), errors.Errorf("JavaScript field normaliser (%q, %q) is unavailable", target.Type(), target.Path())
 	}
 	return e.normalise(callback, value)
 }
 
 // NormaliseMessage invokes the normaliser registered for an object type. None
 // stands for an absent message in both the argument and the result.
-func (e *Evaluator) NormaliseMessage(target schema.TypeRef, value Option[any]) (Option[any], error) {
+func (e *Evaluator) NormaliseMessage(target schema.TypeRef, value Option[model.DynamicValue]) (Option[model.DynamicValue], error) {
 	callback, ok := e.registry.message(target)
 	if !ok {
-		return None[any](), errors.Errorf("JavaScript message normaliser %q is unavailable", target)
+		return None[model.DynamicValue](), errors.Errorf("JavaScript message normaliser %q is unavailable", target)
 	}
 	return e.normalise(callback, value)
 }
@@ -125,7 +126,7 @@ func (e *Evaluator) SelectsRequest(rule Rule, request Request) (bool, error) {
 		}
 	}
 	argument := e.runtime.NewObject()
-	for name, value := range map[string]any{"method": request.Method, "path": request.Path, "headers": headers} {
+	for name, value := range map[string]sobek.Value{"method": e.runtime.ToValue(request.Method), "path": e.runtime.ToValue(request.Path), "headers": headers} {
 		if err := argument.Set(name, value); err != nil {
 			return false, errors.Wrap(err, "build request argument")
 		}
@@ -181,17 +182,17 @@ func (e *Evaluator) selects(rule Rule, callback sobek.Callable, argument sobek.V
 
 // NormaliseResponse invokes a rule's response normaliser on a JSON response
 // object. None stands for an undefined result.
-func (e *Evaluator) NormaliseResponse(rule Rule, response any) (Option[any], error) {
+func (e *Evaluator) NormaliseResponse(rule Rule, response model.DynamicValue) (Option[model.DynamicValue], error) {
 	callbacks := e.registry.rule(rule.Index())
 	callback, ok := callbacks.normalise.Get()
 	if !ok {
-		return None[any](), errors.Errorf("JavaScript normaliser of rule %s is unavailable", rule)
+		return None[model.DynamicValue](), errors.Errorf("JavaScript normaliser of rule %s is unavailable", rule)
 	}
 	return e.normalise(callback, Some(response))
 }
 
 // ReplaceRequest maps a request to a replacing endpoint to the source request it pairs with.
-func (e *Evaluator) ReplaceRequest(replacement Replacement, request any) (any, error) {
+func (e *Evaluator) ReplaceRequest(replacement Replacement, request model.DynamicValue) (model.DynamicValue, error) {
 	callbacks, ok := e.registry.replacer(replacement.Index())
 	if !ok {
 		return nil, errors.Errorf("JavaScript request function of %s is unavailable", replacement)
@@ -201,7 +202,7 @@ func (e *Evaluator) ReplaceRequest(replacement Replacement, request any) (any, e
 
 // ReplaceResponse builds the answer to a request to a replacing endpoint from a
 // reference response to its source.
-func (e *Evaluator) ReplaceResponse(replacement Replacement, request, reference any) (any, error) {
+func (e *Evaluator) ReplaceResponse(replacement Replacement, request, reference model.DynamicValue) (model.DynamicValue, error) {
 	callbacks, ok := e.registry.replacer(replacement.Index())
 	if !ok {
 		return nil, errors.Errorf("JavaScript response function of %s is unavailable", replacement)
@@ -209,7 +210,7 @@ func (e *Evaluator) ReplaceResponse(replacement Replacement, request, reference 
 	return e.replace(replacement, "response", callbacks.response, request, reference)
 }
 
-func (e *Evaluator) replace(replacement Replacement, function string, callback sobek.Callable, values ...any) (any, error) {
+func (e *Evaluator) replace(replacement Replacement, function string, callback sobek.Callable, values ...model.DynamicValue) (model.DynamicValue, error) {
 	arguments := make([]sobek.Value, 0, len(values))
 	for _, value := range values {
 		argument, err := e.argument(Some(value))
@@ -247,9 +248,9 @@ func (e *Evaluator) CombineStatements(limit time.Duration, replacement Statement
 	clock := startStopwatch(e.runtime, limit)
 	defer clock.stop()
 	failure := None[error]()
-	functions := make([]any, 0, len(claims))
+	functions := make([]sobek.Value, 0, len(claims))
 	for _, claim := range claims {
-		functions = append(functions, func(call sobek.FunctionCall) sobek.Value {
+		functions = append(functions, e.runtime.ToValue(func(call sobek.FunctionCall) sobek.Value {
 			claimed, err := e.statementValues(call.Arguments)
 			var rows []Row
 			if err == nil {
@@ -262,9 +263,9 @@ func (e *Evaluator) CombineStatements(limit time.Duration, replacement Statement
 				panic(e.runtime.NewGoError(err))
 			}
 			return e.rowsValue(rows)
-		})
+		}))
 	}
-	result, err := using(sobek.Undefined(), e.valuesValue(values), e.runtime.ToValue(functions))
+	result, err := using(sobek.Undefined(), e.valuesValue(values), e.array(functions))
 	if failed, claimFailed := failure.Get(); claimFailed {
 		return nil, errors.WithStack(failed)
 	}
@@ -285,9 +286,9 @@ func (e *Evaluator) SplitStatement(limit time.Duration, replacement StatementRep
 	clock := startStopwatch(e.runtime, limit)
 	defer clock.stop()
 	failure := None[error]()
-	functions := make([]any, 0, len(replacement.Statements()))
+	functions := make([]sobek.Value, 0, len(replacement.Statements()))
 	for index := range replacement.Statements() {
-		functions = append(functions, func(call sobek.FunctionCall) sobek.Value {
+		functions = append(functions, e.runtime.ToValue(func(call sobek.FunctionCall) sobek.Value {
 			var offered []Option[string]
 			var offeredRows []Row
 			err := errors.New("offer requires rows after its values")
@@ -305,9 +306,9 @@ func (e *Evaluator) SplitStatement(limit time.Duration, replacement StatementRep
 				panic(e.runtime.NewGoError(err))
 			}
 			return sobek.Undefined()
-		})
+		}))
 	}
-	_, err := using(sobek.Undefined(), e.valuesValue(values), e.rowsValue(rows), e.runtime.ToValue(functions))
+	_, err := using(sobek.Undefined(), e.valuesValue(values), e.rowsValue(rows), e.array(functions))
 	if failed, offerFailed := failure.Get(); offerFailed {
 		return errors.WithStack(failed)
 	}
@@ -318,23 +319,32 @@ func (e *Evaluator) SplitStatement(limit time.Duration, replacement StatementRep
 }
 
 func (e *Evaluator) valuesValue(values []Option[string]) sobek.Value {
-	array := make([]any, 0, len(values))
+	elements := make([]sobek.Value, 0, len(values))
 	for _, value := range values {
-		array = append(array, e.nullable(value))
+		elements = append(elements, e.nullable(value))
 	}
-	return e.runtime.ToValue(array)
+	return e.array(elements)
 }
 
 func (e *Evaluator) rowsValue(rows []Row) sobek.Value {
-	array := make([]any, 0, len(rows))
+	elements := make([]sobek.Value, 0, len(rows))
 	for _, row := range rows {
 		object := e.runtime.NewObject()
 		for label, value := range row {
 			_ = object.Set(label, e.nullable(value)) //nolint:errcheck // Plain objects accept any property.
 		}
-		array = append(array, object)
+		elements = append(elements, object)
 	}
-	return e.runtime.ToValue(array)
+	return e.array(elements)
+}
+
+// array returns a JavaScript array of the elements.
+func (e *Evaluator) array(elements []sobek.Value) sobek.Value {
+	array := e.runtime.NewArray()
+	for index, element := range elements {
+		_ = array.Set(strconv.Itoa(index), element) //nolint:errcheck // Arrays accept any index.
+	}
+	return array
 }
 
 func (e *Evaluator) nullable(value Option[string]) sobek.Value {
@@ -348,7 +358,7 @@ func (e *Evaluator) nullable(value Option[string]) sobek.Value {
 func (e *Evaluator) statementValues(arguments []sobek.Value) ([]Option[string], error) {
 	values := make([]Option[string], 0, len(arguments))
 	for _, argument := range arguments {
-		text, err := sqlText(argument.Export())
+		text, err := sqlText(argument)
 		if err != nil {
 			return nil, err
 		}
@@ -359,19 +369,20 @@ func (e *Evaluator) statementValues(arguments []sobek.Value) ([]Option[string], 
 
 // rows reads a script's array of row objects.
 func (e *Evaluator) rows(value sobek.Value) ([]Row, error) {
-	array, ok := value.Export().([]any)
-	if !ok {
+	array, ok := value.(*sobek.Object)
+	if !ok || array.ClassName() != "Array" {
 		return nil, errors.New("rows must be an array")
 	}
-	rows := make([]Row, 0, len(array))
-	for _, element := range array {
-		object, isObject := element.(map[string]any)
-		if !isObject {
+	length := array.Get("length").ToInteger()
+	rows := make([]Row, 0, length)
+	for index := range length {
+		object, isObject := array.Get(strconv.FormatInt(index, 10)).(*sobek.Object)
+		if !isObject || object.ClassName() != "Object" {
 			return nil, errors.New("each row must be an object")
 		}
 		row := Row{}
-		for label, field := range object {
-			text, err := sqlText(field)
+		for _, label := range object.Keys() {
+			text, err := sqlText(object.Get(label))
 			if err != nil {
 				return nil, errors.Wrapf(err, "row field %q", label)
 			}
@@ -383,8 +394,8 @@ func (e *Evaluator) rows(value sobek.Value) ([]Row, error) {
 }
 
 // sqlText is a script value as MySQL's text protocol sends it, with null as NULL.
-func sqlText(value any) (Option[string], error) {
-	switch value := value.(type) {
+func sqlText(value sobek.Value) (Option[string], error) {
+	switch value := value.Export().(type) {
 	case nil:
 		return None[string](), nil
 	case string:
@@ -399,30 +410,30 @@ func sqlText(value any) (Option[string], error) {
 		}
 		return Some("0"), nil
 	}
-	return None[string](), errors.Errorf("value of type %T is not a string, number, boolean or null", value)
+	return None[string](), errors.Errorf("value of type %T is not a string, number, boolean or null", value.Export())
 }
 
 // normalise returns an undefined result as None so callers can remove the node.
-func (e *Evaluator) normalise(callback sobek.Callable, value Option[any]) (Option[any], error) {
+func (e *Evaluator) normalise(callback sobek.Callable, value Option[model.DynamicValue]) (Option[model.DynamicValue], error) {
 	argument, err := e.argument(value)
 	if err != nil {
-		return None[any](), errors.Wrap(err, "clone normaliser argument")
+		return None[model.DynamicValue](), errors.Wrap(err, "clone normaliser argument")
 	}
 	result, err := callback(sobek.Undefined(), argument)
 	if err != nil {
-		return None[any](), scriptError(err, "JavaScript normaliser threw an exception")
+		return None[model.DynamicValue](), scriptError(err, "JavaScript normaliser threw an exception")
 	}
 	if sobek.IsUndefined(result) {
-		return None[any](), nil
+		return None[model.DynamicValue](), nil
 	}
 	normalised, err := e.result(result)
 	if err != nil {
-		return None[any](), err
+		return None[model.DynamicValue](), err
 	}
 	return Some(normalised), nil
 }
 
-func (e *Evaluator) argument(optionalValue Option[any]) (sobek.Value, error) {
+func (e *Evaluator) argument(optionalValue Option[model.DynamicValue]) (sobek.Value, error) {
 	value, present := optionalValue.Get()
 	if !present {
 		return sobek.Undefined(), nil
@@ -437,7 +448,7 @@ func (e *Evaluator) argument(optionalValue Option[any]) (sobek.Value, error) {
 }
 
 // result detaches a normalised value from the runtime through the JSON helper.
-func (e *Evaluator) result(value sobek.Value) (any, error) {
+func (e *Evaluator) result(value sobek.Value) (model.DynamicValue, error) {
 	encoded, err := e.stringify(sobek.Undefined(), value)
 	if err != nil {
 		return nil, errors.New("JavaScript normaliser returned a value that is not representable as JSON")
@@ -446,7 +457,7 @@ func (e *Evaluator) result(value sobek.Value) (any, error) {
 	if !ok {
 		return nil, errors.New("JavaScript normaliser returned a value that is not representable as JSON")
 	}
-	var normalised any
+	var normalised model.DynamicValue
 	if err := json.Unmarshal([]byte(text), &normalised); err != nil {
 		return nil, errors.Wrap(err, "decode normalised value")
 	}

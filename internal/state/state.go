@@ -39,7 +39,7 @@ type Node struct {
 	DependsOn []string `json:"depends_on,omitzero"`
 	Status    Status   `json:"status"`
 	// IO holds the settings of each IO kind the node has. A library has none.
-	IO map[model.IOKind]map[string]any `json:"io,omitzero"`
+	IO map[model.IOKind]map[string]model.DynamicValue `json:"io,omitzero"`
 	// Line is where the node's table starts in the file, or 0 when unknown.
 	Line int `json:"-"`
 }
@@ -110,7 +110,7 @@ func Load(path string, catalog *Catalog) (State, error) {
 // Parse reads a migration state and checks it against the IO kinds the catalog
 // supports. An invalid state returns an *InvalidError.
 func Parse(data []byte, catalog *Catalog) (State, error) {
-	var root map[string]any
+	var root map[string]model.DynamicValue
 	if err := toml.Unmarshal(data, &root); err != nil {
 		return State{}, &InvalidError{Problems: []Problem{syntaxProblem(err)}}
 	}
@@ -291,13 +291,13 @@ func (n Node) hasIngress() bool {
 
 // parser collects every problem in a state file instead of stopping at the first.
 type parser struct {
-	root     map[string]any
+	root     map[string]model.DynamicValue
 	lines    map[string]int
 	catalog  *Catalog
 	problems []Problem
 }
 
-func newParser(root map[string]any, lines map[string]int, catalog *Catalog) *parser {
+func newParser(root map[string]model.DynamicValue, lines map[string]int, catalog *Catalog) *parser {
 	return &parser{root: root, lines: lines, catalog: catalog}
 }
 
@@ -331,7 +331,7 @@ func (p *parser) state() State {
 	if !ok {
 		return State{}
 	}
-	nodes, ok := value.(map[string]any)
+	nodes, ok := value.(map[string]model.DynamicValue)
 	if !ok {
 		p.reportf([]string{nodesKey}, "must be a table of nodes keyed by ID")
 		return State{}
@@ -342,7 +342,7 @@ func (p *parser) state() State {
 		if !nodeIDPattern.MatchString(id) {
 			p.reportf(path, "node IDs must be kebab-case")
 		}
-		table, isTable := nodes[id].(map[string]any)
+		table, isTable := nodes[id].(map[string]model.DynamicValue)
 		if !isTable {
 			p.reportf(path, "must be a table")
 			state.Nodes = append(state.Nodes, Node{ID: id, Status: Pending, Line: p.line(path)})
@@ -353,8 +353,8 @@ func (p *parser) state() State {
 	return state
 }
 
-func (p *parser) node(path []string, table map[string]any) Node {
-	node := Node{ID: path[len(path)-1], Status: Pending, IO: map[model.IOKind]map[string]any{}, Line: p.line(path)}
+func (p *parser) node(path []string, table map[string]model.DynamicValue) Node {
+	node := Node{ID: path[len(path)-1], Status: Pending, IO: map[model.IOKind]map[string]model.DynamicValue{}, Line: p.line(path)}
 	for _, key := range sortedKeys(table) {
 		keyPath := append(slices.Clone(path), key)
 		value := table[key]
@@ -377,8 +377,8 @@ func (p *parser) node(path []string, table map[string]any) Node {
 	return node
 }
 
-func (p *parser) dependsOn(path []string, value any) []string {
-	values, ok := value.([]any)
+func (p *parser) dependsOn(path []string, value model.DynamicValue) []string {
+	values, ok := value.([]model.DynamicValue)
 	if !ok {
 		p.reportf(path, "must be an array of node IDs")
 		return nil
@@ -395,8 +395,8 @@ func (p *parser) dependsOn(path []string, value any) []string {
 	return ids
 }
 
-func (p *parser) kinds(path []string, direction model.Direction, value any, io map[model.IOKind]map[string]any) {
-	protocols, ok := value.(map[string]any)
+func (p *parser) kinds(path []string, direction model.Direction, value model.DynamicValue, io map[model.IOKind]map[string]model.DynamicValue) {
+	protocols, ok := value.(map[string]model.DynamicValue)
 	if !ok {
 		p.reportf(path, "must be a table keyed by protocol")
 		return
@@ -409,7 +409,7 @@ func (p *parser) kinds(path []string, direction model.Direction, value any, io m
 			p.reportf(kindPath, "%s is not a supported IO kind; run spectre state types for the supported ones", kind)
 			continue
 		}
-		settings, isTable := protocols[protocol].(map[string]any)
+		settings, isTable := protocols[protocol].(map[string]model.DynamicValue)
 		if !isTable {
 			p.reportf(kindPath, "must be a table of %s settings", kind)
 			continue
@@ -421,7 +421,7 @@ func (p *parser) kinds(path []string, direction model.Direction, value any, io m
 
 // settings checks a table against the settings it may hold, and each entry of a
 // keyed setting against the settings an entry may hold.
-func (p *parser) settings(path []string, table map[string]any, settings []Setting) {
+func (p *parser) settings(path []string, table map[string]model.DynamicValue, settings []Setting) {
 	for _, setting := range settings {
 		if _, ok := table[setting.Name]; setting.Required && !ok {
 			p.reportf(path, "%s is required", setting.Name)
@@ -437,19 +437,19 @@ func (p *parser) settings(path []string, table map[string]any, settings []Settin
 		setting := settings[index]
 		value := table[key]
 		if setting.Key == "" {
-			if _, ok := value.(map[string]any); ok {
+			if _, ok := value.(map[string]model.DynamicValue); ok {
 				p.reportf(settingPath, "must be a value, not a table")
 			}
 			continue
 		}
-		entries, ok := value.(map[string]any)
+		entries, ok := value.(map[string]model.DynamicValue)
 		if !ok {
 			p.reportf(settingPath, "must be a table keyed by %s", setting.Key)
 			continue
 		}
 		for _, entryKey := range sortedKeys(entries) {
 			entryPath := append(slices.Clone(settingPath), entryKey)
-			entry, isTable := entries[entryKey].(map[string]any)
+			entry, isTable := entries[entryKey].(map[string]model.DynamicValue)
 			if !isTable {
 				p.reportf(entryPath, "must be a table; write {} for an entry with no settings")
 				continue
@@ -531,7 +531,7 @@ func (p *parser) checkUnique(state State) {
 			}
 			owners := map[string]string{}
 			for _, node := range state.Nodes {
-				entries, _ := node.IO[support.Kind][setting.Name].(map[string]any)
+				entries, _ := node.IO[support.Kind][setting.Name].(map[string]model.DynamicValue)
 				for _, key := range slices.Sorted(maps.Keys(entries)) {
 					path := []string{nodesKey, node.ID, string(support.Kind.Direction), string(support.Kind.Protocol), setting.Name, key}
 					if owner, ok := owners[key]; ok {
@@ -545,7 +545,7 @@ func (p *parser) checkUnique(state State) {
 	}
 }
 
-func sortedKeys(table map[string]any) []string {
+func sortedKeys(table map[string]model.DynamicValue) []string {
 	return slices.Sorted(maps.Keys(table))
 }
 

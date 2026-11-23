@@ -25,7 +25,6 @@ require (
 	github.com/pelletier/go-toml/v2 v2.4.3
 	github.com/pingcap/tidb/pkg/parser v0.0.0-20260504140133-511dba1dbe17
 	github.com/redis/go-redis/v9 v9.23.0
-	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
 	go.jetify.com/typeid v1.3.0
 	golang.org/x/mod v0.42.0
 	golang.org/x/net v0.62.0

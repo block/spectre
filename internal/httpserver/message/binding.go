@@ -11,12 +11,13 @@ import (
 
 	"github.com/alecthomas/errors"
 
+	"github.com/block/spectre/internal/model"
 	"github.com/block/spectre/internal/schema"
 )
 
 // bindHTTPParameters binds each field once, so path and query values cannot
 // overwrite a body value or one another. Required fields are validated afterwards.
-func bindHTTPParameters(loaded *schema.Schema, root *schema.Type, object map[string]any, request Request, wildcards map[string]string) error {
+func bindHTTPParameters(loaded *schema.Schema, root *schema.Type, object map[string]model.DynamicValue, request Request, wildcards map[string]string) error {
 	if request.Method == http.MethodGet && len(request.Body) > 0 {
 		return errors.New("GET request has a body")
 	}
@@ -38,7 +39,7 @@ func bindHTTPParameters(loaded *schema.Schema, root *schema.Type, object map[str
 	return nil
 }
 
-func bindField(loaded *schema.Schema, root *schema.Type, object map[string]any, name string, values []string, repeatable bool) error {
+func bindField(loaded *schema.Schema, root *schema.Type, object map[string]model.DynamicValue, name string, values []string, repeatable bool) error {
 	path, err := resolveBinding(loaded, root, name, repeatable)
 	if err != nil {
 		return err
@@ -46,11 +47,11 @@ func bindField(loaded *schema.Schema, root *schema.Type, object map[string]any, 
 	for _, parent := range path[:len(path)-1] {
 		value, present := object[parent.Name]
 		if !present {
-			value = map[string]any{}
+			value = map[string]model.DynamicValue{}
 			object[parent.Name] = value
 		}
 		var ok bool
-		object, ok = value.(map[string]any)
+		object, ok = value.(map[string]model.DynamicValue)
 		if !ok {
 			return errors.Errorf("field %q is not an object", parent.Name)
 		}
@@ -74,7 +75,7 @@ func bindField(loaded *schema.Schema, root *schema.Type, object map[string]any, 
 	if !hasElement {
 		return errors.Errorf("field %q has no element type", name)
 	}
-	list := make([]any, 0, len(values))
+	list := make([]model.DynamicValue, 0, len(values))
 	for _, raw := range values {
 		value, err := parseScalar(*element, raw)
 		if err != nil {
@@ -131,7 +132,7 @@ func resolveBinding(loaded *schema.Schema, root *schema.Type, name string, repea
 	}
 }
 
-func parseScalar(value schema.Value, raw string) (any, error) {
+func parseScalar(value schema.Value, raw string) (model.DynamicValue, error) {
 	switch value.Kind {
 	case schema.KindString:
 		return raw, nil

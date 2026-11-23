@@ -46,7 +46,6 @@ The types come from declarations in `spectre/schema/`:
 
 - For protobuf payloads, put descriptor sets in `spectre/descriptors/` and run
   `spectre gen proto --descriptors-dir=spectre/descriptors --output=spectre/schema`.
-- For JSON Schema, run `spectre gen json-schema --output=spectre/schema/<name>.d.ts`.
 - Otherwise write the declaration by hand from the reference's responses.
 
 Every route a migrated node lists in `spectre/state.toml` needs a match or an ignore.

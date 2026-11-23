@@ -18,6 +18,7 @@ import (
 	"google.golang.org/protobuf/types/dynamicpb"
 
 	"github.com/block/spectre/internal/descriptors"
+	"github.com/block/spectre/internal/model"
 	"github.com/block/spectre/internal/schema"
 )
 
@@ -57,7 +58,7 @@ func (c *Codec) Streaming(name string) bool {
 }
 
 // Decode converts a payload into the ProtoJSON shape of its declared type.
-func (c *Codec) Decode(name schema.TypeRef, format Format, header http.Header, body []byte, maxBodyBytes int) (any, error) {
+func (c *Codec) Decode(name schema.TypeRef, format Format, header http.Header, body []byte, maxBodyBytes int) (model.DynamicValue, error) {
 	descriptor, err := c.registry.Message(protoreflect.FullName(name))
 	if err != nil {
 		return nil, errors.Wrap(err, "resolve wire type")
@@ -90,7 +91,7 @@ func (c *Codec) Decode(name schema.TypeRef, format Format, header http.Header, b
 }
 
 // Encode converts a ProtoJSON value of its declared type into a bare protobuf message.
-func (c *Codec) Encode(name schema.TypeRef, value any) ([]byte, error) {
+func (c *Codec) Encode(name schema.TypeRef, value model.DynamicValue) ([]byte, error) {
 	descriptor, err := c.registry.Message(protoreflect.FullName(name))
 	if err != nil {
 		return nil, errors.Wrap(err, "resolve wire type")
@@ -154,7 +155,7 @@ func unmarshalProtoJSON(types *dynamicpb.Types, data []byte, message proto.Messa
 }
 
 // payloadValue converts a decoded message to the ProtoJSON value normalisers receive.
-func payloadValue(types *dynamicpb.Types, message proto.Message, maxBodyBytes int) (any, error) {
+func payloadValue(types *dynamicpb.Types, message proto.Message, maxBodyBytes int) (model.DynamicValue, error) {
 	data, err := (protojson.MarshalOptions{Resolver: types, EmitDefaultValues: true}).Marshal(message)
 	if err != nil {
 		return nil, errors.Wrap(err, "encode ProtoJSON")
@@ -162,7 +163,7 @@ func payloadValue(types *dynamicpb.Types, message proto.Message, maxBodyBytes in
 	if len(data) > maxBodyBytes {
 		return nil, errors.New("decoded payload exceeds the comparison size limit")
 	}
-	var payload any
+	var payload model.DynamicValue
 	if err := json.Unmarshal(data, &payload); err != nil {
 		return nil, errors.Wrap(err, "decode ProtoJSON value")
 	}

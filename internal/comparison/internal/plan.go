@@ -52,7 +52,7 @@ func (p *Plan) Normalise(
 	evaluator *javascript.Evaluator,
 	root *schema.Type,
 	side string,
-	payload any,
+	payload model.DynamicValue,
 ) (*Normalised, error) {
 	document := newDocument(payload)
 	run := newNormalisationRun(p.loaded, evaluator, root, slices.Clone(p.resolved), side, document)
@@ -76,7 +76,7 @@ func newNormalised(payload *document, loaded Option[*schema.Schema], root Option
 }
 
 // Raw wraps an untyped payload that no normaliser applies to.
-func Raw(payload any) *Normalised {
+func Raw(payload model.DynamicValue) *Normalised {
 	return newNormalised(newDocument(payload), None[*schema.Schema](), None[schema.Value]())
 }
 

@@ -16,6 +16,7 @@ import (
 	"github.com/block/spectre/internal/comparison/javascript"
 	"github.com/block/spectre/internal/httpserver/codec"
 	"github.com/block/spectre/internal/httpserver/route"
+	"github.com/block/spectre/internal/model"
 	"github.com/block/spectre/internal/protocol"
 	"github.com/block/spectre/internal/schema"
 )
@@ -270,7 +271,7 @@ func (d *Decoder) conventionalMethod(path string) (schema.Operation, error) {
 }
 
 // decodeResponse decodes a response body and validates it as root.
-func (d *Decoder) decodeResponse(root *schema.Type, selected wire, response Response) (any, error) {
+func (d *Decoder) decodeResponse(root *schema.Type, selected wire, response Response) (model.DynamicValue, error) {
 	payload, err := d.decodePayload(root, selected, response.Header, response.Body)
 	if err != nil {
 		return nil, err
@@ -282,13 +283,13 @@ func (d *Decoder) decodeResponse(root *schema.Type, selected wire, response Resp
 }
 
 // decodeRequest binds raw HTTP path and query values before validating required fields.
-func (d *Decoder) decodeRequest(input *schema.Type, selected wire, request Request, wildcards map[string]string) (any, error) {
+func (d *Decoder) decodeRequest(input *schema.Type, selected wire, request Request, wildcards map[string]string) (model.DynamicValue, error) {
 	payload, err := d.decodePayload(input, selected, request.Header, request.Body)
 	if err != nil {
 		return nil, err
 	}
 	if selected == wireHTTPJSON {
-		object, ok := payload.(map[string]any)
+		object, ok := payload.(map[string]model.DynamicValue)
 		if !ok {
 			return nil, errors.New("HTTP request body must be an object")
 		}
@@ -309,10 +310,10 @@ func (d *Decoder) decodeRequest(input *schema.Type, selected wire, request Reque
 	return payload, nil
 }
 
-func (d *Decoder) decodePayload(root *schema.Type, selected wire, header http.Header, body []byte) (any, error) {
+func (d *Decoder) decodePayload(root *schema.Type, selected wire, header http.Header, body []byte) (model.DynamicValue, error) {
 	if selected == wireHTTPJSON {
 		if len(body) == 0 {
-			return map[string]any{}, nil
+			return map[string]model.DynamicValue{}, nil
 		}
 		if !hasJSONMediaType(header) {
 			return nil, errors.Errorf("body is not JSON: %q", header.Get("Content-Type"))
@@ -321,7 +322,7 @@ func (d *Decoder) decodePayload(root *schema.Type, selected wire, header http.He
 		if err != nil {
 			return nil, err
 		}
-		var payload any
+		var payload model.DynamicValue
 		if err = json.Unmarshal(decompressed, &payload); err != nil {
 			return nil, errors.Wrap(jsonError(err), "decode JSON")
 		}

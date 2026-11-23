@@ -37,16 +37,14 @@ func newDiffer(loaded Option[*schema.Schema], root Option[schema.Value]) *differ
 
 // compare returns where two payloads differ, and whether they differ in more
 // places. A root is absent once a normaliser removes it.
-func (d *differ) compare(reference, candidate Option[any]) (differences []model.Difference, truncated bool) {
-	referenceRoot, referencePresent := reference.Get()
-	candidateRoot, candidatePresent := candidate.Get()
-	d.diffItem(referenceRoot, referencePresent, candidateRoot, candidatePresent, newDocumentPath(nil), d.root)
+func (d *differ) compare(reference, candidate Option[model.DynamicValue]) (differences []model.Difference, truncated bool) {
+	d.diffItem(reference, candidate, newDocumentPath(nil), d.root)
 	return mergeIndexes(d.differences), d.truncated
 }
 
 // diff structurally compares two payloads after normalisation. value is the
 // declared type at path, or None where the payload departs from the schema.
-func (d *differ) diff(reference, candidate any, path documentPath, value Option[schema.Value]) {
+func (d *differ) diff(reference, candidate model.DynamicValue, path documentPath, value Option[schema.Value]) {
 	if len(d.differences) >= maxDifferences {
 		d.truncated = d.truncated || !reflect.DeepEqual(reference, candidate)
 		return
@@ -55,20 +53,20 @@ func (d *differ) diff(reference, candidate any, path documentPath, value Option[
 		return
 	}
 	switch referenceValue := reference.(type) {
-	case map[string]any:
-		candidateValue, ok := candidate.(map[string]any)
+	case map[string]model.DynamicValue:
+		candidateValue, ok := candidate.(map[string]model.DynamicValue)
 		if !ok {
 			d.add(path.reported(), model.ChangeRetyped, reference, candidate)
 			return
 		}
 		for _, key := range sortedKeys(referenceValue, candidateValue) {
-			referenceItem, referencePresent := referenceValue[key]
-			candidateItem, candidatePresent := candidateValue[key]
+			referenceItem, referenceFound := referenceValue[key]
+			candidateItem, candidateFound := candidateValue[key]
 			itemPath, itemValue := d.member(path, value, key)
-			d.diffItem(referenceItem, referencePresent, candidateItem, candidatePresent, itemPath, itemValue)
+			d.diffItem(From(referenceItem, referenceFound), From(candidateItem, candidateFound), itemPath, itemValue)
 		}
-	case []any:
-		candidateValue, ok := candidate.([]any)
+	case []model.DynamicValue:
+		candidateValue, ok := candidate.([]model.DynamicValue)
 		if !ok {
 			d.add(path.reported(), model.ChangeRetyped, reference, candidate)
 			return
@@ -78,15 +76,7 @@ func (d *differ) diff(reference, candidate any, path documentPath, value Option[
 			element = derefValue(declared.Element)
 		}
 		for index := range max(len(referenceValue), len(candidateValue)) {
-			referencePresent, candidatePresent := index < len(referenceValue), index < len(candidateValue)
-			var referenceItem, candidateItem any
-			if referencePresent {
-				referenceItem = referenceValue[index]
-			}
-			if candidatePresent {
-				candidateItem = candidateValue[index]
-			}
-			d.diffItem(referenceItem, referencePresent, candidateItem, candidatePresent, path.appendIndex(index), element)
+			d.diffItem(elementAt(referenceValue, index), elementAt(candidateValue, index), path.appendIndex(index), element)
 		}
 	default:
 		change := model.ChangeChanged
@@ -98,15 +88,25 @@ func (d *differ) diff(reference, candidate any, path documentPath, value Option[
 }
 
 // diffItem compares an object member or list element that either side may lack.
-func (d *differ) diffItem(reference any, referencePresent bool, candidate any, candidatePresent bool, path documentPath, value Option[schema.Value]) {
+func (d *differ) diffItem(reference, candidate Option[model.DynamicValue], path documentPath, value Option[schema.Value]) {
+	referenceItem, referencePresent := reference.Get()
+	candidateItem, candidatePresent := candidate.Get()
 	switch {
 	case referencePresent && !candidatePresent:
 		d.add(path.reported(), model.ChangeMissing, nil, nil)
 	case !referencePresent && candidatePresent:
 		d.add(path.reported(), model.ChangeAdded, nil, nil)
 	default:
-		d.diff(reference, candidate, path, value)
+		d.diff(referenceItem, candidateItem, path, value)
 	}
+}
+
+// elementAt returns a list's element at index, or None past the end of the list.
+func elementAt(list []model.DynamicValue, index int) Option[model.DynamicValue] {
+	if index < len(list) {
+		return Some(list[index])
+	}
+	return None[model.DynamicValue]()
 }
 
 // member returns the path and declared type of an object's key. Only a declared
@@ -129,7 +129,7 @@ func (d *differ) member(path documentPath, value Option[schema.Value], key strin
 
 // add records a difference, counting it against an equal one already recorded.
 // reference and candidate give a retyped difference its types.
-func (d *differ) add(path reportedPath, change model.Change, reference, candidate any) {
+func (d *differ) add(path reportedPath, change model.Change, reference, candidate model.DynamicValue) {
 	retype := None[model.Retype]()
 	if change == model.ChangeRetyped {
 		retype = Some(model.Retype{Reference: jsonType(reference), Candidate: jsonType(candidate)})
@@ -181,7 +181,7 @@ func mergeIndexes(differences []difference) []model.Difference {
 
 // jsonType returns the type of a decoded JSON value. Decoded JSON holds only
 // these Go types and numbers, whose Go type depends on the decoder.
-func jsonType(value any) model.JSONType {
+func jsonType(value model.DynamicValue) model.JSONType {
 	switch value.(type) {
 	case nil:
 		return model.JSONNull
@@ -189,16 +189,16 @@ func jsonType(value any) model.JSONType {
 		return model.JSONBoolean
 	case string:
 		return model.JSONString
-	case map[string]any:
+	case map[string]model.DynamicValue:
 		return model.JSONObject
-	case []any:
+	case []model.DynamicValue:
 		return model.JSONList
 	}
 	return model.JSONNumber
 }
 
 // sortedKeys returns the keys of both objects in order, without repeats.
-func sortedKeys(reference, candidate map[string]any) []string {
+func sortedKeys(reference, candidate map[string]model.DynamicValue) []string {
 	keys := make([]string, 0, len(reference)+len(candidate))
 	for key := range reference {
 		keys = append(keys, key)

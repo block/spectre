@@ -1,6 +1,7 @@
 package comparisoninternal
 
 import (
+	"log/slog"
 	"slices"
 	"sort"
 
@@ -43,12 +44,12 @@ func (o occurrence) apply(payload *document, normalised documentValue) error {
 	return errors.Wrap(payload.Delete(o.path), "remove normalised value")
 }
 
-func (o occurrence) logAttributes(side string) []any {
-	return []any{
-		"kind", o.target.kind(),
-		"target", o.target.name(),
-		"side", side,
-		"payload_path", o.path.String(),
+func (o occurrence) logAttributes(side string) []slog.Attr {
+	return []slog.Attr{
+		slog.Any("kind", o.target.kind()),
+		slog.String("target", o.target.name()),
+		slog.String("side", side),
+		slog.String("payload_path", o.path.String()),
 	}
 }
 
