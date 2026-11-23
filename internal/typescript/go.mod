@@ -4,7 +4,7 @@ go 1.27.1
 
 require (
 	github.com/alecthomas/errors v0.9.1
-	github.com/microsoft/TypeScript/tsc v0.0.0-20261114002809-6bdcb54d23f4
+	github.com/microsoft/TypeScript/tsc v0.0.0-20261121000825-01f1a759d92b
 )
 
 require (
