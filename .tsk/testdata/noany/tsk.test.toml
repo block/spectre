@@ -1,0 +1,4 @@
+[[case]]
+
+name = "default"
+packages = ["noany"]
