@@ -20,9 +20,9 @@ func TestStatusCommands(t *testing.T) {
 	// Production and staging mirrors report to servers of their own.
 	backend, stagingBackend := storage.NewMemory(), storage.NewMemory()
 	store, stagingStore := storage.NewRepository(backend), storage.NewRepository(stagingBackend)
-	httpServer := httptest.NewServer(server.NewService(backend, time.Hour).Handler())
+	httpServer := httptest.NewServer(server.NewService(backend, server.ServeConfig{StateTTL: time.Hour, CallsTTL: 7 * 24 * time.Hour}).Handler())
 	t.Cleanup(httpServer.Close)
-	stagingServer := httptest.NewServer(server.NewService(stagingBackend, time.Hour).Handler())
+	stagingServer := httptest.NewServer(server.NewService(stagingBackend, server.ServeConfig{StateTTL: time.Hour, CallsTTL: 7 * 24 * time.Hour}).Handler())
 	t.Cleanup(stagingServer.Close)
 	spectre := client.NewServers(client.ServersConfig{URLs: []string{httpServer.URL, stagingServer.URL}})
 	first := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
@@ -36,7 +36,7 @@ func TestStatusCommands(t *testing.T) {
 			Service: earlier.Service, Environment: earlier.Environment, Revision: earlier.Revision,
 			//nolint:exhaustive // Only the reported direction quarantined.
 			Quarantines: map[model.Direction]model.Quarantine{earlier.Direction: earlier.Quarantine},
-		}, time.Time{}, true))
+		}, time.Time{}, time.Time{}, model.StateReport))
 	}
 	quarantined := model.State{
 		Service:        "users",
@@ -69,8 +69,9 @@ func TestStatusCommands(t *testing.T) {
 		Uptime:         12*time.Minute + 300*time.Millisecond,
 		Calls:          model.Calls{Routes: map[model.Route]uint64{"POST /v1/users": 66, "GET /v1/users": 22}, Other: 3},
 	}
-	assert.NoError(t, store.Observe(t.Context(), quarantined, time.Now(), true))
-	assert.NoError(t, stagingStore.Observe(t.Context(), healthy, time.Now(), true))
+	reported := time.Now()
+	assert.NoError(t, store.Observe(t.Context(), quarantined, reported, time.Time{}, model.StateReport))
+	assert.NoError(t, stagingStore.Observe(t.Context(), healthy, reported, time.Time{}, model.StateReport))
 
 	var text strings.Builder
 	list := statusListCommand{}
@@ -86,14 +87,15 @@ users def456 production spectre v1.2.3, up 1h30m0s
     ~ $status 200 → 500
     … more
   quarantined 2026-10-01T12:01:00Z
-    GET /v1/users: 1 call
+  no calls since 2026-10-01T12:01:00Z (last quarantine)
   egress: no matching reference call
   quarantined 2026-10-01T12:00:00Z on abc123, in an earlier run
 users def456 staging spectre v1.2.3, up 12m0s
   healthy
-    GET /v1/users: 22 calls
-    POST /v1/users: 66 calls
-    other routes: 3 calls
+  calls since `+timestamp(reported)+` (first report), 1 run:
+    GET /v1/users: 22 calls (22 this run)
+    POST /v1/users: 66 calls (66 this run)
+    other routes: 3 calls (3 this run)
 `, text.String())
 
 	var data strings.Builder
@@ -124,21 +126,24 @@ users def456 staging spectre v1.2.3, up 12m0s
 			"revision": "def456",
 			"spectreVersion": "v1.2.3",
 			"uptime": "5400s",
-			"quarantines": [`+quarantine+`],
-			"calls": {"routes": {"GET /v1/users": "1"}}
+			"quarantines": [`+quarantine+`]
 		}],
 		"divergences": [{
 			"service": "users",
 			"environment": "production",
 			"revision": "def456",
 			"quarantine": `+quarantine+`
-		}]
+		}],
+        "callTotals": [{"service":"users","environment":"production","since":"2026-10-01T12:01:00Z","start":"last quarantine","calls":{}}]
 	}`), &expected))
 	assert.NoError(t, json.Unmarshal([]byte(data.String()), &printed))
 	assert.Equal(t, expected, printed)
 
 	clearCommand := statusClearCommand{Clear: server.ClearConfig{Service: "users", Environment: "production"}}
 	assert.NoError(t, clearCommand.Run(t.Context(), spectre))
+	cleared, err := spectre.ListDivergences(t.Context(), model.DivergenceFilter{Environment: Some("production")})
+	assert.NoError(t, err)
+	clearedAt := cleared.Environments()[0].Total.MustGet().Since
 	text.Reset()
 	list = statusListCommand{Environment: "production"}
 	assert.NoError(t, list.Run(t.Context(), spectre, Output{Writer: &text}))
@@ -151,7 +156,7 @@ users def456 staging spectre v1.2.3, up 12m0s
     ~ $status 200 → 500
     … more
   quarantined 2026-10-01T12:01:00Z
-    GET /v1/users: 1 call
+  no calls since `+timestamp(clearedAt)+` (cleared)
 `, text.String())
 
 	text.Reset()

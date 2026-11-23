@@ -15,13 +15,13 @@ func TestServiceEnvironmentPreservesSnapshots(t *testing.T) {
 	//nolint:exhaustive // Only ingress quarantined.
 	state := model.State{Service: "users", Environment: "production", Revision: "first",
 		Quarantines: map[model.Direction]model.Quarantine{model.Ingress: {Since: at}}}
-	original := (model.ServiceEnvironment{}).Observed(state, at, true)
+	original := (model.ServiceEnvironment{}).Observed(state, at, time.Time{}, model.StateReport)
 	earlier := state.Divergences()
 	state.Revision = "second"
-	updated := original.Observed(state, at.Add(time.Minute), true)
+	updated := original.Observed(state, at.Add(time.Minute), time.Time{}, model.StateReport)
 	assert.Equal(t, earlier, original.Divergences)
 	assert.Equal(t, state.Divergences(), updated.Divergences)
-	assert.Equal(t, Some(at), updated.ClearedAt(at).Cleared)
+	assert.Equal(t, Some(at), updated.ClearedAt(at, time.Time{}).Cleared)
 	assert.Equal(t, state.Divergences(), updated.Divergences)
 }
 

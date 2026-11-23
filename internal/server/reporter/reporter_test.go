@@ -37,7 +37,7 @@ type mirror struct {
 func run(t *testing.T, ttl time.Duration, failures int32, keepalive, maxAge time.Duration) mirror {
 	t.Helper()
 	streams := &atomic.Int32{}
-	service := server.NewService(storage.NewMemory(), ttl).Handler()
+	service := server.NewService(storage.NewMemory(), server.ServeConfig{StateTTL: ttl, CallsTTL: 7 * 24 * time.Hour}).Handler()
 	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		if request.URL.Path == updateProcedure && streams.Add(1) <= failures {
 			// Reply without reading the stream, as a proxy in front of the server does.
@@ -104,11 +104,13 @@ func TestReporterReconnectsWithQuarantine(t *testing.T) {
 	assert.True(t, m.streams.Load() > 1)
 
 	states, divergences := m.states(t)
+	assert.True(t, states[0].Run != "")
 	expected := []model.State{{
 		Service:        "users",
 		Environment:    "production",
 		Revision:       "abc123",
 		SpectreVersion: internal.Version,
+		Run:            states[0].Run,
 		//nolint:exhaustive // Only the egress proxy quarantined.
 		Quarantines: map[model.Direction]model.Quarantine{model.Egress: quarantine},
 	}}

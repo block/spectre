@@ -26,14 +26,14 @@ import (
 
 // Service serves the SPECTRE service API.
 type Service struct {
-	store *storage.Repository
-	ttl   time.Duration
+	store  *storage.Repository
+	config ServeConfig
 }
 
 // NewService returns a SPECTRE server that keeps mirror states and divergences
-// in store, and lists the states received within ttl.
-func NewService(store storage.Store, ttl time.Duration) *Service {
-	return &Service{store: storage.NewRepository(store), ttl: ttl}
+// in store, and lists state and call totals within their configured TTLs.
+func NewService(store storage.Store, config ServeConfig) *Service {
+	return &Service{store: storage.NewRepository(store), config: config}
 }
 
 // Handler serves the API.
@@ -70,8 +70,13 @@ func (s *Service) Update(ctx context.Context, updates spectrepbconnect.SpectreSe
 		// The mirror measured its uptime when it sent the whole state.
 		stored := current
 		stored.Uptime += now.Sub(measured)
-		recordQuarantines := message.GetState() != nil || message.GetQuarantine() != nil
-		if err := s.store.Observe(ctx, stored, now, recordQuarantines); err != nil {
+		kind := model.CallsReport
+		if message.GetKeepalive() != nil {
+			kind = model.Keepalive
+		} else if message.GetState() != nil || message.GetQuarantine() != nil {
+			kind = model.StateReport
+		}
+		if err := s.store.Observe(ctx, stored, now, now.Add(-s.config.CallsTTL), kind); err != nil {
 			return nil, connect.NewError(connect.CodeUnavailable, err.Error()).WithCause(err)
 		}
 	}
@@ -80,7 +85,7 @@ func (s *Service) Update(ctx context.Context, updates spectrepbconnect.SpectreSe
 // ListDivergences returns the states of the mirrors that sent an update within
 // the TTL, and every recorded divergence.
 func (s *Service) ListDivergences(ctx context.Context, request *pb.ListDivergencesRequest) (*pb.ListDivergencesResponse, error) {
-	status, err := s.store.List(ctx, time.Now().Add(-s.ttl))
+	status, err := s.store.List(ctx, time.Now().Add(-s.config.StateTTL), time.Now().Add(-s.config.CallsTTL))
 	if err != nil {
 		return nil, connect.NewError(connect.CodeUnavailable, err.Error()).WithCause(err)
 	}
@@ -94,7 +99,8 @@ func (s *Service) ClearDivergences(ctx context.Context, request *pb.ClearDiverge
 	if service == "" || environment == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, "clearing divergences needs a service and environment")
 	}
-	if err := s.store.Clear(ctx, service, environment, time.Now()); err != nil {
+	now := time.Now()
+	if err := s.store.Clear(ctx, service, environment, now, now.Add(-s.config.CallsTTL)); err != nil {
 		return nil, connect.NewError(connect.CodeUnavailable, err.Error()).WithCause(err)
 	}
 	return &pb.ClearDivergencesResponse{}, nil
@@ -118,7 +124,7 @@ func ServeListener(ctx context.Context, config ServeConfig, listener net.Listene
 		return errors.Join(errors.Wrap(err, "open state storage"), listener.Close())
 	}
 	defer store.Close()
-	handler := health.New(logging.New(NewService(store, config.StateTTL).Handler(), logger.EventReceived))
+	handler := health.New(logging.New(NewService(store, config).Handler(), logger.EventReceived))
 	protocols := new(http.Protocols)
 	protocols.SetHTTP1(true)
 	protocols.SetHTTP2(true)

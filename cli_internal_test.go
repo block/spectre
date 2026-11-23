@@ -162,6 +162,7 @@ func TestServeCommandEmbedsConfig(t *testing.T) {
 		Listen:   "127.0.0.1:50071",
 		Storage:  storage.Config{Storage: &url.URL{Scheme: "redis", Host: "localhost:6379", Path: "/0"}},
 		StateTTL: 90 * time.Second,
+		CallsTTL: 7 * 24 * time.Hour,
 	}
 	assert.Equal(t, expected, command.Serve.Serve)
 }

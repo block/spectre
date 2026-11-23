@@ -148,7 +148,10 @@ func TestListRoundTrip(t *testing.T) {
 			Detail:  "no matching reference call",
 		}},
 	}}
-	status := model.Status{States: states, Divergences: divergences}
+	status := model.Status{States: states, Divergences: divergences, CallTotals: []model.CallTotal{{
+		Service: "users", Environment: "production", Since: time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC), Start: model.TotalFirstReport,
+		Calls: model.Calls{Other: 4}, Runs: 2,
+	}}}
 	restored, err := wire.ListFromResponse(wire.ListResponse(status))
 	assert.NoError(t, err)
 	assert.Equal(t, status, restored)

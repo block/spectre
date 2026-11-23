@@ -51,6 +51,11 @@ func (f DivergenceFilter) MatchesState(state State) bool {
 	return false
 }
 
+// MatchesServiceEnvironment selects totals, which span revisions and directions.
+func (f DivergenceFilter) MatchesServiceEnvironment(service, environment string) bool {
+	return matches(f.Service, Some(service)) && matches(f.Environment, Some(environment))
+}
+
 // matches reports whether value passes a filter. An absent filter matches
 // every value, including an absent one.
 func matches(filter, value Option[string]) bool {

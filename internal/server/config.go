@@ -15,6 +15,7 @@ import (
 type ServeConfig struct {
 	Listen   string         `default:"127.0.0.1:50070" help:"Address for the SPECTRE server: host:port, or unix:<path|@abstract>."`
 	Storage  storage.Config `embed:""`
+	CallsTTL time.Duration  `default:"168h" help:"How long call totals are kept after a service environment stops reporting."`
 	StateTTL time.Duration  `default:"90s" help:"How long a mirror's state is listed after its last update. Keep it above the mirrors' keepalive interval."`
 }
 

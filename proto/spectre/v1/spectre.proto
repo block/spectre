@@ -61,6 +61,7 @@ message ListDivergencesRequest {
 message ListDivergencesResponse {
   repeated State states = 1;
   repeated Divergence divergences = 2;
+  repeated CallTotal call_totals = 3;
 }
 
 // ClearDivergencesRequest names the service environment whose divergences to clear.
@@ -184,14 +185,28 @@ message State {
   google.protobuf.Duration uptime = 5;
   // Quarantines holds at most one quarantine per direction.
   repeated Quarantine quarantines = 6;
+  // Calls is cumulative when reporting, or the run's share of the listed total.
   Calls calls = 7;
+  // Run identifies a mirror process across reporting-stream reconnects.
+  string run = 8;
 }
 
 // Calls counts the requests on each route whose responses the mirror's ingress
-// proxy compared since the mirror started.
+// proxy compared.
 message Calls {
   // Routes maps each route to its number of requests.
   map<string, uint64> routes = 1;
   // Other counts requests to routes beyond the most a mirror counts.
   uint64 other = 2;
+}
+
+// CallTotal counts a service environment's compared calls across mirror runs.
+message CallTotal {
+  string service = 1;
+  string environment = 2;
+  google.protobuf.Timestamp since = 3;
+  // Start is first report, last quarantine, or cleared.
+  string start = 4;
+  Calls calls = 5;
+  uint32 runs = 6;
 }
