@@ -78,7 +78,7 @@ func (o *observer) received(data []byte) (offer Option[func()]) {
 		}
 		if !o.hold(reader.size() + o.framer.pending()) {
 			o.stop()
-			return Some(o.units(o.pending, normaliser.Rows{}, func(ctx context.Context, units []normaliser.Unit, _ Option[transactionID]) {
+			return Some(o.units(o.pending, normaliser.Rows{}, func(ctx context.Context, units []scopedUnit) {
 				o.server.exceed(ctx, units)
 			}))
 		}
@@ -93,9 +93,9 @@ func (o *observer) received(data []byte) (offer Option[func()]) {
 		held := o.held
 		o.held = 0
 		o.stop()
-		return Some(o.units(o.pending, finished, func(ctx context.Context, units []normaliser.Unit, names Option[transactionID]) {
+		return Some(o.units(o.pending, finished, func(ctx context.Context, units []scopedUnit) {
 			o.server.release(held)
-			o.server.offer(ctx, units, names)
+			o.server.offer(ctx, units)
 		}))
 	}
 }
@@ -129,12 +129,12 @@ func (o *observer) stop() {
 // units returns what turns a finished command into units, and hands them to use.
 // The relay queues it once the reference has the reply, so normalising never delays it.
 func (o *observer) units(sent sentCommand, reply normaliser.Reply,
-	use func(ctx context.Context, units []normaliser.Unit, names Option[transactionID]),
+	use func(ctx context.Context, units []scopedUnit),
 ) (deliver func()) {
 	return func() {
 		// A connection's offers run in order on one goroutine, so the session sees commands in order.
 		command := o.server.command(sent.code, sent.text)
-		units, names := o.transactions.scope(command, func() []normaliser.Unit {
+		units := o.transactions.scope(command, func() []normaliser.Unit {
 			units, err := o.session.Reference(o.ctx, command, reply)
 			if err != nil {
 				logger.FromContext(o.ctx).WarnContext(o.ctx, "Reference command is not offered", "event", logger.EventCorrelation, "reason", err)
@@ -143,7 +143,7 @@ func (o *observer) units(sent sentCommand, reply normaliser.Reply,
 			}
 			return units
 		})
-		use(o.ctx, units, names)
+		use(o.ctx, units)
 	}
 }
 

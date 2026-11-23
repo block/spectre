@@ -2,7 +2,6 @@ package mysqlserver
 
 import (
 	"fmt"
-	"slices"
 	"strings"
 
 	. "github.com/alecthomas/types/optional"
@@ -27,15 +26,21 @@ func newTransactionID() transactionID {
 	return typeid.Must(typeid.New[transactionID]())
 }
 
-// transactionKey pairs a unit only with units of the same transaction.
-func transactionKey(id transactionID, key any) map[string]any {
-	return map[string]any{"transaction": id.String(), "key": key}
+// pairing is what egress pairs a unit by: its key, within the transaction it ran in.
+type pairing struct {
+	Key normaliser.Key `json:"key"`
+	// Opens pairs the first unit of a transaction only with the first unit of another.
+	Opens bool `json:"opens,omitzero"`
+	// Transaction pairs a unit only with units of the same transaction.
+	Transaction Option[transactionID] `json:"transaction,omitzero"`
 }
 
-// openingKey pairs the first unit of a transaction only with the first unit of another,
-// never with a unit outside a transaction.
-func openingKey(key any) map[string]any {
-	return map[string]any{"opens": true, "key": key}
+// scopedUnit is a reference unit, what egress pairs it by, and the transaction it names
+// to the candidate that claims it, if any.
+type scopedUnit struct {
+	normaliser.Unit
+	pairing pairing
+	names   Option[transactionID]
 }
 
 // transactions follows a connection's transactions through the statements it sends, as
@@ -125,28 +130,30 @@ func (r *referenceTransactions) follow(command normaliser.Command) {
 
 // scope follows a command, and keys its units by its transaction. The transaction's first
 // unit pairs with any transaction's first, and names the transaction to the candidate that claims it.
-func (r *referenceTransactions) scope(command normaliser.Command, units func() []normaliser.Unit,
-) (scoped []normaliser.Unit, names Option[transactionID]) {
+func (r *referenceTransactions) scope(command normaliser.Command, units func() []normaliser.Unit) []scopedUnit {
 	started, inside := r.transactions.next(command)
-	scoped = units()
-	if !inside || len(scoped) == 0 {
-		return scoped, None[transactionID]()
+	offered := units()
+	scoped := make([]scopedUnit, 0, len(offered))
+	if !inside {
+		for _, unit := range offered {
+			scoped = append(scoped, scopedUnit{Unit: unit, pairing: pairing{Key: unit.Key}})
+		}
+		return scoped
 	}
 	id, ok := r.current.Get()
 	if !ok || r.started != started {
 		id = newTransactionID()
 		r.started, r.current, r.named = started, Some(id), false
 	}
-	scoped = slices.Clone(scoped)
-	for index := range scoped {
+	for _, unit := range offered {
 		if !r.named {
-			r.named, names = true, Some(id)
-			scoped[index].Key = openingKey(scoped[index].Key)
+			r.named = true
+			scoped = append(scoped, scopedUnit{Unit: unit, pairing: pairing{Key: unit.Key, Opens: true}, names: Some(id)})
 			continue
 		}
-		scoped[index].Key = transactionKey(id, scoped[index].Key)
+		scoped = append(scoped, scopedUnit{Unit: unit, pairing: pairing{Key: unit.Key, Transaction: Some(id)}})
 	}
-	return scoped, names
+	return scoped
 }
 
 // candidateTransactions keys a candidate connection's claims by the reference transaction
@@ -172,15 +179,15 @@ func (c *candidateTransactions) next(command normaliser.Command) {
 	c.inside = inside
 }
 
-// key is the key to claim a unit of the current command by.
-func (c *candidateTransactions) key(key any) any {
+// key is what to claim a unit of the current command by.
+func (c *candidateTransactions) key(key normaliser.Key) pairing {
 	if !c.inside {
-		return key
+		return pairing{Key: key}
 	}
 	if id, bound := c.claims.Get(); bound {
-		return transactionKey(id, key)
+		return pairing{Key: key, Transaction: Some(id)}
 	}
-	return openingKey(key)
+	return pairing{Key: key, Opens: true}
 }
 
 // claimed pairs the rest of the transaction with the reference transaction a claimed reply names.

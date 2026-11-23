@@ -88,7 +88,7 @@ func (c *candidateConn) answer(command normaliser.Command) (*mysql.Result, error
 		}
 	}()
 	c.transactions.next(command)
-	reply, err := c.session.Candidate(ctx, command, func(ctx context.Context, route model.Route, key any) (normaliser.Reply, error) {
+	reply, err := c.session.Candidate(ctx, command, func(ctx context.Context, route model.Route, key normaliser.Key) (normaliser.Reply, error) {
 		saved, err := c.server.claim(ctx, &claimed, route, c.transactions.key(key))
 		if err != nil {
 			return nil, err
@@ -118,6 +118,6 @@ func refusal(reason string) error {
 }
 
 // unclaimed is the claim of a command that needs no reference reply.
-func unclaimed(_ context.Context, route model.Route, _ any) (normaliser.Reply, error) {
+func unclaimed(_ context.Context, route model.Route, _ normaliser.Key) (normaliser.Reply, error) {
 	return nil, errors.Errorf("%s needs no reference reply", route)
 }

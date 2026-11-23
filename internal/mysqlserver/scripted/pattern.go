@@ -65,16 +65,8 @@ func (p pattern) matches(statement string) bool {
 }
 
 // key pairs a statement of the pattern with the same values, in the same default database.
-func (p pattern) key(database string, values []normaliser.Value) map[string]any {
-	texts := make([]any, 0, len(values))
-	for _, value := range values {
-		if text, ok := value.Get(); ok {
-			texts = append(texts, text)
-		} else {
-			texts = append(texts, nil)
-		}
-	}
-	return map[string]any{"database": database, "pattern": p.digest, "values": texts}
+func (p pattern) key(database string, values []normaliser.Value) normaliser.Key {
+	return normaliser.Key{Database: database, Pattern: p.digest, Values: values}
 }
 
 // rows labels a reply's rows with the pattern's columns.
