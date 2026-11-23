@@ -1,4 +1,11 @@
 [[case]]
-
 name = "default"
 packages = ["noany"]
+
+[[case]]
+name = "dynamic"
+packages = ["dynamic", "payload", "elsewhere"]
+
+[[case.config.dynamic]]
+type = "dynamic.Value"
+packages = ["payload"]

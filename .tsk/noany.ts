@@ -7,7 +7,19 @@ import * as edge from "golang.org/x/tools/go/ast/edge";
 import type { Cursor } from "golang.org/x/tools/go/ast/inspector";
 import * as typeutil from "golang.org/x/tools/go/types/typeutil";
 
-export default defineAnalyzer({
+interface Dynamic {
+  /** An alias of any for values typed only at runtime, as "<package path>.<name>". */
+  type: string;
+  /** Packages that may use the alias, besides the one that declares it. */
+  packages: string[];
+}
+
+interface Config {
+  /** Aliases of any that only their listed packages may use. */
+  dynamic: Dynamic[];
+}
+
+export default defineAnalyzer<Config>({
   name: "noany",
   doc: `report uses of any, interface{}, and json.RawMessage
 
@@ -16,12 +28,18 @@ assertions or reflection to use it. json.RawMessage likewise defers decoding to
 untyped bytes. Use a concrete type, a type parameter, or a sum type instead, and
 keep an unavoidable use with a nolint comment.
 
+A named type or alias of the empty interface is reported where it is used, unless
+it is a configured dynamic type. A dynamic type is an alias of any for values
+typed only at runtime, such as decoded payloads. Its declaration is allowed, and
+only the packages its entry lists may use it.
+
 Uses that Go's type checker forces are allowed: an unconstrained type
 parameter, as in [T any]; a method whose signature matches one of an interface
 from an imported package that its type implements; a function whose signature
 is exactly the function type another package's parameter or field expects; and
 a final ...any parameter used only to forward its arguments to another
 package's ...any parameter.`,
+  config: { dynamic: [] },
   requires: [inspect],
   run(pass) {
     const root = pass.resultOf(inspect).root();
@@ -35,14 +53,25 @@ package's ...any parameter.`,
     for (const cursor of root.preorder(ast.Ident)) {
       const ident = cursor.node() as ast.Ident;
       const object = pass.typesInfo.uses.get(ident);
+      const typeExpr = cursor.parentEdgeKind() === edge.SelectorExpr_Sel ? cursor.parent() : cursor;
       if (ident.name === "any" && object === universeAny) {
-        check(cursor, emptyInterface);
+        if (!declaresDynamic(cursor, pass.typesInfo, pass.config.dynamic)) {
+          check(cursor, emptyInterface);
+        }
       } else if (isRawMessage(object)) {
-        check(cursor.parentEdgeKind() === edge.SelectorExpr_Sel ? cursor.parent() : cursor, rawMessage);
+        check(typeExpr, rawMessage);
+      } else if (object?.$type === "TypeName" && object.pkg() !== null && isEmptyInterface(object.type())) {
+        const name = `${object.pkg()?.path()}.${object.name()}`;
+        const dynamic = pass.config.dynamic.find((entry) => entry.type === name);
+        if (dynamic === undefined) {
+          check(typeExpr, `${object.name()} is an empty interface; ${emptyInterface}`);
+        } else if (object.pkg()?.path() !== pass.pkg.path() && !dynamic.packages.includes(pass.pkg.path())) {
+          check(typeExpr, `${object.name()} holds values typed only at runtime, and only the packages its noany dynamic entry lists may use it`);
+        }
       }
     }
     for (const cursor of root.preorder(ast.InterfaceType)) {
-      if (((cursor.node() as ast.InterfaceType).methods?.list.length ?? 0) === 0) {
+      if (((cursor.node() as ast.InterfaceType).methods?.list.length ?? 0) === 0 && !declaresDynamic(cursor, pass.typesInfo, pass.config.dynamic)) {
         check(cursor, emptyInterface);
       }
     }
@@ -62,6 +91,29 @@ function isRawMessage(object: types.Object | null | undefined): boolean {
   const typeName = named?.$type === "Named" ? named.obj() : null;
   const path = typeName?.pkg()?.path();
   return (path === "encoding/json" && typeName?.name() === "RawMessage") || (path === "encoding/json/jsontext" && typeName?.name() === "Value");
+}
+
+// declaresDynamic reports whether the type expression is the whole declaration of a
+// configured dynamic type.
+function declaresDynamic(cursor: Cursor, info: types.Info, dynamic: readonly { readonly type: string }[]): boolean {
+  if (cursor.parentEdgeKind() !== edge.TypeSpec_Type) {
+    return false;
+  }
+  const spec = cursor.parent().node() as ast.TypeSpec;
+  const object = spec.name === null ? undefined : info.defs.get(spec.name);
+  const name = `${object?.pkg()?.path()}.${object?.name()}`;
+  return spec.assign !== token.NoPos && dynamic.some((entry) => entry.type === name);
+}
+
+// isEmptyInterface reports whether a type is, or is defined as, an interface with no
+// methods or type terms. A type parameter is not, even when its constraint is.
+function isEmptyInterface(type: types.Type | null): boolean {
+  const resolved = types.unalias(type);
+  if (resolved === null || resolved.$type === "TypeParam") {
+    return false;
+  }
+  const underlying = resolved.underlying();
+  return underlying?.$type === "Interface" && underlying.isMethodSet() && underlying.numMethods() === 0;
 }
 
 // Reports whether the type expression is the whole constraint of a type parameter.

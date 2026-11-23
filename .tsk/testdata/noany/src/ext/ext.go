@@ -28,3 +28,5 @@ func Printf(format string, args ...any) {}
 func Print(args []any) {}
 
 func Decode(data []byte, visit func(value json.RawMessage)) {}
+
+type Value any
