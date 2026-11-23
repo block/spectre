@@ -55,7 +55,7 @@ type Store interface {
 	Observe(ctx context.Context, state model.State, received time.Time, recordQuarantines bool) error
 	// List returns states received at or after since and recorded divergences.
 	// It forgets older states; the two collections need not be an atomic snapshot.
-	List(ctx context.Context, since time.Time) (model.Listing, error)
+	List(ctx context.Context, since time.Time) (model.Status, error)
 	// Clear removes the divergences of a service environment's mirror, and
 	// ignores its quarantines that began at or before at.
 	Clear(ctx context.Context, service, environment string, at time.Time) error

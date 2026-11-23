@@ -8,22 +8,22 @@ import (
 	. "github.com/alecthomas/types/optional"
 )
 
-// Listing is the live states and recorded divergences listed by SPECTRE servers.
-// It preserves server order and repeated reports until a view groups them.
-type Listing struct {
+// Status contains live mirror states and recorded divergences from SPECTRE servers.
+// It preserves server order and duplicate reports until grouped by service and environment.
+type Status struct {
 	States      []State
 	Divergences []Divergence
 }
 
 // Filter selects and orders states and divergences by their source.
-func (l Listing) Filter(filter DivergenceFilter) Listing {
-	matching := Listing{States: []State{}, Divergences: []Divergence{}}
-	for _, state := range l.States {
+func (s Status) Filter(filter DivergenceFilter) Status {
+	matching := Status{States: []State{}, Divergences: []Divergence{}}
+	for _, state := range s.States {
 		if filter.MatchesState(state) {
 			matching.States = append(matching.States, state)
 		}
 	}
-	for _, divergence := range l.Divergences {
+	for _, divergence := range s.Divergences {
 		if filter.Matches(divergence) {
 			matching.Divergences = append(matching.Divergences, divergence)
 		}
@@ -39,7 +39,7 @@ func (l Listing) Filter(filter DivergenceFilter) Listing {
 
 // Environments groups reports by service and environment, in source order.
 // The last state wins; divergences from different servers remain distinct.
-func (l Listing) Environments() []EnvironmentStatus {
+func (s Status) Environments() []EnvironmentStatus {
 	byKey := map[[2]string]*EnvironmentStatus{}
 	get := func(service, environment string) *EnvironmentStatus {
 		key := [2]string{service, environment}
@@ -48,10 +48,10 @@ func (l Listing) Environments() []EnvironmentStatus {
 		}
 		return byKey[key]
 	}
-	for _, state := range l.States {
+	for _, state := range s.States {
 		get(state.Service, state.Environment).State = Some(state)
 	}
-	for _, divergence := range l.Divergences {
+	for _, divergence := range s.Divergences {
 		environment := get(divergence.Service, divergence.Environment)
 		environment.Divergences = append(environment.Divergences, divergence)
 	}

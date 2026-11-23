@@ -25,18 +25,18 @@ func TestServiceEnvironmentPreservesSnapshots(t *testing.T) {
 	assert.Equal(t, state.Divergences(), updated.Divergences)
 }
 
-func TestListingEnvironmentsPreservesReports(t *testing.T) {
+func TestStatusEnvironmentsPreservesReports(t *testing.T) {
 	first := model.State{Service: "users", Environment: "production", Revision: "first"}
 	second := first
 	second.Revision = "second"
 	divergence := model.Divergence{Service: first.Service, Environment: first.Environment, Direction: model.Ingress}
-	listing := model.Listing{
+	status := model.Status{
 		States:      []model.State{first, second},
 		Divergences: []model.Divergence{divergence, divergence},
 	}
 	assert.Equal(t, []model.EnvironmentStatus{{
 		Service: "users", Environment: "production", State: Some(second),
 		Divergences: []model.Divergence{divergence, divergence},
-	}}, listing.Environments())
-	assert.Equal(t, []model.State{first, second}, listing.States)
+	}}, status.Environments())
+	assert.Equal(t, []model.State{first, second}, status.States)
 }

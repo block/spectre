@@ -49,14 +49,14 @@ func (c *statusListCommand) Run(ctx context.Context, servers *client.Servers, ou
 		Revision:    Zero(c.Revision),
 		Node:        Zero(c.Node),
 	}
-	listing, err := servers.ListDivergences(ctx, filter)
+	status, err := servers.ListDivergences(ctx, filter)
 	if err != nil {
 		return errors.WithStack(err)
 	}
 	if c.JSON {
-		return writeJSON(out, listing)
+		return writeJSON(out, status)
 	}
-	mirrors := listing.Environments()
+	mirrors := status.Environments()
 	if len(mirrors) == 0 {
 		_, err := fmt.Fprintln(out.Writer, out.Palette.Dim("No mirrors or divergences."))
 		return errors.Wrap(err, "write divergences")
@@ -165,8 +165,8 @@ func describe(direction model.Direction, reason model.QuarantineReason) string {
 
 // writeJSON prints states and divergences as the SPECTRE service protocol's
 // list response.
-func writeJSON(out Output, listing model.Listing) error {
-	data, err := wire.ListJSON(listing)
+func writeJSON(out Output, status model.Status) error {
+	data, err := wire.ListJSON(status)
 	if err != nil {
 		return errors.WithStack(err)
 	}

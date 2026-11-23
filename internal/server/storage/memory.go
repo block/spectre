@@ -37,22 +37,22 @@ func (m *Memory) Observe(_ context.Context, state model.State, at time.Time, rec
 }
 
 // List returns live states and recorded divergences, forgetting expired states.
-func (m *Memory) List(_ context.Context, since time.Time) (model.Listing, error) {
+func (m *Memory) List(_ context.Context, since time.Time) (model.Status, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	listing := model.Listing{States: []model.State{}, Divergences: []model.Divergence{}}
+	status := model.Status{States: []model.State{}, Divergences: []model.Divergence{}}
 	for key, environment := range m.environments {
 		environment = environment.ForgetStateBefore(since)
 		m.environments[key] = environment
 		state, reporting := environment.State.Get()
 		if reporting {
-			listing.States = append(listing.States, state)
+			status.States = append(status.States, state)
 		} else if len(environment.Divergences) == 0 && !environment.Cleared.Ok() {
 			delete(m.environments, key)
 		}
-		listing.Divergences = append(listing.Divergences, environment.Divergences...)
+		status.Divergences = append(status.Divergences, environment.Divergences...)
 	}
-	return listing, nil
+	return status, nil
 }
 
 // Clear removes recorded divergences and ignores quarantines from at or before.

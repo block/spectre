@@ -196,9 +196,9 @@ func testReplacesState(t *testing.T, store storage.Store) {
 	assert.NoError(t, store.Observe(t.Context(), latest, received.Add(time.Minute), false))
 	assert.NoError(t, store.Observe(t.Context(), staging, received, false))
 	assertStored(t, store, received, latest, staging)
-	listing, err := store.List(t.Context(), received)
+	status, err := store.List(t.Context(), received)
 	assert.NoError(t, err)
-	assert.Equal(t, 0, len(listing.Divergences))
+	assert.Equal(t, 0, len(status.Divergences))
 }
 
 func testForgetsStaleStates(t *testing.T, store storage.Store) {
@@ -296,7 +296,7 @@ func testClearsServiceEnvironment(t *testing.T, store storage.Store) {
 	// Expiring live state retains the clear watermark and divergence history.
 	expired, err := store.List(t.Context(), since.Add(time.Hour))
 	assert.NoError(t, err)
-	assert.Equal(t, model.Listing{States: []model.State{}, Divergences: []model.Divergence{staging}}, expired)
+	assert.Equal(t, model.Status{States: []model.State{}, Divergences: []model.Divergence{staging}}, expired)
 	// A mirror still quarantined keeps sending the cleared quarantine.
 	assert.NoError(t, record(t.Context(), store, divergence("production", model.Ingress, since)))
 	assertRecorded(t, store, staging)
@@ -353,11 +353,11 @@ func record(ctx context.Context, store storage.Store, divergence model.Divergenc
 }
 
 func states(ctx context.Context, store storage.Store, since time.Time) ([]model.State, error) {
-	listing, err := store.List(ctx, since)
-	return listing.States, err
+	status, err := store.List(ctx, since)
+	return status.States, err
 }
 
 func divergences(ctx context.Context, store storage.Store) ([]model.Divergence, error) {
-	listing, err := store.List(ctx, time.Time{})
-	return listing.Divergences, err
+	status, err := store.List(ctx, time.Time{})
+	return status.Divergences, err
 }

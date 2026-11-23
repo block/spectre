@@ -80,12 +80,12 @@ func (s *Service) Update(ctx context.Context, updates spectrepbconnect.SpectreSe
 // ListDivergences returns the states of the mirrors that sent an update within
 // the TTL, and every recorded divergence.
 func (s *Service) ListDivergences(ctx context.Context, request *pb.ListDivergencesRequest) (*pb.ListDivergencesResponse, error) {
-	listing, err := s.store.List(ctx, time.Now().Add(-s.ttl))
+	status, err := s.store.List(ctx, time.Now().Add(-s.ttl))
 	if err != nil {
 		return nil, connect.NewError(connect.CodeUnavailable, err.Error()).WithCause(err)
 	}
 	filter := wire.FilterFromMessage(request)
-	return wire.ListResponse(listing.Filter(filter)), nil
+	return wire.ListResponse(status.Filter(filter)), nil
 }
 
 // ClearDivergences removes the divergences of one service environment.

@@ -115,16 +115,16 @@ func (r *Redis) Observe(ctx context.Context, state model.State, at time.Time, re
 }
 
 // List returns live states and recorded divergences, forgetting expired states.
-func (r *Redis) List(ctx context.Context, since time.Time) (model.Listing, error) {
+func (r *Redis) List(ctx context.Context, since time.Time) (model.Status, error) {
 	states, err := r.states(ctx, since)
 	if err != nil {
-		return model.Listing{}, err
+		return model.Status{}, err
 	}
 	divergences, err := r.divergences(ctx)
 	if err != nil {
-		return model.Listing{}, err
+		return model.Status{}, err
 	}
-	return model.Listing{States: states, Divergences: divergences}, nil
+	return model.Status{States: states, Divergences: divergences}, nil
 }
 
 // put replaces the state of a service environment's mirror.

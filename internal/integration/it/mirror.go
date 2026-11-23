@@ -395,9 +395,9 @@ func (m *Mirror) waitForState(what string, condition func(state model.State) boo
 	m.t.Helper()
 	var matched model.State
 	m.watch.await(m.t, waitTimeout, what, func() bool {
-		listing, err := m.server.ListDivergences(m.t.Context(), model.DivergenceFilter{})
+		status, err := m.server.ListDivergences(m.t.Context(), model.DivergenceFilter{})
 		assert.NoError(m.t, err)
-		for _, state := range listing.States {
+		for _, state := range status.States {
 			if condition(state) {
 				matched = state
 				return true
