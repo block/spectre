@@ -11,7 +11,6 @@ import (
 	"github.com/block/spectre/internal/comparison/javascript"
 	"github.com/block/spectre/internal/contain"
 	"github.com/block/spectre/internal/descriptors"
-	"github.com/block/spectre/internal/jsonschema"
 	"github.com/block/spectre/internal/logger"
 	"github.com/block/spectre/internal/proxies"
 	"github.com/block/spectre/internal/scaffold"
@@ -81,9 +80,8 @@ func (c *containCommand) Run(ctx context.Context) error {
 
 // genCommand groups the schema declaration generators.
 type genCommand struct { //nolint:singleusestruct // A Kong command group; folding it would flatten its subcommands.
-	Proto      protoCommand      `cmd:"" help:"Generate TypeScript schema declarations from protobuf descriptor sets."`
-	JSONSchema jsonSchemaCommand `cmd:"" name:"json-schema" help:"Generate a TypeScript schema declaration from JSON Schema files."`
-	Module     moduleCommand     `cmd:"" help:"Write the spectre script API declaration for editors."`
+	Proto  protoCommand  `cmd:"" help:"Generate TypeScript schema declarations from protobuf descriptor sets."`
+	Module moduleCommand `cmd:"" help:"Write the spectre script API declaration for editors."`
 }
 
 type protoCommand struct {
@@ -100,15 +98,6 @@ func (c *protoCommand) Run(ctx context.Context) error {
 		return errors.WithStack(err)
 	}
 	return errors.Wrap(descriptors.WriteDeclarations(ctx, set, c.Output), "write declarations")
-}
-
-type jsonSchemaCommand struct {
-	JSONSchema jsonschema.Config `embed:""`
-	Output     string            `required:"" type:"path" placeholder:"FILE" help:"Path to write the module's .d.ts file to."`
-}
-
-func (c *jsonSchemaCommand) Run(ctx context.Context) error {
-	return errors.Wrap(jsonschema.WriteDeclarations(ctx, c.JSONSchema, c.Output), "write declarations")
 }
 
 type moduleCommand struct {
