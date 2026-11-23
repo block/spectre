@@ -781,13 +781,20 @@ List the reporting mirrors and recorded divergences with
 `spectre status --server-url=URL`. Repeat `--server-url` to list the mirrors of
 several servers together, such as one per deployment; `status` fails if any of
 them does, so no server's mirrors go missing. Filter with `--service`,
-`--environment`, `--revision`, or `--node`, and print JSON with `--json`. Each
-mirror lists the calls on each route whose responses it has compared, which lag
-by up to the keepalive interval. Calls ingress does not mirror, or that arrive
-after a quarantine, are not counted. A
+`--environment`, `--revision`, or `--node`, and print JSON with `--json`. A
 mirror stays listed until it sends nothing for the server's `--state-ttl`
 (90s by default), so keep that above the keepalive interval. A mirror stays
 quarantined until it restarts.
+
+Each service environment lists the calls on each route whose responses its
+mirrors compared, added up across mirror runs, so redeploys keep them. The count
+restarts at each new quarantine and at `status clear`, and its header says
+when and why it started. Each route also shows the calls of the reporting run
+since then. Counts lag by up to the keepalive interval. Calls ingress does not
+mirror, or that arrive after a quarantine, are not counted. The server forgets
+a service environment's count once its mirrors report nothing for `--calls-ttl`
+(7 days by default). A mirror that stops reporting for a day and then reports
+again counts its calls twice.
 
 ```
 feeplans-fe cc009bd staging-green-us-west-2 spectre v0.52.0, up 4h25m33s
@@ -798,12 +805,19 @@ feeplans-fe cc009bd staging-green-us-west-2 spectre v0.52.0, up 4h25m33s
     - $.fees[*].rounding_mode ×4
     - $.fees[*] ×2
   quarantined 2026-11-06T01:28:53Z
+  no calls since 2026-11-06T01:28:53Z (last quarantine)
+feeplans-fe 4d1e7a2 staging-blue-us-west-2 spectre v0.52.0, up 2h3m11s
+  healthy
+  calls since 2026-11-04T09:12:40Z (first report), 14 runs:
+    GET /v2/processing-fees: 48210 calls (1204 this run)
+    POST /v2/fee-plans: 3122 calls (88 this run)
+    other routes: 17 calls (0 this run)
 ```
 
 The server keeps the latest divergence of each direction of a service
 environment, through redeploys and stopped mirrors, until someone clears it with
 `spectre status clear --service=SERVICE --environment=ENVIRONMENT`, which
-clears it on every server `status` calls. A
+clears it on every server `status` calls and restarts the call count. A
 clear also ignores the quarantines that mirrors still running report, so a
 cleared divergence only returns if the candidate quarantines again.
 

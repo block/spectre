@@ -3,6 +3,7 @@ package cli
 import (
 	"encoding/json"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -19,9 +20,13 @@ import (
 func TestStatusCommands(t *testing.T) {
 	// Production and staging mirrors report to servers of their own.
 	store, stagingStore := storage.NewMemory(), storage.NewMemory()
-	httpServer := httptest.NewServer(server.NewService(store, time.Hour).Handler())
+	config := server.NewServeConfig()
+	config.StateTTL = time.Hour
+	// The fixed times below are long past, so keep every call total.
+	config.CallsTTL = 100 * 365 * 24 * time.Hour
+	httpServer := httptest.NewServer(server.NewService(store, config).Handler())
 	t.Cleanup(httpServer.Close)
-	stagingServer := httptest.NewServer(server.NewService(stagingStore, time.Hour).Handler())
+	stagingServer := httptest.NewServer(server.NewService(stagingStore, config).Handler())
 	t.Cleanup(stagingServer.Close)
 	spectre := client.NewServers(client.ServersConfig{URLs: []string{httpServer.URL, stagingServer.URL}})
 	first := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
@@ -55,6 +60,7 @@ func TestStatusCommands(t *testing.T) {
 			}},
 		},
 		Calls: model.Calls{Routes: map[model.Route]uint64{"GET /v1/users": 1}},
+		Run:   "quarantined",
 	}
 	healthy := model.State{
 		Service:        "users",
@@ -63,15 +69,25 @@ func TestStatusCommands(t *testing.T) {
 		SpectreVersion: "v1.2.3",
 		Uptime:         12*time.Minute + 300*time.Millisecond,
 		Calls:          model.Calls{Routes: map[model.Route]uint64{"POST /v1/users": 66, "GET /v1/users": 22}, Other: 3},
+		Run:            "healthy",
 	}
 	assert.NoError(t, store.Put(t.Context(), quarantined, time.Now()))
 	assert.NoError(t, stagingStore.Put(t.Context(), healthy, time.Now()))
 	assert.NoError(t, store.Record(t.Context(), model.Divergence{Service: "users", Environment: "production", Revision: "def456", Direction: model.Ingress, Quarantine: quarantined.Quarantines[model.Ingress]}))
+	// Earlier runs counted calls; production's quarantine restarted its count.
+	assert.NoError(t, store.Count(t.Context(), "users", "canary", "stopped", model.Calls{Routes: map[model.Route]uint64{"GET /v1/users": 7}}, first))
+	assert.NoError(t, store.Count(t.Context(), "users", "production", "earlier", model.Calls{Routes: map[model.Route]uint64{"GET /v1/users": 40}}, first))
+	assert.NoError(t, store.Count(t.Context(), "users", "production", "quarantined", quarantined.Calls, first))
+	assert.NoError(t, store.Restart(t.Context(), "users", "production", model.TotalQuarantine, quarantined.Quarantines[model.Ingress].Since))
+	assert.NoError(t, stagingStore.Count(t.Context(), "users", "staging", "earlier", model.Calls{Routes: map[model.Route]uint64{"GET /v1/users": 100, "DELETE /v1/users": 1}}, first))
+	assert.NoError(t, stagingStore.Count(t.Context(), "users", "staging", "healthy", healthy.Calls, first.Add(time.Hour)))
 
 	var text strings.Builder
 	list := statusListCommand{}
 	assert.NoError(t, list.Run(t.Context(), spectre, Output{Writer: &text}))
 	assert.Equal(t, `users canary not reporting
+  calls since 2026-10-01T12:00:00Z (first report), 1 run:
+    GET /v1/users: 7 calls
   egress: no matching reference call
   quarantined 2026-10-01T12:00:00Z on abc123
 users def456 production spectre v1.2.3, up 1h30m0s
@@ -82,14 +98,16 @@ users def456 production spectre v1.2.3, up 1h30m0s
     ~ $status 200 → 500
     … more
   quarantined 2026-10-01T12:01:00Z
-    GET /v1/users: 1 call
+  no calls since 2026-10-01T12:01:00Z (last quarantine)
   egress: no matching reference call
   quarantined 2026-10-01T12:00:00Z on abc123, in an earlier run
 users def456 staging spectre v1.2.3, up 12m0s
   healthy
-    GET /v1/users: 22 calls
-    POST /v1/users: 66 calls
-    other routes: 3 calls
+  calls since 2026-10-01T12:00:00Z (first report), 2 runs:
+    DELETE /v1/users: 1 call (0 this run)
+    GET /v1/users: 122 calls (22 this run)
+    POST /v1/users: 66 calls (66 this run)
+    other routes: 3 calls (3 this run)
 `, text.String())
 
 	var data strings.Builder
@@ -121,13 +139,20 @@ users def456 staging spectre v1.2.3, up 12m0s
 			"spectreVersion": "v1.2.3",
 			"uptime": "5400s",
 			"quarantines": [`+quarantine+`],
-			"calls": {"routes": {"GET /v1/users": "1"}}
+			"run": "quarantined"
 		}],
 		"divergences": [{
 			"service": "users",
 			"environment": "production",
 			"revision": "def456",
 			"quarantine": `+quarantine+`
+		}],
+		"callTotals": [{
+			"service": "users",
+			"environment": "production",
+			"since": "2026-10-01T12:01:00Z",
+			"start": "START_QUARANTINE",
+			"calls": {}
 		}]
 	}`), &expected))
 	assert.NoError(t, json.Unmarshal([]byte(data.String()), &printed))
@@ -139,6 +164,8 @@ users def456 staging spectre v1.2.3, up 12m0s
 	list = statusListCommand{Environment: "production"}
 	assert.NoError(t, list.Run(t.Context(), spectre, Output{Writer: &text}))
 	// The mirror still holds its quarantine, so it lists until the mirror restarts.
+	// The clear restarted the call total when the server received it.
+	cleared := regexp.MustCompile(`since \S+Z`)
 	assert.Equal(t, `users def456 production spectre v1.2.3, up 1h30m0s
   ingress http GET /v1/users: response differences (node users)
     ~ $.name
@@ -147,8 +174,8 @@ users def456 staging spectre v1.2.3, up 12m0s
     ~ $status 200 → 500
     … more
   quarantined 2026-10-01T12:01:00Z
-    GET /v1/users: 1 call
-`, text.String())
+  no calls since CLEARED (cleared)
+`, cleared.ReplaceAllString(text.String(), "since CLEARED"))
 
 	text.Reset()
 	list = statusListCommand{Service: "invoices"}

@@ -23,6 +23,7 @@ type Memory struct {
 	divergences map[sourceKey]model.Divergence
 	// cleared maps each stateKey to when its divergences were last cleared.
 	cleared map[string]time.Time
+	tallies map[string]Tally
 }
 
 // sourceKey identifies the proxy of one direction of a service environment's mirror.
@@ -35,7 +36,7 @@ var _ Store = (*Memory)(nil)
 
 // NewMemory returns an empty in-memory store.
 func NewMemory() *Memory {
-	return &Memory{states: map[string]received{}, divergences: map[sourceKey]model.Divergence{}, cleared: map[string]time.Time{}}
+	return &Memory{states: map[string]received{}, divergences: map[sourceKey]model.Divergence{}, cleared: map[string]time.Time{}, tallies: map[string]Tally{}}
 }
 
 // Put replaces the state of a service environment's mirror.
@@ -100,6 +101,53 @@ func (m *Memory) Divergences(_ context.Context) ([]model.Divergence, error) {
 		divergences = append(divergences, divergence)
 	}
 	return divergences, nil
+}
+
+// Count keeps the latest counts of a mirror run in its service environment's
+// tally, which starts at its first report.
+func (m *Memory) Count(_ context.Context, service, environment, run string, calls model.Calls, at time.Time) error {
+	key := stateKey(service, environment)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	tally, ok := m.tallies[key]
+	if !ok {
+		tally = newTally(service, environment, model.TotalFirstReport, at)
+	}
+	m.tallies[key] = tally.counted(run, calls, at)
+	return nil
+}
+
+// Restart counts a service environment's calls again from at, unless its
+// tally started no earlier.
+func (m *Memory) Restart(_ context.Context, service, environment string, start model.TotalStart, at time.Time) error {
+	key := stateKey(service, environment)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	tally, ok := m.tallies[key]
+	if !ok {
+		m.tallies[key] = newTally(service, environment, start, at)
+		return nil
+	}
+	if restarted, changed := tally.restarted(start, at); changed {
+		m.tallies[key] = restarted
+	}
+	return nil
+}
+
+// Tallies returns the tallies updated at or after since, in no particular
+// order, and forgets older ones.
+func (m *Memory) Tallies(_ context.Context, since time.Time) ([]Tally, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	tallies := make([]Tally, 0, len(m.tallies))
+	for key, tally := range m.tallies {
+		if tally.Updated.Before(since) {
+			delete(m.tallies, key)
+			continue
+		}
+		tallies = append(tallies, tally)
+	}
+	return tallies, nil
 }
 
 // Close does nothing, because memory holds no resources.

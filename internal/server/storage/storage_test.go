@@ -3,6 +3,7 @@ package storage_test
 import (
 	"cmp"
 	"context"
+	"maps"
 	"net/url"
 	"slices"
 	"strconv"
@@ -37,6 +38,11 @@ func TestStores(t *testing.T) {
 		{name: "KeepsLatestQuarantine", test: testKeepsLatestQuarantine},
 		{name: "ClearsServiceEnvironment", test: testClearsServiceEnvironment},
 		{name: "RecordsConcurrently", test: testRecordsConcurrently},
+		{name: "AddsUpRuns", test: testAddsUpRuns},
+		{name: "RestartsTally", test: testRestartsTally},
+		{name: "MergesQuietRuns", test: testMergesQuietRuns},
+		{name: "ForgetsStaleTallies", test: testForgetsStaleTallies},
+		{name: "CountsConcurrently", test: testCountsConcurrently},
 	}
 	for _, backend := range backends {
 		t.Run(backend.name, func(t *testing.T) {
@@ -101,6 +107,16 @@ func TestRedisRejectsUnknownFields(t *testing.T) {
 			value: `{"state":{"service":"users","quarantines":{"ingress":{"reason":{"kind":"divergent","traffic":{"direction":"ingress","method":"GET"}}}}}}`,
 			list: func(ctx context.Context, store storage.Store) error {
 				_, err := store.States(ctx, time.Time{})
+				return err
+			},
+		},
+		{
+			name:  "Tally",
+			key:   "spectre:calls",
+			field: `"users" "production"`,
+			value: `{"service":"users","environment":"production","runs":{"a":{"latest":{"routes":{"GET /v1/users":1}},"method":"GET"}}}`,
+			list: func(ctx context.Context, store storage.Store) error {
+				_, err := store.Tallies(ctx, time.Time{})
 				return err
 			},
 		},
@@ -332,4 +348,109 @@ func assertRecorded(t *testing.T, store storage.Store, expected ...model.Diverge
 	}
 	slices.SortFunc(recorded, bySource)
 	assert.Equal(t, slices.SortedFunc(slices.Values(expected), bySource), recorded)
+}
+
+func calls(routes map[model.Route]uint64) model.Calls {
+	return model.Calls{Routes: routes}
+}
+
+// testAddsUpRuns checks that a redeployed mirror's calls add to the earlier
+// run's, and that each run's latest counts replace its earlier ones.
+func testAddsUpRuns(t *testing.T, store storage.Store) {
+	first := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	ctx := t.Context()
+	assert.NoError(t, store.Count(ctx, "users", "production", "a", calls(map[model.Route]uint64{"GET /v1/users": 1}), first))
+	assert.NoError(t, store.Count(ctx, "users", "production", "a", calls(map[model.Route]uint64{"GET /v1/users": 3}), first.Add(time.Minute)))
+	assert.NoError(t, store.Count(ctx, "users", "production", "b", calls(map[model.Route]uint64{"GET /v1/users": 2, "POST /v1/users": 1}), first.Add(2*time.Minute)))
+	// A reconnecting run resends the counts it already sent.
+	assert.NoError(t, store.Count(ctx, "users", "production", "b", calls(map[model.Route]uint64{"GET /v1/users": 2, "POST /v1/users": 1}), first.Add(3*time.Minute)))
+	assert.NoError(t, store.Count(ctx, "users", "staging", "c", model.Calls{Other: 1}, first))
+	tally := assertTallied(t, store, first,
+		model.CallTotal{Service: "users", Environment: "production", Since: first, Start: model.TotalFirstReport, Calls: calls(map[model.Route]uint64{"GET /v1/users": 5, "POST /v1/users": 1}), Runs: 2},
+		model.CallTotal{Service: "users", Environment: "staging", Since: first, Start: model.TotalFirstReport, Calls: model.Calls{Other: 1}, Runs: 1},
+	)
+	assert.Equal(t, calls(map[model.Route]uint64{"GET /v1/users": 2, "POST /v1/users": 1}), tally["production"].RunCalls("b"))
+}
+
+// testRestartsTally checks that a restart counts only calls reported after it,
+// and that a restart from before the tally's start changes nothing.
+func testRestartsTally(t *testing.T, store storage.Store) {
+	first := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	ctx := t.Context()
+	assert.NoError(t, store.Count(ctx, "users", "production", "a", calls(map[model.Route]uint64{"GET /v1/users": 3}), first))
+	assert.NoError(t, store.Restart(ctx, "users", "production", model.TotalQuarantine, first.Add(time.Minute)))
+	assert.NoError(t, store.Restart(ctx, "users", "production", model.TotalQuarantine, first.Add(-time.Minute)))
+	quarantined := model.CallTotal{Service: "users", Environment: "production", Since: first.Add(time.Minute), Start: model.TotalQuarantine}
+	assertTallied(t, store, first, quarantined)
+
+	assert.NoError(t, store.Count(ctx, "users", "production", "a", calls(map[model.Route]uint64{"GET /v1/users": 5}), first.Add(2*time.Minute)))
+	assert.NoError(t, store.Count(ctx, "users", "production", "b", calls(map[model.Route]uint64{"GET /v1/users": 1}), first.Add(2*time.Minute)))
+	quarantined.Calls, quarantined.Runs = calls(map[model.Route]uint64{"GET /v1/users": 3}), 2
+	tally := assertTallied(t, store, first, quarantined)
+	assert.Equal(t, calls(map[model.Route]uint64{"GET /v1/users": 2}), tally["production"].RunCalls("a"))
+
+	// A clear restarts a service environment with no tally too.
+	assert.NoError(t, store.Restart(ctx, "users", "production", model.TotalClear, first.Add(3*time.Minute)))
+	assert.NoError(t, store.Restart(ctx, "users", "staging", model.TotalClear, first.Add(3*time.Minute)))
+	assertTallied(t, store, first,
+		model.CallTotal{Service: "users", Environment: "production", Since: first.Add(3 * time.Minute), Start: model.TotalClear},
+		model.CallTotal{Service: "users", Environment: "staging", Since: first.Add(3 * time.Minute), Start: model.TotalClear},
+	)
+}
+
+// testMergesQuietRuns checks that runs that stopped reporting a day ago still
+// count once merged.
+func testMergesQuietRuns(t *testing.T, store storage.Store) {
+	first := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	ctx := t.Context()
+	assert.NoError(t, store.Count(ctx, "users", "production", "a", calls(map[model.Route]uint64{"GET /v1/users": 3}), first))
+	assert.NoError(t, store.Count(ctx, "users", "production", "idle", model.Calls{}, first))
+	later := first.Add(25 * time.Hour)
+	assert.NoError(t, store.Count(ctx, "users", "production", "b", calls(map[model.Route]uint64{"GET /v1/users": 1}), later))
+	tally := assertTallied(t, store, first,
+		model.CallTotal{Service: "users", Environment: "production", Since: first, Start: model.TotalFirstReport, Calls: calls(map[model.Route]uint64{"GET /v1/users": 4}), Runs: 2},
+	)
+	assert.Equal(t, []string{"b"}, slices.Sorted(maps.Keys(tally["production"].Runs)))
+}
+
+func testForgetsStaleTallies(t *testing.T, store storage.Store) {
+	first := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	ctx := t.Context()
+	assert.NoError(t, store.Count(ctx, "users", "production", "a", model.Calls{Other: 1}, first))
+	assert.NoError(t, store.Count(ctx, "users", "staging", "b", model.Calls{Other: 1}, first.Add(time.Minute)))
+	staging := model.CallTotal{Service: "users", Environment: "staging", Since: first.Add(time.Minute), Start: model.TotalFirstReport, Calls: model.Calls{Other: 1}, Runs: 1}
+	assertTallied(t, store, first.Add(time.Second), staging)
+	assertTallied(t, store, first, staging)
+}
+
+// testCountsConcurrently checks that concurrent counts of one service
+// environment are all kept, which makes the Redis store retry its transactions.
+func testCountsConcurrently(t *testing.T, store storage.Store) {
+	at := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	var wg sync.WaitGroup
+	for i := range 20 {
+		wg.Go(func() {
+			assert.NoError(t, store.Count(t.Context(), "users", "production", strconv.Itoa(i), model.Calls{Other: 1}, at))
+		})
+	}
+	wg.Wait()
+	assertTallied(t, store, at, model.CallTotal{Service: "users", Environment: "production", Since: at, Start: model.TotalFirstReport, Calls: model.Calls{Other: 20}, Runs: 20})
+}
+
+// assertTallied checks the store's totals updated at or after since, in any
+// order, and returns the tallies by environment.
+func assertTallied(t *testing.T, store storage.Store, since time.Time, expected ...model.CallTotal) map[string]storage.Tally {
+	t.Helper()
+	tallies, err := store.Tallies(t.Context(), since)
+	assert.NoError(t, err)
+	byEnvironment := map[string]storage.Tally{}
+	totals := []model.CallTotal{}
+	for _, tally := range tallies {
+		byEnvironment[tally.Environment] = tally
+		totals = append(totals, tally.Total())
+	}
+	order := func(a, b model.CallTotal) int { return cmp.Compare(a.Environment, b.Environment) }
+	slices.SortFunc(totals, order)
+	assert.Equal(t, slices.SortedFunc(slices.Values(expected), order), totals)
+	return byEnvironment
 }

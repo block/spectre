@@ -39,6 +39,9 @@ const statesKey = "spectre:states"
 // as JSON, and each clearedField to when its divergences were last cleared.
 const divergencesKey = "spectre:divergences"
 
+// talliesKey is the Redis hash that maps each stateKey to its Tally as JSON.
+const talliesKey = "spectre:calls"
+
 // clearedSuffix ends every clearedField. A quoted environment ends with a
 // quote, so no sourceField ends with it.
 const clearedSuffix = `" cleared`
@@ -52,7 +55,7 @@ end
 return 0
 `
 
-// Redis keeps states and divergences in two hashes, shared by servers using the
+// Redis keeps states, divergences, and tallies in three hashes, shared by servers using the
 // same database. Each command touches one key, so it works in a cluster.
 type Redis struct {
 	client redis.UniversalClient
@@ -211,6 +214,84 @@ func (r *Redis) Divergences(ctx context.Context) ([]model.Divergence, error) {
 	return divergences, nil
 }
 
+// Count keeps the latest counts of a mirror run in its service environment's
+// tally, which starts at its first report.
+func (r *Redis) Count(ctx context.Context, service, environment, run string, calls model.Calls, at time.Time) error {
+	return r.updateTally(ctx, service, environment, func(stored Option[Tally]) (Tally, bool) {
+		tally := stored.Default(newTally(service, environment, model.TotalFirstReport, at))
+		return tally.counted(run, calls, at), true
+	})
+}
+
+// Restart counts a service environment's calls again from at, unless its
+// tally started no earlier.
+func (r *Redis) Restart(ctx context.Context, service, environment string, start model.TotalStart, at time.Time) error {
+	return r.updateTally(ctx, service, environment, func(stored Option[Tally]) (Tally, bool) {
+		tally, ok := stored.Get()
+		if !ok {
+			return newTally(service, environment, start, at), true
+		}
+		return tally.restarted(start, at)
+	})
+}
+
+// updateTally replaces a service environment's tally with what update returns,
+// unless it reports no change. It retries whenever another write lands first.
+func (r *Redis) updateTally(ctx context.Context, service, environment string, update func(stored Option[Tally]) (Tally, bool)) error {
+	field := stateKey(service, environment)
+	for {
+		err := r.client.Watch(ctx, func(tx *redis.Tx) error {
+			text, err := tx.HGet(ctx, talliesKey, field).Result()
+			if err != nil && !errors.Is(err, redis.Nil) {
+				return errors.Wrap(err, "read call tally")
+			}
+			stored, err := decodeOptional(From(text, err == nil), decodeTally)
+			if err != nil {
+				return err
+			}
+			tally, changed := update(stored)
+			if !changed {
+				return nil
+			}
+			value, err := json.Marshal(tally)
+			if err != nil {
+				return errors.Wrap(err, "encode call tally")
+			}
+			_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+				return errors.WithStack(pipe.HSet(ctx, talliesKey, field, value).Err())
+			})
+			return errors.WithStack(err)
+		}, talliesKey)
+		if !errors.Is(err, redis.TxFailedErr) {
+			return errors.Wrap(err, "store call tally")
+		}
+	}
+}
+
+// Tallies returns the tallies updated at or after since, in no particular
+// order, and forgets older ones.
+func (r *Redis) Tallies(ctx context.Context, since time.Time) ([]Tally, error) {
+	values, err := r.client.HGetAll(ctx, talliesKey).Result()
+	if err != nil {
+		return nil, errors.Wrap(err, "list call tallies")
+	}
+	tallies := make([]Tally, 0, len(values))
+	for field, value := range values {
+		tally, err := decodeTally([]byte(value))
+		if err != nil {
+			return nil, err
+		}
+		if !tally.Updated.Before(since) {
+			tallies = append(tallies, tally)
+			continue
+		}
+		if err := r.forget.Run(ctx, r.client, []string{talliesKey}, field, value).Err(); err != nil {
+			return nil, errors.Wrap(err, "forget stale call tally")
+		}
+	}
+	return tallies, nil
+}
+
 // Close disconnects from Redis.
 func (r *Redis) Close() error {
 	return errors.Wrap(r.client.Close(), "close Redis client")
@@ -226,6 +307,18 @@ func decodeState(data []byte) (received, error) {
 		return received{}, errors.Wrap(err, "decode state")
 	}
 	return stored, nil
+}
+
+// decodeTally rejects unknown fields, so a stored format that has drifted
+// fails loudly instead of losing data.
+func decodeTally(data []byte) (Tally, error) {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	var tally Tally
+	if err := decoder.Decode(&tally); err != nil {
+		return Tally{}, errors.Wrap(err, "decode call tally")
+	}
+	return tally, nil
 }
 
 // sourceField identifies the proxy of one direction of a service environment's mirror.

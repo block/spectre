@@ -22,7 +22,9 @@ import (
 
 func newRPC(t *testing.T) spectrepbconnect.SpectreServiceClient {
 	t.Helper()
-	httpServer := httptest.NewServer(server.NewService(storage.NewMemory(), time.Hour).Handler())
+	config := server.NewServeConfig()
+	config.StateTTL = time.Hour
+	httpServer := httptest.NewServer(server.NewService(storage.NewMemory(), config).Handler())
 	t.Cleanup(httpServer.Close)
 	return spectrepbconnect.NewSpectreServiceClient(connect.NewClient(connecthttp.NewTransport(httpServer.Client(), httpServer.URL)))
 }
@@ -71,7 +73,7 @@ func keepalive() *pb.UpdateRequest {
 }
 
 // list returns what the server lists for request without uptimes, which it
-// returns separately because the server advances them.
+// returns separately because the server advances them, or call total starts.
 func list(t *testing.T, rpc spectrepbconnect.SpectreServiceClient, request *pb.ListDivergencesRequest) (listed *pb.ListDivergencesResponse, uptimes []time.Duration) {
 	t.Helper()
 	response, err := rpc.ListDivergences(t.Context(), request)
@@ -79,6 +81,9 @@ func list(t *testing.T, rpc spectrepbconnect.SpectreServiceClient, request *pb.L
 	for _, listedState := range response.GetStates() {
 		uptimes = append(uptimes, listedState.GetUptime().AsDuration())
 		listedState.Uptime = nil
+	}
+	for _, total := range response.GetCallTotals() {
+		total.Since = nil
 	}
 	return response, uptimes
 }
@@ -106,17 +111,19 @@ func TestUpdateKeepsLatestState(t *testing.T) {
 	assert.NoError(t, update(t, rpc, whole(state("production", time.Hour)), keepalive(), quarantined(quarantine), called(&pb.Calls{Other: 1}), called(calls), keepalive()))
 	assert.NoError(t, update(t, rpc, whole(staging)))
 
+	// The calls arrived after the quarantine, so they count for nothing.
 	production := withoutUptime(state("production", time.Hour, quarantine))
-	production.Calls = calls
+	productionCalls := &pb.CallTotal{Service: "users", Environment: "production", Start: pb.CallTotal_START_FIRST_REPORT, Calls: &pb.Calls{}}
+	stagingCalls := &pb.CallTotal{Service: "users", Environment: "staging", Start: pb.CallTotal_START_FIRST_REPORT, Calls: &pb.Calls{}}
 	divergence := &pb.Divergence{Service: "users", Environment: "production", Revision: "abc123", Quarantine: quarantine}
 	tests := []struct {
 		name     string
 		request  *pb.ListDivergencesRequest
 		expected *pb.ListDivergencesResponse
 	}{
-		{name: "All", request: &pb.ListDivergencesRequest{}, expected: &pb.ListDivergencesResponse{States: []*pb.State{production, withoutUptime(staging)}, Divergences: []*pb.Divergence{divergence}}},
-		{name: "Environment", request: &pb.ListDivergencesRequest{Environment: proto.String("staging")}, expected: &pb.ListDivergencesResponse{States: []*pb.State{withoutUptime(staging)}}},
-		{name: "Node", request: &pb.ListDivergencesRequest{Node: proto.String("users")}, expected: &pb.ListDivergencesResponse{States: []*pb.State{production}, Divergences: []*pb.Divergence{divergence}}},
+		{name: "All", request: &pb.ListDivergencesRequest{}, expected: &pb.ListDivergencesResponse{States: []*pb.State{production, withoutUptime(staging)}, Divergences: []*pb.Divergence{divergence}, CallTotals: []*pb.CallTotal{productionCalls, stagingCalls}}},
+		{name: "Environment", request: &pb.ListDivergencesRequest{Environment: proto.String("staging")}, expected: &pb.ListDivergencesResponse{States: []*pb.State{withoutUptime(staging)}, CallTotals: []*pb.CallTotal{stagingCalls}}},
+		{name: "Node", request: &pb.ListDivergencesRequest{Node: proto.String("users")}, expected: &pb.ListDivergencesResponse{States: []*pb.State{production}, Divergences: []*pb.Divergence{divergence}, CallTotals: []*pb.CallTotal{productionCalls}}},
 		{name: "Revision", request: &pb.ListDivergencesRequest{Revision: proto.String("def456")}, expected: &pb.ListDivergencesResponse{}},
 	}
 	for _, test := range tests {
@@ -140,7 +147,8 @@ func TestDivergencesOutliveRestartUntilCleared(t *testing.T) {
 	assert.NoError(t, update(t, rpc, whole(state("production", time.Minute)), quarantined(quarantine)))
 	assert.NoError(t, update(t, rpc, whole(redeployed)))
 	divergence := &pb.Divergence{Service: "users", Environment: "production", Revision: "abc123", Quarantine: quarantine}
-	expected := &pb.ListDivergencesResponse{States: []*pb.State{withoutUptime(redeployed)}, Divergences: []*pb.Divergence{divergence}}
+	firstReport := &pb.CallTotal{Service: "users", Environment: "production", Start: pb.CallTotal_START_FIRST_REPORT, Calls: &pb.Calls{}}
+	expected := &pb.ListDivergencesResponse{States: []*pb.State{withoutUptime(redeployed)}, Divergences: []*pb.Divergence{divergence}, CallTotals: []*pb.CallTotal{firstReport}}
 	listed, _ := list(t, rpc, &pb.ListDivergencesRequest{})
 	assert.True(t, proto.Equal(expected, listed), "%v", listed)
 
@@ -150,10 +158,54 @@ func TestDivergencesOutliveRestartUntilCleared(t *testing.T) {
 	assert.NoError(t, update(t, rpc, whole(state("production", time.Minute, quarantine))))
 	assert.NoError(t, update(t, rpc, whole(redeployed)))
 	listed, _ = list(t, rpc, &pb.ListDivergencesRequest{})
-	assert.True(t, proto.Equal(&pb.ListDivergencesResponse{States: []*pb.State{withoutUptime(redeployed)}}, listed), "%v", listed)
+	cleared := &pb.CallTotal{Service: "users", Environment: "production", Start: pb.CallTotal_START_CLEAR, Calls: &pb.Calls{}}
+	assert.True(t, proto.Equal(&pb.ListDivergencesResponse{States: []*pb.State{withoutUptime(redeployed)}, CallTotals: []*pb.CallTotal{cleared}}, listed), "%v", listed)
 
 	_, err = rpc.ClearDivergences(t.Context(), &pb.ClearDivergencesRequest{Service: "users"})
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+}
+
+func TestCallTotalsOutliveRedeploysUntilQuarantine(t *testing.T) {
+	rpc := newRPC(t)
+	routes := func(count uint64) *pb.Calls { return &pb.Calls{Routes: map[string]uint64{"GET /v1/users": count}} }
+	run := func(id string, quarantines ...*pb.Quarantine) *pb.State {
+		reported := state("production", time.Minute, quarantines...)
+		reported.Run = id
+		return reported
+	}
+	listTotal := func(t *testing.T) (*pb.State, *pb.CallTotal) {
+		t.Helper()
+		listed, _ := list(t, rpc, &pb.ListDivergencesRequest{})
+		assert.Equal(t, 1, len(listed.GetCallTotals()))
+		return listed.GetStates()[0], listed.GetCallTotals()[0]
+	}
+	total := func(start pb.CallTotal_Start, calls *pb.Calls, runs uint32) *pb.CallTotal {
+		return &pb.CallTotal{Service: "users", Environment: "production", Start: start, Calls: calls, Runs: runs}
+	}
+
+	assert.NoError(t, update(t, rpc, whole(run("a")), called(routes(3)), called(routes(5))))
+	assert.NoError(t, update(t, rpc, whole(run("b")), called(routes(1))))
+	listed, counted := listTotal(t)
+	assert.True(t, proto.Equal(total(pb.CallTotal_START_FIRST_REPORT, routes(6), 2), counted), "%v", counted)
+	assert.True(t, proto.Equal(routes(1), listed.GetCalls()), "%v", listed)
+
+	// A quarantine restarts the total, and the quarantined run adds nothing more.
+	quarantine := &pb.Quarantine{Direction: pb.Direction_DIRECTION_INGRESS, Since: timestamppb.Now(), Kind: pb.Quarantine_KIND_UNMATCHED}
+	assert.NoError(t, update(t, rpc, whole(run("b")), quarantined(quarantine), called(routes(4))))
+	listed, counted = listTotal(t)
+	assert.True(t, proto.Equal(total(pb.CallTotal_START_QUARANTINE, &pb.Calls{}, 0), counted), "%v", counted)
+	assert.Equal(t, nil, listed.GetCalls())
+
+	assert.NoError(t, update(t, rpc, whole(run("c")), called(routes(2))))
+	_, counted = listTotal(t)
+	assert.True(t, proto.Equal(total(pb.CallTotal_START_QUARANTINE, routes(2), 1), counted), "%v", counted)
+
+	_, err := rpc.ClearDivergences(t.Context(), &pb.ClearDivergencesRequest{Service: "users", Environment: "production"})
+	assert.NoError(t, err)
+	assert.NoError(t, update(t, rpc, whole(run("c")), called(routes(3))))
+	listed, counted = listTotal(t)
+	assert.True(t, proto.Equal(total(pb.CallTotal_START_CLEAR, routes(1), 1), counted), "%v", counted)
+	assert.True(t, proto.Equal(routes(1), listed.GetCalls()), "%v", listed)
 }
 
 func TestUpdateRejectsInvalidStream(t *testing.T) {

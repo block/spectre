@@ -37,7 +37,9 @@ type mirror struct {
 func run(t *testing.T, ttl time.Duration, failures int32, keepalive, maxAge time.Duration) mirror {
 	t.Helper()
 	streams := &atomic.Int32{}
-	service := server.NewService(storage.NewMemory(), ttl).Handler()
+	serveConfig := server.NewServeConfig()
+	serveConfig.StateTTL = ttl
+	service := server.NewService(storage.NewMemory(), serveConfig).Handler()
 	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		if request.URL.Path == updateProcedure && streams.Add(1) <= failures {
 			// Reply without reading the stream, as a proxy in front of the server does.
@@ -82,9 +84,9 @@ func eventually(t *testing.T, timeout time.Duration, done func() bool) {
 // states lists the states the server holds.
 func (m mirror) states(t *testing.T) ([]model.State, []model.Divergence) {
 	t.Helper()
-	states, divergences, err := m.spectre.ListDivergences(t.Context(), model.DivergenceFilter{})
+	listing, err := m.spectre.ListDivergences(t.Context(), model.DivergenceFilter{})
 	assert.NoError(t, err)
-	return states, divergences
+	return listing.States, listing.Divergences
 }
 
 func TestReporterReconnectsWithQuarantine(t *testing.T) {
@@ -104,7 +106,10 @@ func TestReporterReconnectsWithQuarantine(t *testing.T) {
 	assert.True(t, m.streams.Load() > 1)
 
 	states, divergences := m.states(t)
+	assert.Equal(t, 1, len(states))
+	assert.NotEqual(t, "", states[0].Run)
 	expected := []model.State{{
+		Run:            states[0].Run,
 		Service:        "users",
 		Environment:    "production",
 		Revision:       "abc123",

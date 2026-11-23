@@ -25,7 +25,7 @@ func TestClientReachesServerThroughSocket(t *testing.T) {
 	listener, err := (&net.ListenConfig{}).Listen(t.Context(), "unix", socket)
 	assert.NoError(t, err)
 	hosts := make(chan string, 1)
-	service := server.NewService(storage.NewMemory(), time.Minute).Handler()
+	service := server.NewService(storage.NewMemory(), server.NewServeConfig()).Handler()
 	httpServer := &http.Server{
 		ReadHeaderTimeout: time.Second,
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
@@ -38,20 +38,20 @@ func TestClientReachesServerThroughSocket(t *testing.T) {
 
 	// The host does not resolve, so only the socket can reach the server.
 	spectre := client.New(client.Config{URL: "http://spectre.mesh.invalid", Socket: socket})
-	states, divergences, err := spectre.ListDivergences(t.Context(), model.DivergenceFilter{})
+	listing, err := spectre.ListDivergences(t.Context(), model.DivergenceFilter{})
 	assert.NoError(t, err)
-	assert.Equal(t, 0, len(states)+len(divergences))
+	assert.Equal(t, model.Listing{States: []model.State{}, Divergences: []model.Divergence{}, CallTotals: []model.CallTotal{}}, listing)
 	assert.Equal(t, "spectre.mesh.invalid", <-hosts)
 }
 
 func TestServersFailWhenAnyServerFails(t *testing.T) {
-	reachable := httptest.NewServer(server.NewService(storage.NewMemory(), time.Minute).Handler())
+	reachable := httptest.NewServer(server.NewService(storage.NewMemory(), server.NewServeConfig()).Handler())
 	t.Cleanup(reachable.Close)
 	unreachable := httptest.NewServer(http.NotFoundHandler())
 	unreachable.Close()
 	servers := client.NewServers(client.ServersConfig{URLs: []string{reachable.URL, unreachable.URL}})
 
-	_, _, err := servers.ListDivergences(t.Context(), model.DivergenceFilter{})
+	_, err := servers.ListDivergences(t.Context(), model.DivergenceFilter{})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), unreachable.URL)
 

@@ -24,7 +24,7 @@ import (
 type statusCommand struct { //nolint:singleusestruct // A Kong command group; folding it would flatten its subcommands.
 	Servers client.ServersConfig `embed:""`
 	List    statusListCommand    `cmd:"" default:"withargs" help:"List the reporting mirrors and the divergences mirrors reported, from every server. This is the default."`
-	Clear   statusClearCommand   `cmd:"" help:"Clear the divergences of a service environment on every server once they are dealt with."`
+	Clear   statusClearCommand   `cmd:"" help:"Clear the divergences of a service environment on every server once they are dealt with, and restart its call total."`
 }
 
 // ProvideServers gives the subcommands clients of the servers the group's flags
@@ -50,14 +50,14 @@ func (c *statusListCommand) Run(ctx context.Context, servers *client.Servers, ou
 		Revision:    Zero(c.Revision),
 		Node:        Zero(c.Node),
 	}
-	states, divergences, err := servers.ListDivergences(ctx, filter)
+	listing, err := servers.ListDivergences(ctx, filter)
 	if err != nil {
 		return errors.WithStack(err)
 	}
 	if c.JSON {
-		return writeJSON(out, states, divergences)
+		return writeJSON(out, listing)
 	}
-	mirrors := groupMirrors(states, divergences)
+	mirrors := groupMirrors(listing)
 	if len(mirrors) == 0 {
 		_, err := fmt.Fprintln(out.Writer, out.Palette.Dim("No mirrors or divergences."))
 		return errors.Wrap(err, "write divergences")
@@ -70,7 +70,8 @@ func (c *statusListCommand) Run(ctx context.Context, servers *client.Servers, ou
 	return nil
 }
 
-// statusClearCommand clears the divergences of a service environment.
+// statusClearCommand clears the divergences of a service environment and
+// restarts its call total.
 type statusClearCommand struct {
 	Clear server.ClearConfig `embed:""`
 }
@@ -80,16 +81,17 @@ func (c *statusClearCommand) Run(ctx context.Context, servers *client.Servers) e
 }
 
 // mirror is what the server lists for one service environment: its state, if
-// it is reporting, and its recorded divergences.
+// it is reporting, its recorded divergences, and its call total.
 type mirror struct {
 	Service, Environment string
 	State                Option[model.State]
 	Divergences          []model.Divergence
+	Total                Option[model.CallTotal]
 }
 
-// groupMirrors groups states and divergences by service environment, ordered
-// by service and environment.
-func groupMirrors(states []model.State, divergences []model.Divergence) []*mirror {
+// groupMirrors groups a listing by service environment, ordered by service and
+// environment.
+func groupMirrors(listing model.Listing) []*mirror {
 	byKey := map[[2]string]*mirror{}
 	get := func(service, environment string) *mirror {
 		key := [2]string{service, environment}
@@ -98,12 +100,15 @@ func groupMirrors(states []model.State, divergences []model.Divergence) []*mirro
 		}
 		return byKey[key]
 	}
-	for _, state := range states {
+	for _, state := range listing.States {
 		get(state.Service, state.Environment).State = Some(state)
 	}
-	for _, divergence := range divergences {
+	for _, divergence := range listing.Divergences {
 		found := get(divergence.Service, divergence.Environment)
 		found.Divergences = append(found.Divergences, divergence)
+	}
+	for _, total := range listing.CallTotals {
+		get(total.Service, total.Environment).Total = Some(total)
 	}
 	mirrors := slices.Collect(maps.Values(byKey))
 	slices.SortFunc(mirrors, func(a, b *mirror) int {
@@ -112,8 +117,8 @@ func groupMirrors(states []model.State, divergences []model.Divergence) []*mirro
 	return mirrors
 }
 
-// render describes the mirror's state, then each recorded divergence that is
-// not one of its current quarantines.
+// render describes the mirror's state and call total, then each recorded
+// divergence that is not one of its current quarantines.
 func (m *mirror) render(palette terminal.Palette) string {
 	var text strings.Builder
 	state, reporting := m.State.Get()
@@ -129,9 +134,11 @@ func (m *mirror) render(palette terminal.Palette) string {
 				fmt.Fprintf(&text, "  %s\n", palette.Dim("quarantined "+timestamp(quarantine.Since)))
 			}
 		}
-		renderCalls(&text, state.Calls)
 	} else {
 		fmt.Fprintf(&text, "%s %s %s\n", palette.Bold(m.Service), palette.Dim(m.Environment), palette.Dim("not reporting"))
+	}
+	if total, ok := m.Total.Get(); ok {
+		renderTotal(&text, total, From(state.Calls, reporting))
 	}
 	for _, divergence := range m.Divergences {
 		current, ok := state.Quarantines[divergence.Direction]
@@ -148,14 +155,49 @@ func (m *mirror) render(palette terminal.Palette) string {
 	return text.String()
 }
 
-// renderCalls lists the requests on each route, ordered by route.
-func renderCalls(text *strings.Builder, calls model.Calls) {
-	for _, route := range slices.Sorted(maps.Keys(calls.Routes)) {
-		fmt.Fprintf(text, "    %s: %s\n", route, callCount(calls.Routes[route]))
+// renderTotal lists the requests on each route since the total started,
+// ordered by route, with those of the reporting run.
+func renderTotal(text *strings.Builder, total model.CallTotal, current Option[model.Calls]) {
+	since := fmt.Sprintf("since %s (%s)", timestamp(total.Since), totalStart(total.Start))
+	if total.Calls.IsZero() {
+		fmt.Fprintf(text, "  no calls %s\n", since)
+		return
 	}
-	if calls.Other > 0 {
-		fmt.Fprintf(text, "    other routes: %s\n", callCount(calls.Other))
+	fmt.Fprintf(text, "  calls %s, %s:\n", since, runCount(total.Runs))
+	thisRun := func(count func(calls model.Calls) uint64) string {
+		calls, ok := current.Get()
+		if !ok {
+			return ""
+		}
+		return fmt.Sprintf(" (%d this run)", count(calls))
 	}
+	for _, route := range slices.Sorted(maps.Keys(total.Calls.Routes)) {
+		run := thisRun(func(calls model.Calls) uint64 { return calls.Routes[route] })
+		fmt.Fprintf(text, "    %s: %s%s\n", route, callCount(total.Calls.Routes[route]), run)
+	}
+	if total.Calls.Other > 0 {
+		run := thisRun(func(calls model.Calls) uint64 { return calls.Other })
+		fmt.Fprintf(text, "    other routes: %s%s\n", callCount(total.Calls.Other), run)
+	}
+}
+
+func totalStart(start model.TotalStart) string {
+	switch start {
+	case model.TotalFirstReport:
+		return "first report"
+	case model.TotalQuarantine:
+		return "last quarantine"
+	case model.TotalClear:
+		return "cleared"
+	}
+	return string(start)
+}
+
+func runCount(count int) string {
+	if count == 1 {
+		return "1 run"
+	}
+	return fmt.Sprintf("%d runs", count)
 }
 
 func callCount(count uint64) string {
@@ -197,10 +239,9 @@ func describe(direction model.Direction, reason model.QuarantineReason) string {
 	return text
 }
 
-// writeJSON prints states and divergences as the SPECTRE service protocol's
-// list response.
-func writeJSON(out Output, states []model.State, divergences []model.Divergence) error {
-	data, err := wire.ListJSON(states, divergences)
+// writeJSON prints listing as the SPECTRE service protocol's list response.
+func writeJSON(out Output, listing model.Listing) error {
+	data, err := wire.ListJSON(listing)
 	if err != nil {
 		return errors.WithStack(err)
 	}

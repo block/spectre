@@ -16,8 +16,8 @@ service SpectreService {
   // ListDivergences returns the state of each mirror the server still
   // considers current, and the latest divergence each mirror reported.
   rpc ListDivergences(ListDivergencesRequest) returns (ListDivergencesResponse);
-  // ClearDivergences removes the divergences of one service environment, and
-  // ignores quarantines that began before it.
+  // ClearDivergences removes the divergences of one service environment,
+  // ignores quarantines that began before it, and restarts its call total.
   rpc ClearDivergences(ClearDivergencesRequest) returns (ClearDivergencesResponse);
 }
 
@@ -61,6 +61,7 @@ message ListDivergencesRequest {
 message ListDivergencesResponse {
   repeated State states = 1;
   repeated Divergence divergences = 2;
+  repeated CallTotal call_totals = 3;
 }
 
 // ClearDivergencesRequest names the service environment whose divergences to clear.
@@ -184,14 +185,41 @@ message State {
   google.protobuf.Duration uptime = 5;
   // Quarantines holds at most one quarantine per direction.
   repeated Quarantine quarantines = 6;
+  // Calls counts what the mirror compared since it started. A listed state
+  // counts only what its service environment's call total holds.
   Calls calls = 7;
+  // Run identifies one mirror process, so the server adds up the calls of runs.
+  string run = 8;
 }
 
 // Calls counts the requests on each route whose responses the mirror's ingress
-// proxy compared since the mirror started.
+// proxy compared.
 message Calls {
   // Routes maps each route to its number of requests.
   map<string, uint64> routes = 1;
   // Other counts requests to routes beyond the most a mirror counts.
   uint64 other = 2;
+}
+
+// CallTotal adds up the calls of every mirror run of one service environment
+// since its count started. It outlives the runs, so redeploys keep it.
+message CallTotal {
+  // Start is what began the count.
+  enum Start {
+    START_UNSPECIFIED = 0;
+    // The service environment's first report.
+    START_FIRST_REPORT = 1;
+    // A quarantine, which restarts the count.
+    START_QUARANTINE = 2;
+    // Clearing the service environment's divergences.
+    START_CLEAR = 3;
+  }
+  string service = 1;
+  string environment = 2;
+  // Since is when the count started.
+  google.protobuf.Timestamp since = 3;
+  Start start = 4;
+  Calls calls = 5;
+  // Runs is how many mirror runs counted calls.
+  uint32 runs = 6;
 }

@@ -50,7 +50,7 @@ func (c Config) constructor() (Constructor, error) {
 }
 
 // Store keeps the latest state of each service environment's mirror, with when
-// the server received it. Callers validate states and never mutate stored ones.
+// the server received it, and the tally of its calls. Callers validate states and never mutate stored ones.
 type Store interface {
 	// Put replaces the state of a service environment's mirror.
 	Put(ctx context.Context, state model.State, received time.Time) error
@@ -65,6 +65,15 @@ type Store interface {
 	Clear(ctx context.Context, service, environment string, at time.Time) error
 	// Divergences returns every stored divergence, in no particular order.
 	Divergences(ctx context.Context) ([]model.Divergence, error)
+	// Count keeps the latest counts of a mirror run in its service environment's
+	// tally, which starts at its first report.
+	Count(ctx context.Context, service, environment, run string, calls model.Calls, at time.Time) error
+	// Restart counts a service environment's calls again from at, unless its
+	// tally started no earlier.
+	Restart(ctx context.Context, service, environment string, start model.TotalStart, at time.Time) error
+	// Tallies returns the tallies updated at or after since, in no particular
+	// order, and forgets older ones.
+	Tallies(ctx context.Context, since time.Time) ([]Tally, error)
 	Close() error
 }
 

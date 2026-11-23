@@ -8,7 +8,8 @@ package reporter
 
 import (
 	"context"
-	"math/rand/v2"
+	"crypto/rand"
+	mathrand "math/rand/v2"
 	"time"
 
 	"github.com/alecthomas/errors"
@@ -58,6 +59,8 @@ type Reporter struct {
 	// calls returns the requests the ingress proxy has received on each route.
 	calls   func() model.Calls
 	started time.Time
+	// run identifies this mirror process to the server.
+	run string
 	// quarantines belongs to the goroutine that runs streams.
 	quarantines map[model.Direction]model.Quarantine
 }
@@ -70,6 +73,7 @@ func New(config Config, server *client.Client, calls func() model.Calls, sources
 		sources:     sources,
 		calls:       calls,
 		started:     time.Now(),
+		run:         rand.Text(),
 		quarantines: map[model.Direction]model.Quarantine{},
 	}
 }
@@ -162,6 +166,7 @@ func (r *Reporter) state() model.State {
 		Uptime:         time.Since(r.started),
 		Quarantines:    r.quarantines,
 		Calls:          r.calls(),
+		Run:            r.run,
 	}
 }
 
@@ -185,5 +190,5 @@ func failed(updates *client.Updates, err error) error {
 
 // jitter returns a random duration between half of d and d.
 func jitter(d time.Duration) time.Duration {
-	return d/2 + rand.N(d/2+1)
+	return d/2 + mathrand.N(d/2+1)
 }

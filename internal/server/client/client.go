@@ -62,15 +62,15 @@ func (c *Client) OpenUpdates(ctx context.Context) (*Updates, error) {
 	return newUpdates(stream), nil
 }
 
-// ListDivergences returns the states of the reporting mirrors and the
-// recorded divergences that filter selects, ordered by source.
-func (c *Client) ListDivergences(ctx context.Context, filter model.DivergenceFilter) ([]model.State, []model.Divergence, error) {
+// ListDivergences returns the states of the reporting mirrors, the recorded
+// divergences, and the call totals that filter selects, ordered by source.
+func (c *Client) ListDivergences(ctx context.Context, filter model.DivergenceFilter) (model.Listing, error) {
 	response, err := c.rpc.ListDivergences(ctx, wire.FilterMessage(filter))
 	if err != nil {
-		return nil, nil, errors.Wrap(err, "list divergences")
+		return model.Listing{}, errors.Wrap(err, "list divergences")
 	}
-	states, divergences, err := wire.ListFromResponse(response)
-	return states, divergences, errors.Wrap(err, "list divergences")
+	listing, err := wire.ListFromResponse(response)
+	return listing, errors.Wrap(err, "list divergences")
 }
 
 // ClearDivergences removes the divergences of one service environment.

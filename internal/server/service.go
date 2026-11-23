@@ -26,14 +26,14 @@ import (
 
 // Service serves the SPECTRE service API.
 type Service struct {
-	store storage.Store
-	ttl   time.Duration
+	store  storage.Store
+	config ServeConfig
 }
 
-// NewService returns a SPECTRE server that keeps mirror states and divergences
-// in store, and lists the states received within ttl.
-func NewService(store storage.Store, ttl time.Duration) *Service {
-	return &Service{store: store, ttl: ttl}
+// NewService returns a SPECTRE server that keeps mirror states, divergences,
+// and call tallies in store, and lists them within the configured TTLs.
+func NewService(store storage.Store, config ServeConfig) *Service {
+	return &Service{store: store, config: config}
 }
 
 // Handler serves the API.
@@ -46,7 +46,7 @@ func (s *Service) Handler() http.Handler {
 }
 
 // Update keeps the state a mirror streams. Every message stores the whole state,
-// and a state or quarantine also records the divergence of each quarantine.
+// a state or quarantine also records each quarantine, and calls are tallied.
 func (s *Service) Update(ctx context.Context, updates spectrepbconnect.SpectreServiceUpdateServerStream) (*pb.UpdateResponse, error) {
 	var state Option[model.State]
 	var measured time.Time
@@ -73,7 +73,16 @@ func (s *Service) Update(ctx context.Context, updates spectrepbconnect.SpectreSe
 		if err := s.store.Put(ctx, stored, now); err != nil {
 			return nil, connect.NewError(connect.CodeUnavailable, err.Error()).WithCause(err)
 		}
-		if message.GetKeepalive() != nil || message.GetCalls() != nil {
+		if message.GetKeepalive() != nil {
+			continue
+		}
+		// A quarantined run's calls belong to the count its quarantine ended.
+		if len(current.Quarantines) == 0 {
+			if err := s.store.Count(ctx, current.Service, current.Environment, current.Run, current.Calls, now); err != nil {
+				return nil, connect.NewError(connect.CodeUnavailable, err.Error()).WithCause(err)
+			}
+		}
+		if message.GetCalls() != nil {
 			continue
 		}
 		if err := s.recordQuarantines(ctx, current); err != nil {
@@ -82,7 +91,8 @@ func (s *Service) Update(ctx context.Context, updates spectrepbconnect.SpectreSe
 	}
 }
 
-// recordQuarantines records the divergence of each quarantine state holds.
+// recordQuarantines records the divergence of each quarantine state holds, and
+// restarts the call tally from it.
 func (s *Service) recordQuarantines(ctx context.Context, state model.State) error {
 	for direction, quarantine := range state.Quarantines {
 		divergence := model.Divergence{
@@ -95,14 +105,18 @@ func (s *Service) recordQuarantines(ctx context.Context, state model.State) erro
 		if err := s.store.Record(ctx, divergence); err != nil {
 			return errors.WithStack(err)
 		}
+		if err := s.store.Restart(ctx, state.Service, state.Environment, model.TotalQuarantine, quarantine.Since); err != nil {
+			return errors.WithStack(err)
+		}
 	}
 	return nil
 }
 
 // ListDivergences returns the states of the mirrors that sent an update within
-// the TTL, and every recorded divergence.
+// the state TTL, every recorded divergence, and the call totals they select.
 func (s *Service) ListDivergences(ctx context.Context, request *pb.ListDivergencesRequest) (*pb.ListDivergencesResponse, error) {
-	states, err := s.store.States(ctx, time.Now().Add(-s.ttl))
+	now := time.Now()
+	states, err := s.store.States(ctx, now.Add(-s.config.StateTTL))
 	if err != nil {
 		return nil, connect.NewError(connect.CodeUnavailable, err.Error()).WithCause(err)
 	}
@@ -110,17 +124,29 @@ func (s *Service) ListDivergences(ctx context.Context, request *pb.ListDivergenc
 	if err != nil {
 		return nil, connect.NewError(connect.CodeUnavailable, err.Error()).WithCause(err)
 	}
+	tallies, err := s.store.Tallies(ctx, now.Add(-s.config.CallsTTL))
+	if err != nil {
+		return nil, connect.NewError(connect.CodeUnavailable, err.Error()).WithCause(err)
+	}
 	filter := wire.FilterFromMessage(request)
-	return wire.ListResponse(filterStates(states, filter), filterDivergences(divergences, filter)), nil
+	listing := model.Listing{States: filterStates(states, filter), Divergences: filterDivergences(divergences, filter)}
+	listing.States, listing.CallTotals = countedCalls(listing.States, tallies)
+	listing.CallTotals = filterTotals(listing, filter)
+	return wire.ListResponse(listing), nil
 }
 
-// ClearDivergences removes the divergences of one service environment.
+// ClearDivergences removes the divergences of one service environment, and
+// restarts its call tally.
 func (s *Service) ClearDivergences(ctx context.Context, request *pb.ClearDivergencesRequest) (*pb.ClearDivergencesResponse, error) {
 	service, environment := request.GetService(), request.GetEnvironment()
 	if service == "" || environment == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, "clearing divergences needs a service and environment")
 	}
-	if err := s.store.Clear(ctx, service, environment, time.Now()); err != nil {
+	now := time.Now()
+	if err := s.store.Clear(ctx, service, environment, now); err != nil {
+		return nil, connect.NewError(connect.CodeUnavailable, err.Error()).WithCause(err)
+	}
+	if err := s.store.Restart(ctx, service, environment, model.TotalClear, now); err != nil {
 		return nil, connect.NewError(connect.CodeUnavailable, err.Error()).WithCause(err)
 	}
 	return &pb.ClearDivergencesResponse{}, nil
@@ -144,7 +170,7 @@ func ServeListener(ctx context.Context, config ServeConfig, listener net.Listene
 		return errors.Join(errors.Wrap(err, "open state storage"), listener.Close())
 	}
 	defer store.Close()
-	handler := health.New(logging.New(NewService(store, config.StateTTL).Handler(), logger.EventReceived))
+	handler := health.New(logging.New(NewService(store, config).Handler(), logger.EventReceived))
 	protocols := new(http.Protocols)
 	protocols.SetHTTP1(true)
 	protocols.SetHTTP2(true)

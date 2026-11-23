@@ -136,6 +136,7 @@ func TestListRoundTrip(t *testing.T) {
 		Revision:       "def456",
 		SpectreVersion: "v0.47.0",
 		Uptime:         time.Minute,
+		Run:            "a1b2",
 	}}
 	divergences := []model.Divergence{{
 		Service:     "users",
@@ -148,10 +149,18 @@ func TestListRoundTrip(t *testing.T) {
 			Detail:  "no matching reference call",
 		}},
 	}}
-	restoredStates, restoredDivergences, err := wire.ListFromResponse(wire.ListResponse(states, divergences))
+	totals := []model.CallTotal{{
+		Service:     "users",
+		Environment: "production",
+		Since:       time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC),
+		Start:       model.TotalQuarantine,
+		Calls:       model.Calls{Routes: map[model.Route]uint64{"GET /v1/users": 22}, Other: 3},
+		Runs:        4,
+	}}
+	listing := model.Listing{States: states, Divergences: divergences, CallTotals: totals}
+	restored, err := wire.ListFromResponse(wire.ListResponse(listing))
 	assert.NoError(t, err)
-	assert.Equal(t, states, restoredStates)
-	assert.Equal(t, divergences, restoredDivergences)
+	assert.Equal(t, listing, restored)
 }
 
 func TestDivergenceFromMessageRejectsInvalid(t *testing.T) {

@@ -21,6 +21,7 @@ func StateMessage(state model.State) *pb.State {
 		Revision:       state.Revision,
 		SpectreVersion: state.SpectreVersion,
 		Uptime:         durationpb.New(state.Uptime),
+		Run:            state.Run,
 	}
 	if len(state.Calls.Routes) > 0 || state.Calls.Other > 0 {
 		message.Calls = CallsMessage(state.Calls)
@@ -49,6 +50,7 @@ func StateFromMessage(message *pb.State) (model.State, error) {
 		Revision:       message.GetRevision(),
 		SpectreVersion: message.GetSpectreVersion(),
 		Uptime:         message.GetUptime().AsDuration(),
+		Run:            message.GetRun(),
 	}
 	calls, err := CallsFromMessage(message.GetCalls())
 	if err != nil {
@@ -105,6 +107,8 @@ func UpdateFromMessage(message *pb.UpdateRequest) (model.Update, error) {
 }
 
 // CallsMessage returns the message that reports call counts.
+//
+//nolint:narrowdeps // The message carries every field of the counts.
 func CallsMessage(calls model.Calls) *pb.Calls {
 	message := &pb.Calls{Other: calls.Other}
 	if len(calls.Routes) > 0 {
@@ -165,46 +169,99 @@ func DivergenceFromMessage(message *pb.Divergence) (model.Divergence, error) {
 	}, nil
 }
 
-// ListResponse returns the protocol's list response for states and divergences.
-func ListResponse(states []model.State, divergences []model.Divergence) *pb.ListDivergencesResponse {
-	response := &pb.ListDivergencesResponse{
-		States:      make([]*pb.State, 0, len(states)),
-		Divergences: make([]*pb.Divergence, 0, len(divergences)),
+// CallTotalMessage returns the message that reports a call total.
+func CallTotalMessage(total model.CallTotal) *pb.CallTotal {
+	return &pb.CallTotal{
+		Service:     total.Service,
+		Environment: total.Environment,
+		Since:       timestamppb.New(total.Since),
+		Start:       startMessage(total.Start),
+		Calls:       CallsMessage(total.Calls),
+		Runs:        uint32(max(total.Runs, 0)), //nolint:gosec // Runs are bounded by deploys between restarts.
 	}
-	for _, state := range states {
+}
+
+// CallTotalFromMessage restores a listed call total, checking that it
+// identifies its service environment and says when it started.
+func CallTotalFromMessage(message *pb.CallTotal) (model.CallTotal, error) {
+	if message.GetService() == "" || message.GetEnvironment() == "" {
+		return model.CallTotal{}, errors.New("call total needs a service and environment")
+	}
+	if message.GetSince() == nil {
+		return model.CallTotal{}, errors.New("call total needs its start time")
+	}
+	start, err := startFromMessage(message.GetStart())
+	if err != nil {
+		return model.CallTotal{}, err
+	}
+	calls, err := CallsFromMessage(message.GetCalls())
+	if err != nil {
+		return model.CallTotal{}, err
+	}
+	return model.CallTotal{
+		Service:     message.GetService(),
+		Environment: message.GetEnvironment(),
+		Since:       message.GetSince().AsTime(),
+		Start:       start,
+		Calls:       calls,
+		Runs:        int(message.GetRuns()),
+	}, nil
+}
+
+// ListResponse returns the protocol's list response for listing.
+func ListResponse(listing model.Listing) *pb.ListDivergencesResponse {
+	response := &pb.ListDivergencesResponse{
+		States:      make([]*pb.State, 0, len(listing.States)),
+		Divergences: make([]*pb.Divergence, 0, len(listing.Divergences)),
+		CallTotals:  make([]*pb.CallTotal, 0, len(listing.CallTotals)),
+	}
+	for _, state := range listing.States {
 		response.States = append(response.States, StateMessage(state))
 	}
-	for _, divergence := range divergences {
+	for _, divergence := range listing.Divergences {
 		response.Divergences = append(response.Divergences, DivergenceMessage(divergence))
+	}
+	for _, total := range listing.CallTotals {
+		response.CallTotals = append(response.CallTotals, CallTotalMessage(total))
 	}
 	return response
 }
 
-// ListFromResponse restores the states and divergences of a list response.
-func ListFromResponse(response *pb.ListDivergencesResponse) ([]model.State, []model.Divergence, error) {
-	states := make([]model.State, 0, len(response.GetStates()))
+// ListFromResponse restores the listing of a list response.
+func ListFromResponse(response *pb.ListDivergencesResponse) (model.Listing, error) {
+	listing := model.Listing{
+		States:      make([]model.State, 0, len(response.GetStates())),
+		Divergences: make([]model.Divergence, 0, len(response.GetDivergences())),
+		CallTotals:  make([]model.CallTotal, 0, len(response.GetCallTotals())),
+	}
 	for _, message := range response.GetStates() {
 		state, err := StateFromMessage(message)
 		if err != nil {
-			return nil, nil, err
+			return model.Listing{}, err
 		}
-		states = append(states, state)
+		listing.States = append(listing.States, state)
 	}
-	divergences := make([]model.Divergence, 0, len(response.GetDivergences()))
 	for _, message := range response.GetDivergences() {
 		divergence, err := DivergenceFromMessage(message)
 		if err != nil {
-			return nil, nil, err
+			return model.Listing{}, err
 		}
-		divergences = append(divergences, divergence)
+		listing.Divergences = append(listing.Divergences, divergence)
 	}
-	return states, divergences, nil
+	for _, message := range response.GetCallTotals() {
+		total, err := CallTotalFromMessage(message)
+		if err != nil {
+			return model.Listing{}, err
+		}
+		listing.CallTotals = append(listing.CallTotals, total)
+	}
+	return listing, nil
 }
 
-// ListJSON returns states and divergences as the protocol's JSON list
-// response, which is what the command line prints.
-func ListJSON(states []model.State, divergences []model.Divergence) ([]byte, error) {
-	data, err := protojson.MarshalOptions{Multiline: true}.Marshal(ListResponse(states, divergences))
+// ListJSON returns listing as the protocol's JSON list response, which is what
+// the command line prints.
+func ListJSON(listing model.Listing) ([]byte, error) {
+	data, err := protojson.MarshalOptions{Multiline: true}.Marshal(ListResponse(listing))
 	return data, errors.Wrap(err, "encode JSON")
 }
 
@@ -459,6 +516,31 @@ func kindFromMessage(kind pb.Quarantine_Kind) (model.QuarantineKind, error) {
 	case pb.Quarantine_KIND_UNSPECIFIED:
 	}
 	return "", errors.Errorf("unknown quarantine kind %s", kind)
+}
+
+func startMessage(start model.TotalStart) pb.CallTotal_Start {
+	switch start {
+	case model.TotalFirstReport:
+		return pb.CallTotal_START_FIRST_REPORT
+	case model.TotalQuarantine:
+		return pb.CallTotal_START_QUARANTINE
+	case model.TotalClear:
+		return pb.CallTotal_START_CLEAR
+	}
+	return pb.CallTotal_START_UNSPECIFIED
+}
+
+func startFromMessage(start pb.CallTotal_Start) (model.TotalStart, error) {
+	switch start {
+	case pb.CallTotal_START_FIRST_REPORT:
+		return model.TotalFirstReport, nil
+	case pb.CallTotal_START_QUARANTINE:
+		return model.TotalQuarantine, nil
+	case pb.CallTotal_START_CLEAR:
+		return model.TotalClear, nil
+	case pb.CallTotal_START_UNSPECIFIED:
+	}
+	return "", errors.Errorf("unknown call total start %s", start)
 }
 
 func directionMessage(direction model.Direction) pb.Direction {
