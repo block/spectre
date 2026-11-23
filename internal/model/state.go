@@ -31,3 +31,17 @@ func (s State) Quarantined(direction Direction, quarantine Quarantine) State {
 	s.Quarantines = quarantines
 	return s
 }
+
+// Divergences returns each quarantine as a recorded divergence, ingress first.
+func (s State) Divergences() []Divergence {
+	divergences := make([]Divergence, 0, len(s.Quarantines))
+	for _, direction := range []Direction{Ingress, Egress} {
+		if quarantine, ok := s.Quarantines[direction]; ok {
+			divergences = append(divergences, Divergence{
+				Service: s.Service, Environment: s.Environment, Revision: s.Revision,
+				Direction: direction, Quarantine: quarantine,
+			})
+		}
+	}
+	return divergences
+}

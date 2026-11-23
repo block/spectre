@@ -98,8 +98,37 @@ func newRedisClient(storageURL *url.URL) (redis.UniversalClient, error) {
 	return redis.NewClusterClient(options), nil
 }
 
-// Put replaces the state of a service environment's mirror.
-func (r *Redis) Put(ctx context.Context, state model.State, at time.Time) error {
+// Observe replaces a mirror's state and optionally records its quarantines.
+// State and history retain their separate Redis writes and persistence formats.
+func (r *Redis) Observe(ctx context.Context, state model.State, at time.Time, recordQuarantines bool) error {
+	if err := r.put(ctx, state, at); err != nil {
+		return err
+	}
+	if recordQuarantines {
+		for _, divergence := range state.Divergences() {
+			if err := r.record(ctx, divergence); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// List returns live states and recorded divergences, forgetting expired states.
+func (r *Redis) List(ctx context.Context, since time.Time) (model.Listing, error) {
+	states, err := r.states(ctx, since)
+	if err != nil {
+		return model.Listing{}, err
+	}
+	divergences, err := r.divergences(ctx)
+	if err != nil {
+		return model.Listing{}, err
+	}
+	return model.Listing{States: states, Divergences: divergences}, nil
+}
+
+// put replaces the state of a service environment's mirror.
+func (r *Redis) put(ctx context.Context, state model.State, at time.Time) error {
 	value, err := json.Marshal(received{State: state, Received: at})
 	if err != nil {
 		return errors.Wrap(err, "encode state")
@@ -108,9 +137,9 @@ func (r *Redis) Put(ctx context.Context, state model.State, at time.Time) error 
 	return errors.Wrap(err, "store state")
 }
 
-// States returns the states received at or after since, in no particular
+// states returns the states received at or after since, in no particular
 // order, and forgets older ones.
-func (r *Redis) States(ctx context.Context, since time.Time) ([]model.State, error) {
+func (r *Redis) states(ctx context.Context, since time.Time) ([]model.State, error) {
 	values, err := r.client.HGetAll(ctx, statesKey).Result()
 	if err != nil {
 		return nil, errors.Wrap(err, "list states")
@@ -132,9 +161,9 @@ func (r *Redis) States(ctx context.Context, since time.Time) ([]model.State, err
 	return states, nil
 }
 
-// Record keeps a divergence unless its source has already reported a later
+// record keeps a divergence unless its source has already reported a later
 // quarantine, or its service environment was cleared after it began.
-func (r *Redis) Record(ctx context.Context, divergence model.Divergence) error {
+func (r *Redis) record(ctx context.Context, divergence model.Divergence) error {
 	field := sourceField(divergence.Service, divergence.Environment, divergence.Direction)
 	cleared := clearedField(divergence.Service, divergence.Environment)
 	value, err := json.Marshal(divergence)
@@ -162,7 +191,7 @@ func (r *Redis) Record(ctx context.Context, divergence model.Divergence) error {
 			if err != nil {
 				return err
 			}
-			if ignored(stored, clearedAt, divergence.Quarantine) {
+			if divergence.Quarantine.SupersededBy(stored, clearedAt) {
 				return nil
 			}
 			_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
@@ -191,8 +220,8 @@ func (r *Redis) Clear(ctx context.Context, service, environment string, at time.
 	return errors.Wrap(err, "clear divergences")
 }
 
-// Divergences returns every stored divergence, in no particular order.
-func (r *Redis) Divergences(ctx context.Context) ([]model.Divergence, error) {
+// divergences returns every stored divergence, in no particular order.
+func (r *Redis) divergences(ctx context.Context) ([]model.Divergence, error) {
 	values, err := r.client.HGetAll(ctx, divergencesKey).Result()
 	if err != nil {
 		return nil, errors.Wrap(err, "list divergences")

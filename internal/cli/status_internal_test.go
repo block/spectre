@@ -31,7 +31,11 @@ func TestStatusCommands(t *testing.T) {
 		{Service: "users", Environment: "canary", Revision: "abc123", Direction: model.Egress, Quarantine: model.Quarantine{Since: first, Reason: unmatched}},
 		{Service: "users", Environment: "production", Revision: "abc123", Direction: model.Egress, Quarantine: model.Quarantine{Since: first, Reason: unmatched}},
 	} {
-		assert.NoError(t, store.Record(t.Context(), earlier))
+		assert.NoError(t, store.Observe(t.Context(), model.State{
+			Service: earlier.Service, Environment: earlier.Environment, Revision: earlier.Revision,
+			//nolint:exhaustive // Only the reported direction quarantined.
+			Quarantines: map[model.Direction]model.Quarantine{earlier.Direction: earlier.Quarantine},
+		}, time.Time{}, true))
 	}
 	quarantined := model.State{
 		Service:        "users",
@@ -64,9 +68,8 @@ func TestStatusCommands(t *testing.T) {
 		Uptime:         12*time.Minute + 300*time.Millisecond,
 		Calls:          model.Calls{Routes: map[model.Route]uint64{"POST /v1/users": 66, "GET /v1/users": 22}, Other: 3},
 	}
-	assert.NoError(t, store.Put(t.Context(), quarantined, time.Now()))
-	assert.NoError(t, stagingStore.Put(t.Context(), healthy, time.Now()))
-	assert.NoError(t, store.Record(t.Context(), model.Divergence{Service: "users", Environment: "production", Revision: "def456", Direction: model.Ingress, Quarantine: quarantined.Quarantines[model.Ingress]}))
+	assert.NoError(t, store.Observe(t.Context(), quarantined, time.Now(), true))
+	assert.NoError(t, stagingStore.Observe(t.Context(), healthy, time.Now(), true))
 
 	var text strings.Builder
 	list := statusListCommand{}

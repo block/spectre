@@ -165,46 +165,47 @@ func DivergenceFromMessage(message *pb.Divergence) (model.Divergence, error) {
 	}, nil
 }
 
-// ListResponse returns the protocol's list response for states and divergences.
-func ListResponse(states []model.State, divergences []model.Divergence) *pb.ListDivergencesResponse {
+// ListResponse returns the protocol's list response for listing.
+func ListResponse(listing model.Listing) *pb.ListDivergencesResponse {
 	response := &pb.ListDivergencesResponse{
-		States:      make([]*pb.State, 0, len(states)),
-		Divergences: make([]*pb.Divergence, 0, len(divergences)),
+		States:      make([]*pb.State, 0, len(listing.States)),
+		Divergences: make([]*pb.Divergence, 0, len(listing.Divergences)),
 	}
-	for _, state := range states {
+	for _, state := range listing.States {
 		response.States = append(response.States, StateMessage(state))
 	}
-	for _, divergence := range divergences {
+	for _, divergence := range listing.Divergences {
 		response.Divergences = append(response.Divergences, DivergenceMessage(divergence))
 	}
 	return response
 }
 
-// ListFromResponse restores the states and divergences of a list response.
-func ListFromResponse(response *pb.ListDivergencesResponse) ([]model.State, []model.Divergence, error) {
-	states := make([]model.State, 0, len(response.GetStates()))
+// ListFromResponse restores the listing of a list response.
+func ListFromResponse(response *pb.ListDivergencesResponse) (model.Listing, error) {
+	listing := model.Listing{
+		States:      make([]model.State, 0, len(response.GetStates())),
+		Divergences: make([]model.Divergence, 0, len(response.GetDivergences())),
+	}
 	for _, message := range response.GetStates() {
 		state, err := StateFromMessage(message)
 		if err != nil {
-			return nil, nil, err
+			return model.Listing{}, err
 		}
-		states = append(states, state)
+		listing.States = append(listing.States, state)
 	}
-	divergences := make([]model.Divergence, 0, len(response.GetDivergences()))
 	for _, message := range response.GetDivergences() {
 		divergence, err := DivergenceFromMessage(message)
 		if err != nil {
-			return nil, nil, err
+			return model.Listing{}, err
 		}
-		divergences = append(divergences, divergence)
+		listing.Divergences = append(listing.Divergences, divergence)
 	}
-	return states, divergences, nil
+	return listing, nil
 }
 
-// ListJSON returns states and divergences as the protocol's JSON list
-// response, which is what the command line prints.
-func ListJSON(states []model.State, divergences []model.Divergence) ([]byte, error) {
-	data, err := protojson.MarshalOptions{Multiline: true}.Marshal(ListResponse(states, divergences))
+// ListJSON returns listing as the protocol's JSON list response.
+func ListJSON(listing model.Listing) ([]byte, error) {
+	data, err := protojson.MarshalOptions{Multiline: true}.Marshal(ListResponse(listing))
 	return data, errors.Wrap(err, "encode JSON")
 }
 
