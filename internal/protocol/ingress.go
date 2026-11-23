@@ -11,10 +11,10 @@ import (
 	. "github.com/alecthomas/types/optional"
 
 	"github.com/block/spectre/internal/comparison"
-	"github.com/block/spectre/internal/comparison/javascript"
 	"github.com/block/spectre/internal/future"
 	"github.com/block/spectre/internal/logger"
 	"github.com/block/spectre/internal/model"
+	"github.com/block/spectre/internal/schema"
 )
 
 // outcome classifies one response comparison.
@@ -248,11 +248,7 @@ func normaliseResponse(ctx context.Context, scripts *comparison.Scripts, content
 	if err != nil {
 		return Content{}, errors.Errorf("rule %s needs an HTTP status", rule)
 	}
-	body := None[model.DynamicValue]()
-	if message, present := content.Message.Get(); present {
-		body = Some(message.Value)
-	}
-	normalisedStatus, normalisedBody, err := scripts.NormaliseResponse(ctx, rule, status, body)
+	normalisedStatus, normalisedBody, err := scripts.NormaliseResponse(ctx, rule, status, content.Message)
 	if err != nil {
 		return Content{}, errors.Wrapf(err, "normalise response with rule %s", rule)
 	}
@@ -260,15 +256,11 @@ func normaliseResponse(ctx context.Context, scripts *comparison.Scripts, content
 	if code, present := normalisedStatus.Get(); present {
 		content.Status = Some(strconv.Itoa(code))
 	}
-	content.Message = None[Message]()
-	if value, present := normalisedBody.Get(); present {
-		match, _ := rule.Action().(javascript.ActionMatch)
-		content.Message = Some(Message{Type: match.Type, Value: value})
-	}
+	content.Message = normalisedBody
 	return content, nil
 }
 
-func compareMessages(ctx context.Context, scripts *comparison.Scripts, reference, candidate Option[Message]) comparisonResult {
+func compareMessages(ctx context.Context, scripts *comparison.Scripts, reference, candidate Option[schema.Value]) comparisonResult {
 	referenceMessage, referenceOK := reference.Get()
 	candidateMessage, candidateOK := candidate.Get()
 	switch {
@@ -278,10 +270,10 @@ func compareMessages(ctx context.Context, scripts *comparison.Scripts, reference
 		return rootDifference("$", model.ChangeMissing)
 	case !referenceOK:
 		return rootDifference("$", model.ChangeAdded)
-	case referenceMessage.Type != candidateMessage.Type:
+	case !referenceMessage.Type().Equal(candidateMessage.Type()):
 		return newComparisonResult(outcomeUnable, "reference and candidate messages have different types")
 	}
-	differences, truncated, err := scripts.Compare(ctx, referenceMessage.Type, referenceMessage.Value, candidateMessage.Value)
+	differences, truncated, err := scripts.Compare(ctx, referenceMessage, candidateMessage)
 	if err != nil {
 		return newComparisonResult(outcomeUnable, err.Error())
 	}
@@ -495,7 +487,7 @@ func newIngressReference(pairs *ingressPairs, protocol model.Protocol) *ingressR
 }
 
 func (r *ingressReference) ProcessRequest(_ context.Context, _ Option[RequestID], route model.Route, ignored Option[string],
-	_ func(ctx context.Context) (Message, error),
+	_ func(ctx context.Context) (schema.Value, error),
 ) (Decision, error) {
 	return r.pairs.start(r.protocol, route, ignored), nil
 }
@@ -520,7 +512,7 @@ func newIngressCandidate(pairs *ingressPairs, protocol model.Protocol) *ingressC
 }
 
 func (c *ingressCandidate) ProcessRequest(ctx context.Context, requestID Option[RequestID], route model.Route, _ Option[string],
-	_ func(ctx context.Context) (Message, error),
+	_ func(ctx context.Context) (schema.Value, error),
 ) (Decision, error) {
 	return c.pairs.join(ctx, c.protocol, route, requestID)
 }

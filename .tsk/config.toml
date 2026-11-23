@@ -316,19 +316,6 @@ key = "env"
 allow = ["-"]
 reason = "kong.DefaultEnvars names its variable"
 
-# Payloads are typed by their TypeScript declarations only at runtime. The state
-# file and logger template also use it until they have structured types.
 [[noany.dynamic]]
-type = "github.com/block/spectre/internal/model.DynamicValue"
-packages = [
-  "github.com/block/spectre/internal/comparison",
-  "github.com/block/spectre/internal/comparison/internal",
-  "github.com/block/spectre/internal/comparison/javascript",
-  "github.com/block/spectre/internal/httpserver",
-  "github.com/block/spectre/internal/httpserver/codec",
-  "github.com/block/spectre/internal/httpserver/message",
-  "github.com/block/spectre/internal/logger",
-  "github.com/block/spectre/internal/protocol",
-  "github.com/block/spectre/internal/schema",
-  "github.com/block/spectre/internal/state",
-]
+type = "github.com/block/spectre/internal/logger.jsonValue"
+packages = []

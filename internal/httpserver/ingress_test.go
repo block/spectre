@@ -1461,8 +1461,6 @@ func TestMirrorsOnlyRoutesOfMigratedNodes(t *testing.T) {
 		}
 		return jsonResponse(request, `{"value":"same"}`), nil
 	})
-	catalog, err := state.NewCatalog(httpserver.Supports()...)
-	assert.NoError(t, err)
 	migration, err := state.Parse([]byte(`
 [nodes.migrated]
 status = "migrated"
@@ -1471,7 +1469,7 @@ status = "migrated"
 
 [nodes.pending.ingress.http.routes]
 "GET /pending/{name}" = {}
-`), catalog)
+`))
 	assert.NoError(t, err)
 	config := newTestConfig(t, "http://"+acceptingAddress(t), "http://"+candidateAddress)
 	handler, err := httpserver.NewIngress(t.Context(), config, newEngineConfig(t), transport, Some[httpserver.DescriptorLoader](matchingDescriptorLoader()), Some(migration))
@@ -1530,8 +1528,6 @@ func TestQuarantineNamesNodeOfRoute(t *testing.T) {
 		}
 		return jsonResponse(request, `{"value":"reference"}`), nil
 	})
-	catalog, err := state.NewCatalog(httpserver.Supports()...)
-	assert.NoError(t, err)
 	divergent := model.QuarantineReason{
 		Kind: model.QuarantineDivergent, Differences: []model.Difference{{Path: "$.value", Change: model.ChangeChanged, Count: 1}},
 	}
@@ -1560,7 +1556,7 @@ func TestQuarantineNamesNodeOfRoute(t *testing.T) {
 status = "migrated"
 [nodes.forecasts.ingress.http.routes]
 %q = {}
-`, test.pattern), catalog)
+`, test.pattern))
 			assert.NoError(t, err)
 			config := newTestConfig(t, "http://"+acceptingAddress(t), "http://"+candidateAddress)
 			handler, err := httpserver.NewIngress(t.Context(), config, newEngineConfig(t), transport, Some[httpserver.DescriptorLoader](matchingDescriptorLoader()), Some(migration))
@@ -1591,11 +1587,9 @@ status = "migrated"
 func TestRejectsInvalidStateRoute(t *testing.T) {
 	candidateAddress := acceptingAddress(t)
 	migration := state.State{Nodes: []state.Node{{
-		ID:     "api",
-		Status: state.Migrated,
-		IO: map[model.IOKind]map[string]any{
-			{Direction: model.Ingress, Protocol: model.ProtocolHTTP}: {"routes": map[string]any{"/no-method": map[string]any{}}},
-		},
+		ID:      "api",
+		Status:  state.Migrated,
+		Ingress: state.Ingress{HTTP: &state.HTTPIngress{Routes: map[model.Route]state.HTTPRoute{"/no-method": {}}}},
 	}}}
 	config := newTestConfig(t, "http://"+acceptingAddress(t), "http://"+candidateAddress)
 	_, err := httpserver.NewIngress(t.Context(), config, newEngineConfig(t), http.DefaultTransport, Some[httpserver.DescriptorLoader](matchingDescriptorLoader()), Some(migration))

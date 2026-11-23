@@ -36,6 +36,7 @@ type (
 const (
 	KindCallExpression    = ast.KindCallExpression
 	KindModuleDeclaration = ast.KindModuleDeclaration
+	KindSourceFile        = ast.KindSourceFile
 	KindStringLiteral     = ast.KindStringLiteral
 )
 
@@ -62,6 +63,7 @@ const (
 	TypeFlagsString        = checker.TypeFlagsString
 	TypeFlagsStringLiteral = checker.TypeFlagsStringLiteral
 	TypeFlagsUnion         = checker.TypeFlagsUnion
+	TypeFlagsUnknown       = checker.TypeFlagsUnknown
 )
 
 // SignatureKindCall selects call signatures rather than construct signatures.

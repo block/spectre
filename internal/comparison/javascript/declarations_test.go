@@ -59,7 +59,6 @@ declare module "test" {
 				field<Root, "preferences">((value) => ({ ...value }));
 				field<Root, "parent">((value) => value);
 				message<Root>((value) => value);
-				field<Address, "postalCode">(() => undefined);
 			`,
 			valid: true,
 		},
@@ -67,7 +66,6 @@ declare module "test" {
 		"EgressFunction":         {body: `egress.http(() => true);`},
 		"EgressStatus":           {body: `egress.http("GET example/root").status(500);`},
 		"EgressNormaliser":       {body: `egress.http("GET example/root").match<Root>((request) => request);`},
-		"NotObject":              {body: `ingress.http("GET /root").match<string>();`},
 		"TextBodyNotString":      {body: `ingress.http("/").match<Text>(() => ({ body: 1 }));`},
 		"StatusNotNumber":        {body: `ingress.http("/").status("500");`},
 		"RequestNotFunction":     {body: `ingress.http(1);`},
@@ -88,6 +86,7 @@ declare module "test" {
 		"OptionalAncestor":       {body: `field<Root, "address.postalCode">((value: string) => value);`},
 		"OptionalLeaf":           {body: `field<Preference, "enabled">((value: boolean) => value);`},
 		"WrongEnum":              {body: `field<Root, "state">(() => "other");`},
+		"RemovesRequiredField":   {body: `field<Address, "postalCode">(() => undefined);`},
 		"MessageMissingAllowed":  {body: `message<Root>((value: object) => undefined);`},
 		"WrongMessageOutput":     {body: `message<Root>(() => ({ count: "changed" }));`},
 	} {

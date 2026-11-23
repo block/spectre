@@ -1,105 +1,257 @@
-// Package schema models the payload types that normalisers and protocols share.
-// Types are declared in TypeScript, so scripts and the host use one definition.
+// Package schema models shared payloads as two trees: Type, a TypeScript-declared
+// type, and Value, a JSON value that carries its Type.
 package schema
 
 import (
 	"encoding/json"
 	"maps"
 	"slices"
-	"strconv"
 	"strings"
 
 	"github.com/alecthomas/errors"
 	. "github.com/alecthomas/types/optional"
-
-	"github.com/block/spectre/internal/model"
 )
 
-// Kind is the JSON shape of a value.
-type Kind string
+// Type is one TypeScript type expression in the supported subset.
+//
+//sumtype:decl
+type Type interface {
+	// String renders the type as TypeScript, naming referenced types as they are stored.
+	String() string
+	// Format renders the type as TypeScript, naming each referenced type with reference.
+	Format(reference func(name TypeRef) string) string
+	// Equal reports whether two types accept the same JSON. Literal union alias
+	// names are ignored, but object types must have the same name.
+	Equal(other Type) bool
+	isType()
+}
 
-// Kinds of the TypeScript type expressions in the supported subset.
-const (
-	// KindString is a JSON string.
-	KindString Kind = "string"
-	// KindNumber is a JSON number, or one of its literals.
-	KindNumber Kind = "number"
-	// KindBoolean is a JSON boolean.
-	KindBoolean Kind = "boolean"
-	// KindEnum is a union of string literals.
-	KindEnum Kind = "enum"
-	// KindObject is a reference to a named object type.
-	KindObject Kind = "object"
-	// KindList is an array, written T[].
-	KindList Kind = "list"
-	// KindMap is an object with arbitrary string keys, written Record<string, T>.
-	KindMap Kind = "map"
-)
+// StringType is a JSON string.
+type StringType struct{}
 
-// Value is one TypeScript type expression in the supported subset.
-type Value struct {
-	// Kind is the value's JSON shape.
-	Kind Kind
-	// Literals are an enum's permitted strings, or strings a number also accepts, as
-	// in ProtoJSON's non-finite floats and open enums. Their order is not significant.
+// NumberType is a JSON number, or one of the strings in Literals, as in ProtoJSON's
+// non-finite floats and open enums.
+type NumberType struct {
+	// Name is the alias the union was declared with, if any.
+	Name Option[TypeRef]
+	// Literals are the strings the number also accepts. Their order is not significant.
 	Literals []string
-	// Element is the element type of a list or the value type of a map, and None otherwise.
-	Element Option[*Value]
-	// Type names an object's type, or the alias a literal union was declared with, if any.
-	Type TypeRef
 }
 
-// String renders the value as TypeScript, naming referenced types as they are stored.
-func (v Value) String() string {
-	return v.Format(func(name TypeRef) string { return string(name) })
+// BooleanType is a JSON boolean.
+type BooleanType struct{}
+
+// EnumType is a union of string literals.
+type EnumType struct {
+	// Name is the alias the union was declared with, if any.
+	Name Option[TypeRef]
+	// Literals are the permitted strings. Their order is not significant.
+	Literals []string
 }
 
-// Format renders the value as TypeScript, naming each referenced type with reference.
-func (v Value) Format(reference func(name TypeRef) string) string {
-	switch v.Kind {
-	case KindEnum:
-		if v.Type != "" {
-			return reference(v.Type)
-		}
-		return strings.Join(quoted(v.Literals), " | ")
-	case KindNumber:
-		if v.Type != "" {
-			return reference(v.Type)
-		}
-		return strings.Join(append([]string{string(KindNumber)}, quoted(v.Literals)...), " | ")
-	case KindObject:
-		return reference(v.Type)
-	case KindList:
-		element, hasElement := v.Element.Get()
-		if !hasElement {
-			break
-		}
-		formatted := element.Format(reference)
-		if element.isUnion() {
-			formatted = "(" + formatted + ")"
-		}
-		return formatted + "[]"
-	case KindMap:
-		element, hasElement := v.Element.Get()
-		if !hasElement {
-			break
-		}
-		return "Record<string, " + element.Format(reference) + ">"
-	case KindString, KindBoolean:
+// UnknownType is any JSON value, written unknown.
+type UnknownType struct{}
+
+// NullableType is Type or null, written T | null. Type is never itself nullable.
+type NullableType struct {
+	Type Type
+}
+
+// ListType is an array, written T[].
+type ListType struct {
+	Element Type
+}
+
+// MapType is an object with arbitrary string keys, written Record<string, T>.
+type MapType struct {
+	Element Type
+}
+
+// TypeRef names an object type, e.g. "weather.service.GetWeatherRequest".
+type TypeRef string
+
+// ObjectType is a named object type. Fields point to other object types, so recursive
+// types form cycles; compare them by name, and never mutate one a Schema holds.
+type ObjectType struct {
+	// Name is the declaring module's name followed by the type's namespace path.
+	Name TypeRef
+	// Fields are in declaration order.
+	Fields []Field
+}
+
+// Field is one member of an object type.
+type Field struct {
+	// Name is the JSON key.
+	Name string
+	// Optional means the key may be absent.
+	Optional bool
+	// Type is the member's type.
+	Type Type
+}
+
+func (StringType) isType()            {}
+func (NumberType) isType()            {}
+func (BooleanType) isType()           {}
+func (EnumType) isType()              {}
+func (UnknownType) isType()           {}
+func (NullableType) isType()          {}
+func (ListType) isType()              {}
+func (MapType) isType()               {}
+func (*ObjectType) isType()           {}
+func (t StringType) String() string   { return t.Format(storedName) }
+func (t NumberType) String() string   { return t.Format(storedName) }
+func (t BooleanType) String() string  { return t.Format(storedName) }
+func (t EnumType) String() string     { return t.Format(storedName) }
+func (t UnknownType) String() string  { return t.Format(storedName) }
+func (t NullableType) String() string { return t.Format(storedName) }
+func (t ListType) String() string     { return t.Format(storedName) }
+func (t MapType) String() string      { return t.Format(storedName) }
+func (t *ObjectType) String() string  { return t.Format(storedName) }
+
+// Format renders the type as TypeScript.
+func (StringType) Format(func(name TypeRef) string) string { return "string" }
+
+// Format renders the type as TypeScript, naming it by its alias if it has one.
+func (t NumberType) Format(reference func(name TypeRef) string) string {
+	if name, ok := t.Name.Get(); ok {
+		return reference(name)
 	}
-	return string(v.Kind)
+	return strings.Join(append([]string{"number"}, quoted(t.Literals)...), " | ")
 }
 
-// isUnion reports whether the value renders as an unnamed union.
-func (v Value) isUnion() bool {
-	switch v.Kind {
-	case KindEnum:
-		return v.Type == "" && len(v.Literals) > 1
-	case KindNumber:
-		return v.Type == "" && len(v.Literals) > 0
-	case KindString, KindBoolean, KindObject, KindList, KindMap:
+// Format renders the type as TypeScript.
+func (BooleanType) Format(func(name TypeRef) string) string { return "boolean" }
+
+// Format renders the type as TypeScript, naming it by its alias if it has one.
+func (t EnumType) Format(reference func(name TypeRef) string) string {
+	if name, ok := t.Name.Get(); ok {
+		return reference(name)
+	}
+	return strings.Join(quoted(t.Literals), " | ")
+}
+
+// Format renders the type as TypeScript.
+func (UnknownType) Format(func(name TypeRef) string) string { return "unknown" }
+
+// Format renders the type as TypeScript.
+func (t NullableType) Format(reference func(name TypeRef) string) string {
+	return t.Type.Format(reference) + " | null"
+}
+
+// Format renders the type as TypeScript, parenthesising a union element.
+func (t ListType) Format(reference func(name TypeRef) string) string {
+	formatted := t.Element.Format(reference)
+	if isUnion(t.Element) {
+		formatted = "(" + formatted + ")"
+	}
+	return formatted + "[]"
+}
+
+// Format renders the type as TypeScript.
+func (t MapType) Format(reference func(name TypeRef) string) string {
+	return "Record<string, " + t.Element.Format(reference) + ">"
+}
+
+// Format renders the type as TypeScript, by name.
+func (t *ObjectType) Format(reference func(name TypeRef) string) string {
+	return reference(t.Name)
+}
+
+// Equal reports whether other is also a string.
+func (StringType) Equal(other Type) bool {
+	_, ok := other.(StringType)
+	return ok
+}
+
+// Equal reports whether other is a number accepting the same literals.
+func (t NumberType) Equal(other Type) bool {
+	number, ok := other.(NumberType)
+	return ok && sameLiterals(t.Literals, number.Literals)
+}
+
+// Equal reports whether other is also a boolean.
+func (BooleanType) Equal(other Type) bool {
+	_, ok := other.(BooleanType)
+	return ok
+}
+
+// Equal reports whether other is an enum of the same literals.
+func (t EnumType) Equal(other Type) bool {
+	enum, ok := other.(EnumType)
+	return ok && sameLiterals(t.Literals, enum.Literals)
+}
+
+// Equal reports whether other is also unknown.
+func (UnknownType) Equal(other Type) bool {
+	_, ok := other.(UnknownType)
+	return ok
+}
+
+// Equal reports whether other is the same type or null.
+func (t NullableType) Equal(other Type) bool {
+	nullable, ok := other.(NullableType)
+	return ok && t.Type.Equal(nullable.Type)
+}
+
+// Equal reports whether other is a list of the same elements.
+func (t ListType) Equal(other Type) bool {
+	list, ok := other.(ListType)
+	return ok && t.Element.Equal(list.Element)
+}
+
+// Equal reports whether other is a map of the same values.
+func (t MapType) Equal(other Type) bool {
+	mapped, ok := other.(MapType)
+	return ok && t.Element.Equal(mapped.Element)
+}
+
+// Equal reports whether other is the object type of the same name.
+func (t *ObjectType) Equal(other Type) bool {
+	object, ok := other.(*ObjectType)
+	return ok && t.Name == object.Name
+}
+
+// Field returns the member with the given JSON key.
+func (t *ObjectType) Field(name string) (field Field, found bool) {
+	for _, field := range t.Fields {
+		if field.Name == name {
+			return field, true
+		}
+	}
+	return Field{}, false
+}
+
+// NonNull returns a nullable type's non-null type, and any other type as it is.
+func NonNull(t Type) Type {
+	if nullable, ok := t.(NullableType); ok {
+		return nullable.Type
+	}
+	return t
+}
+
+func storedName(name TypeRef) string {
+	return string(name)
+}
+
+// isUnion reports whether the type renders as an unnamed union.
+func isUnion(t Type) bool {
+	switch t := t.(type) {
+	case NullableType:
+		return true
+	case EnumType:
+		return !t.Name.Ok() && len(t.Literals) > 1
+	case NumberType:
+		return !t.Name.Ok() && len(t.Literals) > 0
+	case StringType, BooleanType, UnknownType, ListType, MapType, *ObjectType:
 	}
 	return false
+}
+
+func sameLiterals(left, right []string) bool {
+	left, right = slices.Clone(left), slices.Clone(right)
+	slices.Sort(left)
+	slices.Sort(right)
+	return slices.Equal(left, right)
 }
 
 func quoted(literals []string) []string {
@@ -136,65 +288,6 @@ func isIdentifier(name string) (valid bool) {
 	return true
 }
 
-// Equal reports whether two values accept the same JSON. Enum alias names are
-// ignored, but object types must have the same name.
-func (v Value) Equal(other Value) bool {
-	if v.Kind != other.Kind {
-		return false
-	}
-	switch v.Kind {
-	case KindEnum, KindNumber:
-		left, right := slices.Clone(v.Literals), slices.Clone(other.Literals)
-		slices.Sort(left)
-		slices.Sort(right)
-		return slices.Equal(left, right)
-	case KindObject:
-		return v.Type == other.Type
-	case KindList, KindMap:
-		element, hasElement := v.Element.Get()
-		otherElement, otherHasElement := other.Element.Get()
-		if !hasElement || !otherHasElement {
-			return hasElement == otherHasElement
-		}
-		return element.Equal(*otherElement)
-	case KindString, KindBoolean:
-	}
-	return true
-}
-
-// Field is one member of an object type.
-type Field struct {
-	// Name is the JSON key.
-	Name string
-	// Optional means the key may be absent.
-	Optional bool
-	// Nullable means a present key may hold null.
-	Nullable bool
-	// Value is the member's type.
-	Value Value
-}
-
-// TypeRef names a schema type, e.g. "weather.service.GetWeatherRequest".
-type TypeRef string
-
-// Type is a named object type, declared as an interface or an object type alias.
-type Type struct {
-	// Name is the declaring module's name followed by the type's namespace path.
-	Name TypeRef
-	// Fields are in declaration order.
-	Fields []Field
-}
-
-// Field returns the member with the given JSON key.
-func (t *Type) Field(name string) (field Field, found bool) {
-	for _, field := range t.Fields {
-		if field.Name == name {
-			return field, true
-		}
-	}
-	return Field{}, false
-}
-
 // Operation is one unary RPC method declared on a service interface.
 type Operation struct {
 	// Name is the service's type name followed by the method name.
@@ -205,17 +298,16 @@ type Operation struct {
 	Response TypeRef
 }
 
-// Schema indexes types and operations whose references all resolve. Treat types
-// and their fields as immutable after construction, as comparison plans share them.
+// Schema indexes object types and operations whose references all resolve.
 type Schema struct {
-	types      map[TypeRef]*Type
+	types      map[TypeRef]*ObjectType
 	operations map[string]Operation
 }
 
-// New takes ownership of types and validates their references. It rejects
-// duplicate names and references to undeclared types.
-func New(types []*Type, operations []Operation) (*Schema, error) {
-	loaded := &Schema{types: map[TypeRef]*Type{}, operations: map[string]Operation{}}
+// New takes ownership of types and validates them. It rejects duplicate names, and
+// fields of object types it was not given.
+func New(types []*ObjectType, operations []Operation) (*Schema, error) {
+	loaded := &Schema{types: map[TypeRef]*ObjectType{}, operations: map[string]Operation{}}
 	for _, declared := range types {
 		if _, duplicate := loaded.types[declared.Name]; duplicate {
 			return nil, errors.Errorf("type %q is declared more than once", declared.Name)
@@ -235,7 +327,7 @@ func New(types []*Type, operations []Operation) (*Schema, error) {
 				return nil, errors.Errorf("type %q declares field %q more than once", declared.Name, field.Name)
 			}
 			names[field.Name] = true
-			if err := loaded.checkValue(field.Value); err != nil {
+			if err := loaded.check(field.Type); err != nil {
 				return nil, errors.Wrapf(err, "field %q of type %q", field.Name, declared.Name)
 			}
 		}
@@ -250,31 +342,35 @@ func New(types []*Type, operations []Operation) (*Schema, error) {
 	return loaded, nil
 }
 
-func (s *Schema) checkValue(value Value) error {
-	switch value.Kind {
-	case KindObject:
-		if _, ok := s.types[value.Type]; !ok {
-			return errors.Errorf("type %q is not declared", value.Type)
+// check rejects a type that refers to an object type the schema does not hold.
+func (s *Schema) check(declared Type) error {
+	switch declared := declared.(type) {
+	case nil:
+		return errors.New("type is missing")
+	case *ObjectType:
+		if s.types[declared.Name] != declared {
+			return errors.Errorf("type %q is not declared", declared.Name)
 		}
-	case KindList, KindMap:
-		element, hasElement := value.Element.Get()
-		if !hasElement {
-			return errors.Errorf("%s has no element type", value.Kind)
+	case ListType:
+		return s.check(declared.Element)
+	case MapType:
+		return s.check(declared.Element)
+	case NullableType:
+		if _, nested := declared.Type.(NullableType); nested {
+			return errors.New("nullable type is nullable")
 		}
-		return s.checkValue(*element)
-	case KindEnum:
-		if len(value.Literals) == 0 {
+		return s.check(declared.Type)
+	case EnumType:
+		if len(declared.Literals) == 0 {
 			return errors.New("enum has no literals")
 		}
-	case KindString, KindNumber, KindBoolean:
-	default:
-		return errors.Errorf("unknown value kind %q", value.Kind)
+	case StringType, NumberType, BooleanType, UnknownType:
 	}
 	return nil
 }
 
 // Type returns the named object type.
-func (s *Schema) Type(name TypeRef) (*Type, error) {
+func (s *Schema) Type(name TypeRef) (*ObjectType, error) {
 	declared, ok := s.types[name]
 	if !ok {
 		return nil, errors.Errorf("type %q is not declared", name)
@@ -292,9 +388,9 @@ func (s *Schema) Operation(name string) (Operation, error) {
 }
 
 // Types returns every object type, sorted by name.
-func (s *Schema) Types() []*Type {
+func (s *Schema) Types() []*ObjectType {
 	names := slices.Sorted(maps.Keys(s.types))
-	types := make([]*Type, 0, len(names))
+	types := make([]*ObjectType, 0, len(names))
 	for _, name := range names {
 		types = append(types, s.types[name])
 	}
@@ -309,117 +405,4 @@ func (s *Schema) Operations() []Operation {
 		operations = append(operations, s.operations[name])
 	}
 	return operations
-}
-
-// Validate checks that a value is an instance of the named type, rejecting unknown
-// keys and nulls outside nullable members. Errors never quote payload keys.
-func (s *Schema) Validate(name TypeRef, value model.DynamicValue) error {
-	return s.validate(Value{Kind: KindObject, Type: name}, value, "$")
-}
-
-func (s *Schema) validate(expected Value, value model.DynamicValue, path string) error {
-	switch expected.Kind {
-	case KindString:
-		if _, ok := value.(string); ok {
-			return nil
-		}
-	case KindNumber:
-		if _, ok := value.(float64); ok {
-			return nil
-		}
-		if literal, ok := value.(string); ok && slices.Contains(expected.Literals, literal) {
-			return nil
-		}
-	case KindBoolean:
-		if _, ok := value.(bool); ok {
-			return nil
-		}
-	case KindEnum:
-		if literal, ok := value.(string); ok {
-			if slices.Contains(expected.Literals, literal) {
-				return nil
-			}
-			return errors.Errorf("%s: value is not one of %s", path, expected)
-		}
-	case KindList:
-		element, hasElement := expected.Element.Get()
-		if !hasElement {
-			return errors.Errorf("%s: list has no element type", path)
-		}
-		if items, ok := value.([]model.DynamicValue); ok {
-			for index, item := range items {
-				if err := s.validate(*element, item, path+"["+strconv.Itoa(index)+"]"); err != nil {
-					return err
-				}
-			}
-			return nil
-		}
-	case KindMap:
-		element, hasElement := expected.Element.Get()
-		if !hasElement {
-			return errors.Errorf("%s: map has no element type", path)
-		}
-		if entries, ok := value.(map[string]model.DynamicValue); ok {
-			for _, key := range slices.Sorted(maps.Keys(entries)) {
-				// A map key is payload data, so the path holds a wildcard instead.
-				if err := s.validate(*element, entries[key], path+"[*]"); err != nil {
-					return err
-				}
-			}
-			return nil
-		}
-	case KindObject:
-		if object, ok := value.(map[string]model.DynamicValue); ok {
-			return s.validateObject(expected.Type, object, path)
-		}
-	}
-	return errors.Errorf("%s: expected %s, found %s", path, expected, jsonKind(value))
-}
-
-func (s *Schema) validateObject(name TypeRef, object map[string]model.DynamicValue, path string) error {
-	declared, err := s.Type(name)
-	if err != nil {
-		return errors.Wrap(err, path)
-	}
-	for _, key := range slices.Sorted(maps.Keys(object)) {
-		if _, ok := declared.Field(key); !ok {
-			// An undeclared key is payload data, so the error does not name it.
-			return errors.Errorf("%s: type %q has a field it does not declare", path, name)
-		}
-	}
-	for _, field := range declared.Fields {
-		value, present := object[field.Name]
-		if !present {
-			if field.Optional {
-				continue
-			}
-			return errors.Errorf("%s: required field %q of type %q is missing", path, field.Name, name)
-		}
-		if value == nil && field.Nullable {
-			continue
-		}
-		if err := s.validate(field.Value, value, path+"."+field.Name); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func jsonKind(value model.DynamicValue) string {
-	switch value.(type) {
-	case nil:
-		return "null"
-	case string:
-		return "a string"
-	case float64:
-		return "a number"
-	case bool:
-		return "a boolean"
-	case []model.DynamicValue:
-		return "an array"
-	case map[string]model.DynamicValue:
-		return "an object"
-	default:
-		return "an unsupported value"
-	}
 }

@@ -6,6 +6,7 @@ import (
 	. "github.com/alecthomas/types/optional"
 
 	"github.com/block/spectre/internal/model"
+	"github.com/block/spectre/internal/schema"
 )
 
 // Acceptor receives the requests and responses at one ingress or egress point,
@@ -14,7 +15,7 @@ type Acceptor interface {
 	// ProcessRequest decides what to do with a request of the mirrored request requestID, if any.
 	// ignored explains why ingress never compares its responses. An error means it must not be sent.
 	ProcessRequest(ctx context.Context, requestID Option[RequestID], route model.Route, ignored Option[string],
-		request func(ctx context.Context) (Message, error)) (Decision, error)
+		request func(ctx context.Context) (schema.Value, error)) (Decision, error)
 	// ProcessResponse reports the response to a forwarded request. The engine owns
 	// response.Raw from here on.
 	ProcessResponse(ctx context.Context, exchange Exchange, response Response)

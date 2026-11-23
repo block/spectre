@@ -47,15 +47,6 @@ func New(ctx context.Context, config Config) (*Scripts, error) {
 			return nil, errors.Wrapf(err, "resolve endpoint %q", endpoint.Pattern())
 		}
 	}
-	for _, rule := range scripts.Rules() {
-		if match, ok := rule.Action().(javascript.ActionMatch); ok {
-			if name, typed := match.Type.Get(); typed {
-				if _, err := loaded.Type(name); err != nil {
-					return nil, errors.Wrapf(err, "resolve rule %s", rule)
-				}
-			}
-		}
-	}
 	if err := checkReplacements(scripts.program.Replacements(), scripts.Endpoints()); err != nil {
 		return nil, err
 	}
@@ -112,22 +103,33 @@ func checkReplacements(replacements []javascript.Replacement, endpoints []javasc
 }
 
 // ReplaceRequest maps a request to a replacing endpoint to the source request it pairs with.
-func (s *Scripts) ReplaceRequest(ctx context.Context, replacement javascript.Replacement, request model.DynamicValue) (model.DynamicValue, error) {
-	return s.replace(ctx, replacement.SourceRequest(), func(evaluator *javascript.Evaluator) (model.DynamicValue, error) {
+func (s *Scripts) ReplaceRequest(ctx context.Context, replacement javascript.Replacement, request schema.Value) (schema.Value, error) {
+	return s.replace(ctx, replacement.SourceRequest(), func(evaluator *javascript.Evaluator) (schema.Value, error) {
 		return errors.WithStack2(evaluator.ReplaceRequest(replacement, request))
 	})
 }
 
 // ReplaceResponse builds the answer to a request to a replacing endpoint from a
 // reference response to its source.
-func (s *Scripts) ReplaceResponse(ctx context.Context, replacement javascript.Replacement, request, reference model.DynamicValue) (model.DynamicValue, error) {
-	return s.replace(ctx, replacement.Response(), func(evaluator *javascript.Evaluator) (model.DynamicValue, error) {
+func (s *Scripts) ReplaceResponse(ctx context.Context, replacement javascript.Replacement, request, reference schema.Value) (schema.Value, error) {
+	expected, err := s.Schema().Type(replacement.SourceResponse())
+	if err != nil {
+		return nil, errors.WithStack(err)
+	}
+	if !reference.Type().Equal(expected) {
+		return nil, errors.Errorf("source reference response is %s, not %s", reference.Type(), expected)
+	}
+	return s.replace(ctx, replacement.Response(), func(evaluator *javascript.Evaluator) (schema.Value, error) {
 		return errors.WithStack2(evaluator.ReplaceResponse(replacement, request, reference))
 	})
 }
 
 // replace runs one replacement function in a fresh evaluator and validates its result as typeName.
-func (s *Scripts) replace(ctx context.Context, typeName schema.TypeRef, function func(*javascript.Evaluator) (model.DynamicValue, error)) (model.DynamicValue, error) {
+func (s *Scripts) replace(ctx context.Context, typeName schema.TypeRef, function func(*javascript.Evaluator) (schema.Value, error)) (schema.Value, error) {
+	declared, err := s.Schema().Type(typeName)
+	if err != nil {
+		return nil, errors.WithStack(err)
+	}
 	ctx, cancel := context.WithTimeout(ctx, s.timeout)
 	defer cancel()
 	evaluator, err := s.program.NewEvaluator(ctx)
@@ -139,10 +141,11 @@ func (s *Scripts) replace(ctx context.Context, typeName schema.TypeRef, function
 	if err != nil {
 		return nil, err
 	}
-	if err := s.plan.Schema().Validate(typeName, translated); err != nil {
+	checked, err := schema.As(declared, translated)
+	if err != nil {
 		return nil, errors.Wrapf(err, "validate translated %s", typeName)
 	}
-	return translated, nil
+	return checked, nil
 }
 
 // StatementReplacements returns the MySQL statement replacements in declaration order.
@@ -303,80 +306,87 @@ func selectsHeaders(
 
 // NormaliseResponse applies a rule's normaliser to one response. A None status
 // or body is not compared, and a returned body must still be the rule's type.
-func (s *Scripts) NormaliseResponse(ctx context.Context, rule javascript.Rule, status int, body Option[model.DynamicValue]) (Option[int], Option[model.DynamicValue], error) {
+func (s *Scripts) NormaliseResponse(ctx context.Context, rule javascript.Rule, status int, body Option[schema.Value]) (Option[int], Option[schema.Value], error) {
 	match, ok := rule.Action().(javascript.ActionMatch)
 	if !ok || !match.Normalises {
 		return Some(status), body, nil
+	}
+	code, err := schema.NewNumber(float64(status))
+	if err != nil {
+		return None[int](), None[schema.Value](), errors.WithStack(err)
+	}
+	members := map[string]schema.Value{"status": code}
+	if value, present := body.Get(); present {
+		members["body"] = value
+	}
+	argument, err := schema.NewObject(members)
+	if err != nil {
+		return None[int](), None[schema.Value](), errors.WithStack(err)
 	}
 	ctx, cancel := context.WithTimeout(ctx, s.timeout)
 	defer cancel()
 	evaluator, err := s.program.NewEvaluator(ctx)
 	if err != nil {
-		return None[int](), None[model.DynamicValue](), errors.Wrap(err, "initialise JavaScript evaluator")
+		return None[int](), None[schema.Value](), errors.Wrap(err, "initialise JavaScript evaluator")
 	}
 	defer evaluator.Close()
-	argument := map[string]model.DynamicValue{"status": status}
-	if value, present := body.Get(); present {
-		argument["body"] = value
-	}
 	result, err := evaluator.NormaliseResponse(rule, argument)
 	if err != nil {
-		return None[int](), None[model.DynamicValue](), errors.WithStack(err)
+		return None[int](), None[schema.Value](), errors.WithStack(err)
 	}
-	return s.normalisedResponse(match, result)
+	return normalisedResponse(match, result)
 }
 
 // normalisedResponse checks a normaliser's result: an object with at most a
 // status and a body of the rule's type.
-func (s *Scripts) normalisedResponse(match javascript.ActionMatch, result Option[model.DynamicValue]) (Option[int], Option[model.DynamicValue], error) {
+func normalisedResponse(match javascript.ActionMatch, result Option[schema.Value]) (Option[int], Option[schema.Value], error) {
 	value, _ := result.Get()
-	response, ok := value.(map[string]model.DynamicValue)
+	response, ok := value.(schema.ObjectValue)
 	if !ok {
-		return None[int](), None[model.DynamicValue](), errors.New("response normaliser must return an object")
+		return None[int](), None[schema.Value](), errors.New("response normaliser must return an object")
 	}
 	status := None[int]()
-	body := None[model.DynamicValue]()
-	for key, member := range response {
+	body := None[schema.Value]()
+	for _, key := range response.Keys() {
+		member, _ := response.Member(key)
 		switch key {
 		case "status":
-			code, number := member.(float64)
-			if !number || code != math.Trunc(code) || code < 100 || code > 599 {
-				return None[int](), None[model.DynamicValue](), errors.New("normalised status must be an integer from 100 to 599")
+			number, isNumber := member.(schema.NumberValue)
+			code := number.Float()
+			if !isNumber || code != math.Trunc(code) || code < 100 || code > 599 {
+				return None[int](), None[schema.Value](), errors.New("normalised status must be an integer from 100 to 599")
 			}
 			status = Some(int(code))
 		case "body":
 			body = Some(member)
 		default:
-			return None[int](), None[model.DynamicValue](), errors.Errorf("normalised response has an unknown member %q", key)
+			return None[int](), None[schema.Value](), errors.Errorf("normalised response has an unknown member %q", key)
 		}
 	}
-	value, present := body.Get()
+	member, present := body.Get()
 	if !present {
-		return status, body, nil
+		return status, None[schema.Value](), nil
 	}
-	name, typed := match.Type.Get()
-	if !typed {
-		if _, text := value.(string); !text {
-			return None[int](), None[model.DynamicValue](), errors.New("normalised Text body must be a string")
-		}
-		return status, body, nil
+	checked, err := schema.As(match.Type, member)
+	if err != nil {
+		return None[int](), None[schema.Value](), errors.Wrap(err, "validate normalised body")
 	}
-	if err := s.plan.Schema().Validate(name, value); err != nil {
-		return None[int](), None[model.DynamicValue](), errors.Wrap(err, "validate normalised body")
-	}
-	return status, body, nil
+	return status, Some(checked), nil
 }
 
-// Compare normalises both payloads as typeName and returns where they differ, and
-// whether they differ in more places. Untyped payloads are compared without normalisers.
-func (s *Scripts) Compare(ctx context.Context, typeName Option[schema.TypeRef], reference, candidate model.DynamicValue) (differences []model.Difference, truncated bool, err error) {
+// Compare normalises both payloads and returns where they differ, and whether they
+// differ in more places. Both must be instances of the same type.
+func (s *Scripts) Compare(ctx context.Context, reference, candidate schema.Value) (differences []model.Difference, truncated bool, err error) {
+	if !reference.Type().Equal(candidate.Type()) {
+		return nil, false, errors.Errorf("reference is %s but candidate is %s", reference.Type(), candidate.Type())
+	}
 	ctx, cancel := context.WithTimeout(ctx, s.timeout)
 	defer cancel()
-	normalisedReference, err := s.normalise(ctx, typeName, "reference", reference)
+	normalisedReference, err := s.normalise(ctx, "reference", reference)
 	if err != nil {
 		return nil, false, errors.Wrap(err, "normalise reference")
 	}
-	normalisedCandidate, err := s.normalise(ctx, typeName, "candidate", candidate)
+	normalisedCandidate, err := s.normalise(ctx, "candidate", candidate)
 	if err != nil {
 		return nil, false, errors.Wrap(err, "normalise candidate")
 	}
@@ -386,10 +396,10 @@ func (s *Scripts) Compare(ctx context.Context, typeName Option[schema.TypeRef], 
 
 // Hash returns SHA-256 over identity and the canonical JSON of the normalised
 // payload. side only labels log records.
-func (s *Scripts) Hash(ctx context.Context, identity string, typeName Option[schema.TypeRef], side string, payload model.DynamicValue) (Hash, error) {
+func (s *Scripts) Hash(ctx context.Context, identity string, side string, payload schema.Value) (Hash, error) {
 	ctx, cancel := context.WithTimeout(ctx, s.timeout)
 	defer cancel()
-	normalised, err := s.normalise(ctx, typeName, side, payload)
+	normalised, err := s.normalise(ctx, side, payload)
 	if err != nil {
 		return Hash{}, errors.Wrap(err, "normalise payload")
 	}
@@ -405,21 +415,30 @@ func (s *Scripts) Hash(ctx context.Context, identity string, typeName Option[sch
 	return sha256.Sum256(hashed), nil
 }
 
-// normalise gives each payload a fresh evaluator, so script state cannot carry
-// between payloads and a payload's normalised form depends only on its content.
-func (s *Scripts) normalise(ctx context.Context, typeName Option[schema.TypeRef], side string, payload model.DynamicValue) (*comparisoninternal.Normalised, error) {
-	name, typed := typeName.Get()
-	if !typed {
+// normalise gives each object payload a fresh evaluator, so script state cannot carry
+// between payloads. Normalisers apply only to object types; others compare as they are.
+func (s *Scripts) normalise(ctx context.Context, side string, payload schema.Value) (*comparisoninternal.Normalised, error) {
+	root, isObject := schema.NonNull(payload.Type()).(*schema.ObjectType)
+	if !isObject {
 		return comparisoninternal.Raw(payload), nil
 	}
-	root, err := s.plan.Schema().Type(name)
-	if err != nil {
-		return nil, errors.WithStack(err)
+	evaluator := None[*javascript.Evaluator]()
+	defer func() {
+		if created, ok := evaluator.Get(); ok {
+			created.Close()
+		}
+	}()
+	// Most payloads match no normaliser, so the evaluator starts only once one does.
+	start := func() (*javascript.Evaluator, error) {
+		if created, ok := evaluator.Get(); ok {
+			return created, nil
+		}
+		created, err := s.program.NewEvaluator(ctx)
+		if err != nil {
+			return nil, errors.Wrap(err, "initialise JavaScript evaluator")
+		}
+		evaluator = Some(created)
+		return created, nil
 	}
-	evaluator, err := s.program.NewEvaluator(ctx)
-	if err != nil {
-		return nil, errors.Wrap(err, "initialise JavaScript evaluator")
-	}
-	defer evaluator.Close()
-	return errors.WithStack2(s.plan.Normalise(ctx, evaluator, root, side, payload))
+	return errors.WithStack2(s.plan.Normalise(ctx, start, root, side, payload))
 }

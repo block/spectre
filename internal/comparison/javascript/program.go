@@ -39,7 +39,7 @@ type Program struct {
 	replacements []Replacement
 	statements   []StatementReplacement
 	fields       []FieldTarget
-	messages     []schema.TypeRef
+	messages     []MessageTarget
 }
 
 // NewProgram type-checks scripts against the schema declarations with their variables, links
@@ -57,7 +57,7 @@ func NewProgram(ctx context.Context, evaluationTimeout time.Duration, declaratio
 	if err != nil {
 		return nil, err
 	}
-	loader := newModuleLoader(checked.modules, maps.Clone(variables))
+	loader := newModuleLoader(checked.modules, checked.schema, maps.Clone(variables))
 	module, err := loader.loadAll()
 	if err != nil {
 		return nil, err
@@ -148,8 +148,8 @@ func (p *Program) Fields() []FieldTarget {
 	return slices.Clone(p.fields)
 }
 
-// Messages returns the object type names declared by the scripts.
-func (p *Program) Messages() []schema.TypeRef {
+// Messages returns the spectre.message declarations, sorted by type.
+func (p *Program) Messages() []MessageTarget {
 	return slices.Clone(p.messages)
 }
 
@@ -181,10 +181,10 @@ type moduleLoader struct {
 	names    map[sobek.ModuleRecord]string
 }
 
-func newModuleLoader(compiled map[string]string, variables map[string]string) *moduleLoader {
+func newModuleLoader(compiled map[string]string, loaded *schema.Schema, variables map[string]string) *moduleLoader {
 	return &moduleLoader{
 		compiled: compiled,
-		spectre:  &spectreModule{variables: variables},
+		spectre:  &spectreModule{loaded: loaded, variables: variables},
 		modules:  map[string]*sobek.SourceTextModuleRecord{},
 		names:    map[sobek.ModuleRecord]string{},
 	}

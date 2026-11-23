@@ -32,23 +32,21 @@ spectre.egress.http("POST fake.example/get").replaces<v1.Query, v1.Response>("PO
 spectre.field<v1.Query, "trace">(() => undefined);
 `
 
-var replacementType = Some[schema.TypeRef]("test.v1.Response")
-
 func TestEgressAnswersReplacingRequestFromSourceReference(t *testing.T) {
 	h := newScriptHarness(t, replacementScript, time.Second)
 	raw := newRaw("list")
-	exchange := h.forwardHTTP(t, listRoute, query(queryType, "london", "reference"))
-	h.engine.EgressReference(model.ProtocolHTTP).ProcessResponse(h.ctx, exchange, listed(raw))
+	exchange := h.forwardHTTP(t, listRoute, query(t, queryType, "london", "reference"))
+	h.engine.EgressReference(model.ProtocolHTTP).ProcessResponse(h.ctx, exchange, listed(t, raw))
 
-	replaced, err := h.engine.EgressCandidate(model.ProtocolHTTP).ProcessRequest(h.ctx, Some(h.requestID), getRoute, notIgnored, query(queryType, "london", "candidate"))
+	replaced, err := h.engine.EgressCandidate(model.ProtocolHTTP).ProcessRequest(h.ctx, Some(h.requestID), getRoute, notIgnored, query(t, queryType, "london", "candidate"))
 	assert.NoError(t, err)
 	// Replacing never claims the source reference, so it still pairs with a candidate request to the source.
-	matched, err := h.engine.EgressCandidate(model.ProtocolHTTP).ProcessRequest(h.ctx, Some(h.requestID), listRoute, notIgnored, query(queryType, "london", "candidate"))
+	matched, err := h.engine.EgressCandidate(model.ProtocolHTTP).ProcessRequest(h.ctx, Some(h.requestID), listRoute, notIgnored, query(t, queryType, "london", "candidate"))
 	assert.NoError(t, err)
-	again, err := h.engine.EgressCandidate(model.ProtocolHTTP).ProcessRequest(h.ctx, Some(h.requestID), getRoute, notIgnored, query(queryType, "london", ""))
+	again, err := h.engine.EgressCandidate(model.ProtocolHTTP).ProcessRequest(h.ctx, Some(h.requestID), getRoute, notIgnored, query(t, queryType, "london", ""))
 	assert.NoError(t, err)
 
-	answer := protocol.Decision(protocol.DecisionAnswer{Message: protocol.Message{Type: replacementType, Value: map[string]any{"value": "listed/london"}}})
+	answer := protocol.Decision(protocol.DecisionAnswer{Message: instance(t, responseType, map[string]any{"value": "listed/london"})})
 	assert.Equal(t, answer, replaced)
 	assert.Equal(t, answer, again)
 	assert.Equal(t, protocol.Decision(protocol.DecisionIntercept{Raw: raw}), matched)
@@ -70,23 +68,23 @@ func TestEgressReplacingRequestWaitsForSourceReference(t *testing.T) {
 			h := newScriptHarness(t, replacementScript, 200*time.Millisecond)
 			var exchange protocol.Exchange
 			if hashedFirst {
-				exchange = h.forwardHTTP(t, listRoute, query(queryType, "london", ""))
+				exchange = h.forwardHTTP(t, listRoute, query(t, queryType, "london", ""))
 			}
 			decided := make(chan candidateDecision, 1)
 			go func() {
-				decision, err := h.engine.EgressCandidate(model.ProtocolHTTP).ProcessRequest(h.ctx, Some(h.requestID), getRoute, notIgnored, query(queryType, "london", ""))
+				decision, err := h.engine.EgressCandidate(model.ProtocolHTTP).ProcessRequest(h.ctx, Some(h.requestID), getRoute, notIgnored, query(t, queryType, "london", ""))
 				decided <- candidateDecision{decision: decision, err: err}
 			}()
 			time.Sleep(20 * time.Millisecond)
 			if !hashedFirst {
-				exchange = h.forwardHTTP(t, listRoute, query(queryType, "london", ""))
+				exchange = h.forwardHTTP(t, listRoute, query(t, queryType, "london", ""))
 			}
 
 			raw := newRaw("list")
-			h.engine.EgressReference(model.ProtocolHTTP).ProcessResponse(h.ctx, exchange, listed(raw))
+			h.engine.EgressReference(model.ProtocolHTTP).ProcessResponse(h.ctx, exchange, listed(t, raw))
 
 			assert.Equal(t, candidateDecision{decision: protocol.DecisionAnswer{
-				Message: protocol.Message{Type: replacementType, Value: map[string]any{"value": "listed/london"}},
+				Message: instance(t, responseType, map[string]any{"value": "listed/london"}),
 			}}, <-decided)
 			// The replacing request matched the source reference, so it expires without quarantine.
 			awaitRelease(t, raw)
@@ -98,10 +96,10 @@ func TestEgressReplacingRequestWaitsForSourceReference(t *testing.T) {
 func TestEgressReplacingRequestPairsWithReferenceRequestsToItsOwnEndpoint(t *testing.T) {
 	h := newScriptHarness(t, replacementScript, time.Second)
 	own := newRaw("get")
-	exchange := h.forwardHTTP(t, getRoute, query(queryType, "london", ""))
+	exchange := h.forwardHTTP(t, getRoute, query(t, queryType, "london", ""))
 	h.engine.EgressReference(model.ProtocolHTTP).ProcessResponse(h.ctx, exchange, protocol.Response{Raw: own})
 
-	decision, err := h.engine.EgressCandidate(model.ProtocolHTTP).ProcessRequest(h.ctx, Some(h.requestID), getRoute, notIgnored, query(queryType, "london", ""))
+	decision, err := h.engine.EgressCandidate(model.ProtocolHTTP).ProcessRequest(h.ctx, Some(h.requestID), getRoute, notIgnored, query(t, queryType, "london", ""))
 
 	assert.NoError(t, err)
 	assert.Equal(t, protocol.Decision(protocol.DecisionIntercept{Raw: own}), decision)
@@ -111,12 +109,12 @@ func TestEgressReplacingRequestPairsWithReferenceRequestsToItsOwnEndpoint(t *tes
 
 func TestEgressReplacingRequestPrefersReferenceToItsOwnEndpoint(t *testing.T) {
 	h := newScriptHarness(t, replacementScript, time.Second)
-	source := h.forwardHTTP(t, listRoute, query(queryType, "london", ""))
-	h.engine.EgressReference(model.ProtocolHTTP).ProcessResponse(h.ctx, source, listed(newRaw("list")))
-	exchange := h.forwardHTTP(t, getRoute, query(queryType, "london", ""))
+	source := h.forwardHTTP(t, listRoute, query(t, queryType, "london", ""))
+	h.engine.EgressReference(model.ProtocolHTTP).ProcessResponse(h.ctx, source, listed(t, newRaw("list")))
+	exchange := h.forwardHTTP(t, getRoute, query(t, queryType, "london", ""))
 	decided := make(chan candidateDecision, 1)
 	go func() {
-		decision, err := h.engine.EgressCandidate(model.ProtocolHTTP).ProcessRequest(h.ctx, Some(h.requestID), getRoute, notIgnored, query(queryType, "london", ""))
+		decision, err := h.engine.EgressCandidate(model.ProtocolHTTP).ProcessRequest(h.ctx, Some(h.requestID), getRoute, notIgnored, query(t, queryType, "london", ""))
 		decided <- candidateDecision{decision: decision, err: err}
 	}()
 	// The source has answered, but the request waits for the reference to its own endpoint.
@@ -126,12 +124,12 @@ func TestEgressReplacingRequestPrefersReferenceToItsOwnEndpoint(t *testing.T) {
 	first := <-decided
 	assert.NoError(t, first.err)
 	// The source reference was not claimed, so it still answers the next request.
-	second, err := h.engine.EgressCandidate(model.ProtocolHTTP).ProcessRequest(h.ctx, Some(h.requestID), getRoute, notIgnored, query(queryType, "london", ""))
+	second, err := h.engine.EgressCandidate(model.ProtocolHTTP).ProcessRequest(h.ctx, Some(h.requestID), getRoute, notIgnored, query(t, queryType, "london", ""))
 	assert.NoError(t, err)
 
 	assert.Equal(t, protocol.Decision(protocol.DecisionIntercept{Raw: own}), first.decision)
 	assert.Equal(t, 0, own.Releases())
-	assert.Equal(t, protocol.Decision(protocol.DecisionAnswer{Message: protocol.Message{Type: replacementType, Value: map[string]any{"value": "listed/london"}}}), second)
+	assert.Equal(t, protocol.Decision(protocol.DecisionAnswer{Message: instance(t, responseType, map[string]any{"value": "listed/london"})}), second)
 	assert.Equal(t, nil, h.quarantine.Reasons())
 }
 
@@ -139,21 +137,21 @@ func TestEgressReplacingRequestLeavesLaterReferencesToItsOwnEndpoint(t *testing.
 	h := newScriptHarness(t, replacementScript, time.Second)
 	decided := make(chan candidateDecision, 1)
 	go func() {
-		decision, err := h.engine.EgressCandidate(model.ProtocolHTTP).ProcessRequest(h.ctx, Some(h.requestID), getRoute, notIgnored, query(queryType, "london", ""))
+		decision, err := h.engine.EgressCandidate(model.ProtocolHTTP).ProcessRequest(h.ctx, Some(h.requestID), getRoute, notIgnored, query(t, queryType, "london", ""))
 		decided <- candidateDecision{decision: decision, err: err}
 	}()
 	time.Sleep(20 * time.Millisecond)
-	source := h.forwardHTTP(t, listRoute, query(queryType, "london", ""))
-	h.engine.EgressReference(model.ProtocolHTTP).ProcessResponse(h.ctx, source, listed(newRaw("list")))
+	source := h.forwardHTTP(t, listRoute, query(t, queryType, "london", ""))
+	h.engine.EgressReference(model.ProtocolHTTP).ProcessResponse(h.ctx, source, listed(t, newRaw("list")))
 	replaced := <-decided
 	own := newRaw("get")
-	exchange := h.forwardHTTP(t, getRoute, query(queryType, "london", ""))
+	exchange := h.forwardHTTP(t, getRoute, query(t, queryType, "london", ""))
 	h.engine.EgressReference(model.ProtocolHTTP).ProcessResponse(h.ctx, exchange, protocol.Response{Raw: own})
 
-	replayed, err := h.engine.EgressCandidate(model.ProtocolHTTP).ProcessRequest(h.ctx, Some(h.requestID), getRoute, notIgnored, query(queryType, "london", ""))
+	replayed, err := h.engine.EgressCandidate(model.ProtocolHTTP).ProcessRequest(h.ctx, Some(h.requestID), getRoute, notIgnored, query(t, queryType, "london", ""))
 
 	assert.NoError(t, replaced.err)
-	assert.Equal(t, protocol.Decision(protocol.DecisionAnswer{Message: protocol.Message{Type: replacementType, Value: map[string]any{"value": "listed/london"}}}), replaced.decision)
+	assert.Equal(t, protocol.Decision(protocol.DecisionAnswer{Message: instance(t, responseType, map[string]any{"value": "listed/london"})}), replaced.decision)
 	assert.NoError(t, err)
 	assert.Equal(t, protocol.Decision(protocol.DecisionIntercept{Raw: own}), replayed)
 	assert.Equal(t, 0, own.Releases())
@@ -168,11 +166,11 @@ func TestEgressReleasesDecodedSourceResponseWhenForgotten(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			h := newScriptHarness(t, replacementScript, 50*time.Millisecond)
 			raw, hold := newRaw("list"), newRaw("hold")
-			exchange := h.forwardHTTP(t, listRoute, query(queryType, "london", ""))
+			exchange := h.forwardHTTP(t, listRoute, query(t, queryType, "london", ""))
 			if respondLate {
 				time.Sleep(100 * time.Millisecond)
 			}
-			response := listed(raw)
+			response := listed(t, raw)
 			decode := response.Decode
 			response.Decode = func(ctx context.Context) protocol.Content {
 				content := decode(ctx)
@@ -181,7 +179,7 @@ func TestEgressReleasesDecodedSourceResponseWhenForgotten(t *testing.T) {
 			}
 			h.engine.EgressReference(model.ProtocolHTTP).ProcessResponse(h.ctx, exchange, response)
 			if !respondLate {
-				_, err := h.engine.EgressCandidate(model.ProtocolHTTP).ProcessRequest(h.ctx, Some(h.requestID), getRoute, notIgnored, query(queryType, "london", ""))
+				_, err := h.engine.EgressCandidate(model.ProtocolHTTP).ProcessRequest(h.ctx, Some(h.requestID), getRoute, notIgnored, query(t, queryType, "london", ""))
 				assert.NoError(t, err)
 				assert.Equal(t, 0, hold.Releases())
 			}
@@ -193,14 +191,14 @@ func TestEgressReleasesDecodedSourceResponseWhenForgotten(t *testing.T) {
 
 func TestEgressKeepsDecodedSourceResponseWhenReplayIsCancelled(t *testing.T) {
 	h := newScriptHarness(t, replacementScript, 200*time.Millisecond)
-	exchange := h.forwardHTTP(t, listRoute, query(queryType, "london", ""))
+	exchange := h.forwardHTTP(t, listRoute, query(t, queryType, "london", ""))
 	ctx, cancel := context.WithTimeout(h.ctx, 20*time.Millisecond)
 	defer cancel()
-	_, err := h.engine.EgressCandidate(model.ProtocolHTTP).ProcessRequest(ctx, Some(h.requestID), listRoute, notIgnored, query(queryType, "london", ""))
+	_, err := h.engine.EgressCandidate(model.ProtocolHTTP).ProcessRequest(ctx, Some(h.requestID), listRoute, notIgnored, query(t, queryType, "london", ""))
 	assert.Error(t, err)
 
 	raw, hold := newRaw("list"), newRaw("hold")
-	response := listed(raw)
+	response := listed(t, raw)
 	decode := response.Decode
 	response.Decode = func(ctx context.Context) protocol.Content {
 		content := decode(ctx)
@@ -208,10 +206,10 @@ func TestEgressKeepsDecodedSourceResponseWhenReplayIsCancelled(t *testing.T) {
 		return content
 	}
 	h.engine.EgressReference(model.ProtocolHTTP).ProcessResponse(h.ctx, exchange, response)
-	replaced, err := h.engine.EgressCandidate(model.ProtocolHTTP).ProcessRequest(h.ctx, Some(h.requestID), getRoute, notIgnored, query(queryType, "london", ""))
+	replaced, err := h.engine.EgressCandidate(model.ProtocolHTTP).ProcessRequest(h.ctx, Some(h.requestID), getRoute, notIgnored, query(t, queryType, "london", ""))
 	assert.NoError(t, err)
 
-	assert.Equal(t, protocol.Decision(protocol.DecisionAnswer{Message: protocol.Message{Type: replacementType, Value: map[string]any{"value": "listed/london"}}}), replaced)
+	assert.Equal(t, protocol.Decision(protocol.DecisionAnswer{Message: instance(t, responseType, map[string]any{"value": "listed/london"})}), replaced)
 	assert.Equal(t, 1, raw.Releases())
 	assert.Equal(t, 0, hold.Releases(), "the decoded response is still offered to replacements")
 	awaitRelease(t, hold)
@@ -219,11 +217,11 @@ func TestEgressKeepsDecodedSourceResponseWhenReplayIsCancelled(t *testing.T) {
 
 func TestEgressReleasesDecodedSourceResponseThatWasNeverOffered(t *testing.T) {
 	h := newScriptHarness(t, replacementScript, time.Second)
-	truncated := func(context.Context) (protocol.Message, error) { return protocol.Message{}, errors.New("truncated") }
+	truncated := func(context.Context) (schema.Value, error) { return nil, errors.New("truncated") }
 	exchange := h.forwardHTTP(t, listRoute, truncated)
 
 	hold := newRaw("hold")
-	response := listed(newRaw("list"))
+	response := listed(t, newRaw("list"))
 	decode := response.Decode
 	response.Decode = func(ctx context.Context) protocol.Content {
 		content := decode(ctx)
@@ -276,20 +274,20 @@ func TestEgressQuarantinesUnanswerableReplacingRequests(t *testing.T) {
 			}),
 			expected: "source reference response has no message", kind: model.QuarantineUnable,
 		},
-		"ResponseFunctionThrows": {
+		"SourceResponseMistyped": {
 			window: time.Second, source: Some("london"),
 			response: Some(func(raw protocol.Raw) protocol.Response {
 				return protocol.Response{Raw: raw, Decode: func(context.Context) protocol.Content {
-					return protocol.Content{Status: Some("200"), Message: Some(protocol.Message{Type: replacementType, Value: nil})}
+					return protocol.Content{Status: Some("200"), Message: Some(instance(t, unknown, map[string]any{}))}
 				}}
 			}),
-			expected: "translate response: ", kind: model.QuarantineUnable,
+			expected: "translate response: source reference response is unknown, not test.v1.Response", kind: model.QuarantineUnable,
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			h := newScriptHarness(t, replacementScript, test.window)
 			if source, ok := test.source.Get(); ok {
-				exchange := h.forwardHTTP(t, listRoute, query(queryType, source, ""))
+				exchange := h.forwardHTTP(t, listRoute, query(t, queryType, source, ""))
 				raw := newRaw("list")
 				response, responds := test.response.Get()
 				switch {
@@ -298,14 +296,14 @@ func TestEgressQuarantinesUnanswerableReplacingRequests(t *testing.T) {
 				case responds:
 					h.engine.EgressReference(model.ProtocolHTTP).ProcessResponse(h.ctx, exchange, response(raw))
 				default:
-					h.engine.EgressReference(model.ProtocolHTTP).ProcessResponse(h.ctx, exchange, listed(newRaw("list")))
+					h.engine.EgressReference(model.ProtocolHTTP).ProcessResponse(h.ctx, exchange, listed(t, newRaw("list")))
 				}
 			}
 			if test.expires {
 				time.Sleep(2 * test.window)
 			}
 
-			decision, err := h.engine.EgressCandidate(model.ProtocolHTTP).ProcessRequest(h.ctx, Some(h.requestID), getRoute, notIgnored, query(queryType, "london", ""))
+			decision, err := h.engine.EgressCandidate(model.ProtocolHTTP).ProcessRequest(h.ctx, Some(h.requestID), getRoute, notIgnored, query(t, queryType, "london", ""))
 
 			assert.Error(t, err)
 			assert.Contains(t, err.Error(), test.expected)
@@ -324,12 +322,12 @@ func TestEgressQuarantinesUnanswerableReplacingRequests(t *testing.T) {
 
 func TestEgressRefusesReplacingRequestWhoseSourceWasCancelled(t *testing.T) {
 	h := newScriptHarness(t, replacementScript, time.Second)
-	exchange := h.forwardHTTP(t, listRoute, query(queryType, "london", ""))
+	exchange := h.forwardHTTP(t, listRoute, query(t, queryType, "london", ""))
 	cancelled, cancel := context.WithCancel(h.ctx)
 	cancel()
 	h.engine.EgressReference(model.ProtocolHTTP).Unable(cancelled, exchange, errors.New("connection reset"))
 
-	decision, err := h.engine.EgressCandidate(model.ProtocolHTTP).ProcessRequest(h.ctx, Some(h.requestID), getRoute, notIgnored, query(queryType, "london", ""))
+	decision, err := h.engine.EgressCandidate(model.ProtocolHTTP).ProcessRequest(h.ctx, Some(h.requestID), getRoute, notIgnored, query(t, queryType, "london", ""))
 
 	assert.EqualError(t, err, "source reference request was cancelled: connection reset")
 	assert.Equal(t, nil, decision)
@@ -341,7 +339,7 @@ func TestEgressQuarantinesReplacingRequestThatGivesUp(t *testing.T) {
 	ctx, cancel := context.WithTimeout(h.ctx, 20*time.Millisecond)
 	defer cancel()
 
-	decision, err := h.engine.EgressCandidate(model.ProtocolHTTP).ProcessRequest(ctx, Some(h.requestID), getRoute, notIgnored, query(queryType, "london", ""))
+	decision, err := h.engine.EgressCandidate(model.ProtocolHTTP).ProcessRequest(ctx, Some(h.requestID), getRoute, notIgnored, query(t, queryType, "london", ""))
 
 	assert.Error(t, err)
 	assert.True(t, regexp.MustCompile(`^no matching reference or source reference request before the candidate gave up after \d+m?s: context deadline exceeded$`).MatchString(err.Error()), "error: %s", err)
@@ -358,7 +356,7 @@ func TestEgressReplacingRequestStoppedByProxyIsNotQuarantined(t *testing.T) {
 	ctx, cancel := context.WithCancelCause(h.ctx)
 	cancel(protocol.ErrCandidateStopped)
 
-	_, err := h.engine.EgressCandidate(model.ProtocolHTTP).ProcessRequest(ctx, Some(h.requestID), getRoute, notIgnored, query(queryType, "london", ""))
+	_, err := h.engine.EgressCandidate(model.ProtocolHTTP).ProcessRequest(ctx, Some(h.requestID), getRoute, notIgnored, query(t, queryType, "london", ""))
 
 	assert.True(t, errors.Is(err, context.Canceled))
 	assert.Equal(t, nil, h.quarantine.Reasons())
@@ -366,11 +364,11 @@ func TestEgressReplacingRequestStoppedByProxyIsNotQuarantined(t *testing.T) {
 
 func TestEgressQuarantinesReplacingRequestThatGivesUpOnSourceResponse(t *testing.T) {
 	h := newScriptHarness(t, replacementScript, time.Second)
-	h.forwardHTTP(t, listRoute, query(queryType, "london", "reference"))
+	h.forwardHTTP(t, listRoute, query(t, queryType, "london", "reference"))
 	ctx, cancel := context.WithTimeout(h.ctx, 20*time.Millisecond)
 	defer cancel()
 
-	_, err := h.engine.EgressCandidate(model.ProtocolHTTP).ProcessRequest(ctx, Some(h.requestID), getRoute, notIgnored, query(queryType, "london", ""))
+	_, err := h.engine.EgressCandidate(model.ProtocolHTTP).ProcessRequest(ctx, Some(h.requestID), getRoute, notIgnored, query(t, queryType, "london", ""))
 
 	assert.Equal(t, "wait for source reference response: context deadline exceeded", err.Error())
 	assert.Equal(t, []model.QuarantineReason{{
@@ -383,13 +381,13 @@ func TestEgressQuarantinesReplacingRequestThatGivesUpOnSourceResponse(t *testing
 func TestEngineReportsSourceResponseTypes(t *testing.T) {
 	h := newScriptHarness(t, replacementScript, time.Second)
 
-	assert.Equal(t, replacementType, h.engine.EgressSourceResponse(model.ProtocolHTTP, listRoute))
+	assert.Equal(t, Some[schema.TypeRef]("test.v1.Response"), h.engine.EgressSourceResponse(model.ProtocolHTTP, listRoute))
 	assert.Equal(t, None[schema.TypeRef](), h.engine.EgressSourceResponse(model.ProtocolHTTP, getRoute))
 	assert.Equal(t, None[schema.TypeRef](), h.engine.EgressSourceResponse(fake, listRoute))
 }
 
 // forwardHTTP sends an HTTP reference request and waits until it is hashed.
-func (h *harness) forwardHTTP(t *testing.T, route model.Route, request func(ctx context.Context) (protocol.Message, error)) protocol.Exchange {
+func (h *harness) forwardHTTP(t *testing.T, route model.Route, request func(ctx context.Context) (schema.Value, error)) protocol.Exchange {
 	t.Helper()
 	decision, err := h.engine.EgressReference(model.ProtocolHTTP).ProcessRequest(h.ctx, Some(h.requestID), route, notIgnored, request)
 	assert.NoError(t, err)
@@ -398,8 +396,10 @@ func (h *harness) forwardHTTP(t *testing.T, route model.Route, request func(ctx 
 }
 
 // listed is a source reference response that decodes to "listed".
-func listed(raw protocol.Raw) protocol.Response {
+func listed(t *testing.T, raw protocol.Raw) protocol.Response {
+	t.Helper()
+	message := instance(t, responseType, map[string]any{"value": "listed"})
 	return protocol.Response{Raw: raw, Decode: func(context.Context) protocol.Content {
-		return protocol.Content{Status: Some("200"), Message: Some(protocol.Message{Type: replacementType, Value: map[string]any{"value": "listed"}})}
+		return protocol.Content{Status: Some("200"), Message: Some(message)}
 	}}
 }

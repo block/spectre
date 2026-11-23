@@ -72,15 +72,14 @@ type exit struct {
 	err  error
 }
 
-// New validates config and returns a mirror of services that run elsewhere. The
-// catalog checks the migration state, if config names one.
-func New(ctx context.Context, config ProxyConfig, catalog *state.Catalog) (*Mirror, error) {
+// New validates config and returns a mirror of services that run elsewhere.
+func New(ctx context.Context, config ProxyConfig) (*Mirror, error) {
 	if err := config.Validate(); err != nil {
 		return nil, errors.WithStack(err)
 	}
 	migration := None[state.State]()
 	if stateFile := config.Mirror.StateFile; stateFile != "" {
-		loaded, err := state.Load(stateFile, catalog)
+		loaded, err := state.Load(stateFile)
 		if err != nil {
 			return nil, errors.Wrapf(err, "load migration state %s", stateFile)
 		}

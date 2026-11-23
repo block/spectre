@@ -1,8 +1,6 @@
 // Spectre's script API. Type arguments name schema types and field paths; Spectre
 // reads them from the type checker when it loads scripts, so they must be explicit.
 declare module "spectre" {
-  type Normaliser<V> = (value: V) => V | undefined;
-
   // Same is exact type identity, so a structurally similar type is not mistaken
   // for an ancestor when cutting off recursive paths.
   type Same<A, B> = (<G>() => G extends A ? 1 : 2) extends <G>() => G extends B ? 1 : 2 ? true : false;
@@ -81,8 +79,8 @@ declare module "spectre" {
     requestHeader(name: string, select: HeaderSelect): IngressHTTPRule;
     /** Narrows the rule to responses whose header matches, as requestHeader does. Each side selects by its own. */
     responseHeader(name: string, select: HeaderSelect): IngressHTTPRule;
-    /** Decodes the selected responses' bodies as T, then normalises each response. */
-    match<T extends object>(normalise?: (response: Response<T>) => Response<T>): void;
+    /** Decodes the selected responses' bodies as T, Text, or unknown, then normalises each response. */
+    match<T>(normalise?: (response: Response<T>) => Response<T>): void;
     /** Skips comparison of the selected responses; they are never quarantined. */
     ignore(): void;
   }
@@ -176,10 +174,10 @@ declare module "spectre" {
     /** The service's MySQL statements. */
     mysql: EgressMySQL;
   };
-  /** Normalises field P of every T; returning undefined removes it. */
-  export function field<T extends object, P extends FieldPath<T>>(normalise: Normaliser<FieldValue<T, P>>): void;
-  /** Normalises every T; returning undefined removes it. */
-  export function message<T extends object>(normalise: Normaliser<T | undefined>): void;
+  /** Normalises field P of every T, a normalised type; returning undefined removes an optional field. */
+  export function field<T extends object, P extends FieldPath<T>>(normalise: (value: FieldValue<T, P>) => FieldValue<T, P>): void;
+  /** Declares N, T with some fields made optional, as T's normalised type, and normalises every T. */
+  export function message<T extends object, N extends object = T>(normalise?: (value: N | undefined) => N | undefined): void;
   /** Returns the value of a script variable, such as an environment's host name. It throws if the variable is unset. */
   export function variable(name: string): string;
 }

@@ -11,7 +11,6 @@ import (
 	. "github.com/alecthomas/types/optional"
 	"github.com/grafana/sobek"
 
-	"github.com/block/spectre/internal/model"
 	"github.com/block/spectre/internal/schema"
 )
 
@@ -93,20 +92,20 @@ func (e *Evaluator) Close() {
 
 // NormaliseField invokes the normaliser registered for a JSON field path. None
 // stands for an absent field in both the argument and the result.
-func (e *Evaluator) NormaliseField(target FieldTarget, value Option[model.DynamicValue]) (Option[model.DynamicValue], error) {
+func (e *Evaluator) NormaliseField(target FieldTarget, value Option[schema.Value]) (Option[schema.Value], error) {
 	callback, ok := e.registry.field(target)
 	if !ok {
-		return None[model.DynamicValue](), errors.Errorf("JavaScript field normaliser (%q, %q) is unavailable", target.Type(), target.Path())
+		return None[schema.Value](), errors.Errorf("JavaScript field normaliser (%q, %q) is unavailable", target.Type(), target.Path())
 	}
 	return e.normalise(callback, value)
 }
 
 // NormaliseMessage invokes the normaliser registered for an object type. None
 // stands for an absent message in both the argument and the result.
-func (e *Evaluator) NormaliseMessage(target schema.TypeRef, value Option[model.DynamicValue]) (Option[model.DynamicValue], error) {
+func (e *Evaluator) NormaliseMessage(target schema.TypeRef, value Option[schema.Value]) (Option[schema.Value], error) {
 	callback, ok := e.registry.message(target)
 	if !ok {
-		return None[model.DynamicValue](), errors.Errorf("JavaScript message normaliser %q is unavailable", target)
+		return None[schema.Value](), errors.Errorf("JavaScript message normaliser %q is unavailable", target)
 	}
 	return e.normalise(callback, value)
 }
@@ -182,17 +181,17 @@ func (e *Evaluator) selects(rule Rule, callback sobek.Callable, argument sobek.V
 
 // NormaliseResponse invokes a rule's response normaliser on a JSON response
 // object. None stands for an undefined result.
-func (e *Evaluator) NormaliseResponse(rule Rule, response model.DynamicValue) (Option[model.DynamicValue], error) {
+func (e *Evaluator) NormaliseResponse(rule Rule, response schema.Value) (Option[schema.Value], error) {
 	callbacks := e.registry.rule(rule.Index())
 	callback, ok := callbacks.normalise.Get()
 	if !ok {
-		return None[model.DynamicValue](), errors.Errorf("JavaScript normaliser of rule %s is unavailable", rule)
+		return None[schema.Value](), errors.Errorf("JavaScript normaliser of rule %s is unavailable", rule)
 	}
 	return e.normalise(callback, Some(response))
 }
 
 // ReplaceRequest maps a request to a replacing endpoint to the source request it pairs with.
-func (e *Evaluator) ReplaceRequest(replacement Replacement, request model.DynamicValue) (model.DynamicValue, error) {
+func (e *Evaluator) ReplaceRequest(replacement Replacement, request schema.Value) (schema.Value, error) {
 	callbacks, ok := e.registry.replacer(replacement.Index())
 	if !ok {
 		return nil, errors.Errorf("JavaScript request function of %s is unavailable", replacement)
@@ -202,7 +201,7 @@ func (e *Evaluator) ReplaceRequest(replacement Replacement, request model.Dynami
 
 // ReplaceResponse builds the answer to a request to a replacing endpoint from a
 // reference response to its source.
-func (e *Evaluator) ReplaceResponse(replacement Replacement, request, reference model.DynamicValue) (model.DynamicValue, error) {
+func (e *Evaluator) ReplaceResponse(replacement Replacement, request, reference schema.Value) (schema.Value, error) {
 	callbacks, ok := e.registry.replacer(replacement.Index())
 	if !ok {
 		return nil, errors.Errorf("JavaScript response function of %s is unavailable", replacement)
@@ -210,7 +209,7 @@ func (e *Evaluator) ReplaceResponse(replacement Replacement, request, reference 
 	return e.replace(replacement, "response", callbacks.response, request, reference)
 }
 
-func (e *Evaluator) replace(replacement Replacement, function string, callback sobek.Callable, values ...model.DynamicValue) (model.DynamicValue, error) {
+func (e *Evaluator) replace(replacement Replacement, function string, callback sobek.Callable, values ...schema.Value) (schema.Value, error) {
 	arguments := make([]sobek.Value, 0, len(values))
 	for _, value := range values {
 		argument, err := e.argument(Some(value))
@@ -414,26 +413,26 @@ func sqlText(value sobek.Value) (Option[string], error) {
 }
 
 // normalise returns an undefined result as None so callers can remove the node.
-func (e *Evaluator) normalise(callback sobek.Callable, value Option[model.DynamicValue]) (Option[model.DynamicValue], error) {
+func (e *Evaluator) normalise(callback sobek.Callable, value Option[schema.Value]) (Option[schema.Value], error) {
 	argument, err := e.argument(value)
 	if err != nil {
-		return None[model.DynamicValue](), errors.Wrap(err, "clone normaliser argument")
+		return None[schema.Value](), errors.Wrap(err, "clone normaliser argument")
 	}
 	result, err := callback(sobek.Undefined(), argument)
 	if err != nil {
-		return None[model.DynamicValue](), scriptError(err, "JavaScript normaliser threw an exception")
+		return None[schema.Value](), scriptError(err, "JavaScript normaliser threw an exception")
 	}
 	if sobek.IsUndefined(result) {
-		return None[model.DynamicValue](), nil
+		return None[schema.Value](), nil
 	}
 	normalised, err := e.result(result)
 	if err != nil {
-		return None[model.DynamicValue](), err
+		return None[schema.Value](), err
 	}
 	return Some(normalised), nil
 }
 
-func (e *Evaluator) argument(optionalValue Option[model.DynamicValue]) (sobek.Value, error) {
+func (e *Evaluator) argument(optionalValue Option[schema.Value]) (sobek.Value, error) {
 	value, present := optionalValue.Get()
 	if !present {
 		return sobek.Undefined(), nil
@@ -448,7 +447,8 @@ func (e *Evaluator) argument(optionalValue Option[model.DynamicValue]) (sobek.Va
 }
 
 // result detaches a normalised value from the runtime through the JSON helper.
-func (e *Evaluator) result(value sobek.Value) (model.DynamicValue, error) {
+// Scripts return unknown, so the value is of type unknown.
+func (e *Evaluator) result(value sobek.Value) (schema.Value, error) {
 	encoded, err := e.stringify(sobek.Undefined(), value)
 	if err != nil {
 		return nil, errors.New("JavaScript normaliser returned a value that is not representable as JSON")
@@ -457,11 +457,8 @@ func (e *Evaluator) result(value sobek.Value) (model.DynamicValue, error) {
 	if !ok {
 		return nil, errors.New("JavaScript normaliser returned a value that is not representable as JSON")
 	}
-	var normalised model.DynamicValue
-	if err := json.Unmarshal([]byte(text), &normalised); err != nil {
-		return nil, errors.Wrap(err, "decode normalised value")
-	}
-	return normalised, nil
+	normalised, err := schema.Decode(schema.UnknownType{}, []byte(text))
+	return normalised, errors.Wrap(err, "decode normalised value")
 }
 
 // scriptError hides the exception but keeps an interruption so callers can see cancellation.

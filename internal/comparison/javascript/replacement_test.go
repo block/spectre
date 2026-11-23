@@ -45,13 +45,14 @@ func TestEvaluatesReplacementFunctions(t *testing.T) {
 	defer evaluator.Close()
 	replacement := program.Replacements()[0]
 
-	request, err := evaluator.ReplaceRequest(replacement, map[string]any{"name": "Ada"})
+	ada := objectValue(t, program, "test.v1.User", `{"name":"Ada"}`)
+	request, err := evaluator.ReplaceRequest(replacement, ada)
 	assert.NoError(t, err)
-	response, err := evaluator.ReplaceResponse(replacement, map[string]any{"name": "Ada"}, map[string]any{"value": "x", "values": []any{"a", "b"}})
+	response, err := evaluator.ReplaceResponse(replacement, ada, objectValue(t, program, "test.v1.Response", `{"value":"x","values":["a","b"]}`))
 	assert.NoError(t, err)
 
-	assert.Equal(t, any(map[string]any{"name": "ada"}), request)
-	assert.Equal(t, any(map[string]any{"value": "Ada", "values": []any{"a", "b"}}), response)
+	assert.Equal(t, unknownValue(t, `{"name":"ada"}`), request)
+	assert.Equal(t, unknownValue(t, `{"value":"Ada","values":["a","b"]}`), response)
 }
 
 func TestReplacementFunctionFailures(t *testing.T) {
@@ -81,8 +82,9 @@ func TestReplacementFunctionFailures(t *testing.T) {
 			defer evaluator.Close()
 			replacement := program.Replacements()[0]
 
-			_, requestErr := evaluator.ReplaceRequest(replacement, map[string]any{"name": "Ada"})
-			_, responseErr := evaluator.ReplaceResponse(replacement, map[string]any{"name": "Ada"}, map[string]any{})
+			ada := objectValue(t, program, "test.v1.User", `{"name":"Ada"}`)
+			_, requestErr := evaluator.ReplaceRequest(replacement, ada)
+			_, responseErr := evaluator.ReplaceResponse(replacement, ada, objectValue(t, program, "test.v1.Response", `{"value":"","values":[]}`))
 
 			err = requestErr
 			if err == nil {

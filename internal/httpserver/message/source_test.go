@@ -8,21 +8,19 @@ import (
 	. "github.com/alecthomas/types/optional"
 
 	"github.com/block/spectre/internal/httpserver/message"
-	"github.com/block/spectre/internal/protocol"
 	"github.com/block/spectre/internal/schema"
 )
 
 func TestDecodesSuccessfulSourceResponses(t *testing.T) {
 	decoder := newRawDecoder(t)
-	item := Some[schema.TypeRef]("raw.Item")
 	for name, test := range map[string]struct {
 		response message.Response
-		message  Option[protocol.Message]
+		message  Option[typedValue]
 		failure  string
 	}{
 		"Success": {
 			response: httpResponse(http.StatusOK, "application/json", `{"id":"one","count":2}`),
-			message:  Some(protocol.Message{Type: item, Value: map[string]any{"id": "one", "count": 2.0}}),
+			message:  Some(typedValue{declared: "raw.Item", value: map[string]any{"id": "one", "count": 2.0}}),
 		},
 		"ErrorStatus": {
 			response: httpResponse(http.StatusNotFound, "application/json", `{"id":"one"}`),
@@ -38,7 +36,7 @@ func TestDecodesSuccessfulSourceResponses(t *testing.T) {
 
 			if test.failure == "" {
 				assert.Equal(t, None[error](), content.Failure)
-				assert.Equal(t, test.message, content.Message)
+				assert.Equal(t, test.message, typedValues(t, content.Message))
 				return
 			}
 			failure, failed := content.Failure.Get()
@@ -50,15 +48,22 @@ func TestDecodesSuccessfulSourceResponses(t *testing.T) {
 
 func TestEncodesAnswers(t *testing.T) {
 	decoder := newRawDecoder(t)
-	item := Some[schema.TypeRef]("raw.Item")
+	loaded, err := schema.New([]*schema.ObjectType{{Name: "raw.Item", Fields: []schema.Field{{Name: "id", Type: schema.StringType{}}}}}, nil)
+	assert.NoError(t, err)
+	itemType, err := loaded.Type("raw.Item")
+	assert.NoError(t, err)
+	item, err := schema.Decode(itemType, []byte(`{"id":"one"}`))
+	assert.NoError(t, err)
+	text, err := schema.As(schema.StringType{}, schema.NewString("one"))
+	assert.NoError(t, err)
 
-	answer, err := decoder.Answer(http.Header{}, protocol.Message{Type: item, Value: map[string]any{"id": "one"}})
+	answer, err := decoder.Answer(http.Header{}, item)
 	assert.NoError(t, err)
 	assert.Equal(t, message.Answer{Header: http.Header{"Content-Type": {"application/json"}}, Body: []byte(`{"id":"one"}`)}, answer)
 
-	_, err = decoder.Answer(http.Header{"Content-Type": {"application/grpc"}}, protocol.Message{Type: item, Value: map[string]any{"id": "one"}})
+	_, err = decoder.Answer(http.Header{"Content-Type": {"application/grpc"}}, item)
 	assert.EqualError(t, err, "gRPC requests cannot be answered")
 
-	_, err = decoder.Answer(http.Header{}, protocol.Message{Type: None[schema.TypeRef](), Value: "one"})
-	assert.EqualError(t, err, "answer has no type")
+	_, err = decoder.Answer(http.Header{"Content-Type": {"application/x-protobuf"}}, text)
+	assert.EqualError(t, err, "encode answer as string: string is not a protobuf message type")
 }

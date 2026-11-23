@@ -16,7 +16,7 @@ import (
 )
 
 var (
-	responseType = Some[schema.TypeRef]("test.v1.Response")
+	responseType = &schema.ObjectType{Name: "test.v1.Response", Fields: textFields}
 	notIgnored   = None[string]()
 	ignoredFor   = Some("ignored for test")
 )
@@ -31,8 +31,8 @@ func TestIngressComparesResponses(t *testing.T) {
 		logged      map[string]any
 	}{
 		"Equivalent": {
-			reference: protocol.Response{Decode: decoded("OK", message(responseType, "london", "first"))},
-			candidate: protocol.Response{Decode: decoded("OK", message(responseType, "london", "second"))},
+			reference: protocol.Response{Decode: decoded("OK", message(t, responseType, "london", "first"))},
+			candidate: protocol.Response{Decode: decoded("OK", message(t, responseType, "london", "second"))},
 			logged:    map[string]any{"outcome": "equivalent"},
 		},
 		"NoMessages": {
@@ -41,33 +41,33 @@ func TestIngressComparesResponses(t *testing.T) {
 			logged:    map[string]any{"outcome": "equivalent"},
 		},
 		"DivergentMessages": {
-			reference:   protocol.Response{Decode: decoded("OK", message(responseType, "london", ""))},
-			candidate:   protocol.Response{Decode: decoded("OK", message(responseType, "paris", ""))},
+			reference:   protocol.Response{Decode: decoded("OK", message(t, responseType, "london", ""))},
+			candidate:   protocol.Response{Decode: decoded("OK", message(t, responseType, "paris", ""))},
 			quarantined: []string{"response differences: ~ $.value"},
 			logged:      map[string]any{"outcome": "divergent", "differences": []any{"~ $.value"}},
 		},
 		"UntypedMessagesSkipNormalisers": {
-			reference: protocol.Response{Decode: decoded("OK", message(None[schema.TypeRef](), "london", "first"))},
-			candidate: protocol.Response{Decode: decoded("OK", message(None[schema.TypeRef](), "london", "second"))},
+			reference: protocol.Response{Decode: decoded("OK", message(t, unknown, "london", "first"))},
+			candidate: protocol.Response{Decode: decoded("OK", message(t, unknown, "london", "second"))},
 			// Untyped keys are payload data, so no path quotes them.
 			quarantined: []string{"response differences: ~ $[*]"},
 			logged:      map[string]any{"outcome": "divergent", "differences": []any{"~ $[*]"}},
 		},
 		"Status": {
-			reference:   protocol.Response{Decode: decoded("OK", message(responseType, "london", ""))},
-			candidate:   protocol.Response{Decode: decoded("NOT_FOUND", message(responseType, "london", ""))},
+			reference:   protocol.Response{Decode: decoded("OK", message(t, responseType, "london", ""))},
+			candidate:   protocol.Response{Decode: decoded("NOT_FOUND", message(t, responseType, "london", ""))},
 			quarantined: []string{"response differences: ~ $status OK → NOT_FOUND"},
 			logged:      map[string]any{"outcome": "divergent", "differences": []any{"~ $status OK → NOT_FOUND"}},
 		},
 		"MissingCandidateMessage": {
-			reference:   protocol.Response{Decode: decoded("OK", message(responseType, "london", ""))},
+			reference:   protocol.Response{Decode: decoded("OK", message(t, responseType, "london", ""))},
 			candidate:   protocol.Response{Decode: statusOnly("OK")},
 			quarantined: []string{"response differences: - $"},
 			logged:      map[string]any{"outcome": "divergent", "differences": []any{"- $"}},
 		},
 		"DifferentMessageTypes": {
-			reference:   protocol.Response{Decode: decoded("OK", message(responseType, "london", ""))},
-			candidate:   protocol.Response{Decode: decoded("OK", message(None[schema.TypeRef](), "london", ""))},
+			reference:   protocol.Response{Decode: decoded("OK", message(t, responseType, "london", ""))},
+			candidate:   protocol.Response{Decode: decoded("OK", message(t, unknown, "london", ""))},
 			quarantined: []string{"response comparison failed: reference and candidate messages have different types"},
 			logged:      map[string]any{"outcome": "unable", "reason": "reference and candidate messages have different types"},
 		},
@@ -116,7 +116,7 @@ func TestIngressComparesResponses(t *testing.T) {
 		"Ignored": {
 			route:     "ignored",
 			ignored:   ignoredFor,
-			reference: protocol.Response{Decode: decoded("OK", message(responseType, "london", ""))},
+			reference: protocol.Response{Decode: decoded("OK", message(t, responseType, "london", ""))},
 			candidate: protocol.Response{Decode: statusOnly("NOT_FOUND")},
 			logged:    map[string]any{"outcome": "skipped", "reason": "ignored for test"},
 		},
@@ -189,31 +189,31 @@ func TestIngressAppliesRules(t *testing.T) {
 			logged:      map[string]any{"outcome": "unable", "reason": "only one response is ignored"},
 		},
 		"NormalisedStatus": {
-			reference: side{content: protocol.Content{Status: Some("200"), Message: message(responseType, "london", "")}, rule: Some(normalised)},
-			candidate: side{content: protocol.Content{Status: Some("201"), Message: message(responseType, "london", "")}, rule: Some(normalised)},
+			reference: side{content: protocol.Content{Status: Some("200"), Message: message(t, responseType, "london", "")}, rule: Some(normalised)},
+			candidate: side{content: protocol.Content{Status: Some("201"), Message: message(t, responseType, "london", "")}, rule: Some(normalised)},
 			logged:    map[string]any{"outcome": "equivalent"},
 		},
 		"NormalisedBodyDiffers": {
-			reference:   side{content: protocol.Content{Status: Some("200"), Message: message(responseType, "london", "")}, rule: Some(normalised)},
-			candidate:   side{content: protocol.Content{Status: Some("201"), Message: message(responseType, "paris", "")}, rule: Some(normalised)},
+			reference:   side{content: protocol.Content{Status: Some("200"), Message: message(t, responseType, "london", "")}, rule: Some(normalised)},
+			candidate:   side{content: protocol.Content{Status: Some("201"), Message: message(t, responseType, "paris", "")}, rule: Some(normalised)},
 			quarantined: []string{"response differences: ~ $.value"},
 			logged:      map[string]any{"outcome": "divergent", "differences": []any{"~ $.value"}},
 		},
 		"NormalisedStatusDiffers": {
-			reference: side{content: protocol.Content{Status: Some("201"), Message: message(responseType, "london", "")}, rule: Some(normalised)},
-			candidate: side{content: protocol.Content{Status: Some("500"), Message: message(responseType, "london", "")}, rule: Some(normalised)},
+			reference: side{content: protocol.Content{Status: Some("201"), Message: message(t, responseType, "london", "")}, rule: Some(normalised)},
+			candidate: side{content: protocol.Content{Status: Some("500"), Message: message(t, responseType, "london", "")}, rule: Some(normalised)},
 			// The services' statuses are reported, not the normalised ones.
 			quarantined: []string{"response differences: ~ $status 201 → 500"},
 			logged:      map[string]any{"outcome": "divergent", "differences": []any{"~ $status 201 → 500"}},
 		},
 		"StatusNotCompared": {
-			reference: side{content: protocol.Content{Status: Some("200"), Message: message(responseType, "london", "")}, rule: Some(bodyOnly)},
-			candidate: side{content: protocol.Content{Status: Some("500"), Message: message(responseType, "london", "")}, rule: Some(bodyOnly)},
+			reference: side{content: protocol.Content{Status: Some("200"), Message: message(t, responseType, "london", "")}, rule: Some(bodyOnly)},
+			candidate: side{content: protocol.Content{Status: Some("500"), Message: message(t, responseType, "london", "")}, rule: Some(bodyOnly)},
 			logged:    map[string]any{"outcome": "equivalent"},
 		},
 		"UndecodableComparesRawStatus": {
 			reference:   side{content: protocol.Content{Status: Some("500"), Failure: Some(errors.New("bad body"))}, rule: Some(bodyOnly)},
-			candidate:   side{content: protocol.Content{Status: Some("200"), Message: message(responseType, "london", "")}, rule: Some(bodyOnly)},
+			candidate:   side{content: protocol.Content{Status: Some("200"), Message: message(t, responseType, "london", "")}, rule: Some(bodyOnly)},
 			quarantined: []string{"response differences: ~ $status 500 → 200"},
 			logged:      map[string]any{"outcome": "divergent", "differences": []any{"~ $status 500 → 200"}},
 		},
@@ -595,22 +595,22 @@ func (h *harness) mirror(t *testing.T, route model.Route, ignored Option[string]
 }
 
 // unreadPayload fails the test if ingress reads a request payload.
-func unreadPayload(t *testing.T) func(ctx context.Context) (protocol.Message, error) {
-	return func(context.Context) (protocol.Message, error) {
+func unreadPayload(t *testing.T) func(ctx context.Context) (schema.Value, error) {
+	return func(context.Context) (schema.Value, error) {
 		t.Error("ingress read a request payload")
-		return protocol.Message{}, errors.New("unread")
+		return nil, errors.New("unread")
 	}
 }
 
 // decoded returns a Decode func for a response with a known status and message.
-func decoded(status string, message Option[protocol.Message]) func(context.Context) protocol.Content {
+func decoded(status string, message Option[schema.Value]) func(context.Context) protocol.Content {
 	return func(context.Context) protocol.Content {
 		return protocol.Content{Status: Some(status), Message: message}
 	}
 }
 
 func statusOnly(status string) func(context.Context) protocol.Content {
-	return decoded(status, None[protocol.Message]())
+	return decoded(status, None[schema.Value]())
 }
 
 // undecodable returns a Decode func whose body failed to decode.
@@ -620,8 +620,9 @@ func undecodable(status Option[string], reason string) func(context.Context) pro
 	}
 }
 
-func message(typeRef Option[schema.TypeRef], value, trace string) Option[protocol.Message] {
-	return Some(protocol.Message{Type: typeRef, Value: map[string]any{"value": value, "trace": trace}})
+func message(t *testing.T, declared schema.Type, value, trace string) Option[schema.Value] {
+	t.Helper()
+	return Some(instance(t, declared, map[string]any{"value": value, "trace": trace}))
 }
 
 // comparisonRecord is the comparison log record for route with attributes added.

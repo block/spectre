@@ -52,29 +52,35 @@ func TestDeclarationsSampleRoundTrip(t *testing.T) {
 
 	user, err := loaded.Type("spectre.sample.v1.User")
 	assert.NoError(t, err)
-	text := schema.Value{Kind: schema.KindString}
-	assert.Equal(t, &schema.Type{Name: "spectre.sample.v1.User", Fields: []schema.Field{
-		{Name: "id", Value: text},
-		{Name: "name", Value: text},
-		{Name: "nickname", Optional: true, Value: text},
-		{Name: "roles", Value: schema.Value{Kind: schema.KindList, Element: Some(&schema.Value{
-			Kind: schema.KindNumber, Type: "spectre.sample.v1.Role",
-			Literals: []string{"ROLE_ADMIN", "ROLE_EDITOR", "ROLE_READER", "ROLE_UNSPECIFIED"},
-		})}},
-		{Name: "labels", Value: schema.Value{Kind: schema.KindMap, Element: Some(&text)}},
-		{Name: "profile", Optional: true, Value: schema.Value{Kind: schema.KindObject, Type: "spectre.sample.v1.User.Profile"}},
-		{Name: "avatar", Value: text},
-		{Name: "revision", Value: text},
-		{Name: "createdAt", Optional: true, Value: text},
-		{Name: "email", Optional: true, Value: text},
-		{Name: "phone", Optional: true, Value: schema.Value{Kind: schema.KindObject, Type: "spectre.sample.v1.Phone"}},
-	}}, user)
+	text := schema.StringType{}
+	address, err := loaded.Type("spectre.sample.v1.Address")
+	assert.NoError(t, err)
+	preference, err := loaded.Type("spectre.sample.v1.Preference")
+	assert.NoError(t, err)
+	phone, err := loaded.Type("spectre.sample.v1.Phone")
+	assert.NoError(t, err)
 	profile, err := loaded.Type("spectre.sample.v1.User.Profile")
 	assert.NoError(t, err)
-	assert.Equal(t, &schema.Type{Name: "spectre.sample.v1.User.Profile", Fields: []schema.Field{
-		{Name: "addresses", Value: schema.Value{Kind: schema.KindList, Element: Some(&schema.Value{Kind: schema.KindObject, Type: "spectre.sample.v1.Address"})}},
-		{Name: "marketingConsent", Optional: true, Value: schema.Value{Kind: schema.KindBoolean}},
-		{Name: "preferences", Value: schema.Value{Kind: schema.KindMap, Element: Some(&schema.Value{Kind: schema.KindObject, Type: "spectre.sample.v1.Preference"})}},
+	assert.Equal(t, &schema.ObjectType{Name: "spectre.sample.v1.User", Fields: []schema.Field{
+		{Name: "id", Type: text},
+		{Name: "name", Type: text},
+		{Name: "nickname", Optional: true, Type: text},
+		{Name: "roles", Type: schema.ListType{Element: schema.NumberType{
+			Name:     Some(schema.TypeRef("spectre.sample.v1.Role")),
+			Literals: []string{"ROLE_ADMIN", "ROLE_EDITOR", "ROLE_READER", "ROLE_UNSPECIFIED"},
+		}}},
+		{Name: "labels", Type: schema.MapType{Element: text}},
+		{Name: "profile", Optional: true, Type: profile},
+		{Name: "avatar", Type: text},
+		{Name: "revision", Type: text},
+		{Name: "createdAt", Optional: true, Type: text},
+		{Name: "email", Optional: true, Type: text},
+		{Name: "phone", Optional: true, Type: phone},
+	}}, user)
+	assert.Equal(t, &schema.ObjectType{Name: "spectre.sample.v1.User.Profile", Fields: []schema.Field{
+		{Name: "addresses", Type: schema.ListType{Element: address}},
+		{Name: "marketingConsent", Optional: true, Type: schema.BooleanType{}},
+		{Name: "preferences", Type: schema.MapType{Element: preference}},
 	}}, profile)
 	assert.Equal(t, []schema.Operation{
 		{Name: "spectre.sample.v1.UserService.GetUser", Request: "spectre.sample.v1.GetUserRequest", Response: "spectre.sample.v1.GetUserResponse"},
@@ -146,11 +152,14 @@ func TestSampleDeclarationWireJSONRoundTrip(t *testing.T) {
 			fromJSON := dynamicpb.NewMessage(message)
 			assert.NoError(t, protojson.Unmarshal(jsonData, fromJSON))
 			assert.True(t, proto.Equal(fromBinary, fromJSON))
+			declared, err := loaded.Type(schema.TypeRef(messageName))
+			assert.NoError(t, err)
 			expected := decodeJSON(t, []byte(test.expected))
 			for _, data := range [][]byte{jsonData, binaryJSON, []byte(test.expected)} {
 				actual := decodeJSON(t, data)
 				assert.Equal(t, expected, actual)
-				assert.NoError(t, loaded.Validate(schema.TypeRef(messageName), actual))
+				_, err := schema.Decode(declared, data)
+				assert.NoError(t, err)
 			}
 		})
 	}
@@ -164,28 +173,33 @@ func TestDeclarationsWellKnownScalars(t *testing.T) {
 	assert.NoError(t, err)
 	declared, err := loaded.Type("example.Payload")
 	assert.NoError(t, err)
-	text := schema.Value{Kind: schema.KindString}
-	number := schema.Value{Kind: schema.KindNumber}
-	float := schema.Value{Kind: schema.KindNumber, Literals: []string{"-Infinity", "Infinity", "NaN"}}
-	assert.Equal(t, &schema.Type{Name: "example.Payload", Fields: []schema.Field{
-		{Name: "timestamp", Optional: true, Value: text},
-		{Name: "duration", Optional: true, Value: text},
-		{Name: "fieldMask", Optional: true, Value: text},
-		{Name: "stringValue", Optional: true, Value: text},
-		{Name: "bytesValue", Optional: true, Value: text},
-		{Name: "int64Value", Optional: true, Value: text},
-		{Name: "uint64Value", Optional: true, Value: text},
-		{Name: "doubleValue", Optional: true, Value: float},
-		{Name: "floatValue", Optional: true, Value: float},
-		{Name: "int32Value", Optional: true, Value: number},
-		{Name: "uint32Value", Optional: true, Value: number},
-		{Name: "boolValue", Optional: true, Value: schema.Value{Kind: schema.KindBoolean}},
+	text := schema.StringType{}
+	number := schema.NumberType{}
+	float := schema.NumberType{Literals: []string{"-Infinity", "Infinity", "NaN"}}
+	assert.Equal(t, &schema.ObjectType{Name: "example.Payload", Fields: []schema.Field{
+		{Name: "timestamp", Optional: true, Type: text},
+		{Name: "duration", Optional: true, Type: text},
+		{Name: "fieldMask", Optional: true, Type: text},
+		{Name: "stringValue", Optional: true, Type: text},
+		{Name: "bytesValue", Optional: true, Type: text},
+		{Name: "int64Value", Optional: true, Type: text},
+		{Name: "uint64Value", Optional: true, Type: text},
+		{Name: "doubleValue", Optional: true, Type: float},
+		{Name: "floatValue", Optional: true, Type: float},
+		{Name: "int32Value", Optional: true, Type: number},
+		{Name: "uint32Value", Optional: true, Type: number},
+		{Name: "boolValue", Optional: true, Type: schema.BooleanType{}},
 	}}, declared)
 	assert.Equal(t, 1, len(generated))
 }
 
 func TestDeclarationsAcceptNumbersForOpenEnums(t *testing.T) {
-	for syntax, kind := range map[string]schema.Kind{"proto2": schema.KindEnum, "proto3": schema.KindNumber} {
+	name := Some(schema.TypeRef("example.State"))
+	literals := []string{"STATE_ACTIVE", "STATE_UNSPECIFIED"}
+	for syntax, state := range map[string]schema.Type{
+		"proto2": schema.EnumType{Name: name, Literals: literals},
+		"proto3": schema.NumberType{Name: name, Literals: literals},
+	} {
 		t.Run(syntax, func(t *testing.T) {
 			set := plainDescriptorSet()
 			file := set.GetFile()[0]
@@ -204,9 +218,8 @@ func TestDeclarationsAcceptNumbersForOpenEnums(t *testing.T) {
 			assert.NoError(t, err)
 			declared, err := loaded.Type("example.Payload")
 			assert.NoError(t, err)
-			state := schema.Value{Kind: kind, Literals: []string{"STATE_ACTIVE", "STATE_UNSPECIFIED"}, Type: "example.State"}
-			assert.Equal(t, &schema.Type{Name: "example.Payload", Fields: []schema.Field{
-				{Name: "state", Optional: syntax == "proto2", Value: state},
+			assert.Equal(t, &schema.ObjectType{Name: "example.Payload", Fields: []schema.Field{
+				{Name: "state", Optional: syntax == "proto2", Type: state},
 			}}, declared)
 		})
 	}
@@ -233,9 +246,9 @@ func TestDeclarationsAcceptExtensions(t *testing.T) {
 	assert.NoError(t, err)
 	declared, err := loaded.Type("example.Payload")
 	assert.NoError(t, err)
-	assert.Equal(t, &schema.Type{Name: "example.Payload", Fields: []schema.Field{
-		{Name: "[example.Holder.note]", Optional: true, Value: schema.Value{Kind: schema.KindString}},
-		{Name: "[example.tags]", Optional: true, Value: schema.Value{Kind: schema.KindList, Element: Some(&schema.Value{Kind: schema.KindString})}},
+	assert.Equal(t, &schema.ObjectType{Name: "example.Payload", Fields: []schema.Field{
+		{Name: "[example.Holder.note]", Optional: true, Type: schema.StringType{}},
+		{Name: "[example.tags]", Optional: true, Type: schema.ListType{Element: schema.StringType{}}},
 	}}, declared)
 
 	registry, err := descriptors.NewRegistry(set)
@@ -257,7 +270,8 @@ func TestDeclarationsAcceptExtensions(t *testing.T) {
 	}
 	data, err := (protojson.MarshalOptions{Resolver: registry.Types(), EmitDefaultValues: true}).Marshal(payload)
 	assert.NoError(t, err)
-	assert.NoError(t, loaded.Validate("example.Payload", decodeJSON(t, data)))
+	_, err = schema.Decode(declared, data)
+	assert.NoError(t, err)
 	assert.NoError(t, descriptors.CheckAgreement(registry, loaded))
 }
 
@@ -452,7 +466,7 @@ func TestDeclarationsQuotesJSONNames(t *testing.T) {
 	assert.NoError(t, err)
 	actual, err := loaded.Type("example.Payload")
 	assert.NoError(t, err)
-	assert.Equal(t, &schema.Type{Name: "example.Payload", Fields: []schema.Field{{Name: `odd"key-name`, Value: schema.Value{Kind: schema.KindString}}}}, actual)
+	assert.Equal(t, &schema.ObjectType{Name: "example.Payload", Fields: []schema.Field{{Name: `odd"key-name`, Type: schema.StringType{}}}}, actual)
 }
 
 func TestWriteDeclarationsPreservesUnrelatedFiles(t *testing.T) {
@@ -646,7 +660,10 @@ func TestDeclarationsTypeDoesNotShadowNamespace(t *testing.T) {
 	assert.NoError(t, err)
 	declared, err := loaded.Type("example.example")
 	assert.NoError(t, err)
-	assert.Equal(t, &schema.Type{Name: "example.example", Fields: []schema.Field{
-		{Name: "next", Optional: true, Value: schema.Value{Kind: schema.KindObject, Type: "example.example"}},
-	}}, declared)
+	// The type refers to itself, so compare the field and the reference separately.
+	assert.Equal(t, 1, len(declared.Fields))
+	next := declared.Fields[0]
+	assert.Equal(t, "next", next.Name)
+	assert.True(t, next.Optional)
+	assert.True(t, next.Type == schema.Type(declared), "next should refer to the declared type")
 }

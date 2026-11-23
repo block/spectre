@@ -13,6 +13,7 @@ import (
 	"github.com/block/spectre/internal/model"
 	"github.com/block/spectre/internal/protocol"
 	"github.com/block/spectre/internal/proxy"
+	"github.com/block/spectre/internal/schema"
 )
 
 // errAborted explains a response that ReverseProxy could not finish copying.
@@ -27,8 +28,8 @@ func noDecode(context.Context, *recording) protocol.Content {
 }
 
 // unreadRequest is the payload of requests whose content the engine never needs.
-func unreadRequest(context.Context) (protocol.Message, error) {
-	return protocol.Message{}, errors.New("request payloads are not decoded at this point")
+func unreadRequest(context.Context) (schema.Value, error) {
+	return nil, errors.New("request payloads are not decoded at this point")
 }
 
 // point serves one ingress or egress point, so both share forwarding, recording,
@@ -51,7 +52,7 @@ func newPoint(acceptor protocol.Acceptor, budget func() *proxy.Budget, abortCanc
 
 // process asks the engine what to do with a request.
 func (p *point) process(ctx context.Context, requestID Option[protocol.RequestID], route model.Route,
-	ignored Option[string], request func(ctx context.Context) (protocol.Message, error),
+	ignored Option[string], request func(ctx context.Context) (schema.Value, error),
 ) (protocol.Decision, error) {
 	return errors.WithStack2(p.acceptor.ProcessRequest(ctx, requestID, route, ignored, request))
 }

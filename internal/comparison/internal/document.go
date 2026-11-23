@@ -7,17 +7,18 @@ import (
 	"github.com/alecthomas/errors"
 	. "github.com/alecthomas/types/optional"
 
-	"github.com/block/spectre/internal/model"
+	"github.com/block/spectre/internal/schema"
 )
 
-// document is one mutable normalisation copy; changing it never mutates captured data.
-// Its root is None once a normaliser removes it.
+// document is one normalisation copy of a payload; its root is None once removed.
+// A change checks the new value against its slot, so every value keeps its declared type.
 type document struct {
-	root Option[model.DynamicValue]
+	declared schema.Type
+	root     Option[schema.Value]
 }
 
-func newDocument(root model.DynamicValue) *document {
-	return &document{root: Some(root)}
+func newDocument(root schema.Value) *document {
+	return &document{declared: root.Type(), root: Some(root)}
 }
 
 func (d *document) Value(path documentPath) documentValue {
@@ -30,10 +31,10 @@ func (d *document) Delete(path documentPath) error {
 		return nil
 	}
 	if path.empty() {
-		d.root = None[model.DynamicValue]()
+		d.root = None[schema.Value]()
 		return nil
 	}
-	updated, err := path.delete(root)
+	updated, err := path.deleteFrom(root)
 	if err != nil {
 		return err
 	}
@@ -42,28 +43,37 @@ func (d *document) Delete(path documentPath) error {
 }
 
 // Set replaces the value at path, whose parent must already exist.
-func (d *document) Set(path documentPath, value model.DynamicValue) error {
+func (d *document) Set(path documentPath, value schema.Value) error {
 	if path.empty() {
-		d.root = Some(value)
+		root, err := schema.As(d.declared, value)
+		if err != nil {
+			return errors.WithStack(err)
+		}
+		d.root = Some(root)
 		return nil
 	}
 	root, present := d.root.Get()
 	if !present {
 		return errors.New("normalisation path parent is absent")
 	}
-	return path.set(root, value)
+	updated, err := path.setIn(root, value)
+	if err != nil {
+		return err
+	}
+	d.root = Some(updated)
+	return nil
 }
 
-func (d *document) Export() Option[model.DynamicValue] {
+func (d *document) Export() Option[schema.Value] {
 	return d.root
 }
 
 // documentValue distinguishes an absent path, None, from a present JSON null value.
 type documentValue struct {
-	value Option[model.DynamicValue]
+	value Option[schema.Value]
 }
 
-func newDocumentValue(value Option[model.DynamicValue]) documentValue {
+func newDocumentValue(value Option[schema.Value]) documentValue {
 	return documentValue{value: value}
 }
 
@@ -73,20 +83,23 @@ func (v documentValue) isPresent() bool {
 
 func (v documentValue) isNull() bool {
 	value, present := v.value.Get()
-	return present && value == nil
+	_, null := value.(schema.NullValue)
+	return present && null
 }
 
-func (v documentValue) normaliserArgument() Option[model.DynamicValue] {
+func (v documentValue) normaliserArgument() Option[schema.Value] {
 	return v.value
 }
 
-func (v documentValue) array() ([]model.DynamicValue, bool) {
-	array, ok := v.value.Default(nil).([]model.DynamicValue)
-	return array, ok
+func (v documentValue) list() (schema.ListValue, bool) {
+	value, _ := v.value.Get()
+	list, ok := value.(schema.ListValue)
+	return list, ok
 }
 
-func (v documentValue) object() (map[string]model.DynamicValue, bool) {
-	object, ok := v.value.Default(nil).(map[string]model.DynamicValue)
+func (v documentValue) object() (schema.ObjectValue, bool) {
+	value, _ := v.value.Get()
+	object, ok := value.(schema.ObjectValue)
 	return object, ok
 }
 
@@ -138,70 +151,49 @@ func (p documentPath) indexedSiblingBefore(other documentPath) bool {
 	return leftIndex > rightIndex
 }
 
-func (p documentPath) value(root Option[model.DynamicValue]) documentValue {
-	absent := newDocumentValue(None[model.DynamicValue]())
+func (p documentPath) value(root Option[schema.Value]) documentValue {
+	absent := newDocumentValue(None[schema.Value]())
 	value, present := root.Get()
 	if !present {
 		return absent
 	}
 	for _, part := range p.parts {
 		if index, indexed := part.arrayIndex(); indexed {
-			array, ok := value.([]model.DynamicValue)
-			if !ok || index < 0 || index >= len(array) {
+			list, ok := value.(schema.ListValue)
+			if !ok {
 				return absent
 			}
-			value = array[index]
+			if value, ok = list.Element(index); !ok {
+				return absent
+			}
 			continue
 		}
 		name, named := part.fieldName()
 		if !named {
 			return absent
 		}
-		object, ok := value.(map[string]model.DynamicValue)
+		object, ok := value.(schema.ObjectValue)
 		if !ok {
 			return absent
 		}
-		var found bool
-		value, found = object[name]
-		if !found {
+		if value, ok = object.Member(name); !ok {
 			return absent
 		}
 	}
 	return newDocumentValue(Some(value))
 }
 
-func (p documentPath) delete(root model.DynamicValue) (model.DynamicValue, error) {
+// reported returns the path as a difference reports it.
+// deleteFrom returns root without the value at the path.
+func (p documentPath) deleteFrom(root schema.Value) (schema.Value, error) {
 	return deleteDocumentValue(root, p.parts)
 }
 
-func (p documentPath) set(root model.DynamicValue, value model.DynamicValue) error {
-	parent := p.parent().value(Some(root))
-	if !parent.isPresent() {
-		return errors.New("normalisation path parent is absent")
-	}
-	last := p.parts[len(p.parts)-1]
-	if index, indexed := last.arrayIndex(); indexed {
-		array, ok := parent.array()
-		if !ok || index < 0 || index >= len(array) {
-			return errors.New("normalisation path does not identify an array element")
-		}
-		array[index] = value
-		return nil
-	}
-	name, _ := last.fieldName()
-	object, ok := parent.object()
-	if !ok {
-		return errors.New("normalisation path parent is not an object")
-	}
-	object[name] = value
-	return nil
+// setIn returns root with value at the path.
+func (p documentPath) setIn(root, value schema.Value) (schema.Value, error) {
+	return setDocumentValue(root, p.parts, value)
 }
 
-func (p documentPath) parent() documentPath {
-	return newDocumentPath(p.parts[:len(p.parts)-1])
-}
-
-// reported returns the path as a difference reports it.
 func (p documentPath) reported() reportedPath {
 	parts := make([]pathPart, len(p.parts))
 	for i, part := range p.parts {
@@ -279,55 +271,96 @@ func (p pathPart) equals(other pathPart) bool {
 	return p == other
 }
 
-// deleteDocumentValue mutates only maps and slices owned by its document.
-func deleteDocumentValue(value model.DynamicValue, parts []pathPart) (model.DynamicValue, error) {
+// setDocumentValue returns value with the value at parts replaced, whose parent must exist.
+func setDocumentValue(value schema.Value, parts []pathPart, replacement schema.Value) (schema.Value, error) {
 	part := parts[0]
 	if index, indexed := part.arrayIndex(); indexed {
-		array, ok := value.([]model.DynamicValue)
+		list, ok := value.(schema.ListValue)
 		if !ok {
-			if value == nil {
-				return value, nil
-			}
-			return nil, errors.New("comparison path parent is not an array")
+			return nil, errors.New("normalisation path does not identify an array element")
 		}
-		if index < 0 || index >= len(array) {
-			return array, nil
+		element, ok := list.Element(index)
+		if !ok {
+			return nil, errors.New("normalisation path does not identify an array element")
 		}
-		if len(parts) == 1 {
-			return append(array[:index], array[index+1:]...), nil
-		}
-		updated, err := deleteDocumentValue(array[index], parts[1:])
+		updated, err := replaced(element, parts[1:], replacement)
 		if err != nil {
 			return nil, err
 		}
-		array[index] = updated
-		return array, nil
+		return errors.WithStack2(list.With(index, updated))
+	}
+	name, _ := part.fieldName()
+	object, ok := value.(schema.ObjectValue)
+	if !ok {
+		return nil, errors.New("normalisation path parent is not an object")
+	}
+	updated := replacement
+	if len(parts) > 1 {
+		child, present := object.Member(name)
+		if !present {
+			return nil, errors.New("normalisation path parent is absent")
+		}
+		var err error
+		if updated, err = setDocumentValue(child, parts[1:], replacement); err != nil {
+			return nil, err
+		}
+	}
+	return errors.WithStack2(object.With(name, updated))
+}
+
+// replaced is replacement at the end of a path, or element with replacement below it.
+func replaced(element schema.Value, rest []pathPart, replacement schema.Value) (schema.Value, error) {
+	if len(rest) == 0 {
+		return replacement, nil
+	}
+	return setDocumentValue(element, rest, replacement)
+}
+
+// deleteDocumentValue returns value without the value at parts. A path through null
+// or past the end of a list leaves it as it is.
+func deleteDocumentValue(value schema.Value, parts []pathPart) (schema.Value, error) {
+	if _, null := value.(schema.NullValue); null {
+		return value, nil
+	}
+	part := parts[0]
+	if index, indexed := part.arrayIndex(); indexed {
+		list, ok := value.(schema.ListValue)
+		if !ok {
+			return nil, errors.New("comparison path parent is not an array")
+		}
+		element, ok := list.Element(index)
+		if !ok {
+			return list, nil
+		}
+		if len(parts) == 1 {
+			return list.Without(index), nil
+		}
+		updated, err := deleteDocumentValue(element, parts[1:])
+		if err != nil {
+			return nil, err
+		}
+		return errors.WithStack2(list.With(index, updated))
 	}
 	name, named := part.fieldName()
 	if !named {
 		return nil, errors.New("comparison path contains an invalid part")
 	}
-	object, ok := value.(map[string]model.DynamicValue)
+	object, ok := value.(schema.ObjectValue)
 	if !ok {
-		if value == nil {
-			return value, nil
-		}
 		return nil, errors.New("comparison path parent is not an object")
 	}
-	child, present := object[name]
+	child, present := object.Member(name)
 	if !present {
 		return object, nil
 	}
 	if len(parts) == 1 {
-		delete(object, name)
-		return object, nil
+		return errors.WithStack2(object.Without(name))
 	}
 	updated, err := deleteDocumentValue(child, parts[1:])
 	if err != nil {
 		return nil, err
 	}
-	object[name] = updated
-	return object, nil
+	return errors.WithStack2(object.With(name, updated))
 }
 
 func equalPathParts(left, right []pathPart) bool {

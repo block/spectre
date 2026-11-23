@@ -122,8 +122,8 @@
   `sumtype` linter checks that type switches over it are exhaustive.
 - Use concrete types, type parameters, or sum types instead of `any`,
   `interface{}`, or `json.RawMessage`. Hold a value typed only at runtime, such
-  as a decoded payload, in `model.DynamicValue`, which only the packages listed
-  for it in `.tsk/config.toml` may use. The `noany` linter enforces this.
+  as a decoded payload, in a `schema.Value`, which carries its declared
+  `schema.Type`. The `noany` linter enforces this.
 
 # Optional values
 

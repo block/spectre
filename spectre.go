@@ -16,9 +16,7 @@ import (
 
 	"github.com/block/spectre/internal"
 	"github.com/block/spectre/internal/cli"
-	"github.com/block/spectre/internal/httpserver"
 	"github.com/block/spectre/internal/logger"
-	"github.com/block/spectre/internal/state"
 )
 
 // Command is a top-level command. Kong parses its tagged fields before Run.
@@ -102,15 +100,10 @@ func newParser(command *cli.CommandLine, options ...Option) (*kong.Kong, error) 
 	for _, option := range options {
 		option(registered)
 	}
-	catalog, err := state.NewCatalog(httpserver.Supports()...)
-	if err != nil {
-		return nil, errors.Wrap(err, "collect supported IO")
-	}
 	kongOptions := append([]kong.Option{
 		kong.Vars{"version": internal.Version, "template_repo": "", "server_url": "", collectorServersVar: ""},
 		kong.Configuration(kongtoml.Loader),
 		kong.DefaultEnvars("SPECTRE"),
-		kong.Bind(catalog),
 	}, registered.kongOptions...)
 	parser, err := kong.New(command, kongOptions...)
 	if err != nil {

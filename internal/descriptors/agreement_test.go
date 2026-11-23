@@ -112,38 +112,46 @@ func TestAgreementRejectsMismatchedFields(t *testing.T) {
 	for name, test := range map[string]struct {
 		typeName  schema.TypeRef
 		fieldName string
-		mutate    func(field *schema.Field)
+		mutate    func(field *schema.Field, types map[schema.TypeRef]*schema.ObjectType)
 		message   string
 	}{
-		"NonPresenceScalar": {typeName: "User", fieldName: "id", mutate: func(field *schema.Field) { field.Optional = true }, message: `field "id" must be required`},
-		"OptionalScalar":    {typeName: "User", fieldName: "nickname", mutate: func(field *schema.Field) { field.Optional = false }, message: `field "nickname" must be optional`},
-		"MessagePresence":   {typeName: "User", fieldName: "profile", mutate: func(field *schema.Field) { field.Optional = false }, message: `field "profile" must be optional`},
-		"OneofPresence":     {typeName: "User", fieldName: "email", mutate: func(field *schema.Field) { field.Optional = false }, message: `field "email" must be optional`},
-		"NullableScalar":    {typeName: "User", fieldName: "id", mutate: func(field *schema.Field) { field.Nullable = true }, message: `field "id" of a protobuf message cannot be null`},
-		"JSONName":          {typeName: "User", fieldName: "id", mutate: func(field *schema.Field) { field.Name = "userId" }, message: `field "id" is missing`},
-		"Bytes":             {typeName: "User", fieldName: "avatar", mutate: func(field *schema.Field) { field.Value = schema.Value{Kind: schema.KindNumber} }, message: `field "avatar" has type number, expected string`},
-		"Unsigned64":        {typeName: "User", fieldName: "revision", mutate: func(field *schema.Field) { field.Value = schema.Value{Kind: schema.KindNumber} }, message: `field "revision" has type number, expected string`},
-		"Signed64":          {typeName: "ListUsersResponse", fieldName: "totalCount", mutate: func(field *schema.Field) { field.Value = schema.Value{Kind: schema.KindNumber} }, message: `field "totalCount" has type number, expected string`},
-		"Timestamp":         {typeName: "User", fieldName: "createdAt", mutate: func(field *schema.Field) { field.Value = schema.Value{Kind: schema.KindNumber} }, message: `field "createdAt" has type number, expected string`},
-		"Enum": {typeName: "User", fieldName: "roles", mutate: func(field *schema.Field) {
-			value := *field.Value.Element.MustGet()
-			value.Literals = value.Literals[:1]
-			field.Value.Element = Some(&value)
+		"NonPresenceScalar": {typeName: "User", fieldName: "id", mutate: func(field *schema.Field, _ map[schema.TypeRef]*schema.ObjectType) { field.Optional = true }, message: `field "id" must be required`},
+		"OptionalScalar":    {typeName: "User", fieldName: "nickname", mutate: func(field *schema.Field, _ map[schema.TypeRef]*schema.ObjectType) { field.Optional = false }, message: `field "nickname" must be optional`},
+		"MessagePresence":   {typeName: "User", fieldName: "profile", mutate: func(field *schema.Field, _ map[schema.TypeRef]*schema.ObjectType) { field.Optional = false }, message: `field "profile" must be optional`},
+		"OneofPresence":     {typeName: "User", fieldName: "email", mutate: func(field *schema.Field, _ map[schema.TypeRef]*schema.ObjectType) { field.Optional = false }, message: `field "email" must be optional`},
+		"NullableScalar": {typeName: "User", fieldName: "id", mutate: func(field *schema.Field, _ map[schema.TypeRef]*schema.ObjectType) {
+			field.Type = schema.NullableType{Type: field.Type}
+		}, message: `field "id" of a protobuf message cannot be null`},
+		"JSONName":   {typeName: "User", fieldName: "id", mutate: func(field *schema.Field, _ map[schema.TypeRef]*schema.ObjectType) { field.Name = "userId" }, message: `field "id" is missing`},
+		"Bytes":      {typeName: "User", fieldName: "avatar", mutate: asNumber, message: `field "avatar" has type number, expected string`},
+		"Unsigned64": {typeName: "User", fieldName: "revision", mutate: asNumber, message: `field "revision" has type number, expected string`},
+		"Signed64":   {typeName: "ListUsersResponse", fieldName: "totalCount", mutate: asNumber, message: `field "totalCount" has type number, expected string`},
+		"Timestamp":  {typeName: "User", fieldName: "createdAt", mutate: asNumber, message: `field "createdAt" has type number, expected string`},
+		"Enum": {typeName: "User", fieldName: "roles", mutate: func(field *schema.Field, _ map[schema.TypeRef]*schema.ObjectType) {
+			role := field.Type.(schema.ListType).Element.(schema.NumberType)
+			role.Literals = role.Literals[:1]
+			field.Type = schema.ListType{Element: role}
 		}, message: `field "roles" has type`},
-		"MapElement":       {typeName: "User", fieldName: "labels", mutate: func(field *schema.Field) { field.Value.Element = Some(&schema.Value{Kind: schema.KindBoolean}) }, message: `field "labels" has type Record<string, boolean>, expected Record<string, string>`},
-		"NestedCollection": {typeName: "User.Profile", fieldName: "addresses", mutate: func(field *schema.Field) { field.Value.Kind = schema.KindMap }, message: `field "addresses" has type Record<string, spectre.sample.v1.Address>, expected spectre.sample.v1.Address[]`},
-		"ObjectReference":  {typeName: "User", fieldName: "profile", mutate: func(field *schema.Field) { field.Value.Type = "spectre.sample.v1.Phone" }, message: `field "profile" has type spectre.sample.v1.Phone, expected spectre.sample.v1.User.Profile`},
+		"MapElement": {typeName: "User", fieldName: "labels", mutate: func(field *schema.Field, _ map[schema.TypeRef]*schema.ObjectType) {
+			field.Type = schema.MapType{Element: schema.BooleanType{}}
+		}, message: `field "labels" has type Record<string, boolean>, expected Record<string, string>`},
+		"NestedCollection": {typeName: "User.Profile", fieldName: "addresses", mutate: func(field *schema.Field, _ map[schema.TypeRef]*schema.ObjectType) {
+			field.Type = schema.MapType{Element: field.Type.(schema.ListType).Element}
+		}, message: `field "addresses" has type Record<string, spectre.sample.v1.Address>, expected spectre.sample.v1.Address[]`},
+		"ObjectReference": {typeName: "User", fieldName: "profile", mutate: func(field *schema.Field, types map[schema.TypeRef]*schema.ObjectType) {
+			field.Type = types["spectre.sample.v1.Phone"]
+		}, message: `field "profile" has type spectre.sample.v1.Phone, expected spectre.sample.v1.User.Profile`},
 	} {
 		t.Run(name, func(t *testing.T) {
 			types := cloneDeclaredTypes(loaded)
+			byName := map[schema.TypeRef]*schema.ObjectType{}
 			for _, declared := range types {
-				if declared.Name != "spectre.sample.v1."+test.typeName {
-					continue
-				}
-				for index := range declared.Fields {
-					if declared.Fields[index].Name == test.fieldName {
-						test.mutate(&declared.Fields[index])
-					}
+				byName[declared.Name] = declared
+			}
+			declared := byName["spectre.sample.v1."+test.typeName]
+			for index := range declared.Fields {
+				if declared.Fields[index].Name == test.fieldName {
+					test.mutate(&declared.Fields[index], byName)
 				}
 			}
 			modified, err := schema.New(types, loaded.Operations())
@@ -167,10 +175,10 @@ func TestAgreementRejectsMissingAndExtraFields(t *testing.T) {
 		message string
 	}{
 		"Missing": {message: `field "id" is missing`},
-		"Extra":   {fields: []schema.Field{{Name: "id", Value: schema.Value{Kind: schema.KindString}}, {Name: "extra", Value: schema.Value{Kind: schema.KindString}}}, message: `field "extra" is not in the protobuf message`},
+		"Extra":   {fields: []schema.Field{{Name: "id", Type: schema.StringType{}}, {Name: "extra", Type: schema.StringType{}}}, message: `field "extra" is not in the protobuf message`},
 	} {
 		t.Run(name, func(t *testing.T) {
-			loaded, err := schema.New([]*schema.Type{{Name: "example.Payload", Fields: test.fields}}, nil)
+			loaded, err := schema.New([]*schema.ObjectType{{Name: "example.Payload", Fields: test.fields}}, nil)
 			assert.NoError(t, err)
 			err = descriptors.CheckAgreement(registry, loaded)
 			assert.Error(t, err)
@@ -193,11 +201,11 @@ func TestAgreementAcceptsEquivalentEnumUnion(t *testing.T) {
 		for index := range declared.Fields {
 			field := &declared.Fields[index]
 			if field.Name == "roles" {
-				value := *field.Value.Element.MustGet()
-				value.Type = ""
-				value.Literals = slices.Clone(value.Literals)
-				slices.Reverse(value.Literals)
-				field.Value.Element = Some(&value)
+				role := field.Type.(schema.ListType).Element.(schema.NumberType)
+				role.Name = None[schema.TypeRef]()
+				role.Literals = slices.Clone(role.Literals)
+				slices.Reverse(role.Literals)
+				field.Type = schema.ListType{Element: role}
 			}
 		}
 	}
@@ -277,7 +285,7 @@ func TestAgreementRejectsScalarMethodTypes(t *testing.T) {
 			set := scalarMethodDescriptorSet(name)
 			registry, err := descriptors.NewRegistry(set)
 			assert.NoError(t, err)
-			loaded, err := schema.New([]*schema.Type{{Name: "example.Payload"}}, nil)
+			loaded, err := schema.New([]*schema.ObjectType{{Name: "example.Payload"}}, nil)
 			assert.NoError(t, err)
 			err = descriptors.CheckAgreement(registry, loaded)
 			assert.Error(t, err)
@@ -312,10 +320,41 @@ func TestAgreementAllowsUnreferencedUntypedWellKnownMessages(t *testing.T) {
 	assert.NoError(t, descriptors.CheckAgreement(registry, loaded))
 }
 
-func cloneDeclaredTypes(loaded *schema.Schema) []*schema.Type {
-	types := make([]*schema.Type, 0, len(loaded.Types()))
-	for _, declared := range loaded.Types() {
-		types = append(types, &schema.Type{Name: declared.Name, Fields: slices.Clone(declared.Fields)})
+// cloneDeclaredTypes copies every object type, pointing fields at the copies so the
+// result is a valid input to schema.New.
+func cloneDeclaredTypes(loaded *schema.Schema) []*schema.ObjectType {
+	originals := loaded.Types()
+	clones := make(map[schema.TypeRef]*schema.ObjectType, len(originals))
+	types := make([]*schema.ObjectType, 0, len(originals))
+	for _, original := range originals {
+		clones[original.Name] = &schema.ObjectType{Name: original.Name}
+		types = append(types, clones[original.Name])
+	}
+	for _, original := range originals {
+		fields := slices.Clone(original.Fields)
+		for index := range fields {
+			fields[index].Type = retarget(fields[index].Type, clones)
+		}
+		clones[original.Name].Fields = fields
 	}
 	return types
+}
+
+func retarget(declared schema.Type, clones map[schema.TypeRef]*schema.ObjectType) schema.Type {
+	switch declared := declared.(type) {
+	case *schema.ObjectType:
+		return clones[declared.Name]
+	case schema.ListType:
+		return schema.ListType{Element: retarget(declared.Element, clones)}
+	case schema.MapType:
+		return schema.MapType{Element: retarget(declared.Element, clones)}
+	case schema.NullableType:
+		return schema.NullableType{Type: retarget(declared.Type, clones)}
+	case schema.StringType, schema.NumberType, schema.BooleanType, schema.EnumType, schema.UnknownType:
+	}
+	return declared
+}
+
+func asNumber(field *schema.Field, _ map[schema.TypeRef]*schema.ObjectType) {
+	field.Type = schema.NumberType{}
 }

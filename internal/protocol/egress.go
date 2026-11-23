@@ -1,10 +1,8 @@
 package protocol
 
 import (
-	"bytes"
 	"cmp"
 	"context"
-	"encoding/json"
 	"slices"
 	"sync"
 	"time"
@@ -157,19 +155,19 @@ func (q *egressQueue) shutdown(ctx context.Context) error {
 
 // hash identifies a request by its protocol, route, and normalised payload.
 func (q *egressQueue) hash(ctx context.Context, protocol model.Protocol, route model.Route, side string,
-	request func(ctx context.Context) (Message, error),
+	request func(ctx context.Context) (schema.Value, error),
 ) (comparison.Hash, error) {
 	message, err := request(ctx)
 	if err != nil {
 		return comparison.Hash{}, errors.WithStack(err)
 	}
-	return errors.WithStack2(q.scripts.Hash(ctx, string(protocol)+" "+string(route), message.Type, side, message.Value))
+	return errors.WithStack2(q.scripts.Hash(ctx, string(protocol)+" "+string(route), side, message))
 }
 
 // forward registers a reference request and hashes it in the background. A request
 // that belongs to no mirrored request passes through unpaired.
 func (q *egressQueue) forward(ctx context.Context, requestID Option[RequestID], protocol model.Protocol, route model.Route,
-	request func(ctx context.Context) (Message, error),
+	request func(ctx context.Context) (schema.Value, error),
 ) Decision {
 	id, mirrored := requestID.Get()
 	if !mirrored {
@@ -216,7 +214,7 @@ func (q *egressQueue) passThrough(ctx context.Context, protocol model.Protocol, 
 // intercept answers a candidate request with an equivalent reference response from the
 // same mirrored request. A request that belongs to none can never be answered.
 func (q *egressQueue) intercept(ctx context.Context, requestID Option[RequestID], protocol model.Protocol, route model.Route,
-	request func(ctx context.Context) (Message, error),
+	request func(ctx context.Context) (schema.Value, error),
 ) (Decision, error) {
 	id, mirrored := requestID.Get()
 	if !mirrored {
@@ -239,7 +237,7 @@ func (q *egressQueue) intercept(ctx context.Context, requestID Option[RequestID]
 
 // match returns the reference response to replay, or why there is none.
 func (q *egressQueue) match(ctx context.Context, requestID RequestID, protocol model.Protocol, route model.Route,
-	request func(ctx context.Context) (Message, error),
+	request func(ctx context.Context) (schema.Value, error),
 ) (Raw, model.QuarantineKind, error) {
 	arrival := q.arrive()
 	hash, err := q.hash(ctx, protocol, route, "candidate", request)
@@ -278,7 +276,7 @@ func blamesCandidate(ctx context.Context) bool {
 // answer answers a candidate request to a replacing endpoint with an equivalent reference
 // request to the endpoint, or else with a response translated from a source reference.
 func (q *egressQueue) answer(ctx context.Context, requestID RequestID, protocol model.Protocol, route model.Route,
-	replacement javascript.Replacement, request func(ctx context.Context) (Message, error),
+	replacement javascript.Replacement, request func(ctx context.Context) (schema.Value, error),
 ) (Decision, error) {
 	decision, kind, err := q.respond(ctx, requestID, protocol, route, replacement, request)
 	if err != nil {
@@ -297,7 +295,7 @@ func (q *egressQueue) answer(ctx context.Context, requestID RequestID, protocol 
 
 // respond returns the decision for a candidate request to a replacing endpoint, or why there is none.
 func (q *egressQueue) respond(ctx context.Context, requestID RequestID, protocol model.Protocol, route model.Route,
-	replacement javascript.Replacement, request func(ctx context.Context) (Message, error),
+	replacement javascript.Replacement, request func(ctx context.Context) (schema.Value, error),
 ) (Decision, model.QuarantineKind, error) {
 	arrival := q.arrive()
 	hash, value, err := q.identify(ctx, protocol, route, request)
@@ -308,7 +306,7 @@ func (q *egressQueue) respond(ctx context.Context, requestID RequestID, protocol
 	if err != nil {
 		return nil, model.QuarantineUnable, errors.Wrap(err, "map candidate request to a source request")
 	}
-	sourceHash, err := q.scripts.Hash(ctx, string(protocol)+" "+replacement.Source(), Some(replacement.SourceRequest()), "candidate", sourceRequest)
+	sourceHash, err := q.scripts.Hash(ctx, string(protocol)+" "+replacement.Source(), "candidate", sourceRequest)
 	if err != nil {
 		return nil, model.QuarantineUnable, errors.Wrap(err, "identify source request")
 	}
@@ -331,33 +329,22 @@ func (q *egressQueue) respond(ctx context.Context, requestID RequestID, protocol
 	if err != nil {
 		return nil, model.QuarantineUnable, errors.Wrap(err, "translate response")
 	}
-	return DecisionAnswer{Message: Message{Type: Some(replacement.Response()), Value: answer}}, "", nil
+	return DecisionAnswer{Message: answer}, "", nil
 }
 
-// identify hashes a candidate request to a replacing endpoint, and returns a copy of its value to
-// translate. Hashing normalises the value in place, and replacement functions see only its JSON.
+// identify hashes a candidate request to a replacing endpoint, and returns it to translate.
 func (q *egressQueue) identify(ctx context.Context, protocol model.Protocol, route model.Route,
-	request func(ctx context.Context) (Message, error),
-) (comparison.Hash, model.DynamicValue, error) {
+	request func(ctx context.Context) (schema.Value, error),
+) (comparison.Hash, schema.Value, error) {
 	message, err := request(ctx)
 	if err != nil {
 		return comparison.Hash{}, nil, errors.Wrap(err, "identify candidate request")
 	}
-	encoded, err := json.Marshal(message.Value)
-	if err != nil {
-		return comparison.Hash{}, nil, errors.Wrap(err, "copy candidate request")
-	}
-	decoder := json.NewDecoder(bytes.NewReader(encoded))
-	decoder.UseNumber()
-	var value model.DynamicValue
-	if err := decoder.Decode(&value); err != nil {
-		return comparison.Hash{}, nil, errors.Wrap(err, "copy candidate request")
-	}
-	hash, err := q.scripts.Hash(ctx, string(protocol)+" "+string(route), message.Type, "candidate", message.Value)
+	hash, err := q.scripts.Hash(ctx, string(protocol)+" "+string(route), "candidate", message)
 	if err != nil {
 		return comparison.Hash{}, nil, errors.Wrap(err, "identify candidate request")
 	}
-	return hash, value, nil
+	return hash, message, nil
 }
 
 func egressReason(kind model.QuarantineKind, protocol model.Protocol, route model.Route, err error) model.QuarantineReason {
@@ -772,9 +759,9 @@ func (e *egressExchange) wait(ctx context.Context) (Raw, error) {
 	return raw, nil
 }
 
-// decoded waits for a source reference response and returns its value. It
+// decoded waits for a source reference response and returns its message. It
 // outlives the recorded response, so it never claims or releases it.
-func (e *egressExchange) decoded(ctx context.Context) (model.DynamicValue, error) {
+func (e *egressExchange) decoded(ctx context.Context) (schema.Value, error) {
 	outcome, err := e.outcome.Wait(ctx)
 	if err != nil {
 		return nil, errors.Wrap(err, "wait for source reference response")
@@ -796,7 +783,7 @@ func (e *egressExchange) decoded(ctx context.Context) (model.DynamicValue, error
 	if !ok {
 		return nil, errors.New("source reference response has no message")
 	}
-	return message.Value, nil
+	return message, nil
 }
 
 // egressReference forwards every dependency request at once and hashes one of a mirrored request
@@ -811,7 +798,7 @@ func newEgressReference(queue *egressQueue, protocol model.Protocol) *egressRefe
 }
 
 func (r *egressReference) ProcessRequest(ctx context.Context, requestID Option[RequestID], route model.Route, _ Option[string],
-	request func(ctx context.Context) (Message, error),
+	request func(ctx context.Context) (schema.Value, error),
 ) (Decision, error) {
 	return r.queue.forward(ctx, requestID, r.protocol, route, request), nil
 }
@@ -849,7 +836,7 @@ func newEgressCandidate(queue *egressQueue, protocol model.Protocol) *egressCand
 }
 
 func (c *egressCandidate) ProcessRequest(ctx context.Context, requestID Option[RequestID], route model.Route, _ Option[string],
-	request func(ctx context.Context) (Message, error),
+	request func(ctx context.Context) (schema.Value, error),
 ) (Decision, error) {
 	return c.queue.intercept(ctx, requestID, c.protocol, route, request)
 }

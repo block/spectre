@@ -3,6 +3,7 @@ package schema
 import (
 	"cmp"
 	"context"
+	_ "embed"
 	"io/fs"
 	"maps"
 	"path"
@@ -18,8 +19,27 @@ import (
 // on it to tell schema declarations from script and library declarations.
 const programRoot = "/schema/"
 
+// ScriptRoot is where comparison scripts live in a TypeScript program. A type declared
+// at the top level of a script is named by its own name.
+const ScriptRoot = "/scripts/"
+
 // reservedModule is the script API, which a schema cannot redeclare.
 const reservedModule = "spectre"
+
+// builtinFile holds the built-in declarations in a program. It is outside
+// programRoot, so no schema file can take its name.
+const builtinFile = "/spectre/builtin.d.ts"
+
+//go:embed builtin.d.ts
+var builtinDeclarations string
+
+// Built-in types, which every schema declares.
+const (
+	// ConnectError is the body of a failed Connect unary response.
+	ConnectError = "spectre.connect.Error"
+	// MySQLPairing is what egress pairs a MySQL statement by.
+	MySQLPairing = "spectre.mysql.Pairing"
+)
 
 // ReadSources reads every .ts file in declarations, keyed by slash-separated name.
 // Symlinks are rejected because fs.FS has no portable root-confined open operation.
@@ -45,12 +65,14 @@ func ReadSources(declarations fs.FS) (map[string]string, error) {
 	return sources, errors.WithStack(err)
 }
 
-// ProgramFiles places sources where FromProgram and TypeName expect them.
+// ProgramFiles places sources and the built-in declarations where FromProgram
+// and TypeName expect them.
 func ProgramFiles(sources map[string]string) map[string]string {
-	files := make(map[string]string, len(sources))
+	files := make(map[string]string, len(sources)+1)
 	for name, source := range sources {
 		files[programRoot+name] = source
 	}
+	files[builtinFile] = builtinDeclarations
 	return files
 }
 
@@ -69,43 +91,65 @@ func ParseSources(ctx context.Context, sources map[string]string) (*Schema, erro
 	if err != nil {
 		return nil, errors.Wrap(err, "check schema declarations")
 	}
-	return FromProgram(program, sources)
+	return FromProgram(program, sources, nil)
 }
 
-// FromProgram reads the schema sources declare in a checked program built from
-// ProgramFiles(sources). A type's name is its module name and namespace path.
-func FromProgram(program *ts.Program, sources map[string]string) (*Schema, error) {
-	modules := map[string]bool{}
+// FromProgram reads the types that the schema sources, the built-in declarations, and
+// references declare in a checked program built from ProgramFiles(sources).
+func FromProgram(program *ts.Program, sources map[string]string, references []*ts.Node) (*Schema, error) {
+	builtin := program.SourceFile(builtinFile)
+	if builtin == nil {
+		return nil, errors.New("built-in declarations are not in the program")
+	}
+	modules, err := declaredModules(builtin)
+	if err != nil {
+		return nil, err
+	}
+	reserved := maps.Clone(modules)
+	reserved[reservedModule] = true
 	for _, name := range slices.Sorted(maps.Keys(sources)) {
 		file := program.SourceFile(programRoot + name)
 		if file == nil {
 			return nil, errors.Errorf("schema file %q is not in the program", name)
 		}
-		for _, statement := range file.Statements.Nodes {
-			if statement.Kind != ts.KindModuleDeclaration || statement.Name().Kind != ts.KindStringLiteral {
-				return nil, errors.Errorf("%s: schema files may only contain declare module \"name\" { ... } blocks", ts.Location(statement))
-			}
-			if statement.Name().Text() == reservedModule {
-				return nil, errors.Errorf("%s: module %q is reserved for the script API", ts.Location(statement), reservedModule)
-			}
-			modules[statement.Name().Text()] = true
+		declared, err := declaredModules(file)
+		if err != nil {
+			return nil, err
 		}
+		for _, statement := range file.Statements.Nodes {
+			if module := statement.Name().Text(); reserved[module] {
+				return nil, errors.Errorf("%s: module %q is reserved by SPECTRE", ts.Location(statement), module)
+			}
+		}
+		maps.Copy(modules, declared)
 	}
-	return newReader(program.Checker()).read(modules)
+	return newReader(program.Checker()).read(modules, references)
+}
+
+// declaredModules returns the names of the modules a schema file declares.
+func declaredModules(file *ts.SourceFile) (map[string]bool, error) {
+	modules := map[string]bool{}
+	for _, statement := range file.Statements.Nodes {
+		if statement.Kind != ts.KindModuleDeclaration || statement.Name().Kind != ts.KindStringLiteral {
+			return nil, errors.Errorf("%s: schema files may only contain declare module \"name\" { ... } blocks", ts.Location(statement))
+		}
+		modules[statement.Name().Text()] = true
+	}
+	return modules, nil
 }
 
 // TypeName returns the schema name of a named object type, which is how scripts and
-// the host refer to it. Types declared outside a schema module have no name.
+// the host refer to it. Types declared outside a schema module or script have no name.
 func TypeName(t *ts.Type) (TypeRef, error) {
-	symbol := t.Symbol()
-	if alias := t.Alias(); alias != nil && (symbol == nil || symbol.Flags()&ts.SymbolFlagsTypeLiteral != 0) {
-		if len(alias.TypeArguments()) > 0 {
+	if alias := t.Alias(); alias != nil && len(alias.TypeArguments()) > 0 {
+		symbol := t.Symbol()
+		if symbol == nil || symbol.Flags()&ts.SymbolFlagsTypeLiteral != 0 {
 			return "", errors.Errorf("generic type %q is not supported", alias.Symbol().Name())
 		}
-		symbol = alias.Symbol()
 	}
+	symbol := namedSymbol(t)
 	if symbol == nil || symbol.Flags()&(ts.SymbolFlagsInterface|ts.SymbolFlagsTypeAlias) == 0 {
-		return "", errors.New("object types must be declared by name in a schema module")
+		return "", errors.New("object types must be declared by name in a schema module or at the top level of a script")
 	}
 	return qualifiedName(symbol)
 }
@@ -113,25 +157,47 @@ func TypeName(t *ts.Type) (TypeRef, error) {
 // qualifiedName walks a symbol's parents up to its ambient module, which must be
 // declared in a schema file rather than augmented by a script.
 func qualifiedName(symbol *ts.Symbol) (TypeRef, error) {
+	if name, ok := scriptName(symbol); ok {
+		return name, nil
+	}
 	names := []string{}
 	for current := symbol; current != nil; current = current.Parent() {
 		if len(current.Declarations()) > 0 {
 			declaration := current.Declarations()[0]
 			if declaration.Kind == ts.KindModuleDeclaration && declaration.Name().Kind == ts.KindStringLiteral {
-				if !inSchemaFile(declaration) {
-					break
+				module := declaration.Name().Text()
+				if !slices.ContainsFunc(current.Declarations(), inSchemaFile) {
+					return "", errors.Errorf("%s: %s is declared in module %q, but only schema files may declare modules",
+						ts.Location(symbol.Declarations()[0]), symbol.Name(), module)
+				}
+				if err := checkDeclaredInSchema(symbol); err != nil {
+					return "", err
 				}
 				slices.Reverse(names)
-				return TypeRef(declaration.Name().Text() + "." + strings.Join(names, ".")), nil
+				return TypeRef(module + "." + strings.Join(names, ".")), nil
 			}
 		}
 		names = append(names, current.Name())
 	}
-	return "", errors.Errorf("type %q is not exported from a schema module", symbol.Name())
+	return "", errors.Errorf("type %q is not exported from a schema module or declared at the top level of a script", symbol.Name())
+}
+
+// scriptName names a type declared at the top level of a script by its own name.
+func scriptName(symbol *ts.Symbol) (name TypeRef, ok bool) {
+	if len(symbol.Declarations()) == 0 {
+		return "", false
+	}
+	declaration := symbol.Declarations()[0]
+	file := ts.SourceFileOf(declaration).FileName().AsString()
+	if declaration.Parent.Kind != ts.KindSourceFile || !strings.HasPrefix(file, ScriptRoot) {
+		return "", false
+	}
+	return TypeRef(symbol.Name()), true
 }
 
 func inSchemaFile(node *ts.Node) bool {
-	return strings.HasPrefix(ts.SourceFileOf(node).FileName().AsString(), programRoot)
+	name := ts.SourceFileOf(node).FileName().AsString()
+	return strings.HasPrefix(name, programRoot) || name == builtinFile
 }
 
 // checkDeclaredInSchema rejects script augmentations of schema modules, which
@@ -146,38 +212,43 @@ func checkDeclaredInSchema(symbol *ts.Symbol) error {
 }
 
 type pendingType struct {
-	name TypeRef
-	t    *ts.Type
+	declared *ObjectType
+	t        *ts.Type
 }
 
-// reader converts checked declarations to the schema model, queueing each named
-// object type once so recursive references terminate.
+// reader converts checked declarations to the schema model. It creates each named
+// object type once and fills in its fields later, so recursive references terminate.
 type reader struct {
 	checker    *ts.Checker
 	pending    []pendingType
-	queued     map[TypeRef]bool
+	objects    map[TypeRef]*ObjectType
+	symbols    map[TypeRef]*ts.Symbol
 	operations []Operation
 }
 
 func newReader(checker *ts.Checker) *reader {
-	return &reader{checker: checker, queued: map[TypeRef]bool{}}
+	return &reader{checker: checker, objects: map[TypeRef]*ObjectType{}, symbols: map[TypeRef]*ts.Symbol{}}
 }
 
-func (r *reader) read(modules map[string]bool) (*Schema, error) {
+func (r *reader) read(modules map[string]bool, references []*ts.Node) (*Schema, error) {
 	for _, module := range slices.Sorted(maps.Keys(modules)) {
 		if err := r.members(r.checker.TryFindAmbientModule(module)); err != nil {
 			return nil, err
 		}
 	}
-	types := []*Type{}
+	for _, reference := range references {
+		if _, err := r.objectReference(r.checker.GetTypeFromTypeNode(reference), reference); err != nil {
+			return nil, err
+		}
+	}
+	types := []*ObjectType{}
 	for len(r.pending) > 0 {
 		next := r.pending[0]
 		r.pending = r.pending[1:]
-		declared, err := r.objectType(next.name, next.t)
-		if err != nil {
+		if err := r.objectType(next.declared, next.t); err != nil {
 			return nil, err
 		}
-		types = append(types, declared)
+		types = append(types, next.declared)
 	}
 	return New(types, r.operations)
 }
@@ -205,7 +276,7 @@ func (r *reader) members(container *ts.Symbol) error {
 		}
 		if symbol.Flags()&ts.SymbolFlagsTypeAlias != 0 {
 			// Aliases of non-object types are inlined where they are used, but must be valid anyway.
-			if _, err := r.value(r.checker.GetDeclaredTypeOfSymbol(symbol), declaration); err != nil {
+			if _, err := r.typeOf(r.checker.GetDeclaredTypeOfSymbol(symbol), declaration); err != nil {
 				return err
 			}
 		}
@@ -224,7 +295,7 @@ func (r *reader) interfaceDeclaration(symbol *ts.Symbol) error {
 	declared := r.checker.GetDeclaredTypeOfSymbol(symbol)
 	properties := r.checker.GetPropertiesOfType(declared)
 	if len(properties) == 0 || !slices.ContainsFunc(properties, isMethod) {
-		_, err := r.value(declared, symbol.Declarations()[0])
+		_, err := r.typeOf(declared, symbol.Declarations()[0])
 		return err
 	}
 	service, err := qualifiedName(symbol)
@@ -275,33 +346,45 @@ func (r *reader) operation(service string, method *ts.Symbol) (Operation, error)
 }
 
 func (r *reader) objectReference(t *ts.Type, at *ts.Node) (TypeRef, error) {
-	value, err := r.value(t, at)
+	read, err := r.typeOf(t, at)
 	if err != nil {
 		return "", err
 	}
-	if value.Kind != KindObject {
-		return "", errors.Errorf("%s: expected an object type, found %s", ts.Location(at), value)
+	object, ok := read.(*ObjectType)
+	if !ok {
+		return "", errors.Errorf("%s: expected an object type, found %s", ts.Location(at), read)
 	}
-	return value.Type, nil
+	return object.Name, nil
 }
 
-// value maps a checked type to the JSON shape it accepts. at locates errors.
-func (r *reader) value(t *ts.Type, at *ts.Node) (Value, error) {
+// typeOf maps a checked type to the schema type. at locates errors.
+func (r *reader) typeOf(t *ts.Type, at *ts.Node) (Type, error) {
+	t, nullable := r.withoutNull(t)
+	read, err := r.nonNullType(t, at)
+	if err != nil || !nullable {
+		return read, err
+	}
+	return NullableType{Type: read}, nil
+}
+
+func (r *reader) nonNullType(t *ts.Type, at *ts.Node) (Type, error) {
 	flags := t.Flags()
 	switch {
+	case flags&ts.TypeFlagsUnknown != 0:
+		return UnknownType{}, nil
 	case flags&ts.TypeFlagsEnumLiteral != 0:
 	case flags&ts.TypeFlagsBoolean != 0:
-		return Value{Kind: KindBoolean}, nil
+		return BooleanType{}, nil
 	case flags&ts.TypeFlagsString != 0:
-		return Value{Kind: KindString}, nil
+		return StringType{}, nil
 	case flags&ts.TypeFlagsNumber != 0:
-		return Value{Kind: KindNumber}, nil
+		return NumberType{}, nil
 	case flags&(ts.TypeFlagsStringLiteral|ts.TypeFlagsUnion) != 0:
 		return r.union(t, at)
 	case flags&ts.TypeFlagsObject != 0:
 		return r.object(t, at)
 	}
-	return Value{}, r.unsupported(t, at)
+	return nil, r.unsupported(t, at)
 }
 
 func (r *reader) unsupported(t *ts.Type, at *ts.Node) error {
@@ -310,7 +393,7 @@ func (r *reader) unsupported(t *ts.Type, at *ts.Node) error {
 
 // union reads string literals as an enum, or as a number's literals when the
 // union also contains number.
-func (r *reader) union(t *ts.Type, at *ts.Node) (Value, error) {
+func (r *reader) union(t *ts.Type, at *ts.Node) (Type, error) {
 	members := []*ts.Type{t}
 	if t.Flags()&ts.TypeFlagsUnion != 0 {
 		members = t.Types()
@@ -324,92 +407,110 @@ func (r *reader) union(t *ts.Type, at *ts.Node) (Value, error) {
 		}
 		literal, ok := ts.StringLiteral(member)
 		if !ok || member.Flags()&ts.TypeFlagsEnumLiteral != 0 {
-			return Value{}, r.unsupported(t, at)
+			return nil, r.unsupported(t, at)
 		}
 		literals = append(literals, literal)
 	}
 	// The checker orders union members itself, so declaration order is lost.
 	slices.Sort(literals)
-	value := Value{Kind: KindEnum, Literals: literals}
-	if number {
-		value.Kind = KindNumber
-	}
+	name := None[TypeRef]()
 	if alias := t.Alias(); alias != nil {
 		// The alias name only renders the union, so one declared outside a module is dropped.
-		if name, err := qualifiedName(alias.Symbol()); err == nil {
-			value.Type = name
+		if qualified, err := qualifiedName(alias.Symbol()); err == nil {
+			name = Some(qualified)
 		}
 	}
-	return value, nil
+	if number {
+		return NumberType{Name: name, Literals: literals}, nil
+	}
+	return EnumType{Name: name, Literals: literals}, nil
 }
 
-func (r *reader) object(t *ts.Type, at *ts.Node) (Value, error) {
+func (r *reader) object(t *ts.Type, at *ts.Node) (Type, error) {
 	if ts.IsTupleType(t) || r.checker.TypeHasCallOrConstructSignatures(t) {
-		return Value{}, r.unsupported(t, at)
+		return nil, r.unsupported(t, at)
 	}
 	if r.checker.IsArrayType(t) {
-		element, err := r.value(r.checker.GetTypeArguments(t)[0], at)
+		element, err := r.typeOf(r.checker.GetTypeArguments(t)[0], at)
 		if err != nil {
-			return Value{}, err
+			return nil, err
 		}
-		return Value{Kind: KindList, Element: Some(&element)}, nil
+		return ListType{Element: element}, nil
 	}
 	if indexes := r.checker.GetIndexInfosOfType(t); len(indexes) > 0 {
 		if len(indexes) != 1 || indexes[0].KeyType().Flags()&ts.TypeFlagsString == 0 || len(r.checker.GetPropertiesOfType(t)) > 0 {
-			return Value{}, errors.Errorf("%s: maps must have the form { [key: string]: T } or Record<string, T>", ts.Location(at))
+			return nil, errors.Errorf("%s: maps must have the form { [key: string]: T } or Record<string, T>", ts.Location(at))
 		}
-		element, err := r.value(indexes[0].ValueType(), at)
+		element, err := r.typeOf(indexes[0].ValueType(), at)
 		if err != nil {
-			return Value{}, err
+			return nil, err
 		}
-		return Value{Kind: KindMap, Element: Some(&element)}, nil
+		return MapType{Element: element}, nil
 	}
 	name, err := TypeName(t)
 	if err != nil {
-		return Value{}, errors.Errorf("%s: %s: %v", ts.Location(at), r.checker.TypeToString(t), err)
+		return nil, errors.Errorf("%s: %s: %v", ts.Location(at), r.checker.TypeToString(t), err)
 	}
-	if !r.queued[name] {
-		r.queued[name] = true
-		r.pending = append(r.pending, pendingType{name: name, t: t})
+	symbol := namedSymbol(t)
+	declared, queued := r.objects[name]
+	if !queued {
+		declared = &ObjectType{Name: name}
+		r.objects[name] = declared
+		r.symbols[name] = symbol
+		r.pending = append(r.pending, pendingType{declared: declared, t: t})
 	}
-	return Value{Kind: KindObject, Type: name}, nil
+	if other := r.symbols[name]; other != symbol {
+		return nil, errors.Errorf("%s: types declared at %s and %s are both named %q", ts.Location(at),
+			ts.Location(other.Declarations()[0]), ts.Location(symbol.Declarations()[0]), name)
+	}
+	return declared, nil
 }
 
-func (r *reader) objectType(name TypeRef, t *ts.Type) (*Type, error) {
+// namedSymbol returns the symbol TypeName names t by: its own, or the alias of a type literal.
+func namedSymbol(t *ts.Type) *ts.Symbol {
+	symbol := t.Symbol()
+	if alias := t.Alias(); alias != nil && (symbol == nil || symbol.Flags()&ts.SymbolFlagsTypeLiteral != 0) {
+		return alias.Symbol()
+	}
+	return symbol
+}
+
+func (r *reader) objectType(declared *ObjectType, t *ts.Type) error {
 	symbol := t.Symbol()
 	if alias := t.Alias(); alias != nil {
 		symbol = alias.Symbol()
 	}
 	declaration := symbol.Declarations()[0]
 	if symbol.Flags()&ts.SymbolFlagsClass != 0 {
-		return nil, errors.Errorf("%s: classes are not supported in schemas", ts.Location(declaration))
+		return errors.Errorf("%s: classes are not supported in schemas", ts.Location(declaration))
 	}
 	if len(r.checker.GetLocalTypeParametersOfClassOrInterfaceOrTypeAlias(symbol)) > 0 {
-		return nil, errors.Errorf("%s: generic declarations are not supported", ts.Location(declaration))
+		return errors.Errorf("%s: generic declarations are not supported", ts.Location(declaration))
 	}
 	properties := r.checker.GetPropertiesOfType(t)
-	declared := &Type{Name: name, Fields: make([]Field, 0, len(properties))}
+	declared.Fields = make([]Field, 0, len(properties))
 	for _, property := range properties {
-		if err := checkDeclaredInSchema(property); err != nil {
-			return nil, err
+		if inSchemaFile(declaration) {
+			if err := checkDeclaredInSchema(property); err != nil {
+				return err
+			}
 		}
 		at := property.Declarations()[0]
 		if isMethod(property) {
-			return nil, errors.Errorf("%s: object types may only declare properties; %s mixes them with methods", ts.Location(at), name)
+			return errors.Errorf("%s: object types may only declare properties; %s mixes them with methods", ts.Location(at), declared.Name)
 		}
 		propertyType := r.checker.GetTypeOfSymbol(property)
 		optional := property.Flags()&ts.SymbolFlagsOptional != 0
 		if optional {
 			propertyType = r.checker.RemoveMissingOrUndefinedType(propertyType)
 		}
-		propertyType, nullable := r.withoutNull(propertyType)
-		value, err := r.value(propertyType, at)
+		read, err := r.typeOf(propertyType, at)
 		if err != nil {
-			return nil, err
+			return err
 		}
-		declared.Fields = append(declared.Fields, Field{Name: property.Name(), Optional: optional, Nullable: nullable, Value: value})
+		declared.Fields = append(declared.Fields, Field{Name: property.Name(), Optional: optional, Type: read})
 	}
-	return declared, nil
+	return nil
 }
 
 // withoutNull removes null from a union, reporting whether it was a member.

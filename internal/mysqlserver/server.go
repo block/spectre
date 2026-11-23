@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"net"
 	"os"
 	"slices"
@@ -52,6 +53,8 @@ type Server struct {
 	budget       *proxy.Budget
 	normaliser   normaliser.Normaliser
 	parser       *normaliser.Parser
+	// schema types the pairings egress hashes.
+	schema *schema.Schema
 	// scope pairs every unit with every other, because statements carry no request ID.
 	scope protocol.RequestID
 	// version is the database's version once the proxy has connected to it.
@@ -88,6 +91,7 @@ func New(config Config, statements normaliser.Normaliser, engine *protocol.Engin
 		budget:       proxy.NewBudget(config.SavedRepliesBytes),
 		normaliser:   statements,
 		parser:       normaliser.NewParser(),
+		schema:       engine.Schema(),
 		scope:        scope,
 	}, nil
 }
@@ -330,7 +334,7 @@ func (s *Server) offer(ctx context.Context, units []scopedUnit) {
 			return
 		}
 		saved.name(unit.names)
-		decision, err := s.reference.ProcessRequest(ctx, Some(s.scope), unit.Route, None[string](), request(unit.pairing))
+		decision, err := s.reference.ProcessRequest(ctx, Some(s.scope), unit.Route, None[string](), s.request(unit.pairing))
 		forward, ok := decision.(protocol.DecisionForward)
 		if err != nil || !ok {
 			saved.Release()
@@ -365,7 +369,7 @@ func (s *Server) admit(ctx context.Context, stop context.CancelFunc) (finish fun
 // claim waits for the reply of an equivalent reference unit, and keeps it in claimed
 // until released. The engine quarantines the candidate when there is none.
 func (s *Server) claim(ctx context.Context, claimed *[]*savedReply, route model.Route, by pairing) (*savedReply, error) {
-	decision, err := s.candidate.ProcessRequest(ctx, Some(s.scope), route, None[string](), request(by))
+	decision, err := s.candidate.ProcessRequest(ctx, Some(s.scope), route, None[string](), s.request(by))
 	if err != nil {
 		return nil, errors.WithStack(err)
 	}
@@ -396,9 +400,17 @@ func (s *Server) unable(ctx context.Context, route model.Route, reason string) {
 }
 
 // request is the payload egress hashes to pair a unit.
-func request(by pairing) func(ctx context.Context) (protocol.Message, error) {
-	return func(context.Context) (protocol.Message, error) {
-		return protocol.Message{Type: None[schema.TypeRef](), Value: by}, nil
+func (s *Server) request(by pairing) func(ctx context.Context) (schema.Value, error) {
+	return func(context.Context) (schema.Value, error) {
+		declared, err := s.schema.Type(schema.MySQLPairing)
+		if err != nil {
+			return nil, errors.WithStack(err)
+		}
+		data, err := json.Marshal(by)
+		if err != nil {
+			return nil, errors.Wrap(err, "encode pairing")
+		}
+		return errors.WithStack2(schema.Decode(declared, data))
 	}
 }
 

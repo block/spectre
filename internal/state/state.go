@@ -1,7 +1,7 @@
 package state
 
 import (
-	"cmp"
+	"bytes"
 	"fmt"
 	"maps"
 	"os"
@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/alecthomas/errors"
+	. "github.com/alecthomas/types/optional"
 	"github.com/pelletier/go-toml/v2"
 	"github.com/pelletier/go-toml/v2/unstable"
 
@@ -35,13 +36,52 @@ type State struct {
 
 // Node is one module of the service.
 type Node struct {
-	ID        string   `json:"id"`
-	DependsOn []string `json:"depends_on,omitzero"`
-	Status    Status   `json:"status"`
-	// IO holds the settings of each IO kind the node has. A library has none.
-	IO map[model.IOKind]map[string]model.DynamicValue `json:"io,omitzero"`
+	ID        string   `toml:"-" json:"id"`
+	DependsOn []string `toml:"depends_on,omitempty" json:"depends_on,omitzero"`
+	Status    Status   `toml:"status,omitempty" json:"status"`
+	Ingress   Ingress  `toml:"ingress,omitempty" json:"ingress,omitzero"`
+	Egress    Egress   `toml:"egress,omitempty" json:"egress,omitzero"`
 	// Line is where the node's table starts in the file, or 0 when unknown.
-	Line int `json:"-"`
+	Line int `toml:"-" json:"-"`
+}
+
+// Ingress is the IO that reaches a node, with a field per protocol. Fields are
+// pointers only because go-toml cannot decode an Option; read them as Options.
+type Ingress struct {
+	HTTP *HTTPIngress `toml:"http,omitempty" json:"http,omitzero"`
+}
+
+// HTTPSettings returns the node's ingress[http] settings, if it has that kind of IO.
+func (i Ingress) HTTPSettings() Option[HTTPIngress] {
+	return Ptr(i.HTTP)
+}
+
+// Egress is the IO a node performs, with a field per protocol. Fields are
+// pointers only because go-toml cannot decode an Option; read them as Options.
+type Egress struct {
+	HTTP *HTTPEgress `toml:"http,omitempty" json:"http,omitzero"`
+}
+
+// HTTPSettings returns the node's egress[http] settings, if it has that kind of IO.
+func (e Egress) HTTPSettings() Option[HTTPEgress] {
+	return Ptr(e.HTTP)
+}
+
+// HTTPIngress is a node's ingress[http] settings.
+type HTTPIngress struct {
+	// Routes are unique across nodes, and there must be at least one.
+	Routes map[model.Route]HTTPRoute `toml:"routes" json:"routes"`
+}
+
+// HTTPRoute is the settings of one route a node handles, which has none yet.
+type HTTPRoute struct{}
+
+// HTTPEgress is a node's egress[http] settings, which has none yet.
+type HTTPEgress struct{}
+
+// file is the layout of a state file, which go-toml decodes and encodes directly.
+type file struct {
+	Nodes map[string]Node `toml:"nodes,omitempty"`
 }
 
 // Problem is one thing wrong with a migration state.
@@ -72,18 +112,7 @@ func (e *InvalidError) Error() string {
 	return fmt.Sprintf("%s (and %d more problems)", e.Problems[0], len(e.Problems)-1)
 }
 
-// syntaxProblem moves the position of a TOML syntax error into the problem's
-// line.
-func syntaxProblem(err error) Problem {
-	decodeErr, ok := errors.AsType[*toml.DecodeError](err)
-	if !ok {
-		return Problem{Message: err.Error()}
-	}
-	line, _ := decodeErr.Position()
-	return Problem{Line: line, Message: strings.TrimPrefix(decodeErr.Error(), "toml: ")}
-}
-
-// Keys of the state file that the parser recognises.
+// Keys of the state file that problems name.
 const (
 	nodesKey     = "nodes"
 	dependsOnKey = "depends_on"
@@ -99,22 +128,69 @@ type Config struct {
 }
 
 // Load reads and parses the migration state file at path.
-func Load(path string, catalog *Catalog) (State, error) {
+func Load(path string) (State, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return State{}, errors.Wrap(err, "read migration state")
 	}
-	return errors.WithStack2(Parse(data, catalog))
+	return errors.WithStack2(Parse(data))
 }
 
-// Parse reads a migration state and checks it against the IO kinds the catalog
-// supports. An invalid state returns an *InvalidError.
-func Parse(data []byte, catalog *Catalog) (State, error) {
-	var root map[string]model.DynamicValue
-	if err := toml.Unmarshal(data, &root); err != nil {
-		return State{}, &InvalidError{Problems: []Problem{syntaxProblem(err)}}
+// Parse reads and checks a migration state. An invalid state returns an
+// *InvalidError.
+func Parse(data []byte) (State, error) {
+	var decoded file
+	err := toml.NewDecoder(bytes.NewReader(data)).DisallowUnknownFields().Decode(&decoded)
+	if strict, ok := errors.AsType[*toml.StrictMissingError](err); ok {
+		problems := make([]Problem, 0, len(strict.Errors))
+		for _, unknown := range strict.Errors {
+			line, _ := unknown.Position()
+			problems = append(problems, Problem{Line: line, Message: keyPath(unknown.Key()...) + ": unknown key"})
+		}
+		return State{}, &InvalidError{Problems: problems}
+	} else if err != nil {
+		return State{}, &InvalidError{Problems: []Problem{decodeProblem(err)}}
 	}
-	return newParser(root, keyLines(data), catalog).parse()
+	lines := keyLines(data)
+	state := State{}
+	for _, id := range slices.Sorted(maps.Keys(decoded.Nodes)) {
+		node := decoded.Nodes[id]
+		node.ID = id
+		node.Line = lines[keyPath(nodesKey, id)]
+		if node.Status == "" {
+			node.Status = Pending
+		}
+		state.Nodes = append(state.Nodes, node)
+	}
+	if err := newChecker(lines).check(state); err != nil {
+		return State{}, err
+	}
+	return state, nil
+}
+
+// decodeProblem moves the position of a go-toml error into the problem's line,
+// and names the key it was decoding, if any.
+func decodeProblem(err error) Problem {
+	decodeErr, ok := errors.AsType[*toml.DecodeError](err)
+	if !ok {
+		return Problem{Message: err.Error()}
+	}
+	line, _ := decodeErr.Position()
+	message := strings.TrimPrefix(decodeErr.Error(), "toml: ")
+	if key := decodeErr.Key(); len(key) > 0 {
+		message = keyPath(key...) + ": " + message
+	}
+	return Problem{Line: line, Message: message}
+}
+
+// encode writes nodes as a state file, with keys sorted.
+func encode(nodes []Node) ([]byte, error) {
+	encoded := file{Nodes: make(map[string]Node, len(nodes))}
+	for _, node := range nodes {
+		encoded.Nodes[node.ID] = node
+	}
+	data, err := toml.Marshal(encoded)
+	return data, errors.WithStack(err)
 }
 
 // keyLines maps the key path of each table and key in a TOML document to the
@@ -210,7 +286,7 @@ func (s State) Next() []Node {
 		step := pendingStep(nodes, node.ID)
 		io := 0
 		for _, member := range step {
-			if len(member.IO) > 0 {
+			if len(member.kinds()) > 0 {
 				io++
 			}
 		}
@@ -267,12 +343,10 @@ func pendingStep(nodes map[string]Node, id string) []Node {
 
 // Types returns the node's types: library, or each of its IO kinds.
 func (n Node) Types() []string {
-	if len(n.IO) == 0 {
+	kinds := n.kinds()
+	if len(kinds) == 0 {
 		return []string{Library}
 	}
-	kinds := slices.SortedFunc(maps.Keys(n.IO), func(a, b model.IOKind) int {
-		return cmp.Or(cmp.Compare(a.Protocol, b.Protocol), directionOrder(a.Direction)-directionOrder(b.Direction))
-	})
 	types := make([]string, len(kinds))
 	for i, kind := range kinds {
 		types[i] = kind.String()
@@ -280,188 +354,64 @@ func (n Node) Types() []string {
 	return types
 }
 
-func (n Node) hasIngress() bool {
-	for kind := range n.IO {
-		if kind.Direction == model.Ingress {
-			return true
-		}
+// kinds returns the node's IO kinds, by protocol with ingress first.
+func (n Node) kinds() []model.IOKind {
+	var kinds []model.IOKind
+	if n.Ingress.HTTPSettings().Ok() {
+		kinds = append(kinds, model.IOKind{Direction: model.Ingress, Protocol: model.ProtocolHTTP})
 	}
-	return false
+	if n.Egress.HTTPSettings().Ok() {
+		kinds = append(kinds, model.IOKind{Direction: model.Egress, Protocol: model.ProtocolHTTP})
+	}
+	return kinds
 }
 
-// parser collects every problem in a state file instead of stopping at the first.
-type parser struct {
-	root     map[string]model.DynamicValue
+func (n Node) hasIngress() bool {
+	return n.Ingress != Ingress{}
+}
+
+// checker collects every problem with a decoded state instead of stopping at the first.
+type checker struct {
 	lines    map[string]int
-	catalog  *Catalog
 	problems []Problem
 }
 
-func newParser(root map[string]model.DynamicValue, lines map[string]int, catalog *Catalog) *parser {
-	return &parser{root: root, lines: lines, catalog: catalog}
+func newChecker(lines map[string]int) *checker {
+	return &checker{lines: lines}
 }
 
-func (p *parser) parse() (State, error) {
-	state := p.state()
-	p.checkDependencies(state)
-	p.checkUnique(state)
-	if len(p.problems) > 0 {
-		slices.SortStableFunc(p.problems, func(a, b Problem) int { return a.Line - b.Line })
-		return State{}, &InvalidError{Problems: p.problems}
+func (c *checker) check(state State) error {
+	for _, node := range state.Nodes {
+		c.checkNode(node)
 	}
-	return state, nil
-}
-
-func (p *parser) reportf(path []string, format string, args ...any) {
-	p.problems = append(p.problems, Problem{Line: p.line(path), Message: keyPath(path...) + ": " + fmt.Sprintf(format, args...)})
-}
-
-// line returns where path is defined, or 0 when unknown.
-func (p *parser) line(path []string) int {
-	return p.lines[keyPath(path...)]
-}
-
-func (p *parser) state() State {
-	for _, key := range sortedKeys(p.root) {
-		if key != nodesKey {
-			p.reportf([]string{key}, "unknown key; the state holds only nodes")
-		}
-	}
-	value, ok := p.root[nodesKey]
-	if !ok {
-		return State{}
-	}
-	nodes, ok := value.(map[string]model.DynamicValue)
-	if !ok {
-		p.reportf([]string{nodesKey}, "must be a table of nodes keyed by ID")
-		return State{}
-	}
-	state := State{}
-	for _, id := range sortedKeys(nodes) {
-		path := []string{nodesKey, id}
-		if !nodeIDPattern.MatchString(id) {
-			p.reportf(path, "node IDs must be kebab-case")
-		}
-		table, isTable := nodes[id].(map[string]model.DynamicValue)
-		if !isTable {
-			p.reportf(path, "must be a table")
-			state.Nodes = append(state.Nodes, Node{ID: id, Status: Pending, Line: p.line(path)})
-			continue
-		}
-		state.Nodes = append(state.Nodes, p.node(path, table))
-	}
-	return state
-}
-
-func (p *parser) node(path []string, table map[string]model.DynamicValue) Node {
-	node := Node{ID: path[len(path)-1], Status: Pending, IO: map[model.IOKind]map[string]model.DynamicValue{}, Line: p.line(path)}
-	for _, key := range sortedKeys(table) {
-		keyPath := append(slices.Clone(path), key)
-		value := table[key]
-		switch key {
-		case dependsOnKey:
-			node.DependsOn = p.dependsOn(keyPath, value)
-		case statusKey:
-			status, ok := value.(string)
-			if !ok || (Status(status) != Pending && Status(status) != Migrated) {
-				p.reportf(keyPath, "must be %q or %q", Pending, Migrated)
-				continue
-			}
-			node.Status = Status(status)
-		case string(model.Ingress), string(model.Egress):
-			p.kinds(keyPath, model.Direction(key), value, node.IO)
-		default:
-			p.reportf(keyPath, "unknown key; a node holds depends_on, status, %s, and %s", model.Ingress, model.Egress)
-		}
-	}
-	return node
-}
-
-func (p *parser) dependsOn(path []string, value model.DynamicValue) []string {
-	values, ok := value.([]model.DynamicValue)
-	if !ok {
-		p.reportf(path, "must be an array of node IDs")
+	c.checkDependencies(state)
+	c.checkRoutes(state)
+	if len(c.problems) == 0 {
 		return nil
 	}
-	ids := make([]string, 0, len(values))
-	for _, value := range values {
-		id, isString := value.(string)
-		if !isString {
-			p.reportf(path, "must be an array of node IDs")
-			return nil
-		}
-		ids = append(ids, id)
-	}
-	return ids
+	slices.SortStableFunc(c.problems, func(a, b Problem) int { return a.Line - b.Line })
+	return &InvalidError{Problems: c.problems}
 }
 
-func (p *parser) kinds(path []string, direction model.Direction, value model.DynamicValue, io map[model.IOKind]map[string]model.DynamicValue) {
-	protocols, ok := value.(map[string]model.DynamicValue)
-	if !ok {
-		p.reportf(path, "must be a table keyed by protocol")
-		return
-	}
-	for _, protocol := range sortedKeys(protocols) {
-		kindPath := append(slices.Clone(path), protocol)
-		kind := model.IOKind{Direction: direction, Protocol: model.Protocol(protocol)}
-		support, supported := p.catalog.Support(kind)
-		if !supported {
-			p.reportf(kindPath, "%s is not a supported IO kind; run spectre state types for the supported ones", kind)
-			continue
-		}
-		settings, isTable := protocols[protocol].(map[string]model.DynamicValue)
-		if !isTable {
-			p.reportf(kindPath, "must be a table of %s settings", kind)
-			continue
-		}
-		p.settings(kindPath, settings, support.Settings)
-		io[kind] = settings
-	}
+func (c *checker) reportf(path []string, format string, args ...any) {
+	c.problems = append(c.problems, Problem{Line: c.lines[keyPath(path...)], Message: keyPath(path...) + ": " + fmt.Sprintf(format, args...)})
 }
 
-// settings checks a table against the settings it may hold, and each entry of a
-// keyed setting against the settings an entry may hold.
-func (p *parser) settings(path []string, table map[string]model.DynamicValue, settings []Setting) {
-	for _, setting := range settings {
-		if _, ok := table[setting.Name]; setting.Required && !ok {
-			p.reportf(path, "%s is required", setting.Name)
-		}
+func (c *checker) checkNode(node Node) {
+	if !nodeIDPattern.MatchString(node.ID) {
+		c.reportf([]string{nodesKey, node.ID}, "node IDs must be kebab-case")
 	}
-	for _, key := range sortedKeys(table) {
-		settingPath := append(slices.Clone(path), key)
-		index := slices.IndexFunc(settings, func(setting Setting) bool { return setting.Name == key })
-		if index < 0 {
-			p.reportf(settingPath, "unknown setting")
-			continue
-		}
-		setting := settings[index]
-		value := table[key]
-		if setting.Key == "" {
-			if _, ok := value.(map[string]model.DynamicValue); ok {
-				p.reportf(settingPath, "must be a value, not a table")
-			}
-			continue
-		}
-		entries, ok := value.(map[string]model.DynamicValue)
-		if !ok {
-			p.reportf(settingPath, "must be a table keyed by %s", setting.Key)
-			continue
-		}
-		for _, entryKey := range sortedKeys(entries) {
-			entryPath := append(slices.Clone(settingPath), entryKey)
-			entry, isTable := entries[entryKey].(map[string]model.DynamicValue)
-			if !isTable {
-				p.reportf(entryPath, "must be a table; write {} for an entry with no settings")
-				continue
-			}
-			p.settings(entryPath, entry, setting.Entry)
-		}
+	if node.Status != Pending && node.Status != Migrated {
+		c.reportf([]string{nodesKey, node.ID, statusKey}, "must be %q or %q", Pending, Migrated)
+	}
+	if http, ok := node.Ingress.HTTPSettings().Get(); ok && len(http.Routes) == 0 {
+		c.reportf([]string{nodesKey, node.ID, string(model.Ingress), string(model.ProtocolHTTP)}, "routes must list at least one route")
 	}
 }
 
 // checkDependencies reports dependencies on unknown nodes, cycles, and migrated
 // nodes that depend on pending ones.
-func (p *parser) checkDependencies(state State) {
+func (c *checker) checkDependencies(state State) {
 	nodes := make(map[string]Node, len(state.Nodes))
 	for _, node := range state.Nodes {
 		nodes[node.ID] = node
@@ -473,25 +423,25 @@ func (p *parser) checkDependencies(state State) {
 			dependency, ok := nodes[id]
 			switch {
 			case id == node.ID:
-				p.reportf(path, "a node cannot depend on itself")
+				c.reportf(path, "a node cannot depend on itself")
 			case !ok:
-				p.reportf(path, "%q is not a node", id)
+				c.reportf(path, "%q is not a node", id)
 			case seen[id]:
-				p.reportf(path, "lists %q twice", id)
+				c.reportf(path, "lists %q twice", id)
 			default:
 				seen[id] = true
 				if node.Status == Migrated && dependency.Status == Pending {
-					p.reportf([]string{nodesKey, node.ID, statusKey}, "migrated, but depends on pending node %q", id)
+					c.reportf([]string{nodesKey, node.ID, statusKey}, "migrated, but depends on pending node %q", id)
 				}
 			}
 		}
 	}
-	p.checkCycles(state, nodes)
+	c.checkCycles(state, nodes)
 }
 
 // checkCycles reports the first dependency cycle it finds, starting from the
 // lowest node ID.
-func (p *parser) checkCycles(state State, nodes map[string]Node) {
+func (c *checker) checkCycles(state State, nodes map[string]Node) {
 	done := map[string]bool{}
 	var visit func(stack []string) bool
 	visit = func(stack []string) bool {
@@ -505,7 +455,7 @@ func (p *parser) checkCycles(state State, nodes map[string]Node) {
 			}
 			if start := slices.Index(stack, dependency); start >= 0 {
 				cycle := append(slices.Clone(stack[start:]), dependency)
-				p.reportf([]string{nodesKey, dependency, dependsOnKey}, "dependency cycle %s", strings.Join(cycle, " -> "))
+				c.reportf([]string{nodesKey, dependency, dependsOnKey}, "dependency cycle %s", strings.Join(cycle, " -> "))
 				return true
 			}
 			if visit(append(stack, dependency)) {
@@ -522,31 +472,23 @@ func (p *parser) checkCycles(state State, nodes map[string]Node) {
 	}
 }
 
-// checkUnique reports a key of a unique setting that more than one node lists.
-func (p *parser) checkUnique(state State) {
-	for _, support := range p.catalog.Supports() {
-		for _, setting := range support.Settings {
-			if !setting.Unique {
+// checkRoutes reports an ingress[http] route that more than one node lists.
+func (c *checker) checkRoutes(state State) {
+	owners := map[model.Route]string{}
+	for _, node := range state.Nodes {
+		http, ok := node.Ingress.HTTPSettings().Get()
+		if !ok {
+			continue
+		}
+		for _, route := range slices.Sorted(maps.Keys(http.Routes)) {
+			if owner, listed := owners[route]; listed {
+				path := []string{nodesKey, node.ID, string(model.Ingress), string(model.ProtocolHTTP), "routes", string(route)}
+				c.reportf(path, "also listed by node %q", owner)
 				continue
 			}
-			owners := map[string]string{}
-			for _, node := range state.Nodes {
-				entries, _ := node.IO[support.Kind][setting.Name].(map[string]model.DynamicValue)
-				for _, key := range slices.Sorted(maps.Keys(entries)) {
-					path := []string{nodesKey, node.ID, string(support.Kind.Direction), string(support.Kind.Protocol), setting.Name, key}
-					if owner, ok := owners[key]; ok {
-						p.reportf(path, "also listed by node %q", owner)
-						continue
-					}
-					owners[key] = node.ID
-				}
-			}
+			owners[route] = node.ID
 		}
 	}
-}
-
-func sortedKeys(table map[string]model.DynamicValue) []string {
-	return slices.Sorted(maps.Keys(table))
 }
 
 var bareKeyPattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)

@@ -13,9 +13,7 @@ import (
 
 	"github.com/alecthomas/assert/v2"
 
-	"github.com/block/spectre/internal/httpserver"
 	"github.com/block/spectre/internal/proxies"
-	"github.com/block/spectre/internal/state"
 )
 
 func TestProxyMirrorsServicesThatRunElsewhere(t *testing.T) {
@@ -45,7 +43,7 @@ func TestProxyMirrorsServicesThatRunElsewhere(t *testing.T) {
 	config.Mirror.Reflection = false
 	config.Mirror.ScriptsDir = t.TempDir()
 	config.Mirror.SchemaDir = t.TempDir()
-	proxy, err := proxies.New(t.Context(), config, testCatalog(t))
+	proxy, err := proxies.New(t.Context(), config)
 	assert.NoError(t, err)
 
 	ctx, cancel := context.WithCancel(t.Context())
@@ -80,7 +78,7 @@ func TestProxyMirrorsServicesThatRunElsewhere(t *testing.T) {
 func TestNewProxyValidates(t *testing.T) {
 	config := proxies.ProxyConfig{Mirror: proxies.NewConfig()}
 	config.Mirror.MatchWindow = 0
-	_, err := proxies.New(t.Context(), config, testCatalog(t))
+	_, err := proxies.New(t.Context(), config)
 	assert.EqualError(t, err, "match window must be positive")
 }
 
@@ -101,13 +99,6 @@ func unixClient(path string) *http.Client {
 		var dialer net.Dialer
 		return dialer.DialContext(ctx, "unix", path)
 	}}}
-}
-
-func testCatalog(t *testing.T) *state.Catalog {
-	t.Helper()
-	catalog, err := state.NewCatalog(httpserver.Supports()...)
-	assert.NoError(t, err)
-	return catalog
 }
 
 // shortSocketDir returns a temporary directory with a path short enough for unix

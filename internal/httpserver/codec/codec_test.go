@@ -32,6 +32,8 @@ func TestWireFormatsShareDeclaredJSONShape(t *testing.T) {
 	assert.NoError(t, err)
 	wire, err := codec.New(loaded, set)
 	assert.NoError(t, err)
+	responseType, err := loaded.Type("spectre.sample.v1.ListUsersResponse")
+	assert.NoError(t, err)
 	message := &samplepb.ListUsersResponse{
 		Users: []*samplepb.User{{
 			Id: "one", Nickname: new(""), Roles: []samplepb.Role{samplepb.Role_ROLE_ADMIN},
@@ -66,8 +68,11 @@ func TestWireFormatsShareDeclaredJSONShape(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			decoded, err := wire.Decode("spectre.sample.v1.ListUsersResponse", test.format, http.Header{}, test.body, 1<<20)
 			assert.NoError(t, err)
-			assert.Equal(t, expected, decoded)
-			assert.NoError(t, loaded.Validate("spectre.sample.v1.ListUsersResponse", decoded))
+			var actual any
+			assert.NoError(t, json.Unmarshal(decoded, &actual))
+			assert.Equal(t, expected, actual)
+			_, err = schema.Decode(responseType, decoded)
+			assert.NoError(t, err)
 		})
 	}
 	// Unknown wire fields must not disappear during JSON conversion.
@@ -95,18 +100,28 @@ func TestEncodesDecodedValues(t *testing.T) {
 	}
 	body, err := proto.Marshal(message)
 	assert.NoError(t, err)
-	value, err := wire.Decode("spectre.sample.v1.ListUsersResponse", codec.Protobuf, http.Header{}, body, 1<<20)
+	data, err := wire.Decode("spectre.sample.v1.ListUsersResponse", codec.Protobuf, http.Header{}, body, 1<<20)
+	assert.NoError(t, err)
+	responseType, err := loaded.Type("spectre.sample.v1.ListUsersResponse")
+	assert.NoError(t, err)
+	value, err := schema.Decode(responseType, data)
+	assert.NoError(t, err)
+	text, err := schema.As(schema.StringType{}, schema.NewString("text"))
+	assert.NoError(t, err)
+	connectErrorType, err := loaded.Type(schema.ConnectError)
+	assert.NoError(t, err)
+	connectError, err := schema.Decode(connectErrorType, []byte(`{"code":"internal"}`))
 	assert.NoError(t, err)
 
-	encoded, err := wire.Encode("spectre.sample.v1.ListUsersResponse", value)
+	encoded, err := wire.Encode(value)
 	assert.NoError(t, err)
-	_, invalid := wire.Encode("spectre.sample.v1.ListUsersResponse", map[string]any{"users": "none"})
-	_, unknown := wire.Encode("spectre.sample.v1.Missing", map[string]any{})
+	_, scalar := wire.Encode(text)
+	_, unknown := wire.Encode(connectError)
 
 	decoded := &samplepb.ListUsersResponse{}
 	assert.NoError(t, proto.Unmarshal(encoded, decoded))
 	assert.True(t, proto.Equal(message, decoded))
-	assert.EqualError(t, invalid, "invalid ProtoJSON for spectre.sample.v1.ListUsersResponse")
+	assert.EqualError(t, scalar, "string is not a protobuf message type")
 	assert.Error(t, unknown)
 	assert.Contains(t, unknown.Error(), "resolve wire type")
 }
