@@ -57,7 +57,7 @@ func NewProgram(ctx context.Context, evaluationTimeout time.Duration, declaratio
 	if err != nil {
 		return nil, err
 	}
-	loader := newModuleLoader(checked.modules, maps.Clone(variables))
+	loader := newModuleLoader(checked.modules, checked.schema, maps.Clone(variables))
 	module, err := loader.loadAll()
 	if err != nil {
 		return nil, err
@@ -181,10 +181,10 @@ type moduleLoader struct {
 	names    map[sobek.ModuleRecord]string
 }
 
-func newModuleLoader(compiled map[string]string, variables map[string]string) *moduleLoader {
+func newModuleLoader(compiled map[string]string, loaded *schema.Schema, variables map[string]string) *moduleLoader {
 	return &moduleLoader{
 		compiled: compiled,
-		spectre:  &spectreModule{variables: variables},
+		spectre:  &spectreModule{loaded: loaded, variables: variables},
 		modules:  map[string]*sobek.SourceTextModuleRecord{},
 		names:    map[sobek.ModuleRecord]string{},
 	}

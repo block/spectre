@@ -15,7 +15,6 @@ import (
 	"github.com/block/spectre/internal/proxies"
 	"github.com/block/spectre/internal/scaffold"
 	"github.com/block/spectre/internal/server"
-	"github.com/block/spectre/internal/state"
 )
 
 // CommandLine is the built-in command line. Extensions add to it, so custom
@@ -61,8 +60,8 @@ type proxyCommand struct {
 	Proxy proxies.ProxyConfig `embed:""`
 }
 
-func (c *proxyCommand) Run(ctx context.Context, catalog *state.Catalog) error {
-	proxy, err := proxies.New(ctx, c.Proxy, catalog)
+func (c *proxyCommand) Run(ctx context.Context) error {
+	proxy, err := proxies.New(ctx, c.Proxy)
 	if err != nil {
 		return errors.WithStack(err)
 	}

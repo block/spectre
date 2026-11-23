@@ -78,12 +78,6 @@ type Raw interface {
 	Release()
 }
 
-// Message is a decoded payload. One without a Type is compared without normalisers.
-type Message struct {
-	Type  Option[schema.TypeRef]
-	Value model.DynamicValue
-}
-
 // Response is what a server received for a forwarded request.
 type Response struct {
 	Raw Raw
@@ -100,7 +94,7 @@ type Content struct {
 	// Status is a fixed code such as "200", never payload, because differences report
 	// it. It is absent only when Failure explains why.
 	Status  Option[string]
-	Message Option[Message]
+	Message Option[schema.Value]
 	Failure Option[error]
 	// Ignored explains why the response is never compared.
 	Ignored Option[string]
@@ -129,7 +123,7 @@ type DecisionIntercept struct{ Raw Raw }
 
 // DecisionAnswer answers the request with Message, which the server encodes as
 // a successful response, instead of sending it.
-type DecisionAnswer struct{ Message Message }
+type DecisionAnswer struct{ Message schema.Value }
 
 func (DecisionForward) decision()   {}
 func (DecisionIntercept) decision() {}

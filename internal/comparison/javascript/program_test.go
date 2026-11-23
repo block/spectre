@@ -42,7 +42,7 @@ func TestProgramOwnsDeclarations(t *testing.T) {
 	})
 	assert.NoError(t, err)
 
-	typed := javascript.ActionMatch{Type: Some[schema.TypeRef]("test.v1.Response")}
+	typed := javascript.ActionMatch{Type: objectType(t, program, "test.v1.Response")}
 	assert.Equal(t, []rule{{`http("GET /v1/forecast")`, typed}, {`http("GET /v2/forecast")`, typed}}, rules(program))
 	assert.Equal(t, []endpoint{{"http", "GET weather.example/v1/forecast", "test.v1.Response"}}, endpoints(program, model.Egress))
 	assert.Equal(t, []javascript.FieldTarget{javascript.NewFieldTarget("test.v1.Response", "value")}, program.Fields())
@@ -85,6 +85,7 @@ func TestRegistersRulesInOrder(t *testing.T) {
 			const forecast = spectre.ingress.http("GET /v1/forecast");
 			forecast.status(404).match<v1.User>();
 			forecast.match<v1.Response>();
+			spectre.ingress.http("GET /v1/anything").match<unknown>();
 			spectre.ingress.http("/").responseHeader("x-served-by", "rails").requestHeader("x-synthetic", "true").status(502).responseHeader("Retry-After", (value) => value !== undefined).ignore();
 		`),
 	})
@@ -92,10 +93,11 @@ func TestRegistersRulesInOrder(t *testing.T) {
 
 	assert.Equal(t, []rule{
 		{`http("GET /_status")`, javascript.ActionIgnore{}},
-		{`http("/").status(500, 503)`, javascript.ActionMatch{Type: None[schema.TypeRef](), Normalises: true}},
+		{`http("/").status(500, 503)`, javascript.ActionMatch{Type: schema.StringType{}, Normalises: true}},
 		{`http(<function>).status(<function>)`, javascript.ActionIgnore{}},
-		{`http("GET /v1/forecast").status(404)`, javascript.ActionMatch{Type: Some[schema.TypeRef]("test.v1.User")}},
-		{`http("GET /v1/forecast")`, javascript.ActionMatch{Type: Some[schema.TypeRef]("test.v1.Response")}},
+		{`http("GET /v1/forecast").status(404)`, javascript.ActionMatch{Type: objectType(t, program, "test.v1.User")}},
+		{`http("GET /v1/forecast")`, javascript.ActionMatch{Type: objectType(t, program, "test.v1.Response")}},
+		{`http("GET /v1/anything")`, javascript.ActionMatch{Type: schema.UnknownType{}}},
 		{`http("/").requestHeader("X-Synthetic", "true").status(502).responseHeader("Retry-After", <function>).responseHeader("X-Served-By", "rails")`, javascript.ActionIgnore{}},
 	}, rules(program))
 	evaluator, err := program.NewEvaluator(t.Context())
@@ -140,9 +142,9 @@ func TestEvaluatesRuleFunctions(t *testing.T) {
 	assert.NoError(t, err)
 	assert.False(t, selected)
 
-	normalised, err := evaluator.NormaliseResponse(declared[0], map[string]any{"status": 503, "body": map[string]any{"value": "a"}})
+	normalised, err := evaluator.NormaliseResponse(declared[0], unknownValue(t, `{"status":503,"body":{"value":"a"}}`))
 	assert.NoError(t, err)
-	assert.Equal(t, Some[any](map[string]any{"status": float64(500), "body": map[string]any{"value": "a"}}), normalised)
+	assert.Equal(t, Some(unknownValue(t, `{"status":500,"body":{"value":"a"}}`)), normalised)
 
 	_, err = evaluator.SelectsStatus(declared[1], 500)
 	assert.EqualError(t, err, `JavaScript selector of rule http("/").status(<function>) returned a value that is not a boolean`)
@@ -225,6 +227,18 @@ func TestRejectsUncheckedRegistrations(t *testing.T) {
 		"TextEgress": {
 			files:   fstest.MapFS{"test.ts": script(`spectre.egress.http("GET weather.example/v1/forecast").match<spectre.Text>();`)},
 			message: "only ingress rules may compare bodies as Text",
+		},
+		"UnknownMessage": {
+			files:   fstest.MapFS{"test.ts": script(`spectre.message<unknown>((value) => value);`)},
+			message: "error TS2344",
+		},
+		"UnknownEgress": {
+			files:   fstest.MapFS{"test.ts": script(`spectre.egress.http("GET weather.example/v1/forecast").match<unknown>();`)},
+			message: "error TS2344",
+		},
+		"ScalarBody": {
+			files:   fstest.MapFS{"test.ts": script(`spectre.ingress.http("GET /root").match<string>();`)},
+			message: "spectre.IngressHTTPRule.match type argument string: object types must be declared by name",
 		},
 		"NormaliserReturnsWrongBody": {
 			files:   fstest.MapFS{"test.ts": script(`spectre.ingress.http("/").match<v1.Response>(() => ({ body: { value: 1 } }));`)},
@@ -425,9 +439,9 @@ func TestEvaluatesEachScriptOnce(t *testing.T) {
 	evaluator, err := program.NewEvaluator(t.Context())
 	assert.NoError(t, err)
 	defer evaluator.Close()
-	normalised, err := evaluator.NormaliseMessage("test.v1.User", Some[any]("alice"))
+	normalised, err := evaluator.NormaliseMessage("test.v1.User", Some(unknownValue(t, `"alice"`)))
 	assert.NoError(t, err)
-	assert.Equal(t, Some[any]("alice"), normalised)
+	assert.Equal(t, Some(unknownValue(t, `"alice"`)), normalised)
 }
 
 func TestReadsVariables(t *testing.T) {
@@ -442,9 +456,9 @@ func TestReadsVariables(t *testing.T) {
 	evaluator, err := program.NewEvaluator(t.Context())
 	assert.NoError(t, err)
 	defer evaluator.Close()
-	normalised, err := evaluator.NormaliseMessage("test.v1.User", Some[any](map[string]any{"name": "alice"}))
+	normalised, err := evaluator.NormaliseMessage("test.v1.User", Some(unknownValue(t, `{"name":"alice"}`)))
 	assert.NoError(t, err)
-	assert.Equal(t, Some[any](map[string]any{"name": "staging"}), normalised)
+	assert.Equal(t, Some(unknownValue(t, `{"name":"staging"}`)), normalised)
 }
 
 func TestRejectsUnsetVariable(t *testing.T) {
@@ -522,37 +536,37 @@ func TestEvaluatorPreservesMissingAndNullArguments(t *testing.T) {
 	assert.NoError(t, err)
 	defer evaluator.Close()
 	tests := map[string]struct {
-		value    Option[any]
-		expected any
+		value    Option[schema.Value]
+		expected string
 	}{
-		"Missing": {value: None[any](), expected: "missing"},
-		"Null":    {value: Some[any](nil), expected: "null"},
-		"Value":   {value: Some[any]("value"), expected: "other"},
+		"Missing": {value: None[schema.Value](), expected: "missing"},
+		"Null":    {value: Some(unknownValue(t, `null`)), expected: "null"},
+		"Value":   {value: Some(unknownValue(t, `"value"`)), expected: "other"},
 	}
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
 			normalised, err := evaluator.NormaliseField(javascript.NewFieldTarget("test.v1.Response", "owner"), test.value)
 
 			assert.NoError(t, err)
-			assert.Equal(t, Some(test.expected), normalised)
+			assert.Equal(t, Some(schema.NewString(test.expected)), normalised)
 		})
 	}
 }
 
 func TestNormaliserResults(t *testing.T) {
 	type result struct {
-		Normalised Option[any]
+		Normalised Option[schema.Value]
 		Failed     bool
 	}
 	tests := map[string]struct {
 		normaliser string
 		expected   result
 	}{
-		"Sorted":                   {normaliser: `(value) => value.sort()`, expected: result{Normalised: Some[any]([]any{"a", "b"})}},
-		"Constant":                 {normaliser: `() => true`, expected: result{Normalised: Some[any](true)}},
-		"Null":                     {normaliser: `() => null`, expected: result{Normalised: Some[any](nil)}},
+		"Sorted":                   {normaliser: `(value) => value.sort()`, expected: result{Normalised: Some(unknownValue(t, `["a","b"]`))}},
+		"Constant":                 {normaliser: `() => true`, expected: result{Normalised: Some(unknownValue(t, `true`))}},
+		"Null":                     {normaliser: `() => null`, expected: result{Normalised: Some(unknownValue(t, `null`))}},
 		"UndefinedRemoves":         {normaliser: `() => undefined`},
-		"UndefinedPropertyOmitted": {normaliser: `() => ({kept: 1, dropped: undefined})`, expected: result{Normalised: Some[any](map[string]any{"kept": float64(1)})}},
+		"UndefinedPropertyOmitted": {normaliser: `() => ({kept: 1, dropped: undefined})`, expected: result{Normalised: Some(unknownValue(t, `{"kept":1}`))}},
 		"UndefinedElement":         {normaliser: `() => [undefined]`, expected: result{Failed: true}},
 		"Function":                 {normaliser: `() => () => true`, expected: result{Failed: true}},
 		"NestedFunction":           {normaliser: `() => ({nested: () => true})`, expected: result{Failed: true}},
@@ -571,7 +585,7 @@ func TestNormaliserResults(t *testing.T) {
 			assert.NoError(t, err)
 			defer evaluator.Close()
 
-			normalised, err := evaluator.NormaliseField(javascript.NewFieldTarget("test.v1.Response", "values"), Some[any]([]any{"b", "a"}))
+			normalised, err := evaluator.NormaliseField(javascript.NewFieldTarget("test.v1.Response", "values"), Some(unknownValue(t, `["b","a"]`)))
 
 			assert.Equal(t, test.expected, result{Normalised: normalised, Failed: err != nil})
 		})
@@ -589,10 +603,10 @@ func TestNormalisersCannotReplaceJSONHelpers(t *testing.T) {
 	assert.NoError(t, err)
 	defer evaluator.Close()
 
-	normalised, err := evaluator.NormaliseField(javascript.NewFieldTarget("test.v1.Response", "value"), Some[any]("original"))
+	normalised, err := evaluator.NormaliseField(javascript.NewFieldTarget("test.v1.Response", "value"), Some(unknownValue(t, `"original"`)))
 
 	assert.NoError(t, err)
-	assert.Equal(t, Some[any]("original"), normalised)
+	assert.Equal(t, Some(unknownValue(t, `"original"`)), normalised)
 }
 
 func TestRejectsInvalidNormaliserDeclarations(t *testing.T) {
@@ -629,13 +643,13 @@ func TestEvaluatorProtectsArgumentsFromMutation(t *testing.T) {
 	evaluator, err := program.NewEvaluator(t.Context())
 	assert.NoError(t, err)
 	defer evaluator.Close()
-	value := map[string]any{"value": "original"}
+	value := unknownValue(t, `{"value":"original"}`)
 
-	normalised, err := evaluator.NormaliseMessage("test.v1.Response", Some[any](value))
+	normalised, err := evaluator.NormaliseMessage("test.v1.Response", Some(value))
 
 	assert.NoError(t, err)
-	assert.Equal(t, Some[any](map[string]any{"value": "changed"}), normalised)
-	assert.Equal(t, map[string]any{"value": "original"}, value)
+	assert.Equal(t, Some(unknownValue(t, `{"value":"changed"}`)), normalised)
+	assert.Equal(t, unknownValue(t, `{"value":"original"}`), value)
 }
 
 func TestEvaluatorsKeepConcurrentRuntimesIsolated(t *testing.T) {
@@ -647,7 +661,7 @@ func TestEvaluatorsKeepConcurrentRuntimesIsolated(t *testing.T) {
 
 	const evaluatorCount = 8
 	type result struct {
-		normalised Option[any]
+		normalised Option[schema.Value]
 		err        error
 	}
 	results := make(chan result, evaluatorCount)
@@ -660,7 +674,7 @@ func TestEvaluatorsKeepConcurrentRuntimesIsolated(t *testing.T) {
 				return
 			}
 			defer evaluator.Close()
-			normalised, err := evaluator.NormaliseField(javascript.NewFieldTarget("test.v1.Response", "value"), Some[any]("same"))
+			normalised, err := evaluator.NormaliseField(javascript.NewFieldTarget("test.v1.Response", "value"), Some(unknownValue(t, `"same"`)))
 			results <- result{normalised: normalised, err: err}
 		})
 	}
@@ -669,7 +683,7 @@ func TestEvaluatorsKeepConcurrentRuntimesIsolated(t *testing.T) {
 
 	for result := range results {
 		assert.NoError(t, result.err)
-		assert.Equal(t, Some[any]("same:1"), result.normalised)
+		assert.Equal(t, Some(unknownValue(t, `"same:1"`)), result.normalised)
 	}
 }
 
@@ -690,9 +704,9 @@ func TestTranspilesTypeScriptModules(t *testing.T) {
 	evaluator, err := program.NewEvaluator(t.Context())
 	assert.NoError(t, err)
 	defer evaluator.Close()
-	normalised, err := evaluator.NormaliseField(javascript.NewFieldTarget("test.v1.Response", "value"), Some[any]("world"))
+	normalised, err := evaluator.NormaliseField(javascript.NewFieldTarget("test.v1.Response", "value"), Some(unknownValue(t, `"world"`)))
 	assert.NoError(t, err)
-	assert.Equal(t, Some[any]("hello world!"), normalised)
+	assert.Equal(t, Some(unknownValue(t, `"hello world!"`)), normalised)
 }
 
 func TestEvaluatorsUseStartupModuleGraph(t *testing.T) {
@@ -711,9 +725,9 @@ func TestEvaluatorsUseStartupModuleGraph(t *testing.T) {
 	evaluator, err := program.NewEvaluator(t.Context())
 	assert.NoError(t, err)
 	defer evaluator.Close()
-	value, err := evaluator.NormaliseField(javascript.NewFieldTarget("test.v1.Response", "value"), Some[any]("original"))
+	value, err := evaluator.NormaliseField(javascript.NewFieldTarget("test.v1.Response", "value"), Some(unknownValue(t, `"original"`)))
 	assert.NoError(t, err)
-	assert.Equal(t, Some[any]("original!"), value)
+	assert.Equal(t, Some(unknownValue(t, `"original!"`)), value)
 }
 
 func TestExplicitTypeScriptImportsShareModuleRecord(t *testing.T) {
@@ -783,9 +797,9 @@ func TestFieldRegistrationsPreserveExplicitTypeAndPath(t *testing.T) {
 		"Second": {target: second, expected: "second"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			value, err := evaluator.NormaliseField(test.target, Some[any]("original"))
+			value, err := evaluator.NormaliseField(test.target, Some(unknownValue(t, `"original"`)))
 			assert.NoError(t, err)
-			assert.Equal(t, Some[any](test.expected), value)
+			assert.Equal(t, Some(unknownValue(t, `"`+test.expected+`"`)), value)
 		})
 	}
 }
@@ -840,4 +854,27 @@ func compile(t *testing.T, files fstest.MapFS) (*javascript.Program, error) {
 
 func declarations() fstest.MapFS {
 	return fstest.MapFS{"test.d.ts": {Data: []byte(testDeclarations)}}
+}
+
+// unknownValue decodes JSON as a value of type unknown, which is what normalisers return.
+func unknownValue(t *testing.T, data string) schema.Value {
+	t.Helper()
+	value, err := schema.Decode(schema.UnknownType{}, []byte(data))
+	assert.NoError(t, err)
+	return value
+}
+
+func objectType(t *testing.T, program *javascript.Program, name schema.TypeRef) *schema.ObjectType {
+	t.Helper()
+	declared, err := program.Schema().Type(name)
+	assert.NoError(t, err)
+	return declared
+}
+
+// objectValue decodes JSON as a value of the named object type.
+func objectValue(t *testing.T, program *javascript.Program, name schema.TypeRef, data string) schema.Value {
+	t.Helper()
+	value, err := schema.Decode(objectType(t, program, name), []byte(data))
+	assert.NoError(t, err)
+	return value
 }

@@ -1,6 +1,7 @@
 package message_test
 
 import (
+	"encoding/json"
 	"net/http"
 	"strconv"
 	"testing"
@@ -16,7 +17,7 @@ import (
 // decoded is one response's comparable status and message, or why it failed to decode.
 type decoded struct {
 	status  Option[string]
-	message Option[protocol.Message]
+	message Option[typedValue]
 	failure string
 	ignored Option[string]
 }
@@ -45,13 +46,18 @@ func TestDecodesRPCResponses(t *testing.T) {
 			expected:    decoded{status: Some("200"), message: typed("test.v1.Response", responseValue(map[string]any{"count": "9007199254740993"}))},
 		},
 		// Connect error envelopes are not instances of the RPC output message.
-		"ConnectErrorIsUntyped": {
+		"ConnectErrorIsTyped": {
 			contentType: "application/json",
 			response:    httpResponse(http.StatusNotFound, "application/json", `{"code":"not_found"}`),
-			expected: decoded{status: Some("404"), message: Some(protocol.Message{
-				Type:  None[schema.TypeRef](),
-				Value: map[string]any{"code": "not_found"},
+			expected: decoded{status: Some("404"), message: Some(typedValue{
+				declared: schema.ConnectError + " | null",
+				value:    map[string]any{"code": "not_found"},
 			})},
+		},
+		"ConnectErrorInvalid": {
+			contentType: "application/json",
+			response:    httpResponse(http.StatusNotFound, "application/json", `{"code":"lost"}`),
+			expected:    decoded{status: Some("404"), failure: "validate Connect error response"},
 		},
 		"ConnectResponseNotJSON": {
 			contentType: "application/json",
@@ -91,7 +97,7 @@ func TestDecodesRPCResponses(t *testing.T) {
 		"GRPCErrorStatus": {
 			contentType: "application/grpc",
 			response:    withHeader(grpcResponse(t, responseProto("same", "", nil), false), "Grpc-Status", "7"),
-			expected:    decoded{status: Some("grpc-status 7"), message: None[protocol.Message]()},
+			expected:    decoded{status: Some("grpc-status 7"), message: None[typedValue]()},
 		},
 		"GRPCInvalidStatus": {
 			contentType: "application/grpc",
@@ -121,7 +127,7 @@ func TestDecodesConnectGetResponses(t *testing.T) {
 	assert.Equal(t, None[string](), plan.Ignored())
 
 	assert.Equal(t, decoded{status: Some("200"), message: typed("test.v1.Response", responseValue(map[string]any{"stable": "same"}))},
-		describe(plan.Decode(t.Context(), connectResponse(`{"stable":"same"}`))))
+		describe(t, plan.Decode(t.Context(), connectResponse(`{"stable":"same"}`))))
 }
 
 func TestDecodesResponseStatus(t *testing.T) {
@@ -210,7 +216,7 @@ func TestDecodesDeclaredHTTPJSONResponses(t *testing.T) {
 		},
 		"NoContent": {
 			response: httpResponse(http.StatusNoContent, "", ""),
-			expected: decoded{status: Some("204"), message: None[protocol.Message]()},
+			expected: decoded{status: Some("204"), message: None[typedValue]()},
 		},
 		"EmptyBodyIsValidated": {
 			response: httpResponse(http.StatusOK, "", ""),
@@ -268,7 +274,7 @@ func TestDecodeFailuresOmitPayloadValues(t *testing.T) {
 				header.Set("Content-Type", test.contentType)
 			}
 			content := decoder.Responses(test.method, test.path, "", header).Decode(t.Context(), test.response)
-			assert.Equal(t, test.expected, describe(content))
+			assert.Equal(t, test.expected, describe(t, content))
 		})
 	}
 }
@@ -298,6 +304,8 @@ func TestRulesSelectEachResponse(t *testing.T) {
 		spectre.ingress.http("GET /_status").ignore();
 		spectre.ingress.http("/").status(500).match<spectre.Text>(({ status }) => ({ status }));
 		spectre.ingress.http((request) => request.path.startsWith("/v2/")).status((status) => status === 503).ignore();
+		spectre.ingress.http("GET /v3/forecast").match<unknown>();
+		spectre.ingress.http("POST /test.v1.Service/Find").match<unknown>();
 		spectre.ingress.http("GET /v1/forecast").responseHeader("X-Skip", "yes").ignore();
 		spectre.ingress.http("GET /v1/forecast").match<v1.Response>();
 		spectre.ingress.http("GET /v2/forecast").match<v1.Response>();
@@ -314,7 +322,7 @@ func TestRulesSelectEachResponse(t *testing.T) {
 	}{
 		"StatusRule": {
 			method: http.MethodGet, path: "/v1/forecast", response: httpResponse(http.StatusInternalServerError, "text/html", "<html></html>"),
-			expected: decoded{status: Some("500"), message: Some(protocol.Message{Type: None[schema.TypeRef](), Value: "<html></html>"})},
+			expected: decoded{status: Some("500"), message: Some(typedValue{declared: "string", value: "<html></html>"})},
 			rule:     `http("/").status(500)`,
 		},
 		"RouteRule": {
@@ -343,7 +351,7 @@ func TestRulesSelectEachResponse(t *testing.T) {
 		"AnyMethod": {
 			method: http.MethodPost, path: "/test.v1.Service/Get", contentType: "application/json",
 			response: httpResponse(http.StatusInternalServerError, "text/html", "<html></html>"),
-			expected: decoded{status: Some("500"), message: Some(protocol.Message{Type: None[schema.TypeRef](), Value: "<html></html>"})},
+			expected: decoded{status: Some("500"), message: Some(typedValue{declared: "string", value: "<html></html>"})},
 			rule:     `http("/").status(500)`,
 		},
 		"NoRuleSelects": {
@@ -365,6 +373,20 @@ func TestRulesSelectEachResponse(t *testing.T) {
 			expected: decoded{status: Some("500"), failure: "Text body is not UTF-8"},
 			rule:     `http("/").status(500)`,
 		},
+		"Unknown": {
+			method: http.MethodGet, path: "/v3/forecast", response: httpResponse(http.StatusOK, "application/json", `{"any":[1,"two"]}`),
+			expected: decoded{status: Some("200"), message: Some(typedValue{
+				declared: "unknown",
+				value:    map[string]any{"any": []any{1.0, "two"}},
+			})},
+			rule: `http("GET /v3/forecast")`,
+		},
+		"UnknownProtobuf": {
+			method: http.MethodPost, path: "/test.v1.Service/Find", contentType: "application/x-protobuf",
+			response: protobufResponse(responseProto("first", "", nil)),
+			expected: decoded{status: Some("200"), failure: "protobuf responses cannot be decoded as unknown"},
+			rule:     `http("POST /test.v1.Service/Find")`,
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			header := http.Header{}
@@ -376,7 +398,7 @@ func TestRulesSelectEachResponse(t *testing.T) {
 
 			content := plan.Decode(t.Context(), test.response)
 
-			assert.Equal(t, test.expected, describe(content))
+			assert.Equal(t, test.expected, describe(t, content))
 			rule := ""
 			if selected, ok := content.Rule.Get(); ok {
 				rule = selected.String()
@@ -407,7 +429,7 @@ func TestRequestHeaderRulesIgnoreRequestsUpFront(t *testing.T) {
 		})
 	}
 	content := decoder.Responses(http.MethodGet, "/v2/forecast", "", http.Header{"X-Synthetic": {"true"}}).Decode(t.Context(), httpResponse(http.StatusOK, "text/plain", "ok"))
-	assert.Equal(t, decoded{status: Some("200"), ignored: Some(`rule http("GET /v2/forecast").requestHeader("X-Synthetic", <function>) ignores the response`)}, describe(content))
+	assert.Equal(t, decoded{status: Some("200"), ignored: Some(`rule http("GET /v2/forecast").requestHeader("X-Synthetic", <function>) ignores the response`)}, describe(t, content))
 }
 
 func TestDecodesHTTPJSONWithoutDescriptors(t *testing.T) {
@@ -504,7 +526,7 @@ func TestDecodesBodylessHTTPResponses(t *testing.T) {
 		"NotModified": {method: http.MethodGet, status: http.StatusNotModified},
 	} {
 		t.Run(name, func(t *testing.T) {
-			assertDecodes(t, decoder, test.method, "/raw", "", httpResponse(test.status, "", ""), decoded{status: Some(strconv.Itoa(test.status)), message: None[protocol.Message]()})
+			assertDecodes(t, decoder, test.method, "/raw", "", httpResponse(test.status, "", ""), decoded{status: Some(strconv.Itoa(test.status)), message: None[typedValue]()})
 		})
 	}
 }
@@ -518,7 +540,7 @@ func assertDecodes(t *testing.T, decoder *message.Decoder, method, path, content
 		header.Set("Content-Type", contentType)
 	}
 	content := decoder.Responses(method, path, "", header).Decode(t.Context(), response)
-	actual := describe(content)
+	actual := describe(t, content)
 	if err, failed := content.Failure.Get(); failed && expected.failure != "" {
 		assert.Contains(t, err.Error(), expected.failure)
 		actual.failure = expected.failure
@@ -527,16 +549,40 @@ func assertDecodes(t *testing.T, decoder *message.Decoder, method, path, content
 }
 
 // describe flattens content so that whole values compare, with the failure as its message.
-func describe(content protocol.Content) decoded {
-	actual := decoded{status: content.Status, message: content.Message, ignored: content.Ignored}
+func describe(t *testing.T, content protocol.Content) decoded {
+	t.Helper()
+	actual := decoded{status: content.Status, message: typedValues(t, content.Message), ignored: content.Ignored}
 	if err, failed := content.Failure.Get(); failed {
 		actual.failure = err.Error()
 	}
 	return actual
 }
 
-func typed(name schema.TypeRef, value any) Option[protocol.Message] {
-	return Some(protocol.Message{Type: Some(name), Value: value})
+// typedValue is a value's type and JSON, so expectations need no schema to build.
+type typedValue struct {
+	declared string
+	value    any
+}
+
+func typedOf(t *testing.T, value schema.Value) typedValue {
+	t.Helper()
+	data, err := json.Marshal(value)
+	assert.NoError(t, err)
+	var decoded any
+	assert.NoError(t, json.Unmarshal(data, &decoded))
+	return typedValue{declared: value.Type().String(), value: decoded}
+}
+
+func typedValues(t *testing.T, value Option[schema.Value]) Option[typedValue] {
+	t.Helper()
+	if message, ok := value.Get(); ok {
+		return Some(typedOf(t, message))
+	}
+	return None[typedValue]()
+}
+
+func typed(name schema.TypeRef, value any) Option[typedValue] {
+	return Some(typedValue{declared: string(name), value: value})
 }
 
 // responseValue is a test.v1.Response in ProtoJSON with defaults emitted.

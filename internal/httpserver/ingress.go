@@ -155,13 +155,16 @@ func stateRoutes(migration Option[state.State]) (Option[*route.Map[stateRoute]],
 	if !ok {
 		return None[*route.Map[stateRoute]](), owners, nil
 	}
-	kind := model.IOKind{Direction: model.Ingress, Protocol: model.ProtocolHTTP}
 	routes := route.New[stateRoute]()
 	for _, node := range nodes.Nodes {
-		entries, _ := node.IO[kind][routesSetting].(map[string]model.DynamicValue)
-		for _, pattern := range slices.Sorted(maps.Keys(entries)) {
-			listed := stateRoute{pattern: model.Route(pattern), nodeID: node.ID, migrated: node.Status == state.Migrated}
-			if err := routes.Add(pattern, listed); err != nil {
+		http, hasHTTP := node.Ingress.HTTPSettings().Get()
+		if !hasHTTP {
+			continue
+		}
+		for _, pattern := range slices.Sorted(maps.Keys(http.Routes)) {
+			listed := stateRoute{pattern: pattern, nodeID: node.ID, migrated: node.Status == state.Migrated}
+			//nolint:typeboundary // route.Map's other callers hold patterns as plain strings
+			if err := routes.Add(string(pattern), listed); err != nil {
 				return None[*route.Map[stateRoute]](), nil, errors.Wrapf(err, "node %s", node.ID)
 			}
 			owners[listed.pattern] = node.ID

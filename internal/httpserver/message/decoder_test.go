@@ -21,7 +21,6 @@ import (
 	"github.com/block/spectre/internal/httpserver/route"
 	"github.com/block/spectre/internal/model"
 	"github.com/block/spectre/internal/protocol"
-	"github.com/block/spectre/internal/schema"
 )
 
 // maxBodyBytes is the default capture limit.
@@ -158,7 +157,7 @@ func TestUnresolvableResponsesFailToDecode(t *testing.T) {
 			content := plan.Decode(t.Context(), connectResponse(`{}`))
 
 			// The HTTP status still compares when the plan cannot decode the body.
-			failure := describe(content)
+			failure := describe(t, content)
 			assert.Contains(t, failure.failure, test.message)
 			failure.failure = test.message
 			assert.Equal(t, decoded{status: Some("200"), failure: test.message}, failure)
@@ -168,16 +167,16 @@ func TestUnresolvableResponsesFailToDecode(t *testing.T) {
 
 func TestDecodesRequests(t *testing.T) {
 	decoder := newDecoder(t, weatherScripts)
-	query := func(value map[string]any) protocol.Message {
-		return protocol.Message{Type: Some[schema.TypeRef]("weather.HTTPQuery"), Value: value}
+	query := func(value map[string]any) typedValue {
+		return typedValue{declared: "weather.HTTPQuery", value: value}
 	}
-	rpcQuery := protocol.Message{
-		Type:  Some[schema.TypeRef]("test.v1.Query"),
-		Value: map[string]any{"location": "london", "days": float64(3), "tags": []any{}},
+	rpcQuery := typedValue{
+		declared: "test.v1.Query",
+		value:    map[string]any{"location": "london", "days": float64(3), "tags": []any{}},
 	}
 	for name, test := range map[string]struct {
 		request  message.Request
-		expected protocol.Message
+		expected typedValue
 	}{
 		"PathAndQuery": {
 			request: forecastRequest("london", "days=3&units=METRIC&tags=wind&tags=rain&filter.minDays=2"),
@@ -202,18 +201,18 @@ func TestDecodesRequests(t *testing.T) {
 		"Protobuf":        {request: protobufRequest(queryProto("london", 3)), expected: rpcQuery},
 		"RPCMethodSelectsType": {
 			request:  rpcRequest("Get", `{}`),
-			expected: protocol.Message{Type: Some[schema.TypeRef]("test.v1.Request"), Value: map[string]any{}},
+			expected: typedValue{declared: "test.v1.Request", value: map[string]any{}},
 		},
 		"IngressEndpointIgnored": {
 			request:  rpcRequest("Rename", `{"name":"alice"}`),
-			expected: protocol.Message{Type: Some[schema.TypeRef]("test.v1.User"), Value: map[string]any{"name": "alice"}},
+			expected: typedValue{declared: "test.v1.User", value: map[string]any{"name": "alice"}},
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			decoded, err := decoder.Request(test.request)
 
 			assert.NoError(t, err)
-			assert.Equal(t, test.expected, decoded)
+			assert.Equal(t, test.expected, typedOf(t, decoded))
 		})
 	}
 }
@@ -291,15 +290,15 @@ func TestRejectsUnbindableEndpoints(t *testing.T) {
 
 func TestBindsTextWithoutDescriptors(t *testing.T) {
 	decoder := newRawDecoder(t)
-	item := func(value map[string]any) protocol.Message {
-		return protocol.Message{Type: Some[schema.TypeRef]("raw.Item"), Value: value}
+	item := func(value map[string]any) typedValue {
+		return typedValue{declared: "raw.Item", value: value}
 	}
-	ratio := func(value map[string]any) protocol.Message {
-		return protocol.Message{Type: Some[schema.TypeRef]("raw.Ratio"), Value: value}
+	ratio := func(value map[string]any) typedValue {
+		return typedValue{declared: "raw.Ratio", value: value}
 	}
 	for name, test := range map[string]struct {
 		request  message.Request
-		expected protocol.Message
+		expected typedValue
 		message  string
 	}{
 		"RequiredPathScalar":  {request: apiRequest("/items/one", ""), expected: item(map[string]any{"id": "one"})},
@@ -317,7 +316,7 @@ func TestBindsTextWithoutDescriptors(t *testing.T) {
 				return
 			}
 			assert.NoError(t, err)
-			assert.Equal(t, test.expected, decoded)
+			assert.Equal(t, test.expected, typedOf(t, decoded))
 		})
 	}
 }

@@ -17,39 +17,39 @@ import (
 	"github.com/block/spectre/internal/schema"
 )
 
-var queryType = Some[schema.TypeRef]("test.v1.Query")
+var queryType = &schema.ObjectType{Name: "test.v1.Query", Fields: textFields}
 
 func TestEgressCandidatePairsWithEquivalentReference(t *testing.T) {
 	t.Parallel()
 	const window = 200 * time.Millisecond
 	for name, test := range map[string]struct {
 		referenceRoute   model.Route
-		referenceRequest func(ctx context.Context) (protocol.Message, error)
+		referenceRequest func(ctx context.Context) (schema.Value, error)
 		candidateRoute   model.Route
-		candidateRequest func(ctx context.Context) (protocol.Message, error)
+		candidateRequest func(ctx context.Context) (schema.Value, error)
 		matched          bool
 	}{
 		"Normalised": {
-			referenceRoute: "query", referenceRequest: query(queryType, "london", "first"),
-			candidateRoute: "query", candidateRequest: query(queryType, "london", "second"),
+			referenceRoute: "query", referenceRequest: query(t, queryType, "london", "first"),
+			candidateRoute: "query", candidateRequest: query(t, queryType, "london", "second"),
 			matched: true,
 		},
 		"UntypedEqual": {
-			referenceRoute: "query", referenceRequest: query(None[schema.TypeRef](), "london", "first"),
-			candidateRoute: "query", candidateRequest: query(None[schema.TypeRef](), "london", "first"),
+			referenceRoute: "query", referenceRequest: query(t, unknown, "london", "first"),
+			candidateRoute: "query", candidateRequest: query(t, unknown, "london", "first"),
 			matched: true,
 		},
 		"UntypedSkipsNormalisers": {
-			referenceRoute: "query", referenceRequest: query(None[schema.TypeRef](), "london", "first"),
-			candidateRoute: "query", candidateRequest: query(None[schema.TypeRef](), "london", "second"),
+			referenceRoute: "query", referenceRequest: query(t, unknown, "london", "first"),
+			candidateRoute: "query", candidateRequest: query(t, unknown, "london", "second"),
 		},
 		"DifferentValue": {
-			referenceRoute: "query", referenceRequest: query(queryType, "london", ""),
-			candidateRoute: "query", candidateRequest: query(queryType, "paris", ""),
+			referenceRoute: "query", referenceRequest: query(t, queryType, "london", ""),
+			candidateRoute: "query", candidateRequest: query(t, queryType, "paris", ""),
 		},
 		"DifferentRoute": {
-			referenceRoute: "query", referenceRequest: query(queryType, "london", ""),
-			candidateRoute: "other-query", candidateRequest: query(queryType, "london", ""),
+			referenceRoute: "query", referenceRequest: query(t, queryType, "london", ""),
+			candidateRoute: "other-query", candidateRequest: query(t, queryType, "london", ""),
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -96,12 +96,12 @@ func TestEgressCandidatePairsWithEquivalentReference(t *testing.T) {
 func TestEgressPairsDuplicatesOldestFirst(t *testing.T) {
 	h := newHarness(t, time.Second)
 	first, second := newRaw("first"), newRaw("second")
-	h.reference(t, "query", query(queryType, "london", ""), first)
-	h.reference(t, "query", query(queryType, "london", ""), second)
+	h.reference(t, "query", query(t, queryType, "london", ""), first)
+	h.reference(t, "query", query(t, queryType, "london", ""), second)
 
-	firstDecision, err := h.engine.EgressCandidate(fake).ProcessRequest(h.ctx, Some(h.requestID), "query", notIgnored, query(queryType, "london", ""))
+	firstDecision, err := h.engine.EgressCandidate(fake).ProcessRequest(h.ctx, Some(h.requestID), "query", notIgnored, query(t, queryType, "london", ""))
 	assert.NoError(t, err)
-	secondDecision, err := h.engine.EgressCandidate(fake).ProcessRequest(h.ctx, Some(h.requestID), "query", notIgnored, query(queryType, "london", ""))
+	secondDecision, err := h.engine.EgressCandidate(fake).ProcessRequest(h.ctx, Some(h.requestID), "query", notIgnored, query(t, queryType, "london", ""))
 	assert.NoError(t, err)
 
 	assert.Equal(t, []protocol.Decision{protocol.DecisionIntercept{Raw: first}, protocol.DecisionIntercept{Raw: second}},
@@ -113,8 +113,8 @@ func TestEgressCandidateClaimsEarliestArrivedReference(t *testing.T) {
 	unblock := make(chan struct{})
 	first, second := newRaw("first"), newRaw("second")
 	// The first reference arrives first but finishes hashing last.
-	firstExchange := h.send(t, "query", blockedUntil(unblock, query(queryType, "london", "")))
-	secondExchange := h.send(t, "query", query(queryType, "london", ""))
+	firstExchange := h.send(t, "query", blockedUntil(unblock, query(t, queryType, "london", "")))
+	secondExchange := h.send(t, "query", query(t, queryType, "london", ""))
 	// Give the second reference time to be hashed before the first.
 	time.Sleep(50 * time.Millisecond)
 	close(unblock)
@@ -122,8 +122,8 @@ func TestEgressCandidateClaimsEarliestArrivedReference(t *testing.T) {
 	h.engine.EgressReference(fake).ProcessResponse(h.ctx, firstExchange, protocol.Response{Raw: first})
 	h.engine.EgressReference(fake).ProcessResponse(h.ctx, secondExchange, protocol.Response{Raw: second})
 
-	firstDecision := <-h.candidate(t, query(queryType, "london", ""))
-	secondDecision := <-h.candidate(t, query(queryType, "london", ""))
+	firstDecision := <-h.candidate(t, query(t, queryType, "london", ""))
+	secondDecision := <-h.candidate(t, query(t, queryType, "london", ""))
 
 	assert.Equal(t, []candidateDecision{
 		{decision: protocol.DecisionIntercept{Raw: first}},
@@ -136,11 +136,11 @@ func TestEgressCandidateDoesNotWaitForEarlierReferenceStillHashing(t *testing.T)
 	unblock := make(chan struct{})
 	defer close(unblock)
 	second := newRaw("second")
-	h.send(t, "query", blockedUntil(unblock, query(queryType, "london", "")))
-	secondExchange := h.send(t, "query", query(queryType, "london", ""))
+	h.send(t, "query", blockedUntil(unblock, query(t, queryType, "london", "")))
+	secondExchange := h.send(t, "query", query(t, queryType, "london", ""))
 	h.engine.EgressReference(fake).ProcessResponse(h.ctx, secondExchange, protocol.Response{Raw: second})
 
-	decision := <-h.candidate(t, query(queryType, "london", ""))
+	decision := <-h.candidate(t, query(t, queryType, "london", ""))
 
 	assert.Equal(t, candidateDecision{decision: protocol.DecisionIntercept{Raw: second}}, decision)
 }
@@ -149,9 +149,9 @@ func TestEgressEarliestArrivedCandidateGetsFirstReference(t *testing.T) {
 	h := newHarness(t, time.Second)
 	unblock, started := make(chan struct{}), make(chan struct{})
 	first, second := newRaw("first"), newRaw("second")
-	payload := query(queryType, "london", "")
+	payload := query(t, queryType, "london", "")
 	// The first candidate arrives first but finishes hashing last.
-	firstDecided := h.candidate(t, func(ctx context.Context) (protocol.Message, error) {
+	firstDecided := h.candidate(t, func(ctx context.Context) (schema.Value, error) {
 		close(started)
 		<-unblock
 		return payload(ctx)
@@ -183,17 +183,17 @@ func TestEgressCandidateWaitsForReference(t *testing.T) {
 			raw := newRaw("reference")
 			var exchange protocol.Exchange
 			if hashedFirst {
-				exchange = h.forward(t, "query", query(queryType, "london", ""))
+				exchange = h.forward(t, "query", query(t, queryType, "london", ""))
 			}
 			decided := make(chan protocol.Decision, 1)
 			go func() {
-				decision, err := h.engine.EgressCandidate(fake).ProcessRequest(h.ctx, Some(h.requestID), "query", notIgnored, query(queryType, "london", ""))
+				decision, err := h.engine.EgressCandidate(fake).ProcessRequest(h.ctx, Some(h.requestID), "query", notIgnored, query(t, queryType, "london", ""))
 				assert.NoError(t, err)
 				decided <- decision
 			}()
 			time.Sleep(20 * time.Millisecond)
 			if !hashedFirst {
-				exchange = h.forward(t, "query", query(queryType, "london", ""))
+				exchange = h.forward(t, "query", query(t, queryType, "london", ""))
 			}
 
 			h.engine.EgressReference(fake).ProcessResponse(h.ctx, exchange, protocol.Response{Raw: raw})
@@ -227,7 +227,7 @@ func TestEgressCandidateGivesUpWhenCancelled(t *testing.T) {
 			h := newHarness(t, time.Second)
 			var exchange protocol.Exchange
 			if test.referenced {
-				exchange = h.forward(t, "query", query(queryType, "london", ""))
+				exchange = h.forward(t, "query", query(t, queryType, "london", ""))
 			}
 			var cause error
 			if test.stopped {
@@ -236,7 +236,7 @@ func TestEgressCandidateGivesUpWhenCancelled(t *testing.T) {
 			ctx, cancel := context.WithTimeoutCause(h.ctx, 20*time.Millisecond, cause)
 			defer cancel()
 
-			decision, err := h.engine.EgressCandidate(fake).ProcessRequest(ctx, Some(h.requestID), "query", notIgnored, query(queryType, "london", ""))
+			decision, err := h.engine.EgressCandidate(fake).ProcessRequest(ctx, Some(h.requestID), "query", notIgnored, query(t, queryType, "london", ""))
 
 			assert.Error(t, err)
 			assert.True(t, regexp.MustCompile(test.expected).MatchString(err.Error()), "error: %s", err)
@@ -262,13 +262,13 @@ func TestEgressCandidateGivesUpWhenCancelled(t *testing.T) {
 }
 
 func TestEgressQuarantinesUnreplayableRequests(t *testing.T) {
-	truncated := func(context.Context) (protocol.Message, error) { return protocol.Message{}, errors.New("truncated") }
+	truncated := func(context.Context) (schema.Value, error) { return nil, errors.New("truncated") }
 	for name, test := range map[string]struct {
-		referenceRequest func(ctx context.Context) (protocol.Message, error)
+		referenceRequest func(ctx context.Context) (schema.Value, error)
 		referenceFails   bool
 		// referenceCancelled reports the failure after the reference gave up on the request.
 		referenceCancelled bool
-		candidateRequest   Option[func(ctx context.Context) (protocol.Message, error)]
+		candidateRequest   Option[func(ctx context.Context) (schema.Value, error)]
 		// candidateError is empty when only the reference is quarantined.
 		candidateError string
 		quarantined    []string
@@ -281,23 +281,23 @@ func TestEgressQuarantinesUnreplayableRequests(t *testing.T) {
 			released:         1,
 		},
 		"UnidentifiableCandidate": {
-			referenceRequest: query(queryType, "london", ""),
+			referenceRequest: query(t, queryType, "london", ""),
 			candidateRequest: Some(truncated),
 			candidateError:   "identify candidate request: truncated",
 			quarantined:      []string{"identify candidate request: truncated"},
 		},
 		"ReferenceUnable": {
-			referenceRequest: query(queryType, "london", ""),
+			referenceRequest: query(t, queryType, "london", ""),
 			referenceFails:   true,
-			candidateRequest: Some(query(queryType, "london", "")),
+			candidateRequest: Some(query(t, queryType, "london", "")),
 			candidateError:   "reference response cannot be replayed: connection reset",
 			quarantined:      []string{"reference response cannot be replayed: connection reset"},
 		},
 		"ReferenceCancelled": {
-			referenceRequest:   query(queryType, "london", ""),
+			referenceRequest:   query(t, queryType, "london", ""),
 			referenceFails:     true,
 			referenceCancelled: true,
-			candidateRequest:   Some(query(queryType, "london", "")),
+			candidateRequest:   Some(query(t, queryType, "london", "")),
 			candidateError:     "reference request was cancelled: connection reset",
 		},
 	} {
@@ -333,7 +333,7 @@ func TestEgressQuarantinesUnclaimedReferenceAfterWindow(t *testing.T) {
 		script   string
 		protocol model.Protocol
 		route    model.Route
-		forward  func(h *harness, t *testing.T, route model.Route, request func(ctx context.Context) (protocol.Message, error)) protocol.Exchange
+		forward  func(h *harness, t *testing.T, route model.Route, request func(ctx context.Context) (schema.Value, error)) protocol.Exchange
 	}{
 		"Reference":       {script: fakeScript, protocol: fake, route: "query", forward: (*harness).forward},
 		"SourceReference": {script: replacementScript, protocol: model.ProtocolHTTP, route: listRoute, forward: (*harness).forwardHTTP},
@@ -341,8 +341,8 @@ func TestEgressQuarantinesUnclaimedReferenceAfterWindow(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			h := newScriptHarness(t, test.script, 20*time.Millisecond)
 			raw := newRaw("reference")
-			exchange := test.forward(h, t, test.route, query(queryType, "london", ""))
-			h.engine.EgressReference(test.protocol).ProcessResponse(h.ctx, exchange, listed(raw))
+			exchange := test.forward(h, t, test.route, query(t, queryType, "london", ""))
+			h.engine.EgressReference(test.protocol).ProcessResponse(h.ctx, exchange, listed(t, raw))
 
 			awaitRelease(t, raw)
 
@@ -351,7 +351,7 @@ func TestEgressQuarantinesUnclaimedReferenceAfterWindow(t *testing.T) {
 				Traffic: Some(model.Traffic{Direction: model.Egress, Protocol: test.protocol, Route: test.route}),
 				Detail:  "no matching candidate request within 20ms",
 			}}, h.quarantine.Recorded())
-			_, err := h.engine.EgressCandidate(test.protocol).ProcessRequest(h.ctx, Some(h.requestID), test.route, notIgnored, query(queryType, "london", ""))
+			_, err := h.engine.EgressCandidate(test.protocol).ProcessRequest(h.ctx, Some(h.requestID), test.route, notIgnored, query(t, queryType, "london", ""))
 			assert.EqualError(t, err, "no matching reference request within 20ms")
 		})
 	}
@@ -373,8 +373,8 @@ func TestEgressReleasesUnclaimedOptionalReferenceWithoutQuarantine(t *testing.T)
 		t.Run(name, func(t *testing.T) {
 			h := newScriptHarness(t, optionalScript, 20*time.Millisecond)
 			raw := newRaw("reference")
-			exchange := h.forwardHTTP(t, route, query(queryType, "london", ""))
-			h.engine.EgressReference(model.ProtocolHTTP).ProcessResponse(h.ctx, exchange, listed(raw))
+			exchange := h.forwardHTTP(t, route, query(t, queryType, "london", ""))
+			h.engine.EgressReference(model.ProtocolHTTP).ProcessResponse(h.ctx, exchange, listed(t, raw))
 
 			awaitRelease(t, raw)
 
@@ -390,7 +390,7 @@ func TestEgressReleasesUnclaimedOptionalReferenceWithoutQuarantine(t *testing.T)
 func TestEgressQuarantinesUnmatchedCandidateToOptionalEndpoint(t *testing.T) {
 	h := newScriptHarness(t, optionalScript, 20*time.Millisecond)
 
-	_, err := h.engine.EgressCandidate(model.ProtocolHTTP).ProcessRequest(h.ctx, Some(h.requestID), listRoute, notIgnored, query(queryType, "london", ""))
+	_, err := h.engine.EgressCandidate(model.ProtocolHTTP).ProcessRequest(h.ctx, Some(h.requestID), listRoute, notIgnored, query(t, queryType, "london", ""))
 
 	assert.EqualError(t, err, "no matching reference request within 20ms")
 	assert.Equal(t, []model.QuarantineReason{{
@@ -403,7 +403,7 @@ func TestEgressQuarantinesUnmatchedCandidateToOptionalEndpoint(t *testing.T) {
 func TestEgressReleasesUnclaimedReferenceAfterCloseWithoutQuarantine(t *testing.T) {
 	h := newHarness(t, 20*time.Millisecond)
 	raw := newRaw("reference")
-	h.reference(t, "query", query(queryType, "london", ""), raw)
+	h.reference(t, "query", query(t, queryType, "london", ""), raw)
 
 	h.engine.Close()
 
@@ -414,10 +414,10 @@ func TestEgressReleasesUnclaimedReferenceAfterCloseWithoutQuarantine(t *testing.
 func TestEgressPairsRequestsOnlyWithinTheirMirroredRequest(t *testing.T) {
 	h := newHarness(t, 100*time.Millisecond)
 	raw := newRaw("reference")
-	other := h.candidateIn(t, Some(newRequestID()), query(queryType, "london", ""))
+	other := h.candidateIn(t, Some(newRequestID()), query(t, queryType, "london", ""))
 
-	h.reference(t, "query", query(queryType, "london", ""), raw)
-	same := <-h.candidate(t, query(queryType, "london", ""))
+	h.reference(t, "query", query(t, queryType, "london", ""), raw)
+	same := <-h.candidate(t, query(t, queryType, "london", ""))
 
 	assert.Equal(t, candidateDecision{decision: protocol.DecisionIntercept{Raw: raw}}, same)
 	decided := <-other
@@ -432,7 +432,7 @@ func TestEgressPairsRequestsOnlyWithinTheirMirroredRequest(t *testing.T) {
 func TestEgressQuarantinesCandidateRequestWithoutRequestID(t *testing.T) {
 	h := newHarness(t, time.Second)
 
-	decided := <-h.candidateIn(t, None[protocol.RequestID](), query(queryType, "london", ""))
+	decided := <-h.candidateIn(t, None[protocol.RequestID](), query(t, queryType, "london", ""))
 
 	assert.EqualError(t, decided.err, "candidate request carries no SPECTRE request ID")
 	assert.Equal(t, []model.QuarantineReason{{
@@ -451,7 +451,7 @@ func TestEgressForwardsReferenceRequestWithoutRequestIDUnpaired(t *testing.T) {
 	h.engine.EgressReference(fake).ProcessResponse(h.ctx, decision.(protocol.DecisionForward).Exchange, protocol.Response{Raw: raw})
 
 	assert.Equal(t, 1, raw.Releases())
-	decided := <-h.candidate(t, query(queryType, "london", ""))
+	decided := <-h.candidate(t, query(t, queryType, "london", ""))
 	assert.EqualError(t, decided.err, "no matching reference request within 20ms")
 	assert.Equal(t, []model.QuarantineReason{{
 		Kind:    model.QuarantineUnmatched,
@@ -473,9 +473,9 @@ func TestEgressCandidateReleasesReportedResponse(t *testing.T) {
 func TestShutdownWaitsForReferenceHashing(t *testing.T) {
 	h := newHarness(t, time.Second)
 	unblock := make(chan struct{})
-	payload := query(queryType, "london", "")
+	payload := query(t, queryType, "london", "")
 	_, err := h.engine.EgressReference(fake).ProcessRequest(h.ctx, Some(h.requestID), "query", notIgnored,
-		func(ctx context.Context) (protocol.Message, error) {
+		func(ctx context.Context) (schema.Value, error) {
 			<-unblock
 			return payload(ctx)
 		})
@@ -490,7 +490,7 @@ func TestShutdownWaitsForReferenceHashing(t *testing.T) {
 }
 
 // send forwards a reference request without waiting for it to be hashed.
-func (h *harness) send(t *testing.T, route model.Route, request func(ctx context.Context) (protocol.Message, error)) protocol.Exchange {
+func (h *harness) send(t *testing.T, route model.Route, request func(ctx context.Context) (schema.Value, error)) protocol.Exchange {
 	t.Helper()
 	decision, err := h.engine.EgressReference(fake).ProcessRequest(h.ctx, Some(h.requestID), route, notIgnored, request)
 	assert.NoError(t, err)
@@ -500,7 +500,7 @@ func (h *harness) send(t *testing.T, route model.Route, request func(ctx context
 }
 
 // forward sends a reference request and waits until it is hashed.
-func (h *harness) forward(t *testing.T, route model.Route, request func(ctx context.Context) (protocol.Message, error)) protocol.Exchange {
+func (h *harness) forward(t *testing.T, route model.Route, request func(ctx context.Context) (schema.Value, error)) protocol.Exchange {
 	t.Helper()
 	exchange := h.send(t, route, request)
 	assert.NoError(t, h.engine.Shutdown(h.ctx))
@@ -508,8 +508,8 @@ func (h *harness) forward(t *testing.T, route model.Route, request func(ctx cont
 }
 
 // blockedUntil delays request until unblock closes, so a test controls when it is hashed.
-func blockedUntil(unblock <-chan struct{}, request func(ctx context.Context) (protocol.Message, error)) func(ctx context.Context) (protocol.Message, error) {
-	return func(ctx context.Context) (protocol.Message, error) {
+func blockedUntil(unblock <-chan struct{}, request func(ctx context.Context) (schema.Value, error)) func(ctx context.Context) (schema.Value, error) {
+	return func(ctx context.Context) (schema.Value, error) {
 		<-unblock
 		return request(ctx)
 	}
@@ -522,13 +522,13 @@ type candidateDecision struct {
 }
 
 // candidate sends a candidate request in the background.
-func (h *harness) candidate(t *testing.T, request func(ctx context.Context) (protocol.Message, error)) <-chan candidateDecision {
+func (h *harness) candidate(t *testing.T, request func(ctx context.Context) (schema.Value, error)) <-chan candidateDecision {
 	t.Helper()
 	return h.candidateIn(t, Some(h.requestID), request)
 }
 
 // candidateIn sends a candidate request that belongs to requestID in the background.
-func (h *harness) candidateIn(t *testing.T, requestID Option[protocol.RequestID], request func(ctx context.Context) (protocol.Message, error)) <-chan candidateDecision {
+func (h *harness) candidateIn(t *testing.T, requestID Option[protocol.RequestID], request func(ctx context.Context) (schema.Value, error)) <-chan candidateDecision {
 	t.Helper()
 	decided := make(chan candidateDecision, 1)
 	go func() {
@@ -539,15 +539,17 @@ func (h *harness) candidateIn(t *testing.T, requestID Option[protocol.RequestID]
 }
 
 // reference forwards a hashed reference request and records its response.
-func (h *harness) reference(t *testing.T, route model.Route, request func(ctx context.Context) (protocol.Message, error), raw *countingRaw) {
+func (h *harness) reference(t *testing.T, route model.Route, request func(ctx context.Context) (schema.Value, error), raw *countingRaw) {
 	t.Helper()
 	exchange := h.forward(t, route, request)
 	h.engine.EgressReference(fake).ProcessResponse(h.ctx, exchange, protocol.Response{Raw: raw})
 }
 
 // query returns a fresh payload on every call, because normalisation mutates it.
-func query(typeRef Option[schema.TypeRef], value, trace string) func(ctx context.Context) (protocol.Message, error) {
-	return func(context.Context) (protocol.Message, error) {
-		return protocol.Message{Type: typeRef, Value: map[string]any{"value": value, "trace": trace}}, nil
+func query(t *testing.T, declared schema.Type, value, trace string) func(ctx context.Context) (schema.Value, error) {
+	t.Helper()
+	request := instance(t, declared, map[string]any{"value": value, "trace": trace})
+	return func(context.Context) (schema.Value, error) {
+		return request, nil
 	}
 }

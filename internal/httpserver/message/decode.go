@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
-	"encoding/json"
 	"io"
 	"mime"
 	"net/http"
@@ -16,7 +15,6 @@ import (
 	. "github.com/alecthomas/types/optional"
 
 	"github.com/block/spectre/internal/comparison/javascript"
-	"github.com/block/spectre/internal/model"
 	"github.com/block/spectre/internal/protocol"
 	"github.com/block/spectre/internal/schema"
 )
@@ -131,22 +129,17 @@ func (p ResponsePlan) Decode(ctx context.Context, response Response) protocol.Co
 // decoding decodes responses one way. One that failed to resolve reports the
 // same error for every response, but still compares HTTP status.
 type decoding struct {
-	decoder       *Decoder
-	root          *schema.Type
+	decoder *Decoder
+	// declared is an object type, unknown, or string, which decodes bodies as text.
+	declared      schema.Type
 	selected      wire
 	requestMethod string
-	// text decodes bodies as strings instead of as root.
-	text    bool
-	failure Option[error]
-	ignored Option[string]
+	failure       Option[error]
+	ignored       Option[string]
 }
 
-func newDecoding(decoder *Decoder, root *schema.Type, selected wire, requestMethod string) decoding {
-	return decoding{decoder: decoder, root: root, selected: selected, requestMethod: requestMethod}
-}
-
-func textDecoding(decoder *Decoder, requestMethod string) decoding {
-	return decoding{decoder: decoder, requestMethod: requestMethod, text: true}
+func newDecoding(decoder *Decoder, declared schema.Type, selected wire, requestMethod string) decoding {
+	return decoding{decoder: decoder, declared: declared, selected: selected, requestMethod: requestMethod}
 }
 
 func failedDecoding(err error) decoding {
@@ -171,14 +164,14 @@ func (p decoding) decode(response Response) protocol.Content {
 	if failure, failed := p.failure.Get(); failed {
 		return protocol.Content{Status: status, Failure: Some(failure)}
 	}
-	if p.text {
+	if _, text := p.declared.(schema.StringType); text {
 		message, err := p.decodeText(response)
 		return newContent(status, message, err)
 	}
 	if p.selected == wireGRPC {
 		return p.decodeGRPC(response)
 	}
-	var message Option[protocol.Message]
+	var message Option[schema.Value]
 	var err error
 	switch p.selected {
 	case wireConnectJSON:
@@ -197,56 +190,64 @@ func (p decoding) decode(response Response) protocol.Content {
 
 // decodeText compares the body as exact text, except for empty HEAD, 204, and
 // 304 responses, which have no message.
-func (p decoding) decodeText(response Response) (Option[protocol.Message], error) {
+func (p decoding) decodeText(response Response) (Option[schema.Value], error) {
 	bodyless := p.requestMethod == http.MethodHead || response.StatusCode == http.StatusNoContent ||
 		response.StatusCode == http.StatusNotModified
 	if bodyless && len(response.Body) == 0 {
-		return None[protocol.Message](), nil
+		return None[schema.Value](), nil
 	}
 	body, err := p.decoder.decompress(response.Header, response.Body)
 	if err != nil {
-		return None[protocol.Message](), err
+		return None[schema.Value](), err
 	}
 	if !utf8.Valid(body) {
-		return None[protocol.Message](), errors.New("Text body is not UTF-8")
+		return None[schema.Value](), errors.New("Text body is not UTF-8")
 	}
-	return Some(protocol.Message{Type: None[schema.TypeRef](), Value: string(body)}), nil
+	instance, err := schema.As(p.declared, schema.NewString(string(body)))
+	if err != nil {
+		return None[schema.Value](), errors.WithStack(err)
+	}
+	return Some(instance), nil
 }
 
-func newContent(status Option[string], message Option[protocol.Message], err error) protocol.Content {
+func newContent(status Option[string], message Option[schema.Value], err error) protocol.Content {
 	if err != nil {
 		return protocol.Content{Status: status, Failure: Some(err)}
 	}
 	return protocol.Content{Status: status, Message: message}
 }
 
-func (p decoding) typed(payload model.DynamicValue) Option[protocol.Message] {
-	return Some(protocol.Message{Type: Some(p.root.Name), Value: payload})
-}
-
-// decodeConnect compares error envelopes untyped, because they are not instances
-// of the RPC output message.
-func (p decoding) decodeConnect(response Response) (Option[protocol.Message], error) {
+// decodeConnect decodes error envelopes as the built-in Connect error type, because
+// they are not instances of the RPC output message.
+func (p decoding) decodeConnect(response Response) (Option[schema.Value], error) {
 	if !hasJSONMediaType(response.Header) {
-		return None[protocol.Message](), errors.Errorf("Connect response is not JSON: %q", response.Header.Get("Content-Type"))
+		return None[schema.Value](), errors.Errorf("Connect response is not JSON: %q", response.Header.Get("Content-Type"))
 	}
 	if response.StatusCode != http.StatusOK {
 		payload, err := connectErrorPayload(response.Body)
 		if err != nil {
-			return None[protocol.Message](), errors.Wrap(err, "Connect error response contains malformed JSON")
+			return None[schema.Value](), errors.Wrap(err, "Connect error response contains malformed JSON")
 		}
-		return Some(protocol.Message{Type: None[schema.TypeRef](), Value: payload}), nil
+		connectError, err := p.decoder.connectError()
+		if err != nil {
+			return None[schema.Value](), err
+		}
+		instance, err := schema.As(connectError, payload)
+		if err != nil {
+			return None[schema.Value](), errors.Wrap(err, "validate Connect error response")
+		}
+		return Some(instance), nil
 	}
 	return p.decodeTyped(response)
 }
 
 // decodeHTTPJSON validates bodies as the declared type, except for empty HEAD,
 // 204, and 304 responses. Error bodies use the same type as successful ones.
-func (p decoding) decodeHTTPJSON(response Response) (Option[protocol.Message], error) {
+func (p decoding) decodeHTTPJSON(response Response) (Option[schema.Value], error) {
 	bodyless := p.requestMethod == http.MethodHead || response.StatusCode == http.StatusNoContent ||
 		response.StatusCode == http.StatusNotModified
 	if bodyless && len(response.Body) == 0 {
-		return None[protocol.Message](), nil
+		return None[schema.Value](), nil
 	}
 	return p.decodeTyped(response)
 }
@@ -256,19 +257,19 @@ func (p decoding) decodeHTTPJSON(response Response) (Option[protocol.Message], e
 func (p decoding) decodeGRPC(response Response) protocol.Content {
 	if response.StatusCode != http.StatusOK {
 		status := Some(strconv.Itoa(response.StatusCode))
-		return newContent(status, None[protocol.Message](), errors.Errorf("gRPC response has HTTP status %d", response.StatusCode))
+		return newContent(status, None[schema.Value](), errors.Errorf("gRPC response has HTTP status %d", response.StatusCode))
 	}
 	unknown := None[string]()
 	if !hasGRPCMediaType(response.Header) {
-		return newContent(unknown, None[protocol.Message](), errors.Errorf("gRPC response has an invalid content type: %q", response.Header.Get("Content-Type")))
+		return newContent(unknown, None[schema.Value](), errors.Errorf("gRPC response has an invalid content type: %q", response.Header.Get("Content-Type")))
 	}
 	code, err := grpcStatus(response)
 	if err != nil {
-		return newContent(unknown, None[protocol.Message](), errors.Wrap(err, "response has no valid gRPC status"))
+		return newContent(unknown, None[schema.Value](), errors.Wrap(err, "response has no valid gRPC status"))
 	}
 	status := Some("grpc-status " + strconv.Itoa(code))
 	if code != 0 {
-		return newContent(status, None[protocol.Message](), nil)
+		return newContent(status, None[schema.Value](), nil)
 	}
 	message, err := p.decodeTyped(response)
 	return newContent(status, message, err)
@@ -276,33 +277,30 @@ func (p decoding) decodeGRPC(response Response) protocol.Content {
 
 // decodeProtobuf decodes bare protobuf bodies. A non-OK status carries an error
 // body that is not the method output, so only the status is compared.
-func (p decoding) decodeProtobuf(response Response) (Option[protocol.Message], error) {
+func (p decoding) decodeProtobuf(response Response) (Option[schema.Value], error) {
 	if response.StatusCode != http.StatusOK {
-		return None[protocol.Message](), nil
+		return None[schema.Value](), nil
 	}
 	if !hasProtobufMediaType(response.Header) {
-		return None[protocol.Message](), errors.Errorf("protobuf response has an invalid content type: %q", response.Header.Get("Content-Type"))
+		return None[schema.Value](), errors.Errorf("protobuf response has an invalid content type: %q", response.Header.Get("Content-Type"))
 	}
 	return p.decodeTyped(response)
 }
 
-func (p decoding) decodeTyped(response Response) (Option[protocol.Message], error) {
-	payload, err := p.decoder.decodeResponse(p.root, p.selected, response)
+func (p decoding) decodeTyped(response Response) (Option[schema.Value], error) {
+	instance, err := p.decoder.decodeResponse(p.declared, p.selected, response)
 	if err != nil {
-		return None[protocol.Message](), errors.Wrapf(err, "decode response as %s", p.root.Name)
+		return None[schema.Value](), errors.Wrapf(err, "decode response as %s", p.declared)
 	}
-	return p.typed(payload), nil
+	return Some(instance), nil
 }
 
-func connectErrorPayload(body []byte) (model.DynamicValue, error) {
+func connectErrorPayload(body []byte) (schema.Value, error) {
 	if len(bytes.TrimSpace(body)) == 0 {
 		body = []byte("null")
 	}
-	var payload model.DynamicValue
-	if err := json.Unmarshal(body, &payload); err != nil {
-		return nil, errors.Wrap(jsonError(err), "decode Connect error JSON")
-	}
-	return payload, nil
+	payload, err := schema.Decode(schema.UnknownType{}, body)
+	return payload, errors.Wrap(err, "decode Connect error JSON")
 }
 
 // decompressHTTPBody returns the body decoded per its Content-Encoding: identity

@@ -143,7 +143,7 @@ func typeArguments(checker *ts.Checker, loaded *schema.Schema, call *ts.Node) (O
 			continue
 		}
 		name, err := bodyTypeName(resolved, index == 0 && display == "IngressHTTPRule."+matchMethod)
-		if err == nil && name != textTypeName {
+		if err == nil && name != textTypeName && name != unknownTypeName {
 			_, err = loaded.Type(name)
 		}
 		if err != nil {
@@ -163,13 +163,20 @@ func typeArguments(checker *ts.Checker, loaded *schema.Schema, call *ts.Node) (O
 	return Some(insertion{offset: call.AsCallExpression().Arguments.Loc.Pos(), text: strings.Join(encoded, ", ")}), nil
 }
 
-// bodyTypeName names a schema type, or the spectre Text type where text is allowed.
-func bodyTypeName(resolved *ts.Type, text bool) (schema.TypeRef, error) {
+// bodyTypeName names a schema type, or the spectre Text type or unknown where an ingress
+// rule's body may have them.
+func bodyTypeName(resolved *ts.Type, body bool) (schema.TypeRef, error) {
+	if resolved.Flags()&ts.TypeFlagsUnknown != 0 {
+		if !body {
+			return "", errors.New("only ingress rules may compare bodies as unknown")
+		}
+		return unknownTypeName, nil
+	}
 	symbol := resolved.Symbol()
 	if symbol == nil || len(symbol.Declarations()) == 0 || ts.SourceFileOf(symbol.Declarations()[0]).FileName() != moduleDeclarationFile {
 		return errors.WithStack2(schema.TypeName(resolved))
 	}
-	if !text || symbol.Name() != "Text" {
+	if !body || symbol.Name() != "Text" {
 		return "", errors.New("only ingress rules may compare bodies as Text")
 	}
 	return textTypeName, nil

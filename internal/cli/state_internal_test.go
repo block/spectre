@@ -9,28 +9,10 @@ import (
 	"github.com/alecthomas/assert/v2"
 
 	"github.com/block/spectre/internal/cli/terminal"
-	"github.com/block/spectre/internal/model"
 	"github.com/block/spectre/internal/state"
 )
 
 func TestStateTypesCommand(t *testing.T) {
-	catalog, err := state.NewCatalog(
-		state.Support{Kind: model.IOKind{Direction: model.Egress, Protocol: "rpc"}, Description: "Calls <dependencies>."},
-		state.Support{
-			Kind:        model.IOKind{Direction: model.Ingress, Protocol: "rpc"},
-			Description: "Serves requests.",
-			Settings: []state.Setting{
-				{Name: "methods", Required: true, Description: "Each method served.", Key: "method name", Entry: []state.Setting{
-					{Name: "timeout", Description: "How long a call may take."},
-				}},
-				{Name: "services", Description: "Each service served.", Key: "service name"},
-				{Name: "group", Description: "The server group."},
-			},
-		},
-	)
-	assert.NoError(t, err)
-	library := state.NodeTypes(catalog)[0].Description
-
 	for name, test := range map[string]struct {
 		command  stateTypesCommand
 		palette  terminal.Palette
@@ -38,28 +20,32 @@ func TestStateTypesCommand(t *testing.T) {
 	}{
 		"Text": {
 			palette: terminal.NewPalette(false),
-			expected: "library\n" + terminal.Wrap(library, "  ", 80) + "\n" +
-				"ingress[rpc] [nodes.<id>.ingress.rpc]\n  Serves requests.\n\n" +
-				"  methods (required)\n    Each method served. A table keyed by method name.\n" +
-				"    Each entry is a table with these settings:\n\n" +
-				"      timeout (optional)\n        How long a call may take.\n\n" +
-				"  services (optional)\n    Each service served. A table keyed by service name.\n" +
+			expected: "library\n" +
+				"  Module shared by more than one other node that performs no IO, such as shared\n" +
+				"  domain types, validation, calculations, and helpers.\n\n" +
+				"ingress[http] [nodes.<id>.ingress.http]\n" +
+				"  Module that receives HTTP requests to the service, including gRPC and Connect.\n\n" +
+				"  routes (required)\n" +
+				"    Each route the node handles. A table keyed by <METHOD> /<path>.\n" +
 				"    Each entry takes no settings yet, so write it as {}.\n\n" +
-				"  group (optional)\n    The server group.\n\n" +
-				"egress[rpc] [nodes.<id>.egress.rpc]\n  Calls <dependencies>.\n\n" +
+				"egress[http] [nodes.<id>.egress.http]\n" +
+				"  Module that sends HTTP requests to another service, including gRPC and\n" +
+				"  Connect.\n\n" +
 				"  No settings.\n",
 		},
 		"Color": {
 			palette: terminal.NewPalette(true),
-			expected: "\033[1mlibrary\033[0m\n" + terminal.Wrap(library, "  ", 80) + "\n" +
-				"\033[1mingress[rpc]\033[0m \033[2m[nodes.<id>.ingress.rpc]\033[0m\n  Serves requests.\n\n" +
-				"  \033[32mmethods\033[0m \033[33m(required)\033[0m\n    Each method served. A table keyed by method name.\n" +
-				"    Each entry is a table with these settings:\n\n" +
-				"      \033[32mtimeout\033[0m \033[2m(optional)\033[0m\n        How long a call may take.\n\n" +
-				"  \033[32mservices\033[0m \033[2m(optional)\033[0m\n    Each service served. A table keyed by service name.\n" +
+			expected: "\033[1mlibrary\033[0m\n" +
+				"  Module shared by more than one other node that performs no IO, such as shared\n" +
+				"  domain types, validation, calculations, and helpers.\n\n" +
+				"\033[1mingress[http]\033[0m \033[2m[nodes.<id>.ingress.http]\033[0m\n" +
+				"  Module that receives HTTP requests to the service, including gRPC and Connect.\n\n" +
+				"  \033[32mroutes\033[0m \033[33m(required)\033[0m\n" +
+				"    Each route the node handles. A table keyed by <METHOD> /<path>.\n" +
 				"    Each entry takes no settings yet, so write it as {}.\n\n" +
-				"  \033[32mgroup\033[0m \033[2m(optional)\033[0m\n    The server group.\n\n" +
-				"\033[1megress[rpc]\033[0m \033[2m[nodes.<id>.egress.rpc]\033[0m\n  Calls <dependencies>.\n\n" +
+				"\033[1megress[http]\033[0m \033[2m[nodes.<id>.egress.http]\033[0m\n" +
+				"  Module that sends HTTP requests to another service, including gRPC and\n" +
+				"  Connect.\n\n" +
 				"  \033[2mNo settings.\033[0m\n",
 		},
 		"JSON": {
@@ -68,43 +54,26 @@ func TestStateTypesCommand(t *testing.T) {
 			expected: `[
   {
     "name": "library",
-    "description": "` + library + `"
+    "description": "Module shared by more than one other node that performs no IO, such as shared domain types, validation, calculations, and helpers."
   },
   {
-    "name": "ingress[rpc]",
-    "description": "Serves requests.",
-    "table": "nodes.<id>.ingress.rpc",
+    "name": "ingress[http]",
+    "description": "Module that receives HTTP requests to the service, including gRPC and Connect.",
+    "table": "nodes.<id>.ingress.http",
     "settings": [
       {
-        "name": "methods",
+        "name": "routes",
         "required": true,
-        "description": "Each method served.",
-        "key": "method name",
-        "entry": [
-          {
-            "name": "timeout",
-            "required": false,
-            "description": "How long a call may take."
-          }
-        ]
-      },
-      {
-        "name": "services",
-        "required": false,
-        "description": "Each service served.",
-        "key": "service name"
-      },
-      {
-        "name": "group",
-        "required": false,
-        "description": "The server group."
+        "description": "Each route the node handles.",
+        "key": "<METHOD> /<path>",
+        "unique": true
       }
     ]
   },
   {
-    "name": "egress[rpc]",
-    "description": "Calls <dependencies>.",
-    "table": "nodes.<id>.egress.rpc"
+    "name": "egress[http]",
+    "description": "Module that sends HTTP requests to another service, including gRPC and Connect.",
+    "table": "nodes.<id>.egress.http"
   }
 ]
 `,
@@ -113,21 +82,11 @@ func TestStateTypesCommand(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			var out bytes.Buffer
 
-			assert.NoError(t, test.command.Run(Output{Writer: &out, Palette: test.palette}, catalog))
+			assert.NoError(t, test.command.Run(Output{Writer: &out, Palette: test.palette}))
 
 			assert.Equal(t, test.expected, out.String())
 		})
 	}
-}
-
-func testCatalog(t *testing.T) *state.Catalog {
-	t.Helper()
-	catalog, err := state.NewCatalog(state.Support{
-		Kind:     model.IOKind{Direction: model.Ingress, Protocol: "rpc"},
-		Settings: []state.Setting{{Name: "methods", Required: true, Key: "method name"}},
-	})
-	assert.NoError(t, err)
-	return catalog
 }
 
 func TestStateValidateCommand(t *testing.T) {
@@ -137,12 +96,12 @@ func TestStateValidateCommand(t *testing.T) {
 		err      string
 	}{
 		"Valid": {
-			toml:     "[nodes.api.ingress.rpc.methods]\n\n[nodes.job]\nstatus = \"migrated\"\n",
-			expected: "STATE:3: warning: nodes.job: no ingress node reaches it, so SPECTRE cannot verify it\nSTATE is valid: 2 nodes, 1 migrated\n",
+			toml:     "[nodes.api.ingress.http.routes]\n\"GET /api\" = {}\n\n[nodes.job]\nstatus = \"migrated\"\n",
+			expected: "STATE:4: warning: nodes.job: no ingress node reaches it, so SPECTRE cannot verify it\nSTATE is valid: 2 nodes, 1 migrated\n",
 		},
 		"Invalid": {
 			toml:     "[nodes.a]\nstatus = \"done\"\ncolour = \"red\"\n",
-			expected: "STATE:2: error: nodes.a.status: must be \"pending\" or \"migrated\"\nSTATE:3: error: nodes.a.colour: unknown key; a node holds depends_on, status, ingress, and egress\n",
+			expected: "STATE:3: error: nodes.a.colour: unknown key\n",
 			err:      "STATE is invalid",
 		},
 	} {
@@ -152,7 +111,7 @@ func TestStateValidateCommand(t *testing.T) {
 			command := stateValidateCommand{State: state.Config{StateFile: path}}
 			var out bytes.Buffer
 
-			err := command.Run(Output{Writer: &out}, testCatalog(t))
+			err := command.Run(Output{Writer: &out})
 
 			if test.err != "" {
 				assert.EqualError(t, err, replacePath(test.err, path))
@@ -166,7 +125,7 @@ func TestStateValidateCommand(t *testing.T) {
 
 func TestStateValidateCommandMissingFile(t *testing.T) {
 	command := stateValidateCommand{State: state.Config{StateFile: filepath.Join(t.TempDir(), "state.toml")}}
-	err := command.Run(Output{Writer: &bytes.Buffer{}}, testCatalog(t))
+	err := command.Run(Output{Writer: &bytes.Buffer{}})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "read migration state")
 }
@@ -176,8 +135,8 @@ func replacePath(text, path string) string {
 }
 
 func TestNextCommand(t *testing.T) {
-	const twoSteps = "[nodes.api]\ndepends_on = [\"money\"]\n[nodes.api.ingress.rpc.methods]\n\n[nodes.money]\n\n" +
-		"[nodes.other.ingress.rpc.methods]\nGet = {}\n[nodes.other]\ndepends_on = [\"api\"]\n"
+	const twoSteps = "[nodes.api]\ndepends_on = [\"money\"]\n[nodes.api.ingress.http.routes]\n\"GET /api\" = {}\n\n[nodes.money]\n\n" +
+		"[nodes.other.ingress.http.routes]\n\"GET /other\" = {}\n[nodes.other]\ndepends_on = [\"api\"]\n"
 	for name, test := range map[string]struct {
 		toml     string
 		command  nextCommand
@@ -187,12 +146,12 @@ func TestNextCommand(t *testing.T) {
 	}{
 		"Text": {
 			toml:     twoSteps,
-			expected: "money library\napi ingress[rpc]\n",
+			expected: "money library\napi ingress[http]\n",
 		},
 		"Color": {
 			toml:     twoSteps,
 			palette:  terminal.NewPalette(true),
-			expected: "\033[1mmoney\033[0m \033[2mlibrary\033[0m\n\033[1mapi\033[0m \033[2mingress[rpc]\033[0m\n",
+			expected: "\033[1mmoney\033[0m \033[2mlibrary\033[0m\n\033[1mapi\033[0m \033[2mingress[http]\033[0m\n",
 		},
 		"JSON": {
 			toml:    twoSteps,
@@ -200,8 +159,7 @@ func TestNextCommand(t *testing.T) {
 			expected: `[
   {
     "id": "money",
-    "status": "pending",
-    "io": {}
+    "status": "pending"
   },
   {
     "id": "api",
@@ -209,9 +167,11 @@ func TestNextCommand(t *testing.T) {
       "money"
     ],
     "status": "pending",
-    "io": {
-      "ingress[rpc]": {
-        "methods": {}
+    "ingress": {
+      "http": {
+        "routes": {
+          "GET /api": {}
+        }
       }
     }
   }
@@ -219,11 +179,11 @@ func TestNextCommand(t *testing.T) {
 `,
 		},
 		"AllMigrated": {
-			toml:     "[nodes.api]\nstatus = \"migrated\"\n[nodes.api.ingress.rpc.methods]\n",
+			toml:     "[nodes.api]\nstatus = \"migrated\"\n[nodes.api.ingress.http.routes]\n\"GET /api\" = {}\n",
 			expected: "Every node is migrated.\n",
 		},
 		"AllMigratedJSON": {
-			toml:     "[nodes.api]\nstatus = \"migrated\"\n[nodes.api.ingress.rpc.methods]\n",
+			toml:     "[nodes.api]\nstatus = \"migrated\"\n[nodes.api.ingress.http.routes]\n\"GET /api\" = {}\n",
 			command:  nextCommand{JSON: true},
 			expected: "[]\n",
 		},
@@ -243,7 +203,7 @@ func TestNextCommand(t *testing.T) {
 			test.command.State = state.Config{StateFile: path}
 			var out bytes.Buffer
 
-			err := test.command.Run(Output{Writer: &out, Palette: test.palette}, testCatalog(t))
+			err := test.command.Run(Output{Writer: &out, Palette: test.palette})
 
 			if test.err != "" {
 				assert.EqualError(t, err, replacePath(test.err, path))
@@ -264,11 +224,11 @@ func TestDoneCommand(t *testing.T) {
 		err      string
 	}{
 		"Marks": {
-			toml:     "[nodes.api]\ndepends_on = [\"money\"]\n[nodes.api.ingress.rpc.methods]\n\n[nodes.money]\nstatus = \"pending\"\n",
+			toml:     "[nodes.api]\ndepends_on = [\"money\"]\n[nodes.api.ingress.http.routes]\n\"GET /api\" = {}\n\n[nodes.money]\nstatus = \"pending\"\n",
 			nodes:    []string{"money", "api"},
 			expected: "STATE: marked money, api migrated\n",
 			file: "[nodes]\n[nodes.api]\ndepends_on = ['money']\nstatus = 'migrated'\n\n" +
-				"[nodes.api.ingress]\n[nodes.api.ingress.rpc]\n[nodes.api.ingress.rpc.methods]\n[nodes.money]\nstatus = 'migrated'\n",
+				"[nodes.api.ingress]\n[nodes.api.ingress.http]\n[nodes.api.ingress.http.routes]\n[nodes.api.ingress.http.routes.'GET /api']\n[nodes.money]\nstatus = 'migrated'\n",
 		},
 		"AlreadyMigrated": {
 			toml:     "[nodes.money]\nstatus = \"migrated\"\n",
@@ -296,7 +256,7 @@ func TestDoneCommand(t *testing.T) {
 			command := doneCommand{State: state.Config{StateFile: path}, Nodes: test.nodes}
 			var out bytes.Buffer
 
-			err := command.Run(Output{Writer: &out}, testCatalog(t))
+			err := command.Run(Output{Writer: &out})
 
 			if test.err != "" {
 				assert.EqualError(t, err, replacePath(test.err, path))
@@ -313,7 +273,7 @@ func TestDoneCommand(t *testing.T) {
 
 func TestDoneCommandMissingFile(t *testing.T) {
 	command := doneCommand{State: state.Config{StateFile: filepath.Join(t.TempDir(), "state.toml")}, Nodes: []string{"a"}}
-	err := command.Run(Output{Writer: &bytes.Buffer{}}, testCatalog(t))
+	err := command.Run(Output{Writer: &bytes.Buffer{}})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "read migration state")
 }

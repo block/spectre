@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -24,8 +23,8 @@ import (
 	"github.com/block/spectre/internal/schema"
 )
 
-// declarations mirror the ProtoJSON shape of the test.v1 protobuf package, plus a
-// raw module whose optional fields have no implicit defaults.
+// declarations mirror the ProtoJSON shape of the test.v1 protobuf package, with optional
+// members so tests send only what they compare, plus a raw module of null members.
 const declarations = `
 declare module "test.v1" {
   export interface Request {}
@@ -33,19 +32,19 @@ declare module "test.v1" {
   export interface Query {
     location?: string;
     days?: number;
-    tags: string[];
+    tags?: string[];
     filter?: import("test.v1").Filter;
     trace?: string;
   }
   export interface User { name: string; }
   export interface Response {
-    stable: string;
+    stable?: string;
     ignored?: string;
-    roles: string[];
-    users: import("test.v1").User[];
-    count: string;
-    owner?: import("test.v1").User;
-    labels: Record<string, string>;
+    roles?: string[];
+    users?: import("test.v1").User[];
+    count?: string;
+    owner?: import("test.v1").User | null;
+    labels?: Record<string, string>;
   }
   export interface Service {
     Get(request: import("test.v1").Request): import("test.v1").Response;
@@ -168,7 +167,7 @@ func TestRejectsRulesAbsentFromSchema(t *testing.T) {
 	})
 	_, err := comparison.New(t.Context(), config)
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), `resolve rule http("GET /v1/forecast")`)
+	assert.Contains(t, err.Error(), "spectre.IngressHTTPRule.match")
 	assert.Contains(t, err.Error(), `type "test.v1.Missing" is not declared`)
 }
 
@@ -229,23 +228,24 @@ func TestNormalisesResponsesWithRules(t *testing.T) {
 		spectre.ingress.http("/textbody").match<spectre.Text>(unchecked<spectre.Text>(() => ({ body: 1 })));
 	`)
 	rules := scripts.Rules()
-	body := decode(t, `{"stable":"same","ignored":"first","roles":[],"users":[],"count":"0","labels":{}}`)
+	text := schema.StringType{}
+	body := instance(t, scripts, response, `{"stable":"same","ignored":"first","roles":[],"users":[],"count":"0","labels":{}}`)
 	for name, test := range map[string]struct {
 		rule    javascript.Rule
-		body    Option[any]
+		body    Option[schema.Value]
 		status  Option[int]
-		result  Option[any]
+		result  Option[schema.Value]
 		message string
 	}{
-		"Typed":      {rule: rules[0], body: Some(body), status: Some(200), result: Some(decode(t, `{"stable":"same","roles":[],"users":[],"count":"0","labels":{}}`))},
-		"Text":       {rule: rules[1], body: Some[any](" page "), status: None[int](), result: Some[any]("page")},
-		"NoBody":     {rule: rules[1], body: None[any](), status: None[int](), result: None[any]()},
+		"Typed":      {rule: rules[0], body: Some(body), status: Some(200), result: Some(instance(t, scripts, response, `{"stable":"same","roles":[],"users":[],"count":"0","labels":{}}`))},
+		"Text":       {rule: rules[1], body: Some(typed(t, text, `" page "`)), status: None[int](), result: Some(typed(t, text, `"page"`))},
+		"NoBody":     {rule: rules[1], body: None[schema.Value](), status: None[int](), result: None[schema.Value]()},
 		"Unchanged":  {rule: rules[2], body: Some(body), status: Some(201), result: Some(body)},
 		"NotObject":  {rule: rules[3], body: Some(body), message: "response normaliser must return an object"},
 		"Member":     {rule: rules[4], body: Some(body), message: `normalised response has an unknown member "headers"`},
 		"Status":     {rule: rules[5], body: Some(body), message: "normalised status must be an integer from 100 to 599"},
 		"WrongBody":  {rule: rules[6], body: Some(body), message: "validate normalised body"},
-		"TextNumber": {rule: rules[7], body: Some[any]("page"), message: "normalised Text body must be a string"},
+		"TextNumber": {rule: rules[7], body: Some(typed(t, text, `"page"`)), message: "validate normalised body: $: expected string, found a number"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			status, result, err := scripts.NormaliseResponse(t.Context(), test.rule, 201, test.body)
@@ -291,22 +291,21 @@ func TestLoadsEveryScriptAsOneSet(t *testing.T) {
 		rules = append(rules, rule{declared.String(), declared.Action()})
 	}
 	assert.Equal(t, []rule{
-		{`http("GET /v1/forecast")`, javascript.ActionMatch{Type: Some[schema.TypeRef]("test.v1.Response")}},
+		{`http("GET /v1/forecast")`, javascript.ActionMatch{Type: objectType(t, scripts, "test.v1.Response")}},
 		{`http("GET /_status")`, javascript.ActionIgnore{}},
 	}, rules)
 
-	differences, truncated, err := scripts.Compare(t.Context(), Some[schema.TypeRef]("test.v1.Response"),
-		decode(t, `{"stable":"SAME","owner":{"name":"ALICE"}}`),
-		decode(t, `{"stable":"same","owner":{"name":"alice"}}`))
+	differences, truncated, err := scripts.Compare(t.Context(),
+		instance(t, scripts, response, `{"stable":"SAME","owner":{"name":"ALICE"}}`),
+		instance(t, scripts, response, `{"stable":"same","owner":{"name":"alice"}}`))
 	assert.NoError(t, err)
 	assert.Equal(t, []string{}, model.DifferenceLines(differences, truncated))
 }
 
 func TestCompareAppliesNormalisers(t *testing.T) {
-	response := Some[schema.TypeRef]("test.v1.Response")
 	for name, test := range map[string]struct {
 		script    string
-		typeName  Option[schema.TypeRef]
+		typeName  schema.TypeRef
 		reference string
 		candidate string
 		expected  []string
@@ -315,7 +314,7 @@ func TestCompareAppliesNormalisers(t *testing.T) {
 			typeName: response,
 			script: `
 				spectre.field<v1.Response, "ignored">(() => undefined);
-				spectre.field<v1.Response, "roles">((roles) => roles.sort());
+				spectre.field<v1.Response, "roles">((roles) => roles?.sort());
 			`,
 			reference: `{"stable":"same","ignored":"first","roles":["reader","writer"]}`,
 			candidate: `{"roles":["writer","reader"],"ignored":"second","stable":"same"}`,
@@ -359,20 +358,20 @@ func TestCompareAppliesNormalisers(t *testing.T) {
 			typeName: response,
 			script: `
 				spectre.message<v1.User>(() => { throw new Error("message normaliser ran"); });
-				spectre.field<v1.Response, "owner">((owner): any => owner === undefined ? undefined : owner.name.toLowerCase());
+				spectre.field<v1.Response, "owner">((owner) => owner && { name: owner.name.toLowerCase() });
 			`,
 			reference: `{"owner":{"name":"ALICE"}}`,
 			candidate: `{"owner":{"name":"alice"}}`,
 		},
 		"MessageNormaliserReceivesUndefinedForMissingMessage": {
 			typeName:  response,
-			script:    `spectre.message<v1.User>((): any => "ignored");`,
+			script:    `spectre.message<v1.User>(() => ({ name: "ignored" }));`,
 			reference: `{"stable":"same","owner":{"name":"alice"}}`,
 			candidate: `{"stable":"same"}`,
 		},
 		"FieldNormaliserAppliesToRepeatedMessageElements": {
 			typeName:  response,
-			script:    `spectre.field<v1.Response, "users[].name">((name) => name.toLowerCase());`,
+			script:    `spectre.field<v1.Response, "users[].name">((name) => name?.toLowerCase());`,
 			reference: `{"stable":"same","users":[{"name":"ALICE"},{"name":"BOB"}]}`,
 			candidate: `{"stable":"same","users":[{"name":"alice"},{"name":"bob"}]}`,
 		},
@@ -391,7 +390,7 @@ func TestCompareAppliesNormalisers(t *testing.T) {
 		},
 		"UntypedSkipsNormalisers": {
 			script:    `spectre.field<v1.Response, "ignored">(() => undefined);`,
-			typeName:  None[schema.TypeRef](),
+			typeName:  unknownType,
 			reference: `{"stable":"same","ignored":"first"}`,
 			candidate: `{"stable":"same","ignored":"second"}`,
 			// Untyped keys are payload data, so no path quotes them.
@@ -422,33 +421,33 @@ func TestCompareAppliesNormalisers(t *testing.T) {
 			expected:  []string{"! $.owner object → null"},
 		},
 		"NullMembersAreEqual": {
-			typeName:  Some[schema.TypeRef]("raw.Fee"),
+			typeName:  "raw.Fee",
 			reference: `{"plan":null,"note":null,"tier":null}`,
 			candidate: `{"plan":null,"note":null,"tier":null}`,
 		},
 		"NullAgainstStringIsRetyped": {
-			typeName:  Some[schema.TypeRef]("raw.Fee"),
+			typeName:  "raw.Fee",
 			reference: `{"plan":null,"note":"n","tier":"A"}`,
 			candidate: `{"plan":"p","note":null,"tier":null}`,
 			expected:  []string{"! $.note string → null", "! $.plan null → string", "! $.tier string → null"},
 		},
 		"NullMemberIsMissingWhenAbsent": {
-			typeName:  Some[schema.TypeRef]("raw.Fee"),
+			typeName:  "raw.Fee",
 			reference: `{"plan":null,"note":null,"tier":null}`,
 			candidate: `{"plan":null,"tier":null}`,
 			expected:  []string{"- $.note"},
 		},
 		"NormaliserReceivesNullMember": {
-			typeName: Some[schema.TypeRef]("raw.Fee"),
+			typeName: "raw.Fee",
 			script: `
 				spectre.field<raw.Fee, "plan">((plan) => plan === null ? "none" : plan);
-				spectre.field<raw.Fee, "tier">((tier): any => tier === null ? "none" : tier);
+				spectre.field<raw.Fee, "tier">((tier) => tier === null ? "A" : tier);
 			`,
 			reference: `{"plan":null,"tier":null}`,
-			candidate: `{"plan":"none","tier":"none"}`,
+			candidate: `{"plan":"none","tier":"A"}`,
 		},
 		"NormalisersSkipNullObjectMember": {
-			typeName: Some[schema.TypeRef]("raw.Fee"),
+			typeName: "raw.Fee",
 			script: `
 				spectre.field<raw.Holder, "id">((id) => id.trim());
 				spectre.field<raw.Fee, "holder.id">((): any => "constant");
@@ -461,7 +460,7 @@ func TestCompareAppliesNormalisers(t *testing.T) {
 			candidate: `{"plan":null,"tier":null,"holder":null}`,
 		},
 		"NullObjectMemberAgainstObjectIsRetyped": {
-			typeName:  Some[schema.TypeRef]("raw.Fee"),
+			typeName:  "raw.Fee",
 			script:    `spectre.field<raw.Holder, "id">((id) => id.trim());`,
 			reference: `{"plan":null,"tier":null,"holder":null}`,
 			candidate: `{"plan":null,"tier":null,"holder":{"id":" h "}}`,
@@ -486,22 +485,10 @@ func TestCompareAppliesNormalisers(t *testing.T) {
 			expected:  []string{"~ $.users[*].name ×100", "… more"},
 		},
 		"ExplicitDefaultsRemainPresent": {
-			typeName:  Some[schema.TypeRef]("raw.Response"),
+			typeName:  "raw.Response",
 			reference: `{"stable":"same"}`,
 			candidate: `{"stable":"same","ignored":"","count":0,"enabled":false,"roles":[],"metadata":{}}`,
 			expected:  []string{"+ $.count", "+ $.enabled", "+ $.ignored", "+ $.metadata", "+ $.roles"},
-		},
-		"FieldNormaliserMayChangeType": {
-			script:    `spectre.field<raw.Response, "stable">((): any => ({replacement: true}));`,
-			typeName:  Some[schema.TypeRef]("raw.Response"),
-			reference: `{"stable":"first"}`,
-			candidate: `{"stable":"second"}`,
-		},
-		"MessageNormaliserMayChangeType": {
-			script:    `spectre.message<raw.Response>((): any => [true, null, {replacement: "value"}]);`,
-			typeName:  Some[schema.TypeRef]("raw.Response"),
-			reference: `{"stable":"first"}`,
-			candidate: `{"stable":"second"}`,
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -511,7 +498,8 @@ func TestCompareAppliesNormalisers(t *testing.T) {
 				expected = []string{}
 			}
 
-			differences, truncated, err := scripts.Compare(t.Context(), test.typeName, decode(t, test.reference), decode(t, test.candidate))
+			differences, truncated, err := scripts.Compare(t.Context(),
+				instance(t, scripts, test.typeName, test.reference), instance(t, scripts, test.typeName, test.candidate))
 
 			assert.NoError(t, err)
 			assert.Equal(t, expected, model.DifferenceLines(differences, truncated))
@@ -522,11 +510,42 @@ func TestCompareAppliesNormalisers(t *testing.T) {
 func TestCompareRejectsNonJSONNormaliserResult(t *testing.T) {
 	scripts := newScripts(t, `spectre.message<v1.Response>((): any => () => true);`)
 
-	differences, _, err := scripts.Compare(t.Context(), Some[schema.TypeRef]("test.v1.Response"), decode(t, `{"stable":"same"}`), decode(t, `{"stable":"same"}`))
+	differences, _, err := scripts.Compare(t.Context(), instance(t, scripts, response, `{"stable":"same"}`), instance(t, scripts, response, `{"stable":"same"}`))
 
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "normalise reference")
 	assert.Equal(t, []model.Difference(nil), differences)
+}
+
+// A normaliser returns the type it receives, so a result of another type is an error.
+func TestCompareRejectsNormaliserResultOfAnotherType(t *testing.T) {
+	for name, test := range map[string]struct {
+		script string
+		error  string
+	}{
+		"Field": {
+			script: `spectre.field<raw.Response, "stable">((): any => ({replacement: true}));`,
+			error:  "normalised value is not string: $: expected string, found an object",
+		},
+		"Message": {
+			script: `spectre.message<raw.Response>((): any => [true]);`,
+			error:  "normalised value is not raw.Response: $: expected raw.Response, found an array",
+		},
+		"NullMessage": {
+			script: `spectre.message<raw.Response>((): any => null);`,
+			error:  "normalised value is not raw.Response: $: expected raw.Response, found null",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			scripts := newScripts(t, test.script)
+
+			_, _, err := scripts.Compare(t.Context(), instance(t, scripts, "raw.Response", `{"stable":"first"}`),
+				instance(t, scripts, "raw.Response", `{"stable":"second"}`))
+
+			assert.Error(t, err)
+			assert.Contains(t, err.Error(), test.error)
+		})
+	}
 }
 
 func TestInterruptsRunawayNormaliser(t *testing.T) {
@@ -537,10 +556,11 @@ func TestInterruptsRunawayNormaliser(t *testing.T) {
 	scripts, err := comparison.New(t.Context(), config)
 	assert.NoError(t, err)
 
-	_, _, err = scripts.Compare(t.Context(), Some[schema.TypeRef]("test.v1.Response"), decode(t, `{"stable":"same"}`), decode(t, `{"stable":"same"}`))
+	payload := instance(t, scripts, response, `{"stable":"same"}`)
+	_, _, err = scripts.Compare(t.Context(), payload, payload)
 	assert.IsError(t, err, context.DeadlineExceeded)
 
-	_, err = scripts.Hash(t.Context(), "identity", Some[schema.TypeRef]("test.v1.Response"), "reference", decode(t, `{"stable":"same"}`))
+	_, err = scripts.Hash(t.Context(), "identity", "reference", payload)
 	assert.IsError(t, err, context.DeadlineExceeded)
 }
 
@@ -554,9 +574,9 @@ func TestLogsIndividualNormaliserResults(t *testing.T) {
 	scripts, err := comparison.New(ctx, config)
 	assert.NoError(t, err)
 
-	differences, truncated, err := scripts.Compare(ctx, Some[schema.TypeRef]("test.v1.Response"),
-		decode(t, `{"stable":"first","ignored":"first"}`),
-		decode(t, `{"stable":"second","ignored":"second"}`))
+	differences, truncated, err := scripts.Compare(ctx,
+		instance(t, scripts, response, `{"stable":"first","ignored":"first"}`),
+		instance(t, scripts, response, `{"stable":"second","ignored":"second"}`))
 
 	assert.NoError(t, err)
 	assert.Equal(t, []model.Difference{{Path: "$.stable", Change: model.ChangeChanged, Count: 1}}, differences)
@@ -573,7 +593,7 @@ func TestLogsHashNormalisationWithoutNormalisers(t *testing.T) {
 	scripts, err := comparison.New(ctx, newConfig(t, map[string]string{"test.ts": module("")}))
 	assert.NoError(t, err)
 
-	_, err = scripts.Hash(ctx, "identity", Some[schema.TypeRef]("test.v1.Query"), "candidate", decode(t, `{"location":"london"}`))
+	_, err = scripts.Hash(ctx, "identity", "candidate", instance(t, scripts, query, `{"location":"london"}`))
 
 	assert.NoError(t, err)
 	assert.Contains(t, output.String(), `"level":"DEBUG","msg":"Payload normalisation completed","message":"test.v1.Query","side":"candidate","normalisers":0`)
@@ -588,7 +608,7 @@ func TestHashesIdentityAndCanonicalJSON(t *testing.T) {
 	scripts := newScripts(t, queryScript)
 	identity := "http POST weather.example/v1/search"
 
-	hash, err := scripts.Hash(t.Context(), identity, Some[schema.TypeRef]("test.v1.Query"), "reference", decode(t, `{"trace":"ignored","location":"london","days":3}`))
+	hash, err := scripts.Hash(t.Context(), identity, "reference", instance(t, scripts, query, `{"trace":"ignored","location":"london","days":3}`))
 
 	assert.NoError(t, err)
 	expected := sha256.Sum256([]byte(identity + "\x00" + `{"days":3,"location":"london"}`))
@@ -598,11 +618,11 @@ func TestHashesIdentityAndCanonicalJSON(t *testing.T) {
 func TestHashIsStable(t *testing.T) {
 	type hashed struct {
 		identity string
-		typeName Option[schema.TypeRef]
+		typeName schema.TypeRef
 		payload  string
 	}
-	query := func(payload string) hashed {
-		return hashed{identity: "http POST weather.example/v1/search", typeName: Some[schema.TypeRef]("test.v1.Query"), payload: payload}
+	queried := func(payload string) hashed {
+		return hashed{identity: "http POST weather.example/v1/search", typeName: query, payload: payload}
 	}
 	scripts := newScripts(t, queryScript)
 	for name, test := range map[string]struct {
@@ -611,41 +631,41 @@ func TestHashIsStable(t *testing.T) {
 		equal bool
 	}{
 		"FieldOrder": {
-			left:  query(`{"location":"london","days":3}`),
-			right: query(`{"days":3,"location":"london"}`),
+			left:  queried(`{"location":"london","days":3}`),
+			right: queried(`{"days":3,"location":"london"}`),
 			equal: true,
 		},
 		"IgnoredField": {
-			left:  query(`{"location":"london","trace":"first"}`),
-			right: query(`{"location":"london","trace":"second"}`),
+			left:  queried(`{"location":"london","trace":"first"}`),
+			right: queried(`{"location":"london","trace":"second"}`),
 			equal: true,
 		},
 		"SortedCollection": {
-			left:  query(`{"tags":["wind","rain"]}`),
-			right: query(`{"tags":["rain","wind"]}`),
+			left:  queried(`{"tags":["wind","rain"]}`),
+			right: queried(`{"tags":["rain","wind"]}`),
 			equal: true,
 		},
 		"Value": {
-			left:  query(`{"location":"london","days":3}`),
-			right: query(`{"location":"london","days":4}`),
+			left:  queried(`{"location":"london","days":3}`),
+			right: queried(`{"location":"london","days":4}`),
 		},
 		"ExplicitDefault": {
-			left:  query(`{"location":"london"}`),
-			right: query(`{"location":"london","days":0}`),
+			left:  queried(`{"location":"london"}`),
+			right: queried(`{"location":"london","days":0}`),
 		},
 		"Identity": {
-			left:  query(`{}`),
-			right: hashed{identity: "http GET weather.example/v1/search", typeName: Some[schema.TypeRef]("test.v1.Query"), payload: `{}`},
+			left:  queried(`{}`),
+			right: hashed{identity: "http GET weather.example/v1/search", typeName: query, payload: `{}`},
 		},
-		"UntypedSkipsNormalisers": {
-			left:  hashed{identity: "http POST weather.example/v1/search", payload: `{"trace":"first"}`},
-			right: hashed{identity: "http POST weather.example/v1/search", payload: `{"trace":"second"}`},
+		"UnknownSkipsNormalisers": {
+			left:  hashed{identity: "http POST weather.example/v1/search", typeName: unknownType, payload: `{"trace":"first"}`},
+			right: hashed{identity: "http POST weather.example/v1/search", typeName: unknownType, payload: `{"trace":"second"}`},
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			left, err := scripts.Hash(t.Context(), test.left.identity, test.left.typeName, "reference", decode(t, test.left.payload))
+			left, err := scripts.Hash(t.Context(), test.left.identity, "reference", instance(t, scripts, test.left.typeName, test.left.payload))
 			assert.NoError(t, err)
-			right, err := scripts.Hash(t.Context(), test.right.identity, test.right.typeName, "candidate", decode(t, test.right.payload))
+			right, err := scripts.Hash(t.Context(), test.right.identity, "candidate", instance(t, scripts, test.right.typeName, test.right.payload))
 			assert.NoError(t, err)
 			assert.Equal(t, test.equal, left == right)
 		})
@@ -688,10 +708,32 @@ func writeFiles(t *testing.T, files map[string]string) string {
 	return dir
 }
 
-// decode returns a fresh payload, because normalisation mutates it.
-func decode(t *testing.T, payload string) any {
+// Types of the test payloads. The empty reference stands for unknown.
+const (
+	response    schema.TypeRef = "test.v1.Response"
+	query       schema.TypeRef = "test.v1.Query"
+	unknownType schema.TypeRef = ""
+)
+
+func objectType(t *testing.T, scripts *comparison.Scripts, name schema.TypeRef) *schema.ObjectType {
 	t.Helper()
-	var value any
-	assert.NoError(t, json.Unmarshal([]byte(payload), &value))
-	return value
+	declared, err := scripts.Schema().Type(name)
+	assert.NoError(t, err)
+	return declared
+}
+
+// instance decodes a payload as the named object type, or as unknown for unknownType.
+func instance(t *testing.T, scripts *comparison.Scripts, declared schema.TypeRef, payload string) schema.Value {
+	t.Helper()
+	if declared == unknownType {
+		return typed(t, schema.UnknownType{}, payload)
+	}
+	return typed(t, objectType(t, scripts, declared), payload)
+}
+
+func typed(t *testing.T, declared schema.Type, payload string) schema.Value {
+	t.Helper()
+	decoded, err := schema.Decode(declared, []byte(payload))
+	assert.NoError(t, err)
+	return decoded
 }

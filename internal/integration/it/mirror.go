@@ -23,13 +23,11 @@ import (
 	"github.com/alecthomas/errors"
 	. "github.com/alecthomas/types/optional"
 
-	"github.com/block/spectre/internal/httpserver"
 	"github.com/block/spectre/internal/model"
 	"github.com/block/spectre/internal/mysqlserver"
 	"github.com/block/spectre/internal/proxies"
 	spectreserver "github.com/block/spectre/internal/server"
 	"github.com/block/spectre/internal/server/client"
-	"github.com/block/spectre/internal/state"
 )
 
 const (
@@ -302,9 +300,7 @@ func Start(t *testing.T, settings ...Setting) *Mirror {
 
 	proxyConfig := setup.proxyConfig(listeners, referenceListener, candidateListener, destinations, scriptsDir, schemaDir, serverURL)
 	proxyConfig.Mirror.MySQL = mysqlConfig
-	catalog, err := state.NewCatalog(httpserver.Supports()...)
-	assert.NoError(t, err)
-	proxy, err := proxies.New(ctx, proxyConfig, catalog)
+	proxy, err := proxies.New(ctx, proxyConfig)
 	assert.NoError(t, err)
 	assert.NoError(t, proxy.StartListeners(ctx, listeners))
 	m.watch.run(ctx, t, "proxy", func(ctx context.Context) error { return proxy.Wait(ctx) })

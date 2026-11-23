@@ -24,8 +24,8 @@ type stateTypesCommand struct {
 	JSON bool `help:"Print JSON instead of text."`
 }
 
-func (c *stateTypesCommand) Run(out Output, catalog *state.Catalog) error {
-	types := state.NodeTypes(catalog)
+func (c *stateTypesCommand) Run(out Output) error {
+	types := state.NodeTypes()
 	if c.JSON {
 		encoder := json.NewEncoder(out.Writer)
 		encoder.SetIndent("", "  ")
@@ -46,9 +46,9 @@ type stateValidateCommand struct {
 	State state.Config `embed:""`
 }
 
-func (c *stateValidateCommand) Run(out Output, catalog *state.Catalog) error {
+func (c *stateValidateCommand) Run(out Output) error {
 	path := c.State.StateFile
-	loaded, err := loadValid(out, path, catalog)
+	loaded, err := loadValid(out, path)
 	if err != nil {
 		return err
 	}
@@ -71,9 +71,9 @@ type nextCommand struct {
 	JSON  bool         `help:"Print JSON instead of text."`
 }
 
-func (c *nextCommand) Run(out Output, catalog *state.Catalog) error {
+func (c *nextCommand) Run(out Output) error {
 	path := c.State.StateFile
-	loaded, err := loadValid(out, path, catalog)
+	loaded, err := loadValid(out, path)
 	if err != nil {
 		return err
 	}
@@ -104,8 +104,8 @@ func (c *nextCommand) Run(out Output, catalog *state.Catalog) error {
 }
 
 // loadValid loads the state at path, writing each problem when it is invalid.
-func loadValid(out Output, path string, catalog *state.Catalog) (state.State, error) {
-	loaded, err := state.Load(path, catalog)
+func loadValid(out Output, path string) (state.State, error) {
+	loaded, err := state.Load(path)
 	if invalid, ok := errors.AsType[*state.InvalidError](err); ok {
 		for _, problem := range invalid.Problems {
 			writeProblem(out, path, out.Palette.Red("error"), problem)
@@ -122,7 +122,7 @@ type doneCommand struct {
 	Nodes []string     `arg:"" name:"node" help:"IDs of the nodes now in the candidate."`
 }
 
-func (c *doneCommand) Run(out Output, catalog *state.Catalog) error {
+func (c *doneCommand) Run(out Output) error {
 	path := c.State.StateFile
 	info, err := os.Stat(path)
 	if err != nil {
@@ -132,7 +132,7 @@ func (c *doneCommand) Run(out Output, catalog *state.Catalog) error {
 	if err != nil {
 		return errors.Wrap(err, "read migration state")
 	}
-	updated, marked, err := state.MarkMigrated(data, catalog, c.Nodes)
+	updated, marked, err := state.MarkMigrated(data, c.Nodes)
 	if invalid, ok := errors.AsType[*state.InvalidError](err); ok {
 		for _, problem := range invalid.Problems {
 			writeProblem(out, path, out.Palette.Red("error"), problem)

@@ -219,10 +219,10 @@ type Action interface{ action() }
 // ActionIgnore skips comparison, so the responses never quarantine.
 type ActionIgnore struct{}
 
-// ActionMatch decodes bodies as Type, or as text when Type is None, then
-// compares them after the rule's normaliser, if it has one.
+// ActionMatch decodes bodies as Type, then compares them after the rule's normaliser,
+// if it has one. Type is a declared object type, unknown, or string for a Text body.
 type ActionMatch struct {
-	Type       Option[schema.TypeRef]
+	Type       schema.Type
 	Normalises bool
 }
 

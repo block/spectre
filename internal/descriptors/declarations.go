@@ -18,19 +18,19 @@ import (
 )
 
 // scalarMessageValue models well-known messages whose ProtoJSON is a scalar.
-func scalarMessageValue(name protoreflect.FullName) (value schema.Value, scalar bool) {
+func scalarMessageValue(name protoreflect.FullName) (value schema.Type, scalar bool) {
 	switch name {
 	case "google.protobuf.Timestamp", "google.protobuf.Duration", "google.protobuf.FieldMask",
 		"google.protobuf.StringValue", "google.protobuf.BytesValue", "google.protobuf.Int64Value", "google.protobuf.UInt64Value":
-		return schema.Value{Kind: schema.KindString}, true
+		return schema.StringType{}, true
 	case "google.protobuf.DoubleValue", "google.protobuf.FloatValue":
 		return floatValue(), true
 	case "google.protobuf.Int32Value", "google.protobuf.UInt32Value":
-		return schema.Value{Kind: schema.KindNumber}, true
+		return schema.NumberType{}, true
 	case "google.protobuf.BoolValue":
-		return schema.Value{Kind: schema.KindBoolean}, true
+		return schema.BooleanType{}, true
 	default:
-		return schema.Value{}, false
+		return nil, false
 	}
 }
 
@@ -41,8 +41,8 @@ func isScalarMessage(name protoreflect.FullName) (scalar bool) {
 
 // floatValue models a float or double, which ProtoJSON writes as a string when
 // it is not finite.
-func floatValue() schema.Value {
-	return schema.Value{Kind: schema.KindNumber, Literals: []string{"-Infinity", "Infinity", "NaN"}}
+func floatValue() schema.Type {
+	return schema.NumberType{Literals: []string{"-Infinity", "Infinity", "NaN"}}
 }
 
 // isUntypedMessage identifies ProtoJSON shapes outside the schema subset.
@@ -320,7 +320,7 @@ func (w *declarationWriter) renderMessage(message protoreflect.MessageDescriptor
 			optional = "?"
 		}
 		referenced := referencedType(fields[index])
-		value := field.Value.Format(func(_ schema.TypeRef) string { return typeReference(referenced) })
+		value := field.Type.Format(func(_ schema.TypeRef) string { return typeReference(referenced) })
 		w.linef("%s%s: %s;", schema.PropertyName(field.Name), optional, value)
 	}
 	w.depth--
@@ -393,50 +393,53 @@ func messageFields(registry *Registry, message protoreflect.MessageDescriptor) [
 	return append(all, registry.Extensions(message.FullName())...)
 }
 
-// messageType models the ProtoJSON object a message encodes to when default values
-// are emitted: only fields with presence and extensions, written when set, may be absent.
-func messageType(name protoreflect.FullName, fields []protoreflect.FieldDescriptor) (*schema.Type, error) {
-	declared := &schema.Type{Name: schema.TypeRef(name), Fields: make([]schema.Field, 0, len(fields))}
+// messageType models a message's ProtoJSON with defaults emitted, so only fields with
+// presence may be absent. It refers to other messages by name only, as it only compares.
+func messageType(name protoreflect.FullName, fields []protoreflect.FieldDescriptor) (*schema.ObjectType, error) {
+	declared := &schema.ObjectType{Name: schema.TypeRef(name), Fields: make([]schema.Field, 0, len(fields))}
 	for _, field := range fields {
 		value, err := fieldValue(field)
 		if err != nil {
 			return nil, errors.Wrapf(err, "field %q", field.FullName())
 		}
 		optional := field.HasPresence() || field.IsExtension()
-		declared.Fields = append(declared.Fields, schema.Field{Name: field.JSONName(), Optional: optional, Value: value})
+		declared.Fields = append(declared.Fields, schema.Field{Name: field.JSONName(), Optional: optional, Type: value})
 	}
 	return declared, nil
 }
 
-func fieldValue(field protoreflect.FieldDescriptor) (schema.Value, error) {
+func fieldValue(field protoreflect.FieldDescriptor) (schema.Type, error) {
 	if field.IsMap() {
 		element, err := singularValue(field.MapValue())
-		return schema.Value{Kind: schema.KindMap, Element: Some(&element)}, err
+		if err != nil {
+			return nil, err
+		}
+		return schema.MapType{Element: element}, nil
 	}
 	element, err := singularValue(field)
 	if err != nil || !field.IsList() {
 		return element, err
 	}
-	return schema.Value{Kind: schema.KindList, Element: Some(&element)}, nil
+	return schema.ListType{Element: element}, nil
 }
 
-func singularValue(field protoreflect.FieldDescriptor) (schema.Value, error) {
+func singularValue(field protoreflect.FieldDescriptor) (schema.Type, error) {
 	switch field.Kind() {
 	case protoreflect.StringKind, protoreflect.BytesKind,
 		protoreflect.Int64Kind, protoreflect.Sint64Kind, protoreflect.Sfixed64Kind,
 		protoreflect.Uint64Kind, protoreflect.Fixed64Kind:
 		// ProtoJSON encodes bytes as base64 and 64-bit integers as strings.
-		return schema.Value{Kind: schema.KindString}, nil
+		return schema.StringType{}, nil
 	case protoreflect.BoolKind:
-		return schema.Value{Kind: schema.KindBoolean}, nil
+		return schema.BooleanType{}, nil
 	case protoreflect.Int32Kind, protoreflect.Sint32Kind, protoreflect.Sfixed32Kind,
 		protoreflect.Uint32Kind, protoreflect.Fixed32Kind:
-		return schema.Value{Kind: schema.KindNumber}, nil
+		return schema.NumberType{}, nil
 	case protoreflect.FloatKind, protoreflect.DoubleKind:
 		return floatValue(), nil
 	case protoreflect.EnumKind:
 		if isUntypedMessage(field.Enum().FullName()) {
-			return schema.Value{}, errors.Errorf("%s is not supported", field.Enum().FullName())
+			return nil, errors.Errorf("%s is not supported", field.Enum().FullName())
 		}
 		return enumValue(field.Enum()), nil
 	case protoreflect.MessageKind, protoreflect.GroupKind:
@@ -445,11 +448,11 @@ func singularValue(field protoreflect.FieldDescriptor) (schema.Value, error) {
 			return value, nil
 		}
 		if isUntypedMessage(name) {
-			return schema.Value{}, errors.Errorf("%s is not supported", name)
+			return nil, errors.Errorf("%s is not supported", name)
 		}
-		return schema.Value{Kind: schema.KindObject, Type: schema.TypeRef(name)}, nil
+		return &schema.ObjectType{Name: schema.TypeRef(name)}, nil
 	}
-	return schema.Value{}, errors.Errorf("field kind %s is not supported", field.Kind())
+	return nil, errors.Errorf("field kind %s is not supported", field.Kind())
 }
 
 // referencedType returns the message or enum a field's value names, if any.
@@ -471,22 +474,24 @@ func typeReference(descriptor protoreflect.Descriptor) (reference string) {
 	return fmt.Sprintf("import(%q).%s", pkg, path)
 }
 
-func enumValue(enum protoreflect.EnumDescriptor) schema.Value {
+func enumValue(enum protoreflect.EnumDescriptor) schema.Type {
+	return enumType(enum, Some(schema.TypeRef(enum.FullName())))
+}
+
+// enumType is a closed enum's literals, or an open enum's number and literals, as
+// open enums keep unknown numbers, which ProtoJSON writes as JSON numbers.
+func enumType(enum protoreflect.EnumDescriptor, name Option[schema.TypeRef]) schema.Type {
 	values := enum.Values()
 	literals := make([]string, 0, values.Len())
 	for index := range values.Len() {
 		literals = append(literals, string(values.Get(index).Name()))
 	}
-	value := schema.Value{Kind: schema.KindEnum, Literals: literals, Type: schema.TypeRef(enum.FullName())}
-	// Open enums keep unknown numbers, which ProtoJSON writes as JSON numbers.
 	if !enum.IsClosed() {
-		value.Kind = schema.KindNumber
+		return schema.NumberType{Name: name, Literals: literals}
 	}
-	return value
+	return schema.EnumType{Name: name, Literals: literals}
 }
 
 func enumLiterals(enum protoreflect.EnumDescriptor) (literals string) {
-	value := enumValue(enum)
-	value.Type = ""
-	return value.String()
+	return enumType(enum, None[schema.TypeRef]()).String()
 }

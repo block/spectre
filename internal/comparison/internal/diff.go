@@ -1,7 +1,6 @@
 package comparisoninternal
 
 import (
-	"reflect"
 	"slices"
 
 	. "github.com/alecthomas/types/optional"
@@ -14,11 +13,8 @@ import (
 const maxDifferences = 100
 
 // differ collects where and how two payloads differ. Differences leave the mirror,
-// so paths name only the object keys that the schema declares as fields.
+// so paths name only keys that an object's declared type names as fields.
 type differ struct {
-	// loaded and root are absent for untyped payloads, whose keys are all payload data.
-	loaded      Option[*schema.Schema]
-	root        Option[schema.Value]
 	differences []difference
 	truncated   bool
 }
@@ -31,109 +27,92 @@ type difference struct {
 	count  int
 }
 
-func newDiffer(loaded Option[*schema.Schema], root Option[schema.Value]) *differ {
-	return &differ{loaded: loaded, root: root}
+func newDiffer() *differ {
+	return &differ{}
 }
 
 // compare returns where two payloads differ, and whether they differ in more
 // places. A root is absent once a normaliser removes it.
-func (d *differ) compare(reference, candidate Option[model.DynamicValue]) (differences []model.Difference, truncated bool) {
-	d.diffItem(reference, candidate, newDocumentPath(nil), d.root)
+func (d *differ) compare(reference, candidate Option[schema.Value]) (differences []model.Difference, truncated bool) {
+	d.diffItem(reference, candidate, newDocumentPath(nil))
 	return mergeIndexes(d.differences), d.truncated
 }
 
-// diff structurally compares two payloads after normalisation. value is the
-// declared type at path, or None where the payload departs from the schema.
-func (d *differ) diff(reference, candidate model.DynamicValue, path documentPath, value Option[schema.Value]) {
+// diff structurally compares two payloads after normalisation.
+func (d *differ) diff(reference, candidate schema.Value, path documentPath) {
 	if len(d.differences) >= maxDifferences {
-		d.truncated = d.truncated || !reflect.DeepEqual(reference, candidate)
+		d.truncated = d.truncated || !reference.Equal(candidate)
 		return
 	}
-	if reflect.DeepEqual(reference, candidate) {
+	if reference.Equal(candidate) {
 		return
 	}
 	switch referenceValue := reference.(type) {
-	case map[string]model.DynamicValue:
-		candidateValue, ok := candidate.(map[string]model.DynamicValue)
+	case schema.ObjectValue:
+		candidateValue, ok := candidate.(schema.ObjectValue)
 		if !ok {
-			d.add(path.reported(), model.ChangeRetyped, reference, candidate)
+			d.retyped(path.reported(), reference, candidate)
 			return
 		}
-		for _, key := range sortedKeys(referenceValue, candidateValue) {
-			referenceItem, referenceFound := referenceValue[key]
-			candidateItem, candidateFound := candidateValue[key]
-			itemPath, itemValue := d.member(path, value, key)
-			d.diffItem(From(referenceItem, referenceFound), From(candidateItem, candidateFound), itemPath, itemValue)
+		for _, key := range sortedKeys(referenceValue.Keys(), candidateValue.Keys()) {
+			referenceItem, referenceFound := referenceValue.Member(key)
+			candidateItem, candidateFound := candidateValue.Member(key)
+			d.diffItem(From(referenceItem, referenceFound), From(candidateItem, candidateFound), member(path, reference.Type(), key))
 		}
-	case []model.DynamicValue:
-		candidateValue, ok := candidate.([]model.DynamicValue)
+	case schema.ListValue:
+		candidateValue, ok := candidate.(schema.ListValue)
 		if !ok {
-			d.add(path.reported(), model.ChangeRetyped, reference, candidate)
+			d.retyped(path.reported(), reference, candidate)
 			return
 		}
-		element := None[schema.Value]()
-		if declared, typed := value.Get(); typed && declared.Kind == schema.KindList {
-			element = derefValue(declared.Element)
+		for index := range max(referenceValue.Len(), candidateValue.Len()) {
+			d.diffItem(elementAt(referenceValue, index), elementAt(candidateValue, index), path.appendIndex(index))
 		}
-		for index := range max(len(referenceValue), len(candidateValue)) {
-			d.diffItem(elementAt(referenceValue, index), elementAt(candidateValue, index), path.appendIndex(index), element)
+	case schema.NullValue, schema.StringValue, schema.NumberValue, schema.BooleanValue:
+		if reference.JSONType() != candidate.JSONType() {
+			d.retyped(path.reported(), reference, candidate)
+			return
 		}
-	default:
-		change := model.ChangeChanged
-		if jsonType(reference) != jsonType(candidate) {
-			change = model.ChangeRetyped
-		}
-		d.add(path.reported(), change, reference, candidate)
+		d.add(path.reported(), model.ChangeChanged, None[model.Retype]())
 	}
 }
 
 // diffItem compares an object member or list element that either side may lack.
-func (d *differ) diffItem(reference, candidate Option[model.DynamicValue], path documentPath, value Option[schema.Value]) {
+func (d *differ) diffItem(reference, candidate Option[schema.Value], path documentPath) {
 	referenceItem, referencePresent := reference.Get()
 	candidateItem, candidatePresent := candidate.Get()
 	switch {
 	case referencePresent && !candidatePresent:
-		d.add(path.reported(), model.ChangeMissing, nil, nil)
+		d.add(path.reported(), model.ChangeMissing, None[model.Retype]())
 	case !referencePresent && candidatePresent:
-		d.add(path.reported(), model.ChangeAdded, nil, nil)
-	default:
-		d.diff(referenceItem, candidateItem, path, value)
+		d.add(path.reported(), model.ChangeAdded, None[model.Retype]())
+	case referencePresent && candidatePresent:
+		d.diff(referenceItem, candidateItem, path)
 	}
+}
+
+func (d *differ) retyped(path reportedPath, reference, candidate schema.Value) {
+	d.add(path, model.ChangeRetyped, Some(model.Retype{Reference: reference.JSONType(), Candidate: candidate.JSONType()}))
 }
 
 // elementAt returns a list's element at index, or None past the end of the list.
-func elementAt(list []model.DynamicValue, index int) Option[model.DynamicValue] {
-	if index < len(list) {
-		return Some(list[index])
-	}
-	return None[model.DynamicValue]()
+func elementAt(list schema.ListValue, index int) Option[schema.Value] {
+	return From(list.Element(index))
 }
 
-// member returns the path and declared type of an object's key. Only a declared
-// field is named; other keys are payload data, so the path holds a wildcard.
-func (d *differ) member(path documentPath, value Option[schema.Value], key string) (documentPath, Option[schema.Value]) {
-	declared, typed := value.Get()
-	loaded, hasSchema := d.loaded.Get()
-	switch {
-	case typed && hasSchema && declared.Kind == schema.KindObject:
-		if object, err := loaded.Type(declared.Type); err == nil {
-			if field, found := object.Field(key); found {
-				return path.appendField(key), Some(field.Value)
-			}
+// member returns the path of an object's key. Only a field that the object's type
+// declares is named; other keys are payload data, so the path holds a wildcard.
+func member(path documentPath, object schema.Type, key string) documentPath {
+	if declared, ok := schema.NonNull(object).(*schema.ObjectType); ok {
+		if _, found := declared.Field(key); found {
+			return path.appendField(key)
 		}
-	case typed && declared.Kind == schema.KindMap:
-		return path.appendAnyKey(), derefValue(declared.Element)
 	}
-	return path.appendAnyKey(), None[schema.Value]()
+	return path.appendAnyKey()
 }
 
 // add records a difference, counting it against an equal one already recorded.
-// reference and candidate give a retyped difference its types.
-func (d *differ) add(path reportedPath, change model.Change, reference, candidate model.DynamicValue) {
-	retype := None[model.Retype]()
-	if change == model.ChangeRetyped {
-		retype = Some(model.Retype{Reference: jsonType(reference), Candidate: jsonType(candidate)})
-	}
+func (d *differ) add(path reportedPath, change model.Change, retype Option[model.Retype]) {
 	for i, recorded := range d.differences {
 		if recorded.change == change && recorded.retype == retype && recorded.path == path {
 			d.differences[i].count++
@@ -179,42 +158,9 @@ func mergeIndexes(differences []difference) []model.Difference {
 	return merged
 }
 
-// jsonType returns the type of a decoded JSON value. Decoded JSON holds only
-// these Go types and numbers, whose Go type depends on the decoder.
-func jsonType(value model.DynamicValue) model.JSONType {
-	switch value.(type) {
-	case nil:
-		return model.JSONNull
-	case bool:
-		return model.JSONBoolean
-	case string:
-		return model.JSONString
-	case map[string]model.DynamicValue:
-		return model.JSONObject
-	case []model.DynamicValue:
-		return model.JSONList
-	}
-	return model.JSONNumber
-}
-
 // sortedKeys returns the keys of both objects in order, without repeats.
-func sortedKeys(reference, candidate map[string]model.DynamicValue) []string {
-	keys := make([]string, 0, len(reference)+len(candidate))
-	for key := range reference {
-		keys = append(keys, key)
-	}
-	for key := range candidate {
-		if _, found := reference[key]; !found {
-			keys = append(keys, key)
-		}
-	}
+func sortedKeys(reference, candidate []string) []string {
+	keys := slices.Concat(reference, candidate)
 	slices.Sort(keys)
-	return keys
-}
-
-func derefValue(value Option[*schema.Value]) Option[schema.Value] {
-	if pointer, ok := value.Get(); ok && pointer != nil {
-		return Some(*pointer)
-	}
-	return None[schema.Value]()
+	return slices.Compact(keys)
 }

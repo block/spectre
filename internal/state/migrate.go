@@ -5,15 +5,12 @@ import (
 	"strings"
 
 	"github.com/alecthomas/errors"
-	"github.com/pelletier/go-toml/v2"
-
-	"github.com/block/spectre/internal/model"
 )
 
 // MarkMigrated sets the status of each node in ids to migrated and rewrites
 // the state, dropping comments. The result must still be a valid state.
-func MarkMigrated(data []byte, catalog *Catalog, ids []string) (updated []byte, marked []string, err error) {
-	current, err := Parse(data, catalog)
+func MarkMigrated(data []byte, ids []string) (updated []byte, marked []string, err error) {
+	current, err := Parse(data)
 	if err != nil {
 		return nil, nil, errors.WithStack(err)
 	}
@@ -37,20 +34,16 @@ func MarkMigrated(data []byte, catalog *Catalog, ids []string) (updated []byte, 
 	if len(marked) == 0 {
 		return data, nil, nil
 	}
-	var root map[string]model.DynamicValue
-	if err := toml.Unmarshal(data, &root); err != nil {
-		return nil, nil, errors.Wrap(err, "decode migration state")
+	for i, node := range current.Nodes {
+		if slices.Contains(marked, node.ID) {
+			current.Nodes[i].Status = Migrated
+		}
 	}
-	nodes, _ := root[nodesKey].(map[string]model.DynamicValue)
-	for _, id := range marked {
-		node, _ := nodes[id].(map[string]model.DynamicValue)
-		node[statusKey] = string(Migrated)
-	}
-	updated, err = toml.Marshal(root)
+	updated, err = encode(current.Nodes)
 	if err != nil {
 		return nil, nil, errors.Wrap(err, "encode migration state")
 	}
-	if _, err := Parse(updated, catalog); err != nil {
+	if _, err := Parse(updated); err != nil {
 		return nil, nil, withoutLines(err)
 	}
 	return updated, marked, nil

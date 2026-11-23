@@ -26,6 +26,7 @@ import (
 	"github.com/block/spectre/internal/netaddr"
 	"github.com/block/spectre/internal/protocol"
 	"github.com/block/spectre/internal/proxy"
+	"github.com/block/spectre/internal/schema"
 )
 
 // Egress serves reference and candidate traffic on separate listeners. Candidate
@@ -227,13 +228,13 @@ func (e *Egress) serveReference(writer http.ResponseWriter, request *http.Reques
 	default:
 		outbound.Body = newTeeBody(request.Body, captured)
 	}
-	payload := func(ctx context.Context) (protocol.Message, error) {
+	payload := func(ctx context.Context) (schema.Value, error) {
 		if _, configured := e.destination(snapshot.Host); !configured {
-			return protocol.Message{}, errors.Errorf("reference request to unconfigured host %q", snapshot.Host)
+			return nil, errors.Errorf("reference request to unconfigured host %q", snapshot.Host)
 		}
 		body, overflow, err := captured.wait(ctx)
 		if err != nil {
-			return protocol.Message{}, err
+			return nil, err
 		}
 		snapshot.Body, snapshot.Overflow = body, overflow
 		return errors.WithStack2(e.decoder.Request(snapshot))
@@ -330,14 +331,14 @@ func (e *Egress) serveCandidate(writer http.ResponseWriter, request *http.Reques
 		http.Error(writer, "request ID is invalid", http.StatusBadGateway)
 		return
 	}
-	payload := func(context.Context) (protocol.Message, error) {
+	payload := func(context.Context) (schema.Value, error) {
 		if _, configured := e.destination(request.Host); !configured {
-			return protocol.Message{}, errors.Errorf("candidate request to unconfigured host %q", request.Host)
+			return nil, errors.Errorf("candidate request to unconfigured host %q", request.Host)
 		}
 		limit := e.config.ComparisonMaxBodyBytes
 		body, err := io.ReadAll(io.LimitReader(request.Body, int64(limit)+1))
 		if err != nil {
-			return protocol.Message{}, errors.Wrap(err, "read candidate request body")
+			return nil, errors.Wrap(err, "read candidate request body")
 		}
 		captured := newMessageRequest(request)
 		captured.Body, captured.Overflow = body[:min(len(body), limit)], len(body) > limit
@@ -357,7 +358,7 @@ func (e *Egress) serveCandidate(writer http.ResponseWriter, request *http.Reques
 
 // answer writes a replacement response. One that cannot be encoded quarantines the
 // candidate, because the candidate would otherwise see a response the reference never could.
-func (e *Egress) answer(writer http.ResponseWriter, request *http.Request, route model.Route, answer protocol.Message) {
+func (e *Egress) answer(writer http.ResponseWriter, request *http.Request, route model.Route, answer schema.Value) {
 	encoded, err := e.decoder.Answer(request.Header, answer)
 	if err != nil {
 		e.candidates.Quarantine(request.Context(), model.QuarantineReason{

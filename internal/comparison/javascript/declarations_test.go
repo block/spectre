@@ -67,7 +67,6 @@ declare module "test" {
 		"EgressFunction":         {body: `egress.http(() => true);`},
 		"EgressStatus":           {body: `egress.http("GET example/root").status(500);`},
 		"EgressNormaliser":       {body: `egress.http("GET example/root").match<Root>((request) => request);`},
-		"NotObject":              {body: `ingress.http("GET /root").match<string>();`},
 		"TextBodyNotString":      {body: `ingress.http("/").match<Text>(() => ({ body: 1 }));`},
 		"StatusNotNumber":        {body: `ingress.http("/").status("500");`},
 		"RequestNotFunction":     {body: `ingress.http(1);`},

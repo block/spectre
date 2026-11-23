@@ -101,6 +101,7 @@ type registrations struct {
 // spectreModule is an immutable module record shared safely across isolated runtimes.
 // Every runtime sees the same variables, so re-evaluation reproduces its registrations.
 type spectreModule struct {
+	loaded    *schema.Schema
 	variables map[string]string
 }
 
@@ -130,7 +131,7 @@ func (m *spectreModule) Evaluate(runtime *sobek.Runtime) *sobek.Promise {
 	// instance, so reuse it or earlier importers' registrations would be lost.
 	instance, ok := runtime.GetModuleInstance(m).(*callbackRegistry)
 	if !ok {
-		instance = newCallbackRegistry(runtime, m.variables)
+		instance = newCallbackRegistry(runtime, m.loaded, m.variables)
 	}
 	if err := resolve(instance); err != nil {
 		panic(errors.Wrap(err, "resolve spectre module evaluation"))
@@ -142,6 +143,7 @@ func (m *spectreModule) Evaluate(runtime *sobek.Runtime) *sobek.Promise {
 // values. Evaluator access stays on the runtime's single caller, so it needs no locking.
 type callbackRegistry struct {
 	runtime   *sobek.Runtime
+	loaded    *schema.Schema
 	functions map[string]sobek.Value
 	endpoints []Endpoint
 	rules     []Rule
@@ -172,9 +174,10 @@ type replacementCallbacks struct {
 	response sobek.Callable
 }
 
-func newCallbackRegistry(runtime *sobek.Runtime, variables map[string]string) *callbackRegistry {
+func newCallbackRegistry(runtime *sobek.Runtime, loaded *schema.Schema, variables map[string]string) *callbackRegistry {
 	registry := &callbackRegistry{
 		runtime:  runtime,
+		loaded:   loaded,
 		fields:   map[FieldTarget]sobek.Callable{},
 		messages: map[schema.TypeRef]sobek.Callable{},
 	}
@@ -234,8 +237,10 @@ const (
 	statementsMethod = "statements"
 	// mysqlOwner prefixes the declarations of the MySQL script API, whose type arguments only check scripts.
 	mysqlOwner = "EgressMySQL"
-	// textTypeName is the type name compile inserts for the spectre Text type.
-	textTypeName = "spectre.Text"
+	// textTypeName and unknownTypeName are the type names compile inserts for the spectre
+	// Text type and for unknown. Schema type names never collide, as they contain a module name.
+	textTypeName    = "spectre.Text"
+	unknownTypeName = "unknown"
 	// variableFunction reads a script variable and takes no type arguments.
 	variableFunction = "variable"
 )
@@ -510,11 +515,7 @@ func (r *callbackRegistry) matchRule(builder ruleBuilder, call sobek.FunctionCal
 	if len(call.Arguments) < 1 || len(call.Arguments) > 2 {
 		panic(r.runtime.NewTypeError("spectre.%s requires a type name and an optional normaliser", qualified))
 	}
-	typeName := Some(schema.TypeRef(r.stringArgument(call, 0, qualified, "type name")))
-	if name, _ := typeName.Get(); name == textTypeName {
-		typeName = None[schema.TypeRef]()
-	}
-	action := ActionMatch{Type: typeName}
+	action := ActionMatch{Type: r.bodyType(schema.TypeRef(r.stringArgument(call, 0, qualified, "type name")))}
 	if len(call.Arguments) == 2 && !sobek.IsUndefined(call.Argument(1)) {
 		callback, ok := sobek.AssertFunction(call.Argument(1))
 		if !ok {
@@ -524,6 +525,21 @@ func (r *callbackRegistry) matchRule(builder ruleBuilder, call sobek.FunctionCal
 		builder.callbacks.normalise = Some(callback)
 	}
 	r.addRule(builder, action)
+}
+
+// bodyType returns the type of the bodies a rule decodes as the type name compile inserted.
+func (r *callbackRegistry) bodyType(name schema.TypeRef) schema.Type {
+	switch name {
+	case textTypeName:
+		return schema.StringType{}
+	case unknownTypeName:
+		return schema.UnknownType{}
+	}
+	declared, err := r.loaded.Type(name)
+	if err != nil {
+		panic(r.runtime.NewTypeError("spectre.IngressHTTPRule.match: %v", err))
+	}
+	return declared
 }
 
 // addRule appends a rule. A rule whose selectors repeat an earlier rule's

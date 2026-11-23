@@ -18,7 +18,6 @@ import (
 	"google.golang.org/protobuf/types/dynamicpb"
 
 	"github.com/block/spectre/internal/descriptors"
-	"github.com/block/spectre/internal/model"
 	"github.com/block/spectre/internal/schema"
 )
 
@@ -57,8 +56,8 @@ func (c *Codec) Streaming(name string) bool {
 	return err == nil && (method.IsStreamingClient() || method.IsStreamingServer())
 }
 
-// Decode converts a payload into the ProtoJSON shape of its declared type.
-func (c *Codec) Decode(name schema.TypeRef, format Format, header http.Header, body []byte, maxBodyBytes int) (model.DynamicValue, error) {
+// Decode converts a payload into the ProtoJSON encoding of its declared type.
+func (c *Codec) Decode(name schema.TypeRef, format Format, header http.Header, body []byte, maxBodyBytes int) ([]byte, error) {
 	descriptor, err := c.registry.Message(protoreflect.FullName(name))
 	if err != nil {
 		return nil, errors.Wrap(err, "resolve wire type")
@@ -87,12 +86,16 @@ func (c *Codec) Decode(name schema.TypeRef, format Format, header http.Header, b
 	default:
 		return nil, errors.Errorf("unknown wire format: %d", format)
 	}
-	return payloadValue(c.registry.Types(), message, maxBodyBytes)
+	return payloadJSON(c.registry.Types(), message, maxBodyBytes)
 }
 
-// Encode converts a ProtoJSON value of its declared type into a bare protobuf message.
-func (c *Codec) Encode(name schema.TypeRef, value model.DynamicValue) ([]byte, error) {
-	descriptor, err := c.registry.Message(protoreflect.FullName(name))
+// Encode converts a ProtoJSON value of an object type into a bare protobuf message.
+func (c *Codec) Encode(value schema.Value) ([]byte, error) {
+	declared, ok := value.Type().(*schema.ObjectType)
+	if !ok {
+		return nil, errors.Errorf("%s is not a protobuf message type", value.Type())
+	}
+	descriptor, err := c.registry.Message(protoreflect.FullName(declared.Name))
 	if err != nil {
 		return nil, errors.Wrap(err, "resolve wire type")
 	}
@@ -154,8 +157,8 @@ func unmarshalProtoJSON(types *dynamicpb.Types, data []byte, message proto.Messa
 	return nil
 }
 
-// payloadValue converts a decoded message to the ProtoJSON value normalisers receive.
-func payloadValue(types *dynamicpb.Types, message proto.Message, maxBodyBytes int) (model.DynamicValue, error) {
+// payloadJSON encodes a decoded message as the ProtoJSON normalisers receive.
+func payloadJSON(types *dynamicpb.Types, message proto.Message, maxBodyBytes int) ([]byte, error) {
 	data, err := (protojson.MarshalOptions{Resolver: types, EmitDefaultValues: true}).Marshal(message)
 	if err != nil {
 		return nil, errors.Wrap(err, "encode ProtoJSON")
@@ -163,11 +166,7 @@ func payloadValue(types *dynamicpb.Types, message proto.Message, maxBodyBytes in
 	if len(data) > maxBodyBytes {
 		return nil, errors.New("decoded payload exceeds the comparison size limit")
 	}
-	var payload model.DynamicValue
-	if err := json.Unmarshal(data, &payload); err != nil {
-		return nil, errors.Wrap(err, "decode ProtoJSON value")
-	}
-	return payload, nil
+	return data, nil
 }
 
 func containsUnknown(message protoreflect.Message) bool {

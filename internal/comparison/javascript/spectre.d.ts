@@ -81,8 +81,8 @@ declare module "spectre" {
     requestHeader(name: string, select: HeaderSelect): IngressHTTPRule;
     /** Narrows the rule to responses whose header matches, as requestHeader does. Each side selects by its own. */
     responseHeader(name: string, select: HeaderSelect): IngressHTTPRule;
-    /** Decodes the selected responses' bodies as T, then normalises each response. */
-    match<T extends object>(normalise?: (response: Response<T>) => Response<T>): void;
+    /** Decodes the selected responses' bodies as T, Text, or unknown, then normalises each response. */
+    match<T>(normalise?: (response: Response<T>) => Response<T>): void;
     /** Skips comparison of the selected responses; they are never quarantined. */
     ignore(): void;
   }

@@ -4,9 +4,33 @@ import (
 	"testing"
 
 	"github.com/alecthomas/assert/v2"
+	. "github.com/alecthomas/types/optional"
 
 	"github.com/block/spectre/internal/mysqlserver/normaliser"
+	"github.com/block/spectre/internal/schema"
 )
+
+// Egress hashes pairings as the built-in spectre.mysql.Pairing type, so each must validate as one.
+func TestPairingsAreMySQLPairings(t *testing.T) {
+	loaded, err := schema.ParseSources(t.Context(), map[string]string{})
+	assert.NoError(t, err)
+	server := &Server{schema: loaded}
+	for name, by := range map[string]pairing{
+		"Statement": {Key: normaliser.Key{Database: "app", Statement: "BEGIN"}},
+		"Pattern": {
+			Key:   normaliser.Key{Database: "app", Pattern: "SELECT ?, ?", Values: []normaliser.Value{Some("1"), None[string]()}},
+			Opens: true, Transaction: Some(newTransactionID()),
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			declared, err := loaded.Type(schema.MySQLPairing)
+			assert.NoError(t, err)
+			value, err := server.request(by)(t.Context())
+			assert.NoError(t, err)
+			assert.Equal(t, schema.Type(declared), value.Type())
+		})
+	}
+}
 
 // position is where a statement ran: in which of the connection's transactions, if any.
 type position struct {

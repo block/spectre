@@ -16,7 +16,6 @@ import (
 	"github.com/block/spectre/internal/comparison/javascript"
 	"github.com/block/spectre/internal/httpserver/codec"
 	"github.com/block/spectre/internal/httpserver/route"
-	"github.com/block/spectre/internal/model"
 	"github.com/block/spectre/internal/protocol"
 	"github.com/block/spectre/internal/schema"
 )
@@ -52,7 +51,7 @@ func New(loaded *schema.Schema, set *descriptorpb.FileDescriptorSet, routes *rou
 			return nil, errors.Wrapf(err, "resolve endpoint %q", declared.Pattern)
 		}
 		for _, name := range route.Wildcards(declared.Pattern) {
-			if _, err := resolveBinding(loaded, root, name, false); err != nil {
+			if _, err := resolveBinding(root, name, false); err != nil {
 				return nil, errors.Wrapf(err, "bind endpoint %q wildcard %q", declared.Pattern, name)
 			}
 		}
@@ -80,9 +79,9 @@ type Request struct {
 
 // Request decodes a dependency request as its declared type, or as its RPC
 // method's input. An error means the request cannot be identified.
-func (d *Decoder) Request(request Request) (protocol.Message, error) {
+func (d *Decoder) Request(request Request) (schema.Value, error) {
 	if request.Overflow {
-		return protocol.Message{}, errors.New("request exceeds the comparison size limit")
+		return nil, errors.New("request exceeds the comparison size limit")
 	}
 	endpoint, wildcards, declared := d.routes.Request(request.Method, request.Host, request.Path)
 	selected, err := requestWire(request.Header.Get("Content-Type"))
@@ -90,25 +89,25 @@ func (d *Decoder) Request(request Request) (protocol.Message, error) {
 		selected, err = wireHTTPJSON, nil
 	}
 	if err != nil {
-		return protocol.Message{}, err
+		return nil, err
 	}
 	name := endpoint.Type
 	if !declared {
 		operation, err := d.conventionalMethod(request.Path)
 		if err != nil {
-			return protocol.Message{}, err
+			return nil, err
 		}
 		name = operation.Request
 	}
 	root, err := d.schema.Type(name)
 	if err != nil {
-		return protocol.Message{}, errors.Wrap(err, "endpoint type is unusable")
+		return nil, errors.Wrap(err, "endpoint type is unusable")
 	}
-	payload, err := d.decodeRequest(root, selected, request, wildcards)
+	instance, err := d.decodeRequest(root, selected, request, wildcards)
 	if err != nil {
-		return protocol.Message{}, errors.Wrapf(err, "decode request as %s", root.Name)
+		return nil, errors.Wrapf(err, "decode request as %s", root.Name)
 	}
-	return protocol.Message{Type: Some(root.Name), Value: payload}, nil
+	return instance, nil
 }
 
 // SourceResponse decodes a successful response to a dependency request with method and header as name,
@@ -122,7 +121,11 @@ func (d *Decoder) SourceResponse(method string, header http.Header, name schema.
 	if err != nil {
 		requested = wireHTTPJSON
 	}
-	content := d.matched(javascript.ActionMatch{Type: Some(name)}, requested, method).decode(response)
+	declared, err := d.schema.Type(name)
+	if err != nil {
+		return protocol.Content{Status: status, Failure: Some(errors.Wrap(err, "endpoint type is unusable"))}
+	}
+	content := d.matched(javascript.ActionMatch{Type: declared}, requested, method).decode(response)
 	if _, decoded := content.Message.Get(); decoded || content.Failure.Ok() {
 		return content
 	}
@@ -138,25 +141,21 @@ type Answer struct {
 
 // Answer encodes message as the successful response to a dependency request with
 // header, in its wire format: bare protobuf, or HTTP JSON otherwise.
-func (d *Decoder) Answer(header http.Header, message protocol.Message) (Answer, error) {
-	name, typed := message.Type.Get()
-	if !typed {
-		return Answer{}, errors.New("answer has no type")
-	}
+func (d *Decoder) Answer(header http.Header, message schema.Value) (Answer, error) {
 	requested, err := requestWire(header.Get("Content-Type"))
 	switch {
 	case err == nil && requested == wireGRPC:
 		return Answer{}, errors.New("gRPC requests cannot be answered")
 	case err == nil && requested == wireProtobuf:
-		body, err := d.codec.Encode(name, message.Value)
+		body, err := d.codec.Encode(message)
 		if err != nil {
-			return Answer{}, errors.Wrapf(err, "encode answer as %s", name)
+			return Answer{}, errors.Wrapf(err, "encode answer as %s", message.Type())
 		}
 		return Answer{Header: http.Header{"Content-Type": {header.Get("Content-Type")}}, Body: body}, nil
 	}
-	body, err := json.Marshal(message.Value)
+	body, err := json.Marshal(message)
 	if err != nil {
-		return Answer{}, errors.Wrapf(err, "encode answer as %s", name)
+		return Answer{}, errors.Wrapf(err, "encode answer as %s", message.Type())
 	}
 	return Answer{Header: http.Header{"Content-Type": {jsonMediaType}}, Body: body}, nil
 }
@@ -205,29 +204,39 @@ func (d *Decoder) unruled(method, path, rawQuery string, header http.Header) dec
 	if err != nil {
 		return failedDecoding(err)
 	}
-	root, err := d.schema.Type(operation.Response)
+	output, err := d.schema.Type(operation.Response)
 	if err != nil {
 		return failedDecoding(errors.Wrap(err, "endpoint type is unusable"))
 	}
-	return newDecoding(d, root, selected, method)
+	return newDecoding(d, output, selected, method)
 }
 
-// matched decodes the responses a rule selects as its type, or as text. Their
-// bodies are HTTP JSON unless the request is gRPC or protobuf.
+// matched decodes the responses a rule selects as its type. Their bodies are HTTP
+// JSON unless the request is gRPC or protobuf, whose messages need an object type.
 func (d *Decoder) matched(action javascript.ActionMatch, requested wire, method string) decoding {
-	name, typed := action.Type.Get()
-	if !typed {
-		return textDecoding(d, method)
-	}
 	selected := requested
 	if selected != wireGRPC && selected != wireProtobuf {
 		selected = wireHTTPJSON
 	}
-	root, err := d.schema.Type(name)
-	if err != nil {
-		return failedDecoding(errors.Wrap(err, "endpoint type is unusable"))
+	switch action.Type.(type) {
+	case schema.StringType, *schema.ObjectType:
+	case schema.UnknownType:
+		if selected != wireHTTPJSON {
+			return failedDecoding(errors.New("protobuf responses cannot be decoded as unknown"))
+		}
+	case schema.NumberType, schema.BooleanType, schema.EnumType, schema.NullableType, schema.ListType, schema.MapType:
+		return failedDecoding(errors.Errorf("responses cannot be decoded as %s", action.Type))
 	}
-	return newDecoding(d, root, selected, method)
+	return newDecoding(d, action.Type, selected, method)
+}
+
+// connectError returns the type of a Connect error body, which may be empty.
+func (d *Decoder) connectError() (schema.Type, error) {
+	declared, err := d.schema.Type(schema.ConnectError)
+	if err != nil {
+		return nil, errors.WithStack(err)
+	}
+	return schema.NullableType{Type: declared}, nil
 }
 
 func connectGet(method, rawQuery string) bool {
@@ -270,50 +279,55 @@ func (d *Decoder) conventionalMethod(path string) (schema.Operation, error) {
 	return operation, nil
 }
 
-// decodeResponse decodes a response body and validates it as root.
-func (d *Decoder) decodeResponse(root *schema.Type, selected wire, response Response) (model.DynamicValue, error) {
-	payload, err := d.decodePayload(root, selected, response.Header, response.Body)
+// decodeResponse decodes a response body as declared.
+func (d *Decoder) decodeResponse(declared schema.Type, selected wire, response Response) (schema.Value, error) {
+	payload, err := d.decodePayload(declared, selected, response.Header, response.Body)
 	if err != nil {
 		return nil, err
 	}
-	if err := d.schema.Validate(root.Name, payload); err != nil {
+	instance, err := schema.As(declared, payload)
+	if err != nil {
 		return nil, errors.Wrap(err, "validate response")
 	}
-	return payload, nil
+	return instance, nil
 }
 
 // decodeRequest binds raw HTTP path and query values before validating required fields.
-func (d *Decoder) decodeRequest(input *schema.Type, selected wire, request Request, wildcards map[string]string) (model.DynamicValue, error) {
+func (d *Decoder) decodeRequest(input *schema.ObjectType, selected wire, request Request, wildcards map[string]string) (schema.Value, error) {
 	payload, err := d.decodePayload(input, selected, request.Header, request.Body)
 	if err != nil {
 		return nil, err
 	}
 	if selected == wireHTTPJSON {
-		object, ok := payload.(map[string]model.DynamicValue)
+		object, ok := payload.(schema.ObjectValue)
 		if !ok {
 			return nil, errors.New("HTTP request body must be an object")
 		}
-		if err := bindHTTPParameters(d.schema, input, object, request, wildcards); err != nil {
+		payload, err = bindHTTPParameters(input, object.Members(), request, wildcards)
+		if err != nil {
 			return nil, err
 		}
 	}
-	if err := d.schema.Validate(input.Name, payload); err != nil {
+	instance, err := schema.As(input, payload)
+	if err != nil {
 		return nil, errors.Wrap(err, "validate request")
 	}
-	encoded, err := json.Marshal(payload)
+	encoded, err := json.Marshal(instance)
 	if err != nil {
 		return nil, errors.Wrap(err, "encode bound request")
 	}
 	if len(encoded) > d.maxBodyBytes {
 		return nil, errors.New("decoded payload exceeds the comparison size limit")
 	}
-	return payload, nil
+	return instance, nil
 }
 
-func (d *Decoder) decodePayload(root *schema.Type, selected wire, header http.Header, body []byte) (model.DynamicValue, error) {
+// decodePayload decodes a body as JSON of type unknown, for validation as declared. Only
+// object types decode from protobuf wires, since their descriptors share the type's name.
+func (d *Decoder) decodePayload(declared schema.Type, selected wire, header http.Header, body []byte) (schema.Value, error) {
 	if selected == wireHTTPJSON {
 		if len(body) == 0 {
-			return map[string]model.DynamicValue{}, nil
+			return errors.WithStack2(schema.NewObject(nil))
 		}
 		if !hasJSONMediaType(header) {
 			return nil, errors.Errorf("body is not JSON: %q", header.Get("Content-Type"))
@@ -322,11 +336,11 @@ func (d *Decoder) decodePayload(root *schema.Type, selected wire, header http.He
 		if err != nil {
 			return nil, err
 		}
-		var payload model.DynamicValue
-		if err = json.Unmarshal(decompressed, &payload); err != nil {
-			return nil, errors.Wrap(jsonError(err), "decode JSON")
-		}
-		return payload, nil
+		return decodeJSON(decompressed)
+	}
+	message, ok := schema.NonNull(declared).(*schema.ObjectType)
+	if !ok {
+		return nil, errors.Errorf("protobuf payloads cannot be decoded as %s", declared)
 	}
 	var format codec.Format
 	switch selected {
@@ -341,6 +355,14 @@ func (d *Decoder) decodePayload(root *schema.Type, selected wire, header http.He
 	default:
 		return nil, errors.Errorf("unknown wire protocol: %d", selected)
 	}
-	payload, err := d.codec.Decode(root.Name, format, header, body, d.maxBodyBytes)
-	return payload, errors.Wrap(err, "decode wire payload")
+	data, err := d.codec.Decode(message.Name, format, header, body, d.maxBodyBytes)
+	if err != nil {
+		return nil, errors.Wrap(err, "decode wire payload")
+	}
+	return decodeJSON(data)
+}
+
+func decodeJSON(data []byte) (schema.Value, error) {
+	payload, err := schema.Decode(schema.UnknownType{}, data)
+	return payload, errors.Wrap(err, "decode JSON")
 }

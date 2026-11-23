@@ -24,6 +24,7 @@ import (
 	"github.com/block/spectre/internal/model"
 	"github.com/block/spectre/internal/protocol"
 	"github.com/block/spectre/internal/proxy"
+	"github.com/block/spectre/internal/schema"
 )
 
 // fake and other are protocols no script declares, so the engine pipelines are
@@ -39,6 +40,25 @@ declare module "test.v1" {
   export interface Query { value: string; trace?: string }
 }
 `
+
+// unknown is the type of a value no schema type describes.
+var unknown schema.Type = schema.UnknownType{}
+
+// textFields are the fields of the test.v1 object types schemaDeclarations declares.
+var textFields = []schema.Field{
+	{Name: "value", Type: schema.StringType{}},
+	{Name: "trace", Optional: true, Type: schema.StringType{}},
+}
+
+// instance checks value as declared.
+func instance(t *testing.T, declared schema.Type, value map[string]any) schema.Value {
+	t.Helper()
+	data, err := json.Marshal(value)
+	assert.NoError(t, err)
+	made, err := schema.Decode(declared, data)
+	assert.NoError(t, err)
+	return made
+}
 
 const fakeScript = `
 import * as spectre from "spectre";

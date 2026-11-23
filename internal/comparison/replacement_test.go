@@ -6,7 +6,10 @@ import (
 	"github.com/alecthomas/assert/v2"
 
 	"github.com/block/spectre/internal/comparison"
+	"github.com/block/spectre/internal/schema"
 )
+
+const user schema.TypeRef = "test.v1.User"
 
 // usersSource is a source endpoint replaced by user lookups.
 const usersSource = `spectre.egress.http("POST users.example/v1/users").match<v1.Query>();`
@@ -15,19 +18,20 @@ func TestReplacesWithValidatedRequestsAndResponses(t *testing.T) {
 	scripts := newScripts(t, usersSource+`
 		spectre.egress.http("POST users.example/v1/user").replaces<v1.Query, v1.Response>("POST users.example/v1/users").using<v1.User, v1.User>(
 			(request) => ({ location: request.name, tags: [] }),
-			(request, reference) => reference.users.find((user) => user.name === request.name) ?? { name: "" },
+			(request, reference) => reference.users?.find((user) => user.name === request.name) ?? { name: "" },
 		);
 	`)
 	replacement := scripts.Replacements()[0]
 
-	request, err := scripts.ReplaceRequest(t.Context(), replacement, map[string]any{"name": "ada"})
+	ada := instance(t, scripts, user, `{"name": "ada"}`)
+	request, err := scripts.ReplaceRequest(t.Context(), replacement, ada)
 	assert.NoError(t, err)
-	response, err := scripts.ReplaceResponse(t.Context(), replacement, map[string]any{"name": "ada"},
-		decode(t, `{"stable": "", "roles": [], "users": [{"name": "bob"}, {"name": "ada"}], "count": "2", "labels": {}}`))
+	translated, err := scripts.ReplaceResponse(t.Context(), replacement, ada,
+		instance(t, scripts, response, `{"stable": "", "roles": [], "users": [{"name": "bob"}, {"name": "ada"}], "count": "2", "labels": {}}`))
 	assert.NoError(t, err)
 
-	assert.Equal(t, any(map[string]any{"location": "ada", "tags": []any{}}), request)
-	assert.Equal(t, any(map[string]any{"name": "ada"}), response)
+	assert.Equal(t, instance(t, scripts, query, `{"location": "ada", "tags": []}`), request)
+	assert.Equal(t, ada, translated)
 }
 
 func TestRejectsInvalidTranslatedValues(t *testing.T) {
@@ -40,8 +44,9 @@ func TestRejectsInvalidTranslatedValues(t *testing.T) {
 	`)
 	replacement := scripts.Replacements()[0]
 
-	_, requestErr := scripts.ReplaceRequest(t.Context(), replacement, map[string]any{"name": "ada"})
-	_, responseErr := scripts.ReplaceResponse(t.Context(), replacement, map[string]any{"name": "ada"}, map[string]any{})
+	ada := instance(t, scripts, user, `{"name": "ada"}`)
+	_, requestErr := scripts.ReplaceRequest(t.Context(), replacement, ada)
+	_, responseErr := scripts.ReplaceResponse(t.Context(), replacement, ada, instance(t, scripts, response, `{}`))
 
 	assert.Error(t, requestErr)
 	assert.Contains(t, requestErr.Error(), "validate translated test.v1.Query")

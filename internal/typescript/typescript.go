@@ -62,6 +62,7 @@ const (
 	TypeFlagsString        = checker.TypeFlagsString
 	TypeFlagsStringLiteral = checker.TypeFlagsStringLiteral
 	TypeFlagsUnion         = checker.TypeFlagsUnion
+	TypeFlagsUnknown       = checker.TypeFlagsUnknown
 )
 
 // SignatureKindCall selects call signatures rather than construct signatures.

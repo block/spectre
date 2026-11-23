@@ -73,14 +73,13 @@ func (o occurrence) before(other occurrence) bool {
 // collectOccurrences freezes traversal before normalisation starts mutating the document.
 // Its ordering is independent of registration order.
 func collectOccurrences(
-	loaded *schema.Schema,
-	root *schema.Type,
+	root *schema.ObjectType,
 	targets []normalisationTarget,
 	payload *document,
 ) []occurrence {
 	occurrences := []occurrence{}
 	for _, target := range targets {
-		occurrences = append(occurrences, target.occurrences(loaded, root, payload)...)
+		occurrences = append(occurrences, target.occurrences(root, payload)...)
 	}
 	// A field normaliser replaces any message normaliser at the same location.
 	fieldPaths := map[string]struct{}{}
@@ -120,55 +119,43 @@ func (p pathWithPresence) isPresent() bool {
 // findMessages also reports absent singular message fields of present parents, so
 // normalisers see a missing message as undefined. A null message is not reported.
 func findMessages(
-	loaded *schema.Schema,
-	descriptor *schema.Type,
+	root *schema.ObjectType,
 	target schema.TypeRef,
 	payload *document,
 ) []pathWithPresence {
 	paths := []pathWithPresence{}
-	var walk func(schema.Value, documentPath, bool)
-	walk = func(value schema.Value, path documentPath, present bool) {
-		switch value.Kind {
-		case schema.KindObject:
+	var walk func(schema.Type, documentPath, bool)
+	walk = func(declared schema.Type, path documentPath, present bool) {
+		switch declared := schema.NonNull(declared).(type) {
+		case *schema.ObjectType:
 			if present && payload.Value(path).isNull() {
 				return
 			}
-			if value.Type == target {
+			if declared.Name == target {
 				paths = append(paths, newPathWithPresence(path, present))
 			}
 			if !present {
 				return
 			}
-			current, err := loaded.Type(value.Type)
-			if err != nil {
-				return // The schema has already resolved all references.
-			}
-			for _, field := range current.Fields {
+			for _, field := range declared.Fields {
 				fieldPath := path.appendField(field.Name)
-				walk(field.Value, fieldPath, payload.Value(fieldPath).isPresent())
+				walk(field.Type, fieldPath, payload.Value(fieldPath).isPresent())
 			}
-		case schema.KindList:
-			element, hasElement := value.Element.Get()
-			if !hasElement {
-				return // The schema has already checked every element type.
+		case schema.ListType:
+			for index := range listLength(payload, path) {
+				walk(declared.Element, path.appendIndex(index), true)
 			}
-			for index := range arrayLength(payload, path) {
-				walk(*element, path.appendIndex(index), true)
-			}
-		case schema.KindMap:
-			element, hasElement := value.Element.Get()
-			if !hasElement {
-				return // The schema has already checked every element type.
-			}
+		case schema.MapType:
 			for _, key := range objectKeys(payload, path) {
-				walk(*element, path.appendField(key), true)
+				walk(declared.Element, path.appendField(key), true)
 			}
-		case schema.KindString, schema.KindNumber, schema.KindBoolean, schema.KindEnum:
+		case schema.StringType, schema.NumberType, schema.BooleanType, schema.EnumType,
+			schema.UnknownType, schema.NullableType:
 			return
 		}
 	}
-	root := newDocumentPath(nil)
-	walk(schema.Value{Kind: schema.KindObject, Type: descriptor.Name}, root, payload.Value(root).isPresent())
+	start := newDocumentPath(nil)
+	walk(root, start, payload.Value(start).isPresent())
 	return paths
 }
 
@@ -191,7 +178,7 @@ func descendField(
 			continue
 		}
 		if step.expandsElements() {
-			for index := range arrayLength(payload, fieldPath) {
+			for index := range listLength(payload, fieldPath) {
 				descended = append(descended, newPathWithPresence(fieldPath.appendIndex(index), true))
 			}
 			continue
@@ -201,17 +188,12 @@ func descendField(
 	return descended
 }
 
-func arrayLength(payload *document, path documentPath) int {
-	array, _ := payload.Value(path).array()
-	return len(array)
+func listLength(payload *document, path documentPath) int {
+	list, _ := payload.Value(path).list()
+	return list.Len()
 }
 
 func objectKeys(payload *document, path documentPath) []string {
 	object, _ := payload.Value(path).object()
-	keys := make([]string, 0, len(object))
-	for key := range object {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	return keys
+	return object.Keys()
 }

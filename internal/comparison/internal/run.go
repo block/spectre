@@ -9,27 +9,24 @@ import (
 	"github.com/block/spectre/internal/schema"
 )
 
-// normalisationRun owns the mutable document and isolated evaluator for one payload.
-// It is single-use because normalisers destructively rewrite the document.
+// normalisationRun owns the mutable document for one payload, and starts an isolated
+// evaluator only once a normaliser applies. It is single-use because normalisers rewrite the document.
 type normalisationRun struct {
-	loaded    *schema.Schema
-	evaluator *javascript.Evaluator
-	root      *schema.Type
+	evaluator func() (*javascript.Evaluator, error)
+	root      *schema.ObjectType
 	targets   []normalisationTarget
 	side      string
 	payload   *document
 }
 
 func newNormalisationRun(
-	loaded *schema.Schema,
-	evaluator *javascript.Evaluator,
-	root *schema.Type,
+	evaluator func() (*javascript.Evaluator, error),
+	root *schema.ObjectType,
 	targets []normalisationTarget,
 	side string,
 	payload *document,
 ) *normalisationRun {
 	return &normalisationRun{
-		loaded:    loaded,
 		evaluator: evaluator,
 		root:      root,
 		targets:   targets,
@@ -41,11 +38,15 @@ func newNormalisationRun(
 // normalise logs a summary for every payload, so a payload with no applicable
 // normalisers is still visible in the logs.
 func (r *normalisationRun) normalise(ctx context.Context) error {
-	occurrences := collectOccurrences(r.loaded, r.root, r.targets, r.payload)
+	occurrences := collectOccurrences(r.root, r.targets, r.payload)
 	for _, occurrence := range occurrences {
+		evaluator, err := r.evaluator()
+		if err != nil {
+			return err
+		}
 		// A removed value still reaches later normalisers at its path as undefined.
 		value := occurrence.value(r.payload)
-		normalised, err := occurrence.normalise(r.evaluator, value)
+		normalised, err := occurrence.normalise(evaluator, value)
 		if err != nil {
 			r.logResult(ctx, occurrence, err.Error())
 			return err

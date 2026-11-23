@@ -6,7 +6,6 @@ import (
 	"slices"
 
 	"github.com/alecthomas/errors"
-	. "github.com/alecthomas/types/optional"
 
 	"github.com/block/spectre/internal/comparison/javascript"
 	"github.com/block/spectre/internal/model"
@@ -16,7 +15,6 @@ import (
 // Plan binds JavaScript normaliser declarations to one declared schema.
 // It is immutable after construction and safe to share across normalisations.
 type Plan struct {
-	loaded   *schema.Schema
 	resolved []normalisationTarget
 }
 
@@ -24,65 +22,52 @@ type Plan struct {
 func NewPlan(loaded *schema.Schema, fields []javascript.FieldTarget, messages []schema.TypeRef) (*Plan, error) {
 	targets := make([]normalisationTarget, 0, len(fields)+len(messages))
 	for _, declared := range fields {
-		root, steps, err := resolveField(loaded, declared)
+		steps, err := resolveField(loaded, declared)
 		if err != nil {
 			return nil, errors.Wrapf(err, "validate normaliser target %q", declared.String())
 		}
-		targets = append(targets, newFieldTarget(declared, root, steps))
+		targets = append(targets, newFieldTarget(declared, steps))
 	}
 	for _, name := range messages {
-		root, err := loaded.Type(name)
+		declared, err := loaded.Type(name)
 		if err != nil {
 			return nil, errors.Wrapf(err, "validate normaliser target %q", name)
 		}
-		targets = append(targets, newMessageTarget(name, root))
+		targets = append(targets, newMessageTarget(declared))
 	}
-	return &Plan{loaded: loaded, resolved: targets}, nil
+	return &Plan{resolved: targets}, nil
 }
 
-// Schema returns the declared schema bound to the plan.
-func (p *Plan) Schema() *schema.Schema {
-	return p.loaded
-}
-
-// Normalise applies the plan to one decoded JSON payload of type root, which it takes
-// ownership of and mutates. side only labels log records.
+// Normalise applies the plan to a copy of one payload of type root. evaluator is called
+// only once a normaliser applies, and the caller closes what it returns. side only labels log records.
 func (p *Plan) Normalise(
 	ctx context.Context,
-	evaluator *javascript.Evaluator,
-	root *schema.Type,
+	evaluator func() (*javascript.Evaluator, error),
+	root *schema.ObjectType,
 	side string,
-	payload model.DynamicValue,
+	payload schema.Value,
 ) (*Normalised, error) {
 	document := newDocument(payload)
-	run := newNormalisationRun(p.loaded, evaluator, root, slices.Clone(p.resolved), side, document)
+	run := newNormalisationRun(evaluator, root, slices.Clone(p.resolved), side, document)
 	if err := run.normalise(ctx); err != nil {
 		return nil, err
 	}
-	rootValue := schema.Value{Kind: schema.KindObject, Type: root.Name}
-	return newNormalised(document, Some(p.loaded), Some(rootValue)), nil
+	return newNormalised(document), nil
 }
 
-// Normalised is one payload after every applicable normaliser has run.
+// Normalised is one payload after every applicable normaliser has run. Normalisers
+// may remove the root or change its members, but every value keeps its declared type.
 type Normalised struct {
 	payload *document
-	// loaded and root are absent for an untyped payload, whose keys are all payload data.
-	loaded Option[*schema.Schema]
-	root   Option[schema.Value]
 }
 
-func newNormalised(payload *document, loaded Option[*schema.Schema], root Option[schema.Value]) *Normalised {
-	return &Normalised{payload: payload, loaded: loaded, root: root}
+func newNormalised(payload *document) *Normalised {
+	return &Normalised{payload: payload}
 }
 
-// Raw wraps an untyped payload that no normaliser applies to.
-func Raw(payload model.DynamicValue) *Normalised {
-	return newNormalised(newDocument(payload), None[*schema.Schema](), None[schema.Value]())
-}
-
-// differ compares against this payload's declared type.
-func (n *Normalised) differ() *differ {
-	return newDiffer(n.loaded, n.root)
+// Raw wraps a payload that no normaliser applies to.
+func Raw(payload schema.Value) *Normalised {
+	return newNormalised(newDocument(payload))
 }
 
 func (n *Normalised) document() *document {
@@ -99,5 +84,5 @@ func (n *Normalised) CanonicalJSON() ([]byte, error) {
 // Diff returns where and how two normalised payloads differ, without values, and
 // whether there were more differences. Both are instances of the reference's type.
 func Diff(reference, candidate *Normalised) (differences []model.Difference, truncated bool) {
-	return reference.differ().compare(reference.document().Export(), candidate.document().Export())
+	return newDiffer().compare(reference.document().Export(), candidate.document().Export())
 }

@@ -546,16 +546,16 @@ contains only `declare module "name" { ... }` blocks. A type's name is its modul
 name followed by its namespace path, such as `weather.GetForecastV2Response`, so
 separate services cannot collide. Modules share nothing unless one imports another.
 Use interfaces or object aliases, namespaces, optional members, scalar types, arrays,
-`Record<string, T>`, and string-literal unions. Unsupported constructs fail at
-startup. Raw JSON must match the declared shape; unknown keys, missing required
-members, and nulls are rejected.
+`Record<string, T>`, string-literal unions, and `unknown` for JSON of any shape.
+Unsupported constructs fail at startup. Raw JSON must match the declared shape;
+unknown keys, missing required members, and nulls are rejected.
 
-A member holds null only if its type is `T | null` or `null | T`, where `T` is any
-supported type; `note?: T | null` also lets it be absent. Elsewhere, such as in array
-elements or `Record` values, and as a bare `null` or any other union, null is
-unsupported, as are nullable members of protobuf messages. A null is its own JSON
-type in difference reports and reaches the member's field normalisers as `null`;
-message normalisers and normalisers of fields beneath a null object skip it:
+A value holds null only if its type is `T | null` or `null | T`, where `T` is any
+supported type. This applies to members, array elements, and `Record` values, such
+as `(string | null)[]`; `note?: T | null` also lets a member be absent. A bare `null`
+or any other union is unsupported, as are nullable values in protobuf messages. A
+null is its own JSON type in difference reports and reaches field normalisers as
+`null`; message normalisers and normalisers of fields beneath a null object skip it:
 
 ```ts
 declare module "processing_fees" {
@@ -565,6 +565,12 @@ declare module "processing_fees" {
   }
 }
 ```
+
+Every schema also includes SPECTRE's built-in modules. `spectre.connect` declares
+`Error`, the body of a failed Connect response, and `spectre.mysql` declares
+`Pairing`, what egress pairs a MySQL statement by. A Connect error body that is not
+a valid `Error` fails to decode. Schemas cannot declare the `spectre`,
+`spectre.connect`, or `spectre.mysql` modules.
 
 Protobuf traffic also needs binary `FileDescriptorSet` files, each including its
 imports, in `--descriptors-dir`. Every `.pb` file in it, including
@@ -619,7 +625,9 @@ from the checker, so aliases and namespace imports work.
 `field<T, "path">(callback)` uses JSON field names. Paths descend through objects
 with dots and through lists with `[]`, such as `users[].name`.
 `message<T>(callback)` applies wherever that object type occurs. Missing optional
-values arrive as `undefined`; returning `undefined` removes them.
+values arrive as `undefined`; returning `undefined` removes them, even a required
+field. Otherwise a normaliser must return the type it receives, and any other
+result fails the comparison.
 
 ### Ingress rules
 
@@ -640,8 +648,9 @@ arrives.
 
 `.match<T>(normalise?)` decodes the body as `T` and compares the responses after the
 normaliser, which returns a new `{ status, body }`; members it leaves out are not
-compared. `T` may be `Text` to compare the body as exact text. `.ignore()` skips
-comparison, so the responses never quarantine the candidate:
+compared. `T` may be `Text` to compare the body as exact text, or `unknown` to
+compare JSON of any shape. Protobuf responses cannot be decoded as `unknown`.
+`.ignore()` skips comparison, so the responses never quarantine the candidate:
 
 ```ts
 import { ingress, type Text } from "spectre";
@@ -724,8 +733,9 @@ agent writing the file. `--json` prints JSON.
 
 `spectre state validate` checks the file, `spectre/state.toml` by default or
 `--state-file`. It fails on errors and warns about nodes that no ingress node
-reaches, which are dead code or run from something SPECTRE does not mirror. An
-invalid state also stops `spectre proxy` at startup.
+reaches, which are dead code or run from something SPECTRE does not mirror.
+Unknown keys, or a value of the wrong type, stop the check, so it reports only
+those first. An invalid state also stops `spectre proxy` at startup.
 
 `spectre next` lists the nodes to migrate next, dependencies first, so that
 ingress traffic can verify them as soon as they are migrated. Each step holds one

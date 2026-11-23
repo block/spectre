@@ -12,8 +12,6 @@ import (
 	"time"
 
 	"github.com/alecthomas/errors"
-
-	"github.com/block/spectre/internal/model"
 )
 
 // templateHandler writes records as JSON lines shaped by a Template.
@@ -98,8 +96,8 @@ func (h *templateHandler) attrs(record slog.Record) []slog.Attr {
 
 // attrsMap converts attributes to JSON values, resolving them and dropping empty
 // attributes and groups as slog's handlers do.
-func attrsMap(attrs []slog.Attr) map[string]model.DynamicValue {
-	values := map[string]model.DynamicValue{}
+func attrsMap(attrs []slog.Attr) map[string]jsonValue {
+	values := map[string]jsonValue{}
 	for _, attr := range attrs {
 		attr.Value = attr.Value.Resolve()
 		switch {
@@ -118,7 +116,7 @@ func attrsMap(attrs []slog.Attr) map[string]model.DynamicValue {
 }
 
 // attrValue converts a resolved, non-group value the way slog's JSON handler does.
-func attrValue(value slog.Value) model.DynamicValue {
+func attrValue(value slog.Value) jsonValue {
 	switch value.Kind() {
 	case slog.KindDuration:
 		return int64(value.Duration())

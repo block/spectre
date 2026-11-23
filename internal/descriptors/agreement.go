@@ -69,7 +69,7 @@ func checkMessages(registry *Registry, messages protoreflect.MessageDescriptors,
 		if err != nil {
 			return errors.Wrapf(err, "protobuf message %q needs a declaration", message.FullName())
 		}
-		if err := sameFields(expected, declared); err != nil {
+		if err := sameFields(expected.Fields, declared); err != nil {
 			return errors.Wrapf(err, "type %q disagrees with its protobuf message", declared.Name)
 		}
 		if err := checkMessages(registry, message.Messages(), loaded); err != nil {
@@ -96,8 +96,8 @@ func checkMethod(method protoreflect.MethodDescriptor, loaded *schema.Schema) er
 	return nil
 }
 
-func sameFields(expected, declared *schema.Type) error {
-	for _, field := range expected.Fields {
+func sameFields(expected []schema.Field, declared *schema.ObjectType) error {
+	for _, field := range expected {
 		actual, ok := declared.Field(field.Name)
 		if !ok {
 			return errors.Errorf("field %q is missing", field.Name)
@@ -105,15 +105,15 @@ func sameFields(expected, declared *schema.Type) error {
 		if actual.Optional != field.Optional {
 			return errors.Errorf("field %q must be %s", field.Name, optionality(field.Optional))
 		}
-		if actual.Nullable {
+		if _, nullable := actual.Type.(schema.NullableType); nullable {
 			return errors.Errorf("field %q of a protobuf message cannot be null", field.Name)
 		}
-		if !actual.Value.Equal(field.Value) {
-			return errors.Errorf("field %q has type %s, expected %s", field.Name, actual.Value, field.Value)
+		if !actual.Type.Equal(field.Type) {
+			return errors.Errorf("field %q has type %s, expected %s", field.Name, actual.Type, field.Type)
 		}
 	}
 	for _, field := range declared.Fields {
-		if !slices.ContainsFunc(expected.Fields, func(candidate schema.Field) bool { return candidate.Name == field.Name }) {
+		if !slices.ContainsFunc(expected, func(candidate schema.Field) bool { return candidate.Name == field.Name }) {
 			return errors.Errorf("field %q is not in the protobuf message", field.Name)
 		}
 	}

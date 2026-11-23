@@ -2,8 +2,11 @@ package schema_test
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 	"testing/fstest"
 
@@ -50,31 +53,32 @@ declare module "audit" {
 		"ignored.js": {Data: []byte(`not TypeScript`)},
 	})
 	assert.NoError(t, err)
-	role := schema.Value{Kind: schema.KindEnum, Literals: []string{"ROLE_ADMIN", "ROLE_READER"}, Type: "example.users.v1.Role"}
-	assert.Equal(t, []*schema.Type{
+	role := schema.EnumType{Name: Some(schema.TypeRef("example.users.v1.Role")), Literals: []string{"ROLE_ADMIN", "ROLE_READER"}}
+	profile := &schema.ObjectType{Name: "example.users.v1.User.Profile", Fields: []schema.Field{
+		{Name: "team", Type: schema.StringType{}},
+	}}
+	assert.Equal(t, []*schema.ObjectType{
 		{Name: "audit.Audit", Fields: []schema.Field{
-			{Name: "updatedBy", Optional: true, Value: schema.Value{Kind: schema.KindString}},
+			{Name: "updatedBy", Optional: true, Type: schema.StringType{}},
 		}},
 		{Name: "example.users.v1.GetUserRequest", Fields: []schema.Field{
-			{Name: "id", Value: schema.Value{Kind: schema.KindString}},
+			{Name: "id", Type: schema.StringType{}},
 		}},
 		{Name: "example.users.v1.User", Fields: []schema.Field{
-			{Name: "id", Value: schema.Value{Kind: schema.KindString}},
-			{Name: "age", Optional: true, Value: schema.Value{Kind: schema.KindNumber}},
-			{Name: "ratio", Value: schema.Value{Kind: schema.KindNumber, Literals: []string{"Infinity", "NaN"}}},
-			{Name: "active", Value: schema.Value{Kind: schema.KindBoolean}},
-			{Name: "roles", Value: schema.Value{Kind: schema.KindList, Element: Some(&role)}},
-			{Name: "tags", Value: schema.Value{Kind: schema.KindList, Element: Some(&schema.Value{Kind: schema.KindEnum, Literals: []string{"a", "b"}})}},
-			{Name: "labels", Value: schema.Value{Kind: schema.KindMap, Element: Some(&schema.Value{Kind: schema.KindString})}},
-			{Name: "scores", Value: schema.Value{Kind: schema.KindMap, Element: Some(&schema.Value{Kind: schema.KindNumber})}},
-			{Name: "profile", Optional: true, Value: schema.Value{Kind: schema.KindObject, Type: "example.users.v1.User.Profile"}},
-			{Name: "@type", Optional: true, Value: schema.Value{Kind: schema.KindString}},
-			{Name: "updatedBy", Optional: true, Value: schema.Value{Kind: schema.KindString}},
+			{Name: "id", Type: schema.StringType{}},
+			{Name: "age", Optional: true, Type: schema.NumberType{}},
+			{Name: "ratio", Type: schema.NumberType{Literals: []string{"Infinity", "NaN"}}},
+			{Name: "active", Type: schema.BooleanType{}},
+			{Name: "roles", Type: schema.ListType{Element: role}},
+			{Name: "tags", Type: schema.ListType{Element: schema.EnumType{Literals: []string{"a", "b"}}}},
+			{Name: "labels", Type: schema.MapType{Element: schema.StringType{}}},
+			{Name: "scores", Type: schema.MapType{Element: schema.NumberType{}}},
+			{Name: "profile", Optional: true, Type: profile},
+			{Name: "@type", Optional: true, Type: schema.StringType{}},
+			{Name: "updatedBy", Optional: true, Type: schema.StringType{}},
 		}},
-		{Name: "example.users.v1.User.Profile", Fields: []schema.Field{
-			{Name: "team", Value: schema.Value{Kind: schema.KindString}},
-		}},
-	}, loaded.Types())
+		profile,
+	}, schemaTypes(loaded))
 	assert.Equal(t, []schema.Operation{{
 		Name:     "example.users.v1.UserService.GetUser",
 		Request:  "example.users.v1.GetUserRequest",
@@ -94,27 +98,42 @@ declare module "m" {
     child: B | null;
     items: B[] | null;
     byKey?: Record<string, string> | null;
+    texts: (string | null)[];
+    byName: Record<string, B | null>;
+    anything: unknown;
     plain: string;
   }
   export interface B { id: string }
 }
 `})
 	assert.NoError(t, err)
-	child := schema.Value{Kind: schema.KindObject, Type: "m.B"}
-	assert.Equal(t, []*schema.Type{
-		{Name: "m.A", Fields: []schema.Field{
-			{Name: "id", Nullable: true, Value: schema.Value{Kind: schema.KindString}},
-			{Name: "note", Optional: true, Nullable: true, Value: schema.Value{Kind: schema.KindString}},
-			{Name: "null_first", Nullable: true, Value: schema.Value{Kind: schema.KindNumber}},
-			{Name: "flag", Nullable: true, Value: schema.Value{Kind: schema.KindBoolean}},
-			{Name: "kind", Nullable: true, Value: schema.Value{Kind: schema.KindEnum, Literals: []string{"x", "y"}}},
-			{Name: "child", Nullable: true, Value: child},
-			{Name: "items", Nullable: true, Value: schema.Value{Kind: schema.KindList, Element: Some(&child)}},
-			{Name: "byKey", Optional: true, Nullable: true, Value: schema.Value{Kind: schema.KindMap, Element: Some(&schema.Value{Kind: schema.KindString})}},
-			{Name: "plain", Value: schema.Value{Kind: schema.KindString}},
-		}},
-		{Name: "m.B", Fields: []schema.Field{{Name: "id", Value: schema.Value{Kind: schema.KindString}}}},
-	}, loaded.Types())
+	child := &schema.ObjectType{Name: "m.B", Fields: []schema.Field{{Name: "id", Type: schema.StringType{}}}}
+	nullableChild := schema.NullableType{Type: child}
+	declared, err := loaded.Type("m.A")
+	assert.NoError(t, err)
+	assert.Equal(t, &schema.ObjectType{Name: "m.A", Fields: []schema.Field{
+		{Name: "id", Type: schema.NullableType{Type: schema.StringType{}}},
+		{Name: "note", Optional: true, Type: schema.NullableType{Type: schema.StringType{}}},
+		{Name: "null_first", Type: schema.NullableType{Type: schema.NumberType{}}},
+		{Name: "flag", Type: schema.NullableType{Type: schema.BooleanType{}}},
+		{Name: "kind", Type: schema.NullableType{Type: schema.EnumType{Literals: []string{"x", "y"}}}},
+		{Name: "child", Type: nullableChild},
+		{Name: "items", Type: schema.NullableType{Type: schema.ListType{Element: child}}},
+		{Name: "byKey", Optional: true, Type: schema.NullableType{Type: schema.MapType{Element: schema.StringType{}}}},
+		{Name: "texts", Type: schema.ListType{Element: schema.NullableType{Type: schema.StringType{}}}},
+		{Name: "byName", Type: schema.MapType{Element: nullableChild}},
+		{Name: "anything", Type: schema.UnknownType{}},
+		{Name: "plain", Type: schema.StringType{}},
+	}}, declared)
+}
+
+func TestDeclaresBuiltinTypes(t *testing.T) {
+	loaded, err := schema.ParseSources(t.Context(), map[string]string{})
+	assert.NoError(t, err)
+	for _, name := range []schema.TypeRef{schema.ConnectError, schema.MySQLPairing} {
+		_, err := loaded.Type(name)
+		assert.NoError(t, err, "%s", name)
+	}
 }
 
 func TestRejectsSchemaSymlinks(t *testing.T) {
@@ -148,10 +167,10 @@ func TestSameNameInDifferentModules(t *testing.T) {
 		"b.d.ts": `declare module "b" { export interface Response { b: number } }`,
 	})
 	assert.NoError(t, err)
-	assert.Equal(t, []*schema.Type{
-		{Name: "a.Response", Fields: []schema.Field{{Name: "a", Value: schema.Value{Kind: schema.KindString}}}},
-		{Name: "b.Response", Fields: []schema.Field{{Name: "b", Value: schema.Value{Kind: schema.KindNumber}}}},
-	}, loaded.Types())
+	assert.Equal(t, []*schema.ObjectType{
+		{Name: "a.Response", Fields: []schema.Field{{Name: "a", Type: schema.StringType{}}}},
+		{Name: "b.Response", Fields: []schema.Field{{Name: "b", Type: schema.NumberType{}}}},
+	}, schemaTypes(loaded))
 }
 
 func TestRejectsDeclarations(t *testing.T) {
@@ -164,7 +183,8 @@ func TestRejectsDeclarations(t *testing.T) {
 		"Global":            {source: "interface A {}", error: `schema/a.d.ts:1:1: schema files may only contain declare module "name" { ... } blocks`},
 		"Namespace":         {source: "declare namespace a { interface A {} }", error: "schema files may only contain declare module"},
 		"TopLevelExport":    {source: `export interface A {}`, error: "schema files may only contain declare module"},
-		"Reserved":          {source: `declare module "spectre" {}`, error: `module "spectre" is reserved for the script API`},
+		"Reserved":          {source: `declare module "spectre" {}`, error: `module "spectre" is reserved by SPECTRE`},
+		"ReservedBuiltin":   {source: `declare module "spectre.connect" { interface A {} }`, error: `module "spectre.connect" is reserved by SPECTRE`},
 		"Class":             {source: `declare module "m" { class A {} }`, error: "schema/a.d.ts:1:22: schema modules may only declare interfaces, type aliases, and namespaces"},
 		"Enum":              {source: `declare module "m" { enum A { B } }`, error: "schema modules may only declare interfaces"},
 		"Function":          {source: `declare module "m" { function f(): void }`, error: "schema modules may only declare interfaces"},
@@ -172,10 +192,8 @@ func TestRejectsDeclarations(t *testing.T) {
 		"Generic":           {source: `declare module "m" { interface A<T> { a: T } }`, error: "generic declarations are not supported"},
 		"GenericAlias":      {source: `declare module "m" { type A<T> = { a: T } }`, error: "generic declarations are not supported"},
 		"Any":               {source: `declare module "m" { interface A { a: any } }`, error: "schema/a.d.ts:1:36: type any is not supported in schemas"},
-		"Unknown":           {source: `declare module "m" { interface A { a: unknown } }`, error: "type unknown is not supported"},
 		"Null":              {source: `declare module "m" { interface A { a: null } }`, error: "type null is not supported"},
-		"NullInList":        {source: `declare module "m" { interface A { a: (string | null)[] } }`, error: "type string | null is not supported"},
-		"NullInMap":         {source: `declare module "m" { interface A { a: Record<string, string | null> } }`, error: "type string | null is not supported"},
+		"NullableService":   {source: `declare module "m" { interface B {} interface A { Get(request: B | null): B } }`, error: "expected an object type, found m.B | null"},
 		"NullableMixed":     {source: `declare module "m" { interface A { a: string | number | null } }`, error: "type string | number is not supported"},
 		"RequiredUndefined": {source: `declare module "m" { interface A { a: string | undefined } }`, error: "type string | undefined is not supported"},
 		"NumberLiteral":     {source: `declare module "m" { interface A { a: 1 } }`, error: "type 1 is not supported"},
@@ -225,10 +243,15 @@ func TestCancelledCheckReturnsError(t *testing.T) {
 func TestValidatesJSON(t *testing.T) {
 	loaded, err := schema.ParseSources(t.Context(), map[string]string{"a.d.ts": `
 declare module "m" {
-  interface A { name: string; nick: string | null; tag?: string | null; count?: number; ratio?: number | "NaN"; flag?: boolean; kind?: "x" | "y"; items?: B[]; byKey?: Record<string, B> }
+  interface A {
+    name: string; nick: string | null; tag?: string | null; count?: number; ratio?: number | "NaN"; flag?: boolean;
+    kind?: "x" | "y"; items?: B[]; byKey?: Record<string, B>; texts?: (string | null)[]; extra?: unknown
+  }
   interface B { id: string }
 }
 `})
+	assert.NoError(t, err)
+	declared, err := loaded.Type("m.A")
 	assert.NoError(t, err)
 	for name, test := range map[string]struct {
 		value any
@@ -237,7 +260,7 @@ declare module "m" {
 		"Minimal":         {value: map[string]any{"name": "a", "nick": nil}},
 		"NullableString":  {value: map[string]any{"name": "a", "nick": "n"}},
 		"NullableValue":   {value: map[string]any{"name": "a", "nick": "n", "tag": nil}},
-		"NullableWrong":   {value: map[string]any{"name": "a", "nick": 1.0}, error: "$.nick: expected string, found a number"},
+		"NullableWrong":   {value: map[string]any{"name": "a", "nick": 1.0}, error: "$.nick: expected string | null, found a number"},
 		"NullableMissing": {value: map[string]any{"name": "a"}, error: `$: required field "nick" of type "m.A" is missing`},
 		"RequiredNull":    {value: map[string]any{"name": nil, "nick": nil}, error: "$.name: expected string, found null"},
 		"Complete":        {value: map[string]any{"name": "a", "nick": "n", "count": 1.0, "flag": true, "kind": "x", "items": []any{map[string]any{"id": "b"}}, "byKey": map[string]any{"k": map[string]any{"id": "c"}}}},
@@ -251,9 +274,14 @@ declare module "m" {
 		"NumberString":    {value: map[string]any{"name": "a", "nick": nil, "ratio": "Infinity"}, error: `$.ratio: expected number | "NaN", found a string`},
 		"NestedElement":   {value: map[string]any{"name": "a", "nick": nil, "items": []any{map[string]any{}}}, error: `$.items[0]: required field "id" of type "m.B" is missing`},
 		"NestedMapValue":  {value: map[string]any{"name": "a", "nick": nil, "byKey": map[string]any{"alice@example.com": "v"}}, error: `$.byKey[*]: expected m.B, found a string`},
+		"NullElement":     {value: map[string]any{"name": "a", "nick": nil, "texts": []any{"t", nil}}},
+		"WrongElement":    {value: map[string]any{"name": "a", "nick": nil, "texts": []any{true}}, error: "$.texts[0]: expected string | null, found a boolean"},
+		"UnknownJSON":     {value: map[string]any{"name": "a", "nick": nil, "extra": map[string]any{"k": []any{1.0, nil, "s", false}}}},
 	} {
 		t.Run(name, func(t *testing.T) {
-			err := loaded.Validate("m.A", test.value)
+			data, err := json.Marshal(test.value)
+			assert.NoError(t, err)
+			_, err = schema.Decode(declared, data)
 			if test.error == "" {
 				assert.NoError(t, err)
 				return
@@ -263,35 +291,74 @@ declare module "m" {
 	}
 }
 
-func TestRendersValues(t *testing.T) {
-	text := schema.Value{Kind: schema.KindString}
-	for expected, value := range map[string]schema.Value{
-		"string":                  text,
-		`("a" | "b")[]`:           {Kind: schema.KindList, Element: Some(&schema.Value{Kind: schema.KindEnum, Literals: []string{"a", "b"}})},
-		"Role[]":                  {Kind: schema.KindList, Element: Some(&schema.Value{Kind: schema.KindEnum, Literals: []string{"a", "b"}, Type: "Role"})},
-		"Record<string, a.B[]>":   {Kind: schema.KindMap, Element: Some(&schema.Value{Kind: schema.KindList, Element: Some(&schema.Value{Kind: schema.KindObject, Type: "a.B"})})},
-		`Record<string, "a\"b">`:  {Kind: schema.KindMap, Element: Some(&schema.Value{Kind: schema.KindEnum, Literals: []string{`a"b`}})},
-		"Record<string, boolean>": {Kind: schema.KindMap, Element: Some(&schema.Value{Kind: schema.KindBoolean})},
-		`number | "NaN"`:          {Kind: schema.KindNumber, Literals: []string{"NaN"}},
-		`(number | "NaN")[]`:      {Kind: schema.KindList, Element: Some(&schema.Value{Kind: schema.KindNumber, Literals: []string{"NaN"}})},
-		"number[]":                {Kind: schema.KindList, Element: Some(&schema.Value{Kind: schema.KindNumber})},
+func TestRendersTypes(t *testing.T) {
+	object := &schema.ObjectType{Name: "a.B"}
+	enum := schema.EnumType{Literals: []string{"a", "b"}}
+	number := schema.NumberType{Literals: []string{"NaN"}}
+	for expected, declared := range map[string]schema.Type{
+		"string":                     schema.StringType{},
+		`("a" | "b")[]`:              schema.ListType{Element: enum},
+		"Role[]":                     schema.ListType{Element: schema.EnumType{Name: Some(schema.TypeRef("Role")), Literals: []string{"a", "b"}}},
+		"Record<string, a.B[]>":      schema.MapType{Element: schema.ListType{Element: object}},
+		`Record<string, "a\"b">`:     schema.MapType{Element: schema.EnumType{Literals: []string{`a"b`}}},
+		"Record<string, boolean>":    schema.MapType{Element: schema.BooleanType{}},
+		`number | "NaN"`:             number,
+		`(number | "NaN")[]`:         schema.ListType{Element: number},
+		"number[]":                   schema.ListType{Element: schema.NumberType{}},
+		"unknown":                    schema.UnknownType{},
+		"a.B | null":                 schema.NullableType{Type: object},
+		"(string | null)[]":          schema.ListType{Element: schema.NullableType{Type: schema.StringType{}}},
+		"Record<string, a.B | null>": schema.MapType{Element: schema.NullableType{Type: object}},
 	} {
-		assert.Equal(t, expected, value.String())
+		assert.Equal(t, expected, declared.String())
 	}
 }
 
-func TestRejectsCollectionsWithoutElement(t *testing.T) {
-	for _, kind := range []schema.Kind{schema.KindList, schema.KindMap} {
-		t.Run(string(kind), func(t *testing.T) {
-			_, err := schema.New([]*schema.Type{{Name: "m.A", Fields: []schema.Field{{Name: "a", Value: schema.Value{Kind: kind}}}}}, nil)
-			assert.EqualError(t, err, `field "a" of type "m.A": `+string(kind)+" has no element type")
+func TestRejectsInvalidTypes(t *testing.T) {
+	for name, test := range map[string]struct {
+		field schema.Type
+		error string
+	}{
+		"ListWithoutElement":   {field: schema.ListType{}, error: `field "a" of type "m.A": type is missing`},
+		"MapWithoutElement":    {field: schema.MapType{}, error: `field "a" of type "m.A": type is missing`},
+		"EnumWithoutLiterals":  {field: schema.EnumType{}, error: `field "a" of type "m.A": enum has no literals`},
+		"NestedNullable":       {field: schema.NullableType{Type: schema.NullableType{Type: schema.StringType{}}}, error: `field "a" of type "m.A": nullable type is nullable`},
+		"UndeclaredObjectType": {field: &schema.ObjectType{Name: "m.B"}, error: `field "a" of type "m.A": type "m.B" is not declared`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := schema.New([]*schema.ObjectType{{Name: "m.A", Fields: []schema.Field{{Name: "a", Type: test.field}}}}, nil)
+			assert.EqualError(t, err, test.error)
 		})
 	}
 }
 
-func TestValueEqualComparesElementPresence(t *testing.T) {
-	text := schema.Value{Kind: schema.KindList, Element: Some(&schema.Value{Kind: schema.KindString})}
-	assert.True(t, text.Equal(schema.Value{Kind: schema.KindList, Element: Some(&schema.Value{Kind: schema.KindString})}))
-	assert.False(t, text.Equal(schema.Value{Kind: schema.KindList}))
-	assert.True(t, schema.Value{Kind: schema.KindList}.Equal(schema.Value{Kind: schema.KindList}))
+func TestTypeEqual(t *testing.T) {
+	object := &schema.ObjectType{Name: "a.B"}
+	for name, test := range map[string]struct {
+		left, right schema.Type
+		equal       bool
+	}{
+		"Scalar":              {left: schema.StringType{}, right: schema.StringType{}, equal: true},
+		"DifferentScalar":     {left: schema.StringType{}, right: schema.NumberType{}},
+		"EnumIgnoresAlias":    {left: schema.EnumType{Name: Some(schema.TypeRef("A")), Literals: []string{"a", "b"}}, right: schema.EnumType{Literals: []string{"b", "a"}}, equal: true},
+		"EnumLiterals":        {left: schema.EnumType{Literals: []string{"a"}}, right: schema.EnumType{Literals: []string{"b"}}},
+		"NumberLiterals":      {left: schema.NumberType{Literals: []string{"NaN"}}, right: schema.NumberType{}},
+		"ObjectByName":        {left: object, right: &schema.ObjectType{Name: "a.B"}, equal: true},
+		"ObjectDifferentName": {left: object, right: &schema.ObjectType{Name: "a.C"}},
+		"Nullable":            {left: schema.NullableType{Type: object}, right: schema.NullableType{Type: object}, equal: true},
+		"NullableVersusPlain": {left: schema.NullableType{Type: object}, right: object},
+		"ListElement":         {left: schema.ListType{Element: schema.StringType{}}, right: schema.ListType{Element: schema.BooleanType{}}},
+		"ListVersusMap":       {left: schema.ListType{Element: schema.StringType{}}, right: schema.MapType{Element: schema.StringType{}}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, test.equal, test.left.Equal(test.right))
+		})
+	}
+}
+
+// schemaTypes returns the types the test's sources declare, without the built-in ones.
+func schemaTypes(loaded *schema.Schema) []*schema.ObjectType {
+	return slices.DeleteFunc(loaded.Types(), func(declared *schema.ObjectType) bool {
+		return strings.HasPrefix(string(declared.Name), "spectre.")
+	})
 }
