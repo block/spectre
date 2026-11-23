@@ -38,9 +38,7 @@ func newDiffer(loaded Option[*schema.Schema], root Option[schema.Value]) *differ
 // compare returns where two payloads differ, and whether they differ in more
 // places. A root is absent once a normaliser removes it.
 func (d *differ) compare(reference, candidate Option[model.DynamicValue]) (differences []model.Difference, truncated bool) {
-	referenceRoot, referencePresent := reference.Get()
-	candidateRoot, candidatePresent := candidate.Get()
-	d.diffItem(referenceRoot, referencePresent, candidateRoot, candidatePresent, newDocumentPath(nil), d.root)
+	d.diffItem(reference, candidate, newDocumentPath(nil), d.root)
 	return mergeIndexes(d.differences), d.truncated
 }
 
@@ -62,10 +60,10 @@ func (d *differ) diff(reference, candidate model.DynamicValue, path documentPath
 			return
 		}
 		for _, key := range sortedKeys(referenceValue, candidateValue) {
-			referenceItem, referencePresent := referenceValue[key]
-			candidateItem, candidatePresent := candidateValue[key]
+			referenceItem, referenceFound := referenceValue[key]
+			candidateItem, candidateFound := candidateValue[key]
 			itemPath, itemValue := d.member(path, value, key)
-			d.diffItem(referenceItem, referencePresent, candidateItem, candidatePresent, itemPath, itemValue)
+			d.diffItem(From(referenceItem, referenceFound), From(candidateItem, candidateFound), itemPath, itemValue)
 		}
 	case []model.DynamicValue:
 		candidateValue, ok := candidate.([]model.DynamicValue)
@@ -78,15 +76,7 @@ func (d *differ) diff(reference, candidate model.DynamicValue, path documentPath
 			element = derefValue(declared.Element)
 		}
 		for index := range max(len(referenceValue), len(candidateValue)) {
-			referencePresent, candidatePresent := index < len(referenceValue), index < len(candidateValue)
-			var referenceItem, candidateItem model.DynamicValue
-			if referencePresent {
-				referenceItem = referenceValue[index]
-			}
-			if candidatePresent {
-				candidateItem = candidateValue[index]
-			}
-			d.diffItem(referenceItem, referencePresent, candidateItem, candidatePresent, path.appendIndex(index), element)
+			d.diffItem(elementAt(referenceValue, index), elementAt(candidateValue, index), path.appendIndex(index), element)
 		}
 	default:
 		change := model.ChangeChanged
@@ -98,15 +88,25 @@ func (d *differ) diff(reference, candidate model.DynamicValue, path documentPath
 }
 
 // diffItem compares an object member or list element that either side may lack.
-func (d *differ) diffItem(reference model.DynamicValue, referencePresent bool, candidate model.DynamicValue, candidatePresent bool, path documentPath, value Option[schema.Value]) {
+func (d *differ) diffItem(reference, candidate Option[model.DynamicValue], path documentPath, value Option[schema.Value]) {
+	referenceItem, referencePresent := reference.Get()
+	candidateItem, candidatePresent := candidate.Get()
 	switch {
 	case referencePresent && !candidatePresent:
 		d.add(path.reported(), model.ChangeMissing, nil, nil)
 	case !referencePresent && candidatePresent:
 		d.add(path.reported(), model.ChangeAdded, nil, nil)
 	default:
-		d.diff(reference, candidate, path, value)
+		d.diff(referenceItem, candidateItem, path, value)
 	}
+}
+
+// elementAt returns a list's element at index, or None past the end of the list.
+func elementAt(list []model.DynamicValue, index int) Option[model.DynamicValue] {
+	if index < len(list) {
+		return Some(list[index])
+	}
+	return None[model.DynamicValue]()
 }
 
 // member returns the path and declared type of an object's key. Only a declared
