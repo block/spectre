@@ -134,7 +134,7 @@ users def456 staging spectre v1.2.3, up 12m0s
 			"revision": "def456",
 			"quarantine": `+quarantine+`
 		}],
-        "callTotals": [{"service":"users","environment":"production","since":"2026-10-01T12:01:00Z","start":"last quarantine","calls":{}}]
+        "callTotals": [{"service":"users","environment":"production","since":"2026-10-01T12:01:00Z","start":"START_QUARANTINE","calls":{}}]
 	}`), &expected))
 	assert.NoError(t, json.Unmarshal([]byte(data.String()), &printed))
 	assert.Equal(t, expected, printed)

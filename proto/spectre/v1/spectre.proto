@@ -202,11 +202,17 @@ message Calls {
 
 // CallTotal counts a service environment's compared calls across mirror runs.
 message CallTotal {
+  // Start is what began the counting period.
+  enum Start {
+    START_UNSPECIFIED = 0;
+    START_FIRST_REPORT = 1;
+    START_QUARANTINE = 2;
+    START_CLEAR = 3;
+  }
   string service = 1;
   string environment = 2;
   google.protobuf.Timestamp since = 3;
-  // Start is first report, last quarantine, or cleared.
-  string start = 4;
+  Start start = 4;
   Calls calls = 5;
   uint32 runs = 6;
 }

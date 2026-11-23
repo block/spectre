@@ -221,7 +221,7 @@ func TestCallTotalsSurviveRedeploysAndClearThroughAPI(t *testing.T) {
 	assert.NoError(t, update(t, rpc, whole(a)))
 	assert.NoError(t, update(t, rpc, whole(b)))
 	assert.NoError(t, update(t, rpc, whole(b)))
-	check := func(count uint64, runs uint32, start string) {
+	check := func(count uint64, runs uint32, start pb.CallTotal_Start) {
 		response, err := rpc.ListDivergences(t.Context(), &pb.ListDivergencesRequest{})
 		assert.NoError(t, err)
 		assert.Equal(t, 1, len(response.GetCallTotals()))
@@ -230,10 +230,10 @@ func TestCallTotalsSurviveRedeploysAndClearThroughAPI(t *testing.T) {
 		expected := &pb.CallTotal{Service: "users", Environment: "production", Since: total.GetSince(), Start: start, Calls: &pb.Calls{Other: count}, Runs: runs}
 		assert.True(t, proto.Equal(expected, total), "%v", total)
 	}
-	check(5, 2, "first report")
+	check(5, 2, pb.CallTotal_START_FIRST_REPORT)
 	_, err := rpc.ClearDivergences(t.Context(), &pb.ClearDivergencesRequest{Service: "users", Environment: "production"})
 	assert.NoError(t, err)
 	a.Calls.Other = 4
 	assert.NoError(t, update(t, rpc, whole(a)))
-	check(2, 1, "cleared")
+	check(2, 1, pb.CallTotal_START_CLEAR)
 }

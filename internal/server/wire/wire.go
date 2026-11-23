@@ -501,7 +501,7 @@ func directionFromMessage(direction pb.Direction) (model.Direction, error) {
 // CallTotalMessage converts a service environment's counting period and totals.
 func CallTotalMessage(total model.CallTotal) *pb.CallTotal {
 	return &pb.CallTotal{Service: total.Service, Environment: total.Environment, Since: timestamppb.New(total.Since),
-		Start: string(total.Start), Calls: CallsMessage(total.Calls),
+		Start: startMessage(total.Start), Calls: CallsMessage(total.Calls),
 		Runs: uint32(max(total.Runs, 0)), //nolint:gosec // Runs are bounded by redeployments between resets.
 	}
 }
@@ -511,15 +511,38 @@ func CallTotalFromMessage(message *pb.CallTotal) (model.CallTotal, error) {
 	if message.GetService() == "" || message.GetEnvironment() == "" || message.GetSince() == nil {
 		return model.CallTotal{}, errors.New("call total needs a service, environment, and start time")
 	}
-	start := model.TotalStart(message.GetStart()) //nolint:typeboundary // Protobuf getters return plain strings.
-	switch start {
-	case model.TotalFirstReport, model.TotalQuarantine, model.TotalClear:
-	default:
-		return model.CallTotal{}, errors.Errorf("unknown call total start %q", start)
+	start, err := startFromMessage(message.GetStart())
+	if err != nil {
+		return model.CallTotal{}, err
 	}
 	calls, err := CallsFromMessage(message.GetCalls())
 	if err != nil {
 		return model.CallTotal{}, err
 	}
 	return model.CallTotal{Service: message.GetService(), Environment: message.GetEnvironment(), Since: message.GetSince().AsTime(), Start: start, Calls: calls, Runs: int(message.GetRuns())}, nil
+}
+
+func startMessage(start model.TotalStart) pb.CallTotal_Start {
+	switch start {
+	case model.TotalFirstReport:
+		return pb.CallTotal_START_FIRST_REPORT
+	case model.TotalQuarantine:
+		return pb.CallTotal_START_QUARANTINE
+	case model.TotalClear:
+		return pb.CallTotal_START_CLEAR
+	}
+	return pb.CallTotal_START_UNSPECIFIED
+}
+
+func startFromMessage(start pb.CallTotal_Start) (model.TotalStart, error) {
+	switch start {
+	case pb.CallTotal_START_FIRST_REPORT:
+		return model.TotalFirstReport, nil
+	case pb.CallTotal_START_QUARANTINE:
+		return model.TotalQuarantine, nil
+	case pb.CallTotal_START_CLEAR:
+		return model.TotalClear, nil
+	case pb.CallTotal_START_UNSPECIFIED:
+	}
+	return "", errors.Errorf("unknown call total start %s", start)
 }

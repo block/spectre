@@ -157,6 +157,52 @@ func TestListRoundTrip(t *testing.T) {
 	assert.Equal(t, status, restored)
 }
 
+func TestCallTotalStartRoundTrip(t *testing.T) {
+	tests := []struct {
+		name    string
+		start   model.TotalStart
+		message pb.CallTotal_Start
+	}{
+		{name: "FirstReport", start: model.TotalFirstReport, message: pb.CallTotal_START_FIRST_REPORT},
+		{name: "Quarantine", start: model.TotalQuarantine, message: pb.CallTotal_START_QUARANTINE},
+		{name: "Clear", start: model.TotalClear, message: pb.CallTotal_START_CLEAR},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			total := model.CallTotal{
+				Service: "users", Environment: "production", Start: test.start,
+				Since: time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC),
+			}
+			message := wire.CallTotalMessage(total)
+			assert.Equal(t, test.message, message.GetStart())
+			restored, err := wire.CallTotalFromMessage(message)
+			assert.NoError(t, err)
+			assert.Equal(t, total, restored)
+		})
+	}
+}
+
+func TestCallTotalFromMessageRejectsInvalidStart(t *testing.T) {
+	tests := []struct {
+		name  string
+		start pb.CallTotal_Start
+	}{
+		{name: "Unspecified", start: pb.CallTotal_START_UNSPECIFIED},
+		{name: "Unknown", start: pb.CallTotal_Start(99)},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			message := &pb.CallTotal{
+				Service: "users", Environment: "production",
+				Since: timestamppb.Now(), Start: test.start,
+			}
+			_, err := wire.CallTotalFromMessage(message)
+			assert.Error(t, err)
+			assert.Contains(t, err.Error(), "unknown call total start")
+		})
+	}
+}
+
 func TestDivergenceFromMessageRejectsInvalid(t *testing.T) {
 	valid := func() *pb.Divergence {
 		return &pb.Divergence{
