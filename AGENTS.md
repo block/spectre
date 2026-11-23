@@ -25,6 +25,9 @@
   never write to the terminal. The `architecture` linter allows only
   `internal/cli` and its sub-packages to import `internal/cli/terminal`.
 - Put all other code in the top-level `internal` directory unless it is explicitly part of a public API.
+- Storage adapters persist whole service-environment aggregates. Apply domain
+  transitions in `internal/server/storage/repository.go`; the `architecture`
+  linter rejects domain method calls from backend files.
 - Define each type in the lowest package that owns its concept, not where it is
   first needed. Before adding a named type, check lower packages for the same
   concept held as a plain value, and give them the type too.

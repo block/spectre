@@ -53,3 +53,13 @@ type Quarantine struct { //nolint:singleusestruct // Proxies report quarantines 
 	Reason QuarantineReason `json:"reason"` //nolint:narrowdeps // Other packages read the whole reason.
 	Since  time.Time        `json:"since"`
 }
+
+// SupersededBy reports whether a later recorded quarantine or a clear at or
+// after this quarantine began prevents it from being recorded.
+func (q Quarantine) SupersededBy(stored Option[Quarantine], cleared Option[time.Time]) bool {
+	if existing, ok := stored.Get(); ok && existing.Since.After(q.Since) {
+		return true
+	}
+	at, ok := cleared.Get()
+	return ok && !q.Since.After(at)
+}

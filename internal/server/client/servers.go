@@ -43,20 +43,23 @@ func NewServers(config ServersConfig) *Servers {
 
 // ListDivergences returns what filter selects on every server, in server
 // order. It fails if any server does, so no server's mirrors go missing.
-func (s *Servers) ListDivergences(ctx context.Context, filter model.DivergenceFilter) ([]model.State, []model.Divergence, error) {
-	states := make([][]model.State, len(s.clients))
-	divergences := make([][]model.Divergence, len(s.clients))
+func (s *Servers) ListDivergences(ctx context.Context, filter model.DivergenceFilter) (model.Status, error) {
+	statuses := make([]model.Status, len(s.clients))
 	group, ctx := errgroup.WithContext(ctx)
 	for i, client := range s.clients {
 		group.Go(func() (err error) {
-			states[i], divergences[i], err = client.ListDivergences(ctx, filter)
+			statuses[i], err = client.ListDivergences(ctx, filter)
 			return errors.Wrap(err, s.urls[i])
 		})
 	}
 	if err := group.Wait(); err != nil {
-		return nil, nil, errors.WithStack(err)
+		return model.Status{}, errors.WithStack(err)
 	}
-	return slices.Concat(states...), slices.Concat(divergences...), nil
+	var status model.Status
+	for _, listed := range statuses {
+		status = status.Plus(listed)
+	}
+	return status, nil
 }
 
 // ClearDivergences removes the divergences of one service environment from

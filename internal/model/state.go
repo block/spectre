@@ -1,6 +1,9 @@
 package model
 
 import (
+	"bytes"
+	"encoding/json"
+	"github.com/alecthomas/errors"
 	"maps"
 	"time"
 )
@@ -30,4 +33,26 @@ func (s State) Quarantined(direction Direction, quarantine Quarantine) State {
 	quarantines[direction] = quarantine
 	s.Quarantines = quarantines
 	return s
+}
+
+// Divergences returns each quarantine as a recorded divergence, ingress first.
+func (s State) Divergences() []Divergence {
+	divergences := make([]Divergence, 0, len(s.Quarantines))
+	for _, direction := range []Direction{Ingress, Egress} {
+		if quarantine, ok := s.Quarantines[direction]; ok {
+			divergences = append(divergences, Divergence{
+				Service: s.Service, Environment: s.Environment, Revision: s.Revision,
+				Direction: direction, Quarantine: quarantine,
+			})
+		}
+	}
+	return divergences
+}
+
+// UnmarshalJSON retains strict decoding when a state is held in an Option.
+func (s *State) UnmarshalJSON(data []byte) error {
+	type plain State
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	return errors.Wrap(decoder.Decode((*plain)(s)), "decode state")
 }

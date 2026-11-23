@@ -26,14 +26,14 @@ import (
 
 // Service serves the SPECTRE service API.
 type Service struct {
-	store storage.Store
+	store *storage.Repository
 	ttl   time.Duration
 }
 
 // NewService returns a SPECTRE server that keeps mirror states and divergences
 // in store, and lists the states received within ttl.
 func NewService(store storage.Store, ttl time.Duration) *Service {
-	return &Service{store: store, ttl: ttl}
+	return &Service{store: storage.NewRepository(store), ttl: ttl}
 }
 
 // Handler serves the API.
@@ -70,48 +70,22 @@ func (s *Service) Update(ctx context.Context, updates spectrepbconnect.SpectreSe
 		// The mirror measured its uptime when it sent the whole state.
 		stored := current
 		stored.Uptime += now.Sub(measured)
-		if err := s.store.Put(ctx, stored, now); err != nil {
-			return nil, connect.NewError(connect.CodeUnavailable, err.Error()).WithCause(err)
-		}
-		if message.GetKeepalive() != nil || message.GetCalls() != nil {
-			continue
-		}
-		if err := s.recordQuarantines(ctx, current); err != nil {
+		recordQuarantines := message.GetState() != nil || message.GetQuarantine() != nil
+		if err := s.store.Observe(ctx, stored, now, recordQuarantines); err != nil {
 			return nil, connect.NewError(connect.CodeUnavailable, err.Error()).WithCause(err)
 		}
 	}
-}
-
-// recordQuarantines records the divergence of each quarantine state holds.
-func (s *Service) recordQuarantines(ctx context.Context, state model.State) error {
-	for direction, quarantine := range state.Quarantines {
-		divergence := model.Divergence{
-			Service:     state.Service,
-			Environment: state.Environment,
-			Revision:    state.Revision,
-			Direction:   direction,
-			Quarantine:  quarantine,
-		}
-		if err := s.store.Record(ctx, divergence); err != nil {
-			return errors.WithStack(err)
-		}
-	}
-	return nil
 }
 
 // ListDivergences returns the states of the mirrors that sent an update within
 // the TTL, and every recorded divergence.
 func (s *Service) ListDivergences(ctx context.Context, request *pb.ListDivergencesRequest) (*pb.ListDivergencesResponse, error) {
-	states, err := s.store.States(ctx, time.Now().Add(-s.ttl))
-	if err != nil {
-		return nil, connect.NewError(connect.CodeUnavailable, err.Error()).WithCause(err)
-	}
-	divergences, err := s.store.Divergences(ctx)
+	status, err := s.store.List(ctx, time.Now().Add(-s.ttl))
 	if err != nil {
 		return nil, connect.NewError(connect.CodeUnavailable, err.Error()).WithCause(err)
 	}
 	filter := wire.FilterFromMessage(request)
-	return wire.ListResponse(filterStates(states, filter), filterDivergences(divergences, filter)), nil
+	return wire.ListResponse(status.Filter(filter)), nil
 }
 
 // ClearDivergences removes the divergences of one service environment.

@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"cmp"
 	"context"
 	"fmt"
 	"maps"
@@ -50,20 +49,20 @@ func (c *statusListCommand) Run(ctx context.Context, servers *client.Servers, ou
 		Revision:    Zero(c.Revision),
 		Node:        Zero(c.Node),
 	}
-	states, divergences, err := servers.ListDivergences(ctx, filter)
+	status, err := servers.ListDivergences(ctx, filter)
 	if err != nil {
 		return errors.WithStack(err)
 	}
 	if c.JSON {
-		return writeJSON(out, states, divergences)
+		return writeJSON(out, status)
 	}
-	mirrors := groupMirrors(states, divergences)
+	mirrors := status.Environments()
 	if len(mirrors) == 0 {
 		_, err := fmt.Fprintln(out.Writer, out.Palette.Dim("No mirrors or divergences."))
 		return errors.Wrap(err, "write divergences")
 	}
 	for _, mirror := range mirrors {
-		if _, err := fmt.Fprint(out.Writer, mirror.render(out.Palette)); err != nil {
+		if _, err := fmt.Fprint(out.Writer, renderMirror(mirror, out.Palette)); err != nil {
 			return errors.Wrap(err, "write divergences")
 		}
 	}
@@ -79,42 +78,9 @@ func (c *statusClearCommand) Run(ctx context.Context, servers *client.Servers) e
 	return errors.WithStack(servers.ClearDivergences(ctx, c.Clear.Service, c.Clear.Environment))
 }
 
-// mirror is what the server lists for one service environment: its state, if
-// it is reporting, and its recorded divergences.
-type mirror struct {
-	Service, Environment string
-	State                Option[model.State]
-	Divergences          []model.Divergence
-}
-
-// groupMirrors groups states and divergences by service environment, ordered
-// by service and environment.
-func groupMirrors(states []model.State, divergences []model.Divergence) []*mirror {
-	byKey := map[[2]string]*mirror{}
-	get := func(service, environment string) *mirror {
-		key := [2]string{service, environment}
-		if _, ok := byKey[key]; !ok {
-			byKey[key] = &mirror{Service: service, Environment: environment}
-		}
-		return byKey[key]
-	}
-	for _, state := range states {
-		get(state.Service, state.Environment).State = Some(state)
-	}
-	for _, divergence := range divergences {
-		found := get(divergence.Service, divergence.Environment)
-		found.Divergences = append(found.Divergences, divergence)
-	}
-	mirrors := slices.Collect(maps.Values(byKey))
-	slices.SortFunc(mirrors, func(a, b *mirror) int {
-		return cmp.Or(cmp.Compare(a.Service, b.Service), cmp.Compare(a.Environment, b.Environment))
-	})
-	return mirrors
-}
-
-// render describes the mirror's state, then each recorded divergence that is
+// renderMirror describes the mirror's state, then each recorded divergence that is
 // not one of its current quarantines.
-func (m *mirror) render(palette terminal.Palette) string {
+func renderMirror(m model.EnvironmentStatus, palette terminal.Palette) string {
 	var text strings.Builder
 	state, reporting := m.State.Get()
 	if reporting {
@@ -199,8 +165,8 @@ func describe(direction model.Direction, reason model.QuarantineReason) string {
 
 // writeJSON prints states and divergences as the SPECTRE service protocol's
 // list response.
-func writeJSON(out Output, states []model.State, divergences []model.Divergence) error {
-	data, err := wire.ListJSON(states, divergences)
+func writeJSON(out Output, status model.Status) error {
+	data, err := wire.ListJSON(status)
 	if err != nil {
 		return errors.WithStack(err)
 	}

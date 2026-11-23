@@ -148,10 +148,10 @@ func TestListRoundTrip(t *testing.T) {
 			Detail:  "no matching reference call",
 		}},
 	}}
-	restoredStates, restoredDivergences, err := wire.ListFromResponse(wire.ListResponse(states, divergences))
+	status := model.Status{States: states, Divergences: divergences}
+	restored, err := wire.ListFromResponse(wire.ListResponse(status))
 	assert.NoError(t, err)
-	assert.Equal(t, states, restoredStates)
-	assert.Equal(t, divergences, restoredDivergences)
+	assert.Equal(t, status, restored)
 }
 
 func TestDivergenceFromMessageRejectsInvalid(t *testing.T) {

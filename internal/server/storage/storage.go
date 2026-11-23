@@ -7,7 +7,6 @@ import (
 	"context"
 	"net/url"
 	"strconv"
-	"time"
 
 	"github.com/alecthomas/errors"
 	. "github.com/alecthomas/types/optional"
@@ -49,22 +48,13 @@ func (c Config) constructor() (Constructor, error) {
 	return constructor, nil
 }
 
-// Store keeps the latest state of each service environment's mirror, with when
-// the server received it. Callers validate states and never mutate stored ones.
+// Store persists immutable service-environment snapshots.
+// Update callbacks may run more than once and must not mutate shared values.
 type Store interface {
-	// Put replaces the state of a service environment's mirror.
-	Put(ctx context.Context, state model.State, received time.Time) error
-	// States returns the states received at or after since, in no particular
-	// order, and forgets older ones.
-	States(ctx context.Context, since time.Time) ([]model.State, error)
-	// Record keeps a divergence unless its source has already reported a later
-	// quarantine, or its service environment was cleared after it began.
-	Record(ctx context.Context, divergence model.Divergence) error
-	// Clear removes the divergences of a service environment's mirror, and
-	// ignores its quarantines that began before at.
-	Clear(ctx context.Context, service, environment string, at time.Time) error
-	// Divergences returns every stored divergence, in no particular order.
-	Divergences(ctx context.Context) ([]model.Divergence, error)
+	// Update atomically changes one aggregate, creating it if absent or deleting it for None.
+	Update(ctx context.Context, service, environment string, change func(current model.ServiceEnvironment) Option[model.ServiceEnvironment]) error
+	// List returns snapshots in no particular order.
+	List(ctx context.Context) ([]model.ServiceEnvironment, error)
 	Close() error
 }
 
@@ -83,18 +73,7 @@ func stateKey(service, environment string) string {
 	return strconv.Quote(service) + " " + strconv.Quote(environment)
 }
 
-// received is a state as stored, with when the server received it.
-type received struct {
-	State    model.State `json:"state"`
-	Received time.Time   `json:"received"`
-}
-
-// ignored reports whether incoming must not replace its source's stored
-// divergence: it began before the stored one, or before the last clear.
-func ignored(stored Option[model.Quarantine], cleared Option[time.Time], incoming model.Quarantine) bool {
-	if existing, ok := stored.Get(); ok && existing.Since.After(incoming.Since) {
-		return true
-	}
-	at, ok := cleared.Get()
-	return ok && !incoming.Since.After(at)
+// newEnvironment supplies the identity of an aggregate that is not stored yet.
+func newEnvironment(service, environment string) model.ServiceEnvironment {
+	return model.ServiceEnvironment{EnvironmentStatus: model.EnvironmentStatus{Service: service, Environment: environment}}
 }

@@ -38,9 +38,9 @@ func TestClientReachesServerThroughSocket(t *testing.T) {
 
 	// The host does not resolve, so only the socket can reach the server.
 	spectre := client.New(client.Config{URL: "http://spectre.mesh.invalid", Socket: socket})
-	states, divergences, err := spectre.ListDivergences(t.Context(), model.DivergenceFilter{})
+	status, err := spectre.ListDivergences(t.Context(), model.DivergenceFilter{})
 	assert.NoError(t, err)
-	assert.Equal(t, 0, len(states)+len(divergences))
+	assert.Equal(t, 0, len(status.States)+len(status.Divergences))
 	assert.Equal(t, "spectre.mesh.invalid", <-hosts)
 }
 
@@ -51,7 +51,7 @@ func TestServersFailWhenAnyServerFails(t *testing.T) {
 	unreachable.Close()
 	servers := client.NewServers(client.ServersConfig{URLs: []string{reachable.URL, unreachable.URL}})
 
-	_, _, err := servers.ListDivergences(t.Context(), model.DivergenceFilter{})
+	_, err := servers.ListDivergences(t.Context(), model.DivergenceFilter{})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), unreachable.URL)
 

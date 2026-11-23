@@ -29,7 +29,7 @@ func TestStores(t *testing.T) {
 	}
 	tests := []struct {
 		name string
-		test func(t *testing.T, store storage.Store)
+		test func(t *testing.T, store *storage.Repository)
 	}{
 		{name: "ReplacesState", test: testReplacesState},
 		{name: "ForgetsStaleStates", test: testForgetsStaleStates},
@@ -40,9 +40,14 @@ func TestStores(t *testing.T) {
 	}
 	for _, backend := range backends {
 		t.Run(backend.name, func(t *testing.T) {
+			t.Run("UpdatesSameAggregate", func(t *testing.T) {
+				store := backend.open(t)
+				t.Cleanup(func() { assert.NoError(t, store.Close()) })
+				testUpdatesSameAggregate(t, store)
+			})
 			for _, test := range tests {
 				t.Run(test.name, func(t *testing.T) {
-					store := backend.open(t)
+					store := storage.NewRepository(backend.open(t))
 					t.Cleanup(func() { assert.NoError(t, store.Close()) })
 					test.test(t, store)
 				})
@@ -92,25 +97,25 @@ func TestRedisRejectsUnknownFields(t *testing.T) {
 		key   string
 		field string
 		value string
-		list  func(ctx context.Context, store storage.Store) error
+		list  func(ctx context.Context, store *storage.Repository) error
 	}{
 		{
 			name:  "State",
-			key:   "spectre:states",
+			key:   "spectre:environments",
 			field: `"users" "production"`,
 			value: `{"state":{"service":"users","quarantines":{"ingress":{"reason":{"kind":"divergent","traffic":{"direction":"ingress","method":"GET"}}}}}}`,
-			list: func(ctx context.Context, store storage.Store) error {
-				_, err := store.States(ctx, time.Time{})
+			list: func(ctx context.Context, store *storage.Repository) error {
+				_, err := states(ctx, store, time.Time{})
 				return err
 			},
 		},
 		{
 			name:  "Divergence",
-			key:   "spectre:divergences",
-			field: `"users" "production" ingress`,
-			value: `{"service":"users","quarantine":{"reason":{"kind":"divergent","traffic":{"direction":"ingress","method":"GET"}}}}`,
-			list: func(ctx context.Context, store storage.Store) error {
-				_, err := store.Divergences(ctx)
+			key:   "spectre:environments",
+			field: `"users" "production"`,
+			value: `{"service":"users","environment":"production","divergences":[{"service":"users","quarantine":{"reason":{"kind":"divergent","traffic":{"direction":"ingress","method":"GET"}}}}]}`,
+			list: func(ctx context.Context, store *storage.Repository) error {
+				_, err := divergences(ctx, store)
 				return err
 			},
 		},
@@ -122,23 +127,22 @@ func TestRedisRejectsUnknownFields(t *testing.T) {
 			assert.NoError(t, err)
 			t.Cleanup(func() { assert.NoError(t, store.Close()) })
 			server.HSet(test.key, test.field, test.value)
-			err = test.list(t.Context(), store)
+			err = test.list(t.Context(), storage.NewRepository(store))
 			assert.Contains(t, err.Error(), `unknown field "method"`)
 		})
 	}
 }
 
-// TestRedisReadsRecordedDivergences checks that divergences already stored
-// in Redis stay readable.
-func TestRedisReadsRecordedDivergences(t *testing.T) {
+// TestRedisReadsAggregateHistory restores divergence history from a stored aggregate.
+func TestRedisReadsAggregateHistory(t *testing.T) {
 	server := miniredis.RunT(t)
 	store, err := storage.NewRedis(t.Context(), parseURL(t, "redis://"+server.Addr()))
 	assert.NoError(t, err)
 	t.Cleanup(func() { assert.NoError(t, store.Close()) })
-	server.HSet("spectre:divergences", `"users" "production" egress`,
-		`{"service":"users","environment":"production","revision":"abc123","direction":"egress",`+
-			`"quarantine":{"reason":{"kind":"unmatched","detail":"no matching reference call"},"since":"2026-10-01T12:00:00Z"}}`)
-	divergences, err := store.Divergences(t.Context())
+	server.HSet("spectre:environments", `"users" "production"`,
+		`{"service":"users","environment":"production","divergences":[{"service":"users","environment":"production","revision":"abc123","direction":"egress",`+
+			`"quarantine":{"reason":{"kind":"unmatched","detail":"no matching reference call"},"since":"2026-10-01T12:00:00Z"}}]}`)
+	divergences, err := divergences(t.Context(), storage.NewRepository(store))
 	assert.NoError(t, err)
 	expected := []model.Divergence{{
 		Service:     "users",
@@ -172,7 +176,7 @@ func parseURL(t *testing.T, raw string) *url.URL {
 	return parsed
 }
 
-func testReplacesState(t *testing.T, store storage.Store) {
+func testReplacesState(t *testing.T, store *storage.Repository) {
 	received := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
 	latest := state("production", 2*time.Minute)
 	//nolint:exhaustive // Only the ingress proxy quarantined.
@@ -192,25 +196,30 @@ func testReplacesState(t *testing.T, store storage.Store) {
 		},
 	}}
 	staging := state("staging", time.Minute)
-	assert.NoError(t, store.Put(t.Context(), state("production", time.Minute), received))
-	assert.NoError(t, store.Put(t.Context(), latest, received.Add(time.Minute)))
-	assert.NoError(t, store.Put(t.Context(), staging, received))
+	assert.NoError(t, store.Observe(t.Context(), state("production", time.Minute), received, false))
+	assert.NoError(t, store.Observe(t.Context(), latest, received.Add(time.Minute), false))
+	assert.NoError(t, store.Observe(t.Context(), staging, received, false))
 	assertStored(t, store, received, latest, staging)
+	status, err := store.List(t.Context(), received)
+	assert.NoError(t, err)
+	assert.Equal(t, 0, len(status.Divergences))
 }
 
-func testForgetsStaleStates(t *testing.T, store storage.Store) {
+func testForgetsStaleStates(t *testing.T, store *storage.Repository) {
 	received := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
 	staging := state("staging", time.Minute)
-	assert.NoError(t, store.Put(t.Context(), state("production", time.Minute), received))
-	assert.NoError(t, store.Put(t.Context(), staging, received.Add(time.Minute)))
+	quarantine := divergence("production", model.Ingress, received)
+	assert.NoError(t, record(t.Context(), store, quarantine))
+	assert.NoError(t, store.Observe(t.Context(), staging, received.Add(time.Minute), false))
 	assertStored(t, store, received.Add(time.Second), staging)
 	// The stale state stays forgotten when an older cutoff would include it.
 	assertStored(t, store, received, staging)
+	assertRecorded(t, store, quarantine)
 }
 
 // testPutsConcurrently checks that concurrent writes for different service
 // environments are all kept.
-func testPutsConcurrently(t *testing.T, store storage.Store) {
+func testPutsConcurrently(t *testing.T, store *storage.Repository) {
 	received := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
 	expected := []model.State{}
 	for i := range 20 {
@@ -218,7 +227,7 @@ func testPutsConcurrently(t *testing.T, store storage.Store) {
 	}
 	var wg sync.WaitGroup
 	for _, reported := range expected {
-		wg.Go(func() { assert.NoError(t, store.Put(t.Context(), reported, received)) })
+		wg.Go(func() { assert.NoError(t, store.Observe(t.Context(), reported, received, false)) })
 	}
 	wg.Wait()
 	assertStored(t, store, received, expected...)
@@ -236,16 +245,16 @@ func state(environment string, uptime time.Duration) model.State {
 
 // assertStored checks the store lists exactly the expected states received at
 // or after since, in any order.
-func assertStored(t *testing.T, store storage.Store, since time.Time, expected ...model.State) {
+func assertStored(t *testing.T, store *storage.Repository, since time.Time, expected ...model.State) {
 	t.Helper()
-	stored, err := store.States(t.Context(), since)
+	stored, err := states(t.Context(), store, since)
 	assert.NoError(t, err)
 	byEnvironment := func(a, b model.State) int { return cmp.Compare(a.Environment, b.Environment) }
 	slices.SortFunc(stored, byEnvironment)
 	assert.Equal(t, slices.SortedFunc(slices.Values(expected), byEnvironment), stored)
 }
 
-func testKeepsLatestQuarantine(t *testing.T, store storage.Store) {
+func testKeepsLatestQuarantine(t *testing.T, store *storage.Repository) {
 	first := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
 	latest := divergence("production", model.Ingress, first.Add(time.Minute))
 	latest.Quarantine.Reason = model.QuarantineReason{
@@ -270,12 +279,12 @@ func testKeepsLatestQuarantine(t *testing.T, store storage.Store) {
 		// Every update repeats the quarantine.
 		egress,
 	} {
-		assert.NoError(t, store.Record(t.Context(), reported))
+		assert.NoError(t, record(t.Context(), store, reported))
 	}
 	assertRecorded(t, store, latest, egress)
 }
 
-func testClearsServiceEnvironment(t *testing.T, store storage.Store) {
+func testClearsServiceEnvironment(t *testing.T, store *storage.Repository) {
 	since := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
 	staging := divergence("staging", model.Ingress, since)
 	for _, reported := range []model.Divergence{
@@ -283,22 +292,26 @@ func testClearsServiceEnvironment(t *testing.T, store storage.Store) {
 		divergence("production", model.Egress, since),
 		staging,
 	} {
-		assert.NoError(t, store.Record(t.Context(), reported))
+		assert.NoError(t, record(t.Context(), store, reported))
 	}
 	assert.NoError(t, store.Clear(t.Context(), "users", "production", since.Add(time.Minute)))
 	assertRecorded(t, store, staging)
 
+	// Expiring live state retains the clear watermark and divergence history.
+	expired, err := store.List(t.Context(), since.Add(time.Hour))
+	assert.NoError(t, err)
+	assert.Equal(t, model.Status{States: []model.State{}, Divergences: []model.Divergence{staging}}, expired)
 	// A mirror still quarantined keeps sending the cleared quarantine.
-	assert.NoError(t, store.Record(t.Context(), divergence("production", model.Ingress, since)))
+	assert.NoError(t, record(t.Context(), store, divergence("production", model.Ingress, since)))
 	assertRecorded(t, store, staging)
 	later := divergence("production", model.Ingress, since.Add(2*time.Minute))
-	assert.NoError(t, store.Record(t.Context(), later))
+	assert.NoError(t, record(t.Context(), store, later))
 	assertRecorded(t, store, later, staging)
 }
 
 // testRecordsConcurrently checks that concurrent writes to different sources
 // are all kept, which makes the Redis store retry its transactions.
-func testRecordsConcurrently(t *testing.T, store storage.Store) {
+func testRecordsConcurrently(t *testing.T, store *storage.Repository) {
 	since := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
 	expected := []model.Divergence{}
 	for i := range 20 {
@@ -306,7 +319,7 @@ func testRecordsConcurrently(t *testing.T, store storage.Store) {
 	}
 	var wg sync.WaitGroup
 	for _, reported := range expected {
-		wg.Go(func() { assert.NoError(t, store.Record(t.Context(), reported)) })
+		wg.Go(func() { assert.NoError(t, record(t.Context(), store, reported)) })
 	}
 	wg.Wait()
 	assertRecorded(t, store, expected...)
@@ -323,13 +336,67 @@ func divergence(environment string, direction model.Direction, since time.Time) 
 }
 
 // assertRecorded checks the store holds exactly the expected divergences, in any order.
-func assertRecorded(t *testing.T, store storage.Store, expected ...model.Divergence) {
+func assertRecorded(t *testing.T, store *storage.Repository, expected ...model.Divergence) {
 	t.Helper()
-	recorded, err := store.Divergences(t.Context())
+	recorded, err := divergences(t.Context(), store)
 	assert.NoError(t, err)
 	bySource := func(a, b model.Divergence) int {
 		return cmp.Or(cmp.Compare(a.Environment, b.Environment), cmp.Compare(a.Direction, b.Direction))
 	}
 	slices.SortFunc(recorded, bySource)
 	assert.Equal(t, slices.SortedFunc(slices.Values(expected), bySource), recorded)
+}
+
+// record reports a fixture's quarantine through the repository's observation boundary.
+func record(ctx context.Context, store *storage.Repository, divergence model.Divergence) error {
+	return store.Observe(ctx, model.State{
+		Service: divergence.Service, Environment: divergence.Environment, Revision: divergence.Revision,
+		//nolint:exhaustive // Only the reported direction quarantined.
+		Quarantines: map[model.Direction]model.Quarantine{divergence.Direction: divergence.Quarantine},
+	}, divergence.Quarantine.Since, true)
+}
+
+func states(ctx context.Context, store *storage.Repository, since time.Time) ([]model.State, error) {
+	status, err := store.List(ctx, since)
+	return status.States, err
+}
+
+func divergences(ctx context.Context, store *storage.Repository) ([]model.Divergence, error) {
+	status, err := store.List(ctx, time.Time{})
+	return status.Divergences, err
+}
+
+func testUpdatesSameAggregate(t *testing.T, store storage.Store) {
+	var group sync.WaitGroup
+	for range 20 {
+		group.Go(func() {
+			assert.NoError(t, store.Update(t.Context(), "users", "production", func(e model.ServiceEnvironment) Option[model.ServiceEnvironment] {
+				e.Received = e.Received.Add(time.Second)
+				return Some(e)
+			}))
+		})
+	}
+	group.Wait()
+	stored, err := store.List(t.Context())
+	assert.NoError(t, err)
+	assert.Equal(t, []model.ServiceEnvironment{{EnvironmentStatus: model.EnvironmentStatus{Service: "users", Environment: "production"}, Received: time.Time{}.Add(20 * time.Second)}}, stored)
+	assert.NoError(t, store.Update(t.Context(), "users", "production", func(_ model.ServiceEnvironment) Option[model.ServiceEnvironment] {
+		return None[model.ServiceEnvironment]()
+	}))
+	stored, err = store.List(t.Context())
+	assert.NoError(t, err)
+	assert.Equal(t, 0, len(stored))
+}
+
+func TestRedisRejectsPreviousFormatWithoutChangingRecords(t *testing.T) {
+	for _, key := range []string{"spectre:states", "spectre:divergences", "spectre:calls:{spectre:divergences}"} {
+		t.Run(key, func(t *testing.T) {
+			server := miniredis.RunT(t)
+			server.HSet(key, "retained", "original")
+			_, err := storage.NewRedis(t.Context(), parseURL(t, "redis://"+server.Addr()))
+			assert.Error(t, err)
+			assert.Contains(t, err.Error(), "previous-format")
+			assert.Equal(t, "original", server.HGet(key, "retained"))
+		})
+	}
 }

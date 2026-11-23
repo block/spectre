@@ -82,9 +82,9 @@ func eventually(t *testing.T, timeout time.Duration, done func() bool) {
 // states lists the states the server holds.
 func (m mirror) states(t *testing.T) ([]model.State, []model.Divergence) {
 	t.Helper()
-	states, divergences, err := m.spectre.ListDivergences(t.Context(), model.DivergenceFilter{})
+	status, err := m.spectre.ListDivergences(t.Context(), model.DivergenceFilter{})
 	assert.NoError(t, err)
-	return states, divergences
+	return status.States, status.Divergences
 }
 
 func TestReporterReconnectsWithQuarantine(t *testing.T) {

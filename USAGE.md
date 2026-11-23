@@ -800,6 +800,12 @@ feeplans-fe cc009bd staging-green-us-west-2 spectre v0.52.0, up 4h25m33s
   quarantined 2026-11-06T01:28:53Z
 ```
 
+Redis stores each service environment as one atomic JSON record in
+`spectre:environments`. This replaces the earlier split-hash format. Servers
+refuse to open a database containing previous-format records and leave them
+untouched. Under the 0.x compatibility policy, no automatic conversion is
+provided; use a fresh Redis database for this storage format.
+
 The server keeps the latest divergence of each direction of a service
 environment, through redeploys and stopped mirrors, until someone clears it with
 `spectre status clear --service=SERVICE --environment=ENVIRONMENT`, which
