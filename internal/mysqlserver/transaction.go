@@ -3,27 +3,33 @@ package mysqlserver
 import (
 	"fmt"
 	"slices"
-	"strconv"
 	"strings"
 
 	. "github.com/alecthomas/types/optional"
 	"github.com/pingcap/tidb/pkg/parser/ast"
 	"github.com/pingcap/tidb/pkg/parser/test_driver"
+	"go.jetify.com/typeid"
 
 	"github.com/block/spectre/internal/mysqlserver/normaliser"
 )
 
+type transactionPrefix struct{}
+
+func (transactionPrefix) Prefix() string { return "transaction" }
+
 // transactionID names one reference transaction, so a candidate transaction claims
 // only its replies once it has claimed one.
-type transactionID string
+type transactionID struct {
+	typeid.TypeID[transactionPrefix]
+}
 
-func newTransactionID(sequence uint64) transactionID {
-	return transactionID("t" + strconv.FormatUint(sequence, 10))
+func newTransactionID() transactionID {
+	return typeid.Must(typeid.New[transactionID]())
 }
 
 // transactionKey pairs a unit only with units of the same transaction.
 func transactionKey(id transactionID, key any) map[string]any {
-	return map[string]any{"transaction": string(id), "key": key}
+	return map[string]any{"transaction": id.String(), "key": key}
 }
 
 // openingKey pairs the first unit of a transaction only with the first unit of another,
@@ -102,15 +108,14 @@ func (t *transactions) other() (inside bool) {
 // transaction that each statement ran in.
 type referenceTransactions struct {
 	transactions *transactions
-	name         func() transactionID
 	started      uint64
 	current      Option[transactionID]
 	// named is whether a unit has named the current transaction to the candidate.
 	named bool
 }
 
-func newReferenceTransactions(name func() transactionID) *referenceTransactions {
-	return &referenceTransactions{transactions: newTransactions(), name: name}
+func newReferenceTransactions() *referenceTransactions {
+	return &referenceTransactions{transactions: newTransactions()}
 }
 
 // follow follows a command whose units are not offered.
@@ -129,7 +134,7 @@ func (r *referenceTransactions) scope(command normaliser.Command, units func() [
 	}
 	id, ok := r.current.Get()
 	if !ok || r.started != started {
-		id = r.name()
+		id = newTransactionID()
 		r.started, r.current, r.named = started, Some(id), false
 	}
 	scoped = slices.Clone(scoped)

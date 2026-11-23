@@ -9,7 +9,6 @@ import (
 	"slices"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/alecthomas/errors"
@@ -55,8 +54,6 @@ type Server struct {
 	parser       *normaliser.Parser
 	// scope pairs every unit with every other, because statements carry no request ID.
 	scope protocol.RequestID
-	// transactions counts the reference transactions named.
-	transactions atomic.Uint64
 	// version is the database's version once the proxy has connected to it.
 	versionMu sync.Mutex
 	version   Option[string]
@@ -384,11 +381,6 @@ func (s *Server) claim(ctx context.Context, claimed *[]*savedReply, route model.
 	}
 	*claimed = append(*claimed, saved)
 	return saved, nil
-}
-
-// newTransaction names a reference transaction.
-func (s *Server) newTransaction() transactionID {
-	return newTransactionID(s.transactions.Add(1))
 }
 
 // unable quarantines the candidate for a command that cannot be answered, unless

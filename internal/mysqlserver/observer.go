@@ -33,7 +33,7 @@ type observer struct {
 func newObserver(ctx context.Context, server *Server, session normaliser.Session, capability uint32) *observer {
 	return &observer{
 		ctx: ctx, server: server, capability: capability, session: session, framer: newFramer(),
-		transactions: newReferenceTransactions(server.newTransaction),
+		transactions: newReferenceTransactions(),
 	}
 }
 
