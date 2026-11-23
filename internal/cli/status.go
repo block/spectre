@@ -95,9 +95,13 @@ func renderMirror(m model.EnvironmentStatus, palette terminal.Palette) string {
 				fmt.Fprintf(&text, "  %s\n", palette.Dim("quarantined "+timestamp(quarantine.Since)))
 			}
 		}
-		renderCalls(&text, state.Calls)
 	} else {
 		fmt.Fprintf(&text, "%s %s %s\n", palette.Bold(m.Service), palette.Dim(m.Environment), palette.Dim("not reporting"))
+	}
+	if total, ok := m.Total.Get(); ok {
+		renderTotal(&text, total, From(state.Calls, reporting))
+	} else if reporting {
+		renderCalls(&text, state.Calls)
 	}
 	for _, divergence := range m.Divergences {
 		current, ok := state.Quarantines[divergence.Direction]
@@ -114,8 +118,35 @@ func renderMirror(m model.EnvironmentStatus, palette terminal.Palette) string {
 	return text.String()
 }
 
+// renderTotal lists accumulated calls and the reporting run's contribution.
+func renderTotal(text *strings.Builder, total model.CallTotal, current Option[model.Calls]) {
+	since := fmt.Sprintf("since %s (%s)", timestamp(total.Since), total.Start)
+	if total.Calls.IsZero() {
+		fmt.Fprintf(text, "  no calls %s\n", since)
+		return
+	}
+	runs := "runs"
+	if total.Runs == 1 {
+		runs = "run"
+	}
+	fmt.Fprintf(text, "  calls %s, %d %s:\n", since, total.Runs, runs)
+	calls, reporting := current.Get()
+	suffix := func(count uint64) string {
+		if !reporting {
+			return ""
+		}
+		return fmt.Sprintf(" (%d this run)", count)
+	}
+	for _, route := range slices.Sorted(maps.Keys(total.Calls.Routes)) {
+		fmt.Fprintf(text, "    %s: %s%s\n", route, callCount(total.Calls.Routes[route]), suffix(calls.Routes[route]))
+	}
+	if total.Calls.Other > 0 {
+		fmt.Fprintf(text, "    other routes: %s%s\n", callCount(total.Calls.Other), suffix(calls.Other))
+	}
+}
+
 // renderCalls lists the requests on each route, ordered by route.
-func renderCalls(text *strings.Builder, calls model.Calls) {
+func renderCalls(text *strings.Builder, calls model.Calls) { //nolint:narrowdeps // Formats every field of the counts.
 	for _, route := range slices.Sorted(maps.Keys(calls.Routes)) {
 		fmt.Fprintf(text, "    %s: %s\n", route, callCount(calls.Routes[route]))
 	}

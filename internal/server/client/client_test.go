@@ -25,7 +25,7 @@ func TestClientReachesServerThroughSocket(t *testing.T) {
 	listener, err := (&net.ListenConfig{}).Listen(t.Context(), "unix", socket)
 	assert.NoError(t, err)
 	hosts := make(chan string, 1)
-	service := server.NewService(storage.NewMemory(), time.Minute).Handler()
+	service := server.NewService(storage.NewMemory(), server.ServeConfig{StateTTL: time.Minute, CallsTTL: 7 * 24 * time.Hour}).Handler()
 	httpServer := &http.Server{
 		ReadHeaderTimeout: time.Second,
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
@@ -45,7 +45,7 @@ func TestClientReachesServerThroughSocket(t *testing.T) {
 }
 
 func TestServersFailWhenAnyServerFails(t *testing.T) {
-	reachable := httptest.NewServer(server.NewService(storage.NewMemory(), time.Minute).Handler())
+	reachable := httptest.NewServer(server.NewService(storage.NewMemory(), server.ServeConfig{StateTTL: time.Minute, CallsTTL: 7 * 24 * time.Hour}).Handler())
 	t.Cleanup(reachable.Close)
 	unreachable := httptest.NewServer(http.NotFoundHandler())
 	unreachable.Close()

@@ -37,6 +37,8 @@ func TestStores(t *testing.T) {
 		{name: "KeepsLatestQuarantine", test: testKeepsLatestQuarantine},
 		{name: "ClearsServiceEnvironment", test: testClearsServiceEnvironment},
 		{name: "RecordsConcurrently", test: testRecordsConcurrently},
+		{name: "CallTotals", test: testCallTotals},
+		{name: "CountsConcurrently", test: testCountsConcurrently},
 	}
 	for _, backend := range backends {
 		t.Run(backend.name, func(t *testing.T) {
@@ -196,11 +198,11 @@ func testReplacesState(t *testing.T, store *storage.Repository) {
 		},
 	}}
 	staging := state("staging", time.Minute)
-	assert.NoError(t, store.Observe(t.Context(), state("production", time.Minute), received, false))
-	assert.NoError(t, store.Observe(t.Context(), latest, received.Add(time.Minute), false))
-	assert.NoError(t, store.Observe(t.Context(), staging, received, false))
+	assert.NoError(t, store.Observe(t.Context(), state("production", time.Minute), received, time.Time{}, model.CallsReport))
+	assert.NoError(t, store.Observe(t.Context(), latest, received.Add(time.Minute), time.Time{}, model.CallsReport))
+	assert.NoError(t, store.Observe(t.Context(), staging, received, time.Time{}, model.CallsReport))
 	assertStored(t, store, received, latest, staging)
-	status, err := store.List(t.Context(), received)
+	status, err := store.List(t.Context(), received, time.Time{})
 	assert.NoError(t, err)
 	assert.Equal(t, 0, len(status.Divergences))
 }
@@ -210,7 +212,7 @@ func testForgetsStaleStates(t *testing.T, store *storage.Repository) {
 	staging := state("staging", time.Minute)
 	quarantine := divergence("production", model.Ingress, received)
 	assert.NoError(t, record(t.Context(), store, quarantine))
-	assert.NoError(t, store.Observe(t.Context(), staging, received.Add(time.Minute), false))
+	assert.NoError(t, store.Observe(t.Context(), staging, received.Add(time.Minute), time.Time{}, model.CallsReport))
 	assertStored(t, store, received.Add(time.Second), staging)
 	// The stale state stays forgotten when an older cutoff would include it.
 	assertStored(t, store, received, staging)
@@ -227,7 +229,9 @@ func testPutsConcurrently(t *testing.T, store *storage.Repository) {
 	}
 	var wg sync.WaitGroup
 	for _, reported := range expected {
-		wg.Go(func() { assert.NoError(t, store.Observe(t.Context(), reported, received, false)) })
+		wg.Go(func() {
+			assert.NoError(t, store.Observe(t.Context(), reported, received, time.Time{}, model.CallsReport))
+		})
 	}
 	wg.Wait()
 	assertStored(t, store, received, expected...)
@@ -294,13 +298,16 @@ func testClearsServiceEnvironment(t *testing.T, store *storage.Repository) {
 	} {
 		assert.NoError(t, record(t.Context(), store, reported))
 	}
-	assert.NoError(t, store.Clear(t.Context(), "users", "production", since.Add(time.Minute)))
+	assert.NoError(t, store.Clear(t.Context(), "users", "production", since.Add(time.Minute), time.Time{}))
 	assertRecorded(t, store, staging)
 
 	// Expiring live state retains the clear watermark and divergence history.
-	expired, err := store.List(t.Context(), since.Add(time.Hour))
+	expired, err := store.List(t.Context(), since.Add(time.Hour), time.Time{})
 	assert.NoError(t, err)
-	assert.Equal(t, model.Status{States: []model.State{}, Divergences: []model.Divergence{staging}}, expired)
+	assert.Equal(t, model.Status{States: []model.State{}, Divergences: []model.Divergence{staging}, CallTotals: []model.CallTotal{
+		{Service: "users", Environment: "production", Since: since.Add(time.Minute), Start: model.TotalClear},
+		{Service: "users", Environment: "staging", Since: since, Start: model.TotalQuarantine},
+	}}, expired.Filter(model.DivergenceFilter{}))
 	// A mirror still quarantined keeps sending the cleared quarantine.
 	assert.NoError(t, record(t.Context(), store, divergence("production", model.Ingress, since)))
 	assertRecorded(t, store, staging)
@@ -309,8 +316,8 @@ func testClearsServiceEnvironment(t *testing.T, store *storage.Repository) {
 	assertRecorded(t, store, later, staging)
 }
 
-// testRecordsConcurrently checks that concurrent writes to different sources
-// are all kept, which makes the Redis store retry its transactions.
+// testRecordsConcurrently checks that reports for independent environments
+// are all retained.
 func testRecordsConcurrently(t *testing.T, store *storage.Repository) {
 	since := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
 	expected := []model.Divergence{}
@@ -353,16 +360,16 @@ func record(ctx context.Context, store *storage.Repository, divergence model.Div
 		Service: divergence.Service, Environment: divergence.Environment, Revision: divergence.Revision,
 		//nolint:exhaustive // Only the reported direction quarantined.
 		Quarantines: map[model.Direction]model.Quarantine{divergence.Direction: divergence.Quarantine},
-	}, divergence.Quarantine.Since, true)
+	}, divergence.Quarantine.Since, time.Time{}, model.StateReport)
 }
 
 func states(ctx context.Context, store *storage.Repository, since time.Time) ([]model.State, error) {
-	status, err := store.List(ctx, since)
+	status, err := store.List(ctx, since, time.Time{})
 	return status.States, err
 }
 
 func divergences(ctx context.Context, store *storage.Repository) ([]model.Divergence, error) {
-	status, err := store.List(ctx, time.Time{})
+	status, err := store.List(ctx, time.Time{}, time.Time{})
 	return status.Divergences, err
 }
 
@@ -399,4 +406,79 @@ func TestRedisRejectsPreviousFormatWithoutChangingRecords(t *testing.T) {
 			assert.Equal(t, "original", server.HGet(key, "retained"))
 		})
 	}
+}
+
+func testCallTotals(t *testing.T, store *storage.Repository) {
+	at := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	report := func(run string, count uint64, minutes int) {
+		state := state("production", time.Minute)
+		state.Run, state.Calls = run, model.Calls{Other: count}
+		assert.NoError(t, store.Observe(t.Context(), state, at.Add(time.Duration(minutes)*time.Minute), time.Time{}, model.CallsReport))
+	}
+	check := func(count uint64, runs int, start model.TotalStart, since time.Time) {
+		listed, err := store.List(t.Context(), time.Time{}, time.Time{})
+		assert.NoError(t, err)
+		assert.Equal(t, []model.CallTotal{{Service: "users", Environment: "production", Since: since, Start: start, Calls: model.Calls{Other: count}, Runs: runs}}, listed.CallTotals)
+	}
+	report("a", 3, 0)
+	report("a", 2, 1) // A delayed older report never lowers its checkpoint.
+	report("a", 3, 1)
+	report("b", 2, 1)
+	check(5, 2, model.TotalFirstReport, at)
+	expired, err := store.List(t.Context(), at.Add(time.Hour), time.Time{})
+	assert.NoError(t, err)
+	assert.Equal(t, 0, len(expired.States))
+	check(5, 2, model.TotalFirstReport, at)
+	quarantined := state("production", time.Minute)
+	quarantined.Run = "b"
+	//nolint:exhaustive // Only ingress quarantined.
+	quarantined.Quarantines = map[model.Direction]model.Quarantine{model.Ingress: {Since: at.Add(2 * time.Minute)}}
+	assert.NoError(t, store.Observe(t.Context(), quarantined, at.Add(2*time.Minute), time.Time{}, model.StateReport))
+	check(0, 0, model.TotalQuarantine, at.Add(2*time.Minute))
+	report("a", 5, 3)
+	report("b", 99, 3) // A delayed healthy snapshot cannot revive a quarantined run.
+	check(2, 1, model.TotalQuarantine, at.Add(2*time.Minute))
+	assert.NoError(t, store.Clear(t.Context(), "users", "production", at.Add(4*time.Minute), time.Time{}))
+	assert.NoError(t, store.Observe(t.Context(), quarantined, at.Add(5*time.Minute), time.Time{}, model.StateReport))
+	report("a", 6, 6)
+	check(1, 1, model.TotalClear, at.Add(4*time.Minute))
+	expired, err = store.List(t.Context(), time.Time{}, at.Add(7*time.Minute))
+	assert.NoError(t, err)
+	assert.Equal(t, 0, len(expired.CallTotals))
+	expired, err = store.List(t.Context(), time.Time{}, time.Time{})
+	assert.NoError(t, err)
+	assert.Equal(t, 0, len(expired.CallTotals))
+	report("a", 7, 8)
+	check(7, 1, model.TotalFirstReport, at.Add(8*time.Minute))
+	// A new report also expires inactive history without an intervening list.
+	fresh := state("production", time.Minute)
+	fresh.Run, fresh.Calls = "a", model.Calls{Other: 8}
+	assert.NoError(t, store.Observe(t.Context(), fresh, at.Add(10*time.Minute), at.Add(9*time.Minute), model.CallsReport))
+	check(8, 1, model.TotalFirstReport, at.Add(10*time.Minute))
+	assert.NoError(t, store.Clear(t.Context(), "users", "production", at.Add(12*time.Minute), at.Add(11*time.Minute)))
+	fresh.Calls.Other = 9
+	assert.NoError(t, store.Observe(t.Context(), fresh, at.Add(13*time.Minute), time.Time{}, model.CallsReport))
+	check(9, 1, model.TotalClear, at.Add(12*time.Minute))
+	// Heartbeats refresh live state without extending call-history retention.
+	assert.NoError(t, store.Observe(t.Context(), fresh, at.Add(20*time.Minute), at.Add(19*time.Minute), model.Keepalive))
+	expired, err = store.List(t.Context(), at.Add(19*time.Minute), at.Add(14*time.Minute))
+	assert.NoError(t, err)
+	assert.Equal(t, 0, len(expired.CallTotals))
+	assert.Equal(t, model.Calls{Other: 9}, expired.States[0].Calls)
+}
+
+func testCountsConcurrently(t *testing.T, store *storage.Repository) {
+	at := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	var group sync.WaitGroup
+	for i := range 20 {
+		group.Go(func() {
+			state := state("production", time.Minute)
+			state.Run, state.Calls = strconv.Itoa(i), model.Calls{Other: 1}
+			assert.NoError(t, store.Observe(t.Context(), state, at, time.Time{}, model.CallsReport))
+		})
+	}
+	group.Wait()
+	listed, err := store.List(t.Context(), time.Time{}, time.Time{})
+	assert.NoError(t, err)
+	assert.Equal(t, []model.CallTotal{{Service: "users", Environment: "production", Since: at, Start: model.TotalFirstReport, Calls: model.Calls{Other: 20}, Runs: 20}}, listed.CallTotals)
 }

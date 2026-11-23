@@ -22,7 +22,7 @@ import (
 
 func newRPC(t *testing.T) spectrepbconnect.SpectreServiceClient {
 	t.Helper()
-	httpServer := httptest.NewServer(server.NewService(storage.NewMemory(), time.Hour).Handler())
+	httpServer := httptest.NewServer(server.NewService(storage.NewMemory(), server.ServeConfig{StateTTL: time.Hour, CallsTTL: 7 * 24 * time.Hour}).Handler())
 	t.Cleanup(httpServer.Close)
 	return spectrepbconnect.NewSpectreServiceClient(connect.NewClient(connecthttp.NewTransport(httpServer.Client(), httpServer.URL)))
 }
@@ -80,6 +80,7 @@ func list(t *testing.T, rpc spectrepbconnect.SpectreServiceClient, request *pb.L
 		uptimes = append(uptimes, listedState.GetUptime().AsDuration())
 		listedState.Uptime = nil
 	}
+	response.CallTotals = nil // The call-total lifecycle is tested separately.
 	return response, uptimes
 }
 
@@ -107,7 +108,7 @@ func TestUpdateKeepsLatestState(t *testing.T) {
 	assert.NoError(t, update(t, rpc, whole(staging)))
 
 	production := withoutUptime(state("production", time.Hour, quarantine))
-	production.Calls = calls
+	production.Calls = nil
 	divergence := &pb.Divergence{Service: "users", Environment: "production", Revision: "abc123", Quarantine: quarantine}
 	tests := []struct {
 		name     string
@@ -210,4 +211,29 @@ func TestUpdateEndsRejectedStreamWhileMirrorSends(t *testing.T) {
 	assert.IsError(t, err, io.EOF)
 	_, err = stream.CloseAndReceive()
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+}
+
+func TestCallTotalsSurviveRedeploysAndClearThroughAPI(t *testing.T) {
+	rpc := newRPC(t)
+	a, b := state("production", time.Minute), state("production", time.Minute)
+	a.Run, a.Calls = "a", &pb.Calls{Other: 2}
+	b.Run, b.Calls = "b", &pb.Calls{Other: 3}
+	assert.NoError(t, update(t, rpc, whole(a)))
+	assert.NoError(t, update(t, rpc, whole(b)))
+	assert.NoError(t, update(t, rpc, whole(b)))
+	check := func(count uint64, runs uint32, start pb.CallTotal_Start) {
+		response, err := rpc.ListDivergences(t.Context(), &pb.ListDivergencesRequest{})
+		assert.NoError(t, err)
+		assert.Equal(t, 1, len(response.GetCallTotals()))
+		total := response.GetCallTotals()[0]
+		assert.True(t, total.GetSince() != nil)
+		expected := &pb.CallTotal{Service: "users", Environment: "production", Since: total.GetSince(), Start: start, Calls: &pb.Calls{Other: count}, Runs: runs}
+		assert.True(t, proto.Equal(expected, total), "%v", total)
+	}
+	check(5, 2, pb.CallTotal_START_FIRST_REPORT)
+	_, err := rpc.ClearDivergences(t.Context(), &pb.ClearDivergencesRequest{Service: "users", Environment: "production"})
+	assert.NoError(t, err)
+	a.Calls.Other = 4
+	assert.NoError(t, update(t, rpc, whole(a)))
+	check(2, 1, pb.CallTotal_START_CLEAR)
 }

@@ -13,6 +13,7 @@ import (
 type Status struct {
 	States      []State
 	Divergences []Divergence
+	CallTotals  []CallTotal
 }
 
 // Filter selects and orders states and divergences by their source.
@@ -28,6 +29,25 @@ func (s Status) Filter(filter DivergenceFilter) Status {
 			matching.Divergences = append(matching.Divergences, divergence)
 		}
 	}
+	listed := map[[2]string]bool{}
+	for _, state := range matching.States {
+		listed[[2]string{state.Service, state.Environment}] = true
+	}
+	for _, divergence := range matching.Divergences {
+		listed[[2]string{divergence.Service, divergence.Environment}] = true
+	}
+	for _, total := range s.CallTotals {
+		if !filter.MatchesServiceEnvironment(total.Service, total.Environment) {
+			continue
+		}
+		if (filter.Revision.Ok() || filter.Node.Ok()) && !listed[[2]string{total.Service, total.Environment}] {
+			continue
+		}
+		matching.CallTotals = append(matching.CallTotals, total)
+	}
+	slices.SortFunc(matching.CallTotals, func(a, b CallTotal) int {
+		return compareEnvironment(a.Service, a.Environment, b.Service, b.Environment)
+	})
 	slices.SortFunc(matching.States, func(a, b State) int {
 		return compareEnvironment(a.Service, a.Environment, b.Service, b.Environment)
 	})
@@ -55,6 +75,9 @@ func (s Status) Environments() []EnvironmentStatus {
 		environment := get(divergence.Service, divergence.Environment)
 		environment.Divergences = append(environment.Divergences, divergence)
 	}
+	for _, total := range s.CallTotals {
+		get(total.Service, total.Environment).Total = Some(total)
+	}
 	environments := make([]EnvironmentStatus, 0, len(byKey))
 	for environment := range maps.Values(byKey) {
 		environments = append(environments, *environment)
@@ -71,7 +94,9 @@ func compareEnvironment(aService, aEnvironment, bService, bEnvironment string) i
 
 // Plus combines server responses without grouping their reports.
 func (s Status) Plus(other Status) Status {
-	s.States = append(s.States, other.States...)
-	s.Divergences = append(s.Divergences, other.Divergences...)
-	return s
+	return Status{
+		States:      append(s.States, other.States...),
+		Divergences: append(s.Divergences, other.Divergences...),
+		CallTotals:  append(s.CallTotals, other.CallTotals...),
+	}
 }

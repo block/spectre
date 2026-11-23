@@ -22,6 +22,8 @@ type State struct {
 	// Quarantines holds the quarantine of each direction whose proxy has one.
 	Quarantines map[Direction]Quarantine `json:"quarantines,omitempty"`
 	Calls       Calls                    `json:"calls,omitzero"`
+	// Run identifies a process across reporting-stream reconnects.
+	Run string `json:"run,omitzero"`
 }
 
 func (State) update() {}

@@ -806,10 +806,26 @@ refuse to open a database containing previous-format records and leave them
 untouched. Under the 0.x compatibility policy, no automatic conversion is
 provided; use a fresh Redis database for this storage format.
 
+Mirrors report a process ID; mirrors without IDs share one counting checkpoint.
+Use one server version for all instances sharing a Redis database.
+
+Each service environment lists compared calls by route across mirror runs, so
+redeploys keep the total. A new quarantine or `status clear` restarts the count;
+subsequent reports count only increases beyond each run's reset baseline. Calls
+from a quarantined run are excluded. The header shows when and why counting
+started and how many runs contributed. Each route includes the reporting run's
+share. `status --json` includes the same totals in `callTotals`.
+
+Totals outlive the live-state TTL and remain visible when no mirror is reporting.
+`--calls-ttl` controls their retention after the last state or call-count report
+(7 days by default); heartbeats only refresh live state. A run's checkpoints are
+compacted after a day without a state or call-count report. If another report
+has compacted it and that run returns, its cumulative calls count again.
+
 The server keeps the latest divergence of each direction of a service
 environment, through redeploys and stopped mirrors, until someone clears it with
 `spectre status clear --service=SERVICE --environment=ENVIRONMENT`, which
-clears it on every server `status` calls. A
+clears it on every server `status` calls and restarts the call total. A
 clear also ignores the quarantines that mirrors still running report, so a
 cleared divergence only returns if the candidate quarantines again.
 

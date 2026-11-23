@@ -21,6 +21,7 @@ func StateMessage(state model.State) *pb.State {
 		Revision:       state.Revision,
 		SpectreVersion: state.SpectreVersion,
 		Uptime:         durationpb.New(state.Uptime),
+		Run:            state.Run,
 	}
 	if len(state.Calls.Routes) > 0 || state.Calls.Other > 0 {
 		message.Calls = CallsMessage(state.Calls)
@@ -49,6 +50,7 @@ func StateFromMessage(message *pb.State) (model.State, error) {
 		Revision:       message.GetRevision(),
 		SpectreVersion: message.GetSpectreVersion(),
 		Uptime:         message.GetUptime().AsDuration(),
+		Run:            message.GetRun(),
 	}
 	calls, err := CallsFromMessage(message.GetCalls())
 	if err != nil {
@@ -105,7 +107,7 @@ func UpdateFromMessage(message *pb.UpdateRequest) (model.Update, error) {
 }
 
 // CallsMessage returns the message that reports call counts.
-func CallsMessage(calls model.Calls) *pb.Calls {
+func CallsMessage(calls model.Calls) *pb.Calls { //nolint:narrowdeps // The message carries every field of the counts.
 	message := &pb.Calls{Other: calls.Other}
 	if len(calls.Routes) > 0 {
 		message.Routes = make(map[string]uint64, len(calls.Routes))
@@ -170,12 +172,16 @@ func ListResponse(status model.Status) *pb.ListDivergencesResponse {
 	response := &pb.ListDivergencesResponse{
 		States:      make([]*pb.State, 0, len(status.States)),
 		Divergences: make([]*pb.Divergence, 0, len(status.Divergences)),
+		CallTotals:  make([]*pb.CallTotal, 0, len(status.CallTotals)),
 	}
 	for _, state := range status.States {
 		response.States = append(response.States, StateMessage(state))
 	}
 	for _, divergence := range status.Divergences {
 		response.Divergences = append(response.Divergences, DivergenceMessage(divergence))
+	}
+	for _, total := range status.CallTotals {
+		response.CallTotals = append(response.CallTotals, CallTotalMessage(total))
 	}
 	return response
 }
@@ -185,6 +191,7 @@ func ListFromResponse(response *pb.ListDivergencesResponse) (model.Status, error
 	status := model.Status{
 		States:      make([]model.State, 0, len(response.GetStates())),
 		Divergences: make([]model.Divergence, 0, len(response.GetDivergences())),
+		CallTotals:  make([]model.CallTotal, 0, len(response.GetCallTotals())),
 	}
 	for _, message := range response.GetStates() {
 		state, err := StateFromMessage(message)
@@ -199,6 +206,13 @@ func ListFromResponse(response *pb.ListDivergencesResponse) (model.Status, error
 			return model.Status{}, err
 		}
 		status.Divergences = append(status.Divergences, divergence)
+	}
+	for _, message := range response.GetCallTotals() {
+		total, err := CallTotalFromMessage(message)
+		if err != nil {
+			return model.Status{}, err
+		}
+		status.CallTotals = append(status.CallTotals, total)
 	}
 	return status, nil
 }
@@ -482,4 +496,53 @@ func directionFromMessage(direction pb.Direction) (model.Direction, error) {
 	case pb.Direction_DIRECTION_UNSPECIFIED:
 	}
 	return "", errors.Errorf("unknown direction %s", direction)
+}
+
+// CallTotalMessage converts a service environment's counting period and totals.
+func CallTotalMessage(total model.CallTotal) *pb.CallTotal {
+	return &pb.CallTotal{Service: total.Service, Environment: total.Environment, Since: timestamppb.New(total.Since),
+		Start: startMessage(total.Start), Calls: CallsMessage(total.Calls),
+		Runs: uint32(max(total.Runs, 0)), //nolint:gosec // Runs are bounded by redeployments between resets.
+	}
+}
+
+// CallTotalFromMessage validates and restores a listed call total.
+func CallTotalFromMessage(message *pb.CallTotal) (model.CallTotal, error) {
+	if message.GetService() == "" || message.GetEnvironment() == "" || message.GetSince() == nil {
+		return model.CallTotal{}, errors.New("call total needs a service, environment, and start time")
+	}
+	start, err := startFromMessage(message.GetStart())
+	if err != nil {
+		return model.CallTotal{}, err
+	}
+	calls, err := CallsFromMessage(message.GetCalls())
+	if err != nil {
+		return model.CallTotal{}, err
+	}
+	return model.CallTotal{Service: message.GetService(), Environment: message.GetEnvironment(), Since: message.GetSince().AsTime(), Start: start, Calls: calls, Runs: int(message.GetRuns())}, nil
+}
+
+func startMessage(start model.TotalStart) pb.CallTotal_Start {
+	switch start {
+	case model.TotalFirstReport:
+		return pb.CallTotal_START_FIRST_REPORT
+	case model.TotalQuarantine:
+		return pb.CallTotal_START_QUARANTINE
+	case model.TotalClear:
+		return pb.CallTotal_START_CLEAR
+	}
+	return pb.CallTotal_START_UNSPECIFIED
+}
+
+func startFromMessage(start pb.CallTotal_Start) (model.TotalStart, error) {
+	switch start {
+	case pb.CallTotal_START_FIRST_REPORT:
+		return model.TotalFirstReport, nil
+	case pb.CallTotal_START_QUARANTINE:
+		return model.TotalQuarantine, nil
+	case pb.CallTotal_START_CLEAR:
+		return model.TotalClear, nil
+	case pb.CallTotal_START_UNSPECIFIED:
+	}
+	return "", errors.Errorf("unknown call total start %s", start)
 }
