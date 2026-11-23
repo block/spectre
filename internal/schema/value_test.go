@@ -387,6 +387,15 @@ func TestWithoutKeepsDeclaredTypes(t *testing.T) {
 	assert.Equal[schema.Type](t, schema.ListType{Element: itemType}, shortened.Type())
 	assert.Equal(t, `[{"id":"1"},{"id":"2"}]`, marshal(t, items.Without(2)))
 	assert.Equal(t, `[{"id":"1"},{"id":"2"}]`, marshal(t, items))
+
+	// Rebuilding the containers above a removed field keeps it removed.
+	element := first(t, items).(schema.ObjectValue).Without("id")
+	rebuiltItems, err := items.With(0, element)
+	assert.NoError(t, err)
+	rebuilt, err := object.With("items", rebuiltItems)
+	assert.NoError(t, err)
+	assert.Equal(t, `{"items":[{},{"id":"2"}],"name":"a","nick":null}`, marshal(t, rebuilt))
+	assert.Equal[schema.Type](t, rootType, rebuilt.Type())
 }
 
 func mustObject(t *testing.T, members map[string]schema.Value) schema.Value {

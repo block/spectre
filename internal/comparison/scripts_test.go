@@ -375,6 +375,12 @@ func TestCompareAppliesNormalisers(t *testing.T) {
 			reference: `{"stable":"same","users":[{"name":"ALICE"},{"name":"BOB"}]}`,
 			candidate: `{"stable":"same","users":[{"name":"alice"},{"name":"bob"}]}`,
 		},
+		"FieldNormaliserCanRemoveRequiredNestedField": {
+			typeName:  response,
+			script:    `spectre.field<v1.User, "name">(() => undefined);`,
+			reference: `{"owner":{"name":"ALICE"},"users":[{"name":"ALICE"},{"name":"BOB"}]}`,
+			candidate: `{"owner":{"name":"alice"},"users":[{"name":"alice"},{"name":"bob"}]}`,
+		},
 		"MessageNormaliserCanRemoveRepeatedElement": {
 			typeName: response,
 			script: `spectre.message<v1.User>((user) =>
