@@ -354,7 +354,7 @@ func deleteDocumentValue(value schema.Value, parts []pathPart) (schema.Value, er
 		return object, nil
 	}
 	if len(parts) == 1 {
-		return object.Without(name), nil
+		return errors.WithStack2(object.Without(name))
 	}
 	updated, err := deleteDocumentValue(child, parts[1:])
 	if err != nil {

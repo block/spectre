@@ -36,6 +36,7 @@ type (
 const (
 	KindCallExpression    = ast.KindCallExpression
 	KindModuleDeclaration = ast.KindModuleDeclaration
+	KindSourceFile        = ast.KindSourceFile
 	KindStringLiteral     = ast.KindStringLiteral
 )
 

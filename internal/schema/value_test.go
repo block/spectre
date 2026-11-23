@@ -372,30 +372,28 @@ func TestWithRejects(t *testing.T) {
 	}
 }
 
-// Without keeps the container's type even without a required field, as normalisers may remove one.
 func TestWithoutKeepsDeclaredTypes(t *testing.T) {
-	value, err := schema.Decode(rootType, []byte(`{"name":"a","nick":null,"items":[{"id":"1"},{"id":"2"}]}`))
+	value, err := schema.Decode(rootType, []byte(`{"name":"a","nick":null,"count":1,"items":[{"id":"1"},{"id":"2"}]}`))
 	assert.NoError(t, err)
 	object := value.(schema.ObjectValue)
 	items := member(t, object, "items").(schema.ListValue)
 
-	removed := object.Without("name")
-	assert.Equal(t, `{"items":[{"id":"1"},{"id":"2"}],"nick":null}`, marshal(t, removed))
+	removed, err := object.Without("count")
+	assert.NoError(t, err)
+	assert.Equal(t, `{"items":[{"id":"1"},{"id":"2"}],"name":"a","nick":null}`, marshal(t, removed))
 	assert.Equal[schema.Type](t, rootType, removed.Type())
 	shortened := items.Without(0)
 	assert.Equal(t, `[{"id":"2"}]`, marshal(t, shortened))
 	assert.Equal[schema.Type](t, schema.ListType{Element: itemType}, shortened.Type())
 	assert.Equal(t, `[{"id":"1"},{"id":"2"}]`, marshal(t, items.Without(2)))
 	assert.Equal(t, `[{"id":"1"},{"id":"2"}]`, marshal(t, items))
+}
 
-	// Rebuilding the containers above a removed field keeps it removed.
-	element := first(t, items).(schema.ObjectValue).Without("id")
-	rebuiltItems, err := items.With(0, element)
+func TestWithoutRejectsRequiredField(t *testing.T) {
+	value, err := schema.Decode(rootType, []byte(`{"name":"a","nick":null}`))
 	assert.NoError(t, err)
-	rebuilt, err := object.With("items", rebuiltItems)
-	assert.NoError(t, err)
-	assert.Equal(t, `{"items":[{},{"id":"2"}],"name":"a","nick":null}`, marshal(t, rebuilt))
-	assert.Equal[schema.Type](t, rootType, rebuilt.Type())
+	_, err = value.(schema.ObjectValue).Without("name")
+	assert.EqualError(t, err, `type "m.Root" requires field "name"`)
 }
 
 func mustObject(t *testing.T, members map[string]schema.Value) schema.Value {

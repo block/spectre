@@ -614,20 +614,47 @@ The `spectre` module provides:
 | `ingress.http(select)` | Start a rule that decides how responses are compared. |
 | `egress.http(pattern)` | Declare a dependency endpoint, as `<METHOD> <host>/<path>`. |
 | `field<T, "path">(normalise)` | Normalise one field of every `T`. |
-| `message<T>(normalise)` | Normalise every `T`. |
+| `message<T, N>(normalise?)` | Declare `N` as the normalised type of `T`, and normalise every `T`. |
 | `variable(name)` | Read a script variable. |
 
-Type arguments are required, and they must name schema types. The host reads them
-from the checker, so aliases and namespace imports work.
+Type arguments are required, and they must name object types declared by name in
+a schema module or at the top level of a script. A script's type is named by its
+own name, so two scripts may not declare types of the same name. The host reads
+type arguments from the checker, so aliases and namespace imports work.
 
 ### Normalisers
 
 `field<T, "path">(callback)` uses JSON field names. Paths descend through objects
 with dots and through lists with `[]`, such as `users[].name`.
 `message<T>(callback)` applies wherever that object type occurs. Missing optional
-values arrive as `undefined`; returning `undefined` removes them, even a required
-field. Otherwise a normaliser must return the type it receives, and any other
-result fails the comparison.
+values arrive as `undefined`, and returning `undefined` removes a value. A
+normaliser must return its normalised type, and any other result, including one
+without a required field, fails the comparison.
+
+Each type's values are compared as its normalised type, which is the type itself
+unless a script declares one. To remove a required field, declare a normalised
+type that makes it optional, and name that type in field normalisers:
+
+```ts
+import { field, message } from "spectre";
+// Account is { id: string; balance: string; updatedAt: string }.
+import type { Account } from "billing";
+
+interface NormalisedAccount {
+  id: string;
+  balance: string;
+  updatedAt?: string;
+}
+
+message<Account, NormalisedAccount>();
+field<NormalisedAccount, "updatedAt">(() => undefined);
+```
+
+A normalised type must have the same fields and types as the type it normalises,
+except that it may make required fields optional. Where a field holds another
+object type, it must hold that type's normalised type. A type without a declared
+normalised type has its fields' types normalised for it. The callback is optional,
+and each type has at most one normalised type.
 
 ### Ingress rules
 

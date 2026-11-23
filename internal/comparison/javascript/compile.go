@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"maps"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/alecthomas/errors"
@@ -18,7 +19,7 @@ import (
 // Scripts and the module declaration sit beside the schema in one program, so
 // error locations name the directory each file came from.
 const (
-	scriptsRoot           = "/scripts/"
+	scriptsRoot           = schema.ScriptRoot
 	moduleDeclarationFile = "/spectre.d.ts"
 )
 
@@ -40,7 +41,27 @@ func compile(ctx context.Context, declarations, scripts map[string]string) (*com
 	if err != nil {
 		return nil, errors.Wrap(err, "check comparison scripts")
 	}
-	loaded, err := schema.FromProgram(program, declarations)
+	insertions := map[string][]insertion{}
+	references := []*ts.Node{}
+	for _, name := range slices.Sorted(maps.Keys(scripts)) {
+		if !isScript(name) {
+			continue
+		}
+		calls, err := spectreCalls(program.Checker(), program.SourceFile(scriptsRoot+name))
+		if err != nil {
+			return nil, err
+		}
+		for _, call := range calls {
+			inserted, referenced, err := typeArguments(program.Checker(), call)
+			if err != nil {
+				return nil, err
+			}
+			insertions[name] = append(insertions[name], inserted)
+			references = append(references, referenced...)
+		}
+	}
+	// Scripts may name types they declare themselves, so the schema includes every type they name.
+	loaded, err := schema.FromProgram(program, declarations, references)
 	if err != nil {
 		return nil, errors.Wrap(err, "read schema")
 	}
@@ -49,10 +70,7 @@ func compile(ctx context.Context, declarations, scripts map[string]string) (*com
 		if !isScript(name) {
 			continue
 		}
-		source, err := passTypeArguments(program, loaded, program.SourceFile(scriptsRoot+name))
-		if err != nil {
-			return nil, err
-		}
+		source := insertTypeArguments(program.SourceFile(scriptsRoot+name).Text(), insertions[name])
 		code, diagnostics := ts.Transpile(ctx, scriptsRoot+name, source)
 		if err := ctx.Err(); err != nil {
 			return nil, errors.Wrapf(err, "transpile comparison module %q", name)
@@ -65,89 +83,117 @@ func compile(ctx context.Context, declarations, scripts map[string]string) (*com
 	return result, nil
 }
 
-type insertion struct {
-	offset int
-	text   string
+// spectreCall is a call the checker resolved to a generic spectre function, with
+// the type arguments the script wrote.
+type spectreCall struct {
+	node     *ts.Node
+	function string
+	// display names the call the way a script writes it, e.g. "IngressHTTPRule.match".
+	display string
+	types   []*ts.Node
 }
 
-// passTypeArguments rewrites every call the checker resolved to a spectre function,
-// including calls through aliases, so the runtime receives the type arguments.
-func passTypeArguments(program *ts.Program, loaded *schema.Schema, file *ts.SourceFile) (string, error) {
-	insertions := []insertion{}
-	var rewriteErr error
+// spectreCalls returns every call in file to a generic spectre function, including
+// calls through aliases.
+func spectreCalls(checker *ts.Checker, file *ts.SourceFile) ([]spectreCall, error) {
+	calls := []spectreCall{}
+	var findErr error
 	var visit func(node *ts.Node) bool
 	visit = func(node *ts.Node) bool {
 		if node.Kind == ts.KindCallExpression {
-			found, err := typeArguments(program.Checker(), loaded, node)
+			found, err := resolveSpectreCall(checker, node)
 			if err != nil {
-				rewriteErr = err
+				findErr = err
 				return true
 			}
-			if inserted, ok := found.Get(); ok {
-				insertions = append(insertions, inserted)
+			if call, ok := found.Get(); ok {
+				calls = append(calls, call)
 			}
 		}
 		return node.ForEachChild(visit)
 	}
 	file.AsNode().ForEachChild(visit)
-	if rewriteErr != nil {
-		return "", rewriteErr
-	}
-	// Later offsets are applied first so earlier ones stay valid.
-	slices.SortFunc(insertions, func(left, right insertion) int { return cmp.Compare(right.offset, left.offset) })
-	source := file.Text()
-	for _, inserted := range insertions {
-		source = source[:inserted.offset] + inserted.text + source[inserted.offset:]
-	}
-	return source, nil
+	return calls, findErr
 }
 
-// typeArguments returns the arguments to insert after a spectre call's opening
-// parenthesis, or None for any other call.
-func typeArguments(checker *ts.Checker, loaded *schema.Schema, call *ts.Node) (Option[insertion], error) {
+// resolveSpectreCall returns the spectre call that call makes, or None for any other call.
+func resolveSpectreCall(checker *ts.Checker, call *ts.Node) (Option[spectreCall], error) {
 	signature := checker.GetResolvedSignature(call)
 	if signature == nil || signature.Declaration() == nil {
-		return None[insertion](), nil // Most calls are not registrations.
+		return None[spectreCall](), nil // Most calls are not registrations.
 	}
 	declaration := signature.Declaration()
 	if ts.SourceFileOf(declaration).FileName() != moduleDeclarationFile || declaration.Name() == nil {
-		return None[insertion](), nil // Only spectre functions take type arguments at runtime.
+		return None[spectreCall](), nil // Only spectre functions take type arguments at runtime.
 	}
-	expected := len(declaration.TypeParameters())
-	if expected == 0 {
-		return None[insertion](), nil // Only generic spectre functions take type arguments at runtime.
+	parameters := declaration.TypeParameters()
+	if len(parameters) == 0 {
+		return None[spectreCall](), nil // Only generic spectre functions take type arguments at runtime.
 	}
 	function := declaration.Name().Text()
 	owner := ts.MemberOwnerName(declaration)
 	if strings.HasPrefix(owner, mysqlOwner) {
-		return None[insertion](), nil // MySQL row types only check scripts.
+		return None[spectreCall](), nil // MySQL row types only check scripts.
 	}
-	// display names the call the way a script writes it, e.g. "IngressHTTPRule.match".
 	display := function
 	if owner != "" {
 		display = owner + "." + function
 	}
-	types := call.TypeArguments()
-	if len(types) != expected {
-		return None[insertion](), errors.Errorf("%s: spectre.%s needs %d explicit type argument(s)", ts.Location(call), display, expected)
+	required := 0
+	for _, parameter := range parameters {
+		if parameter.AsTypeParameterDeclaration().DefaultType == nil {
+			required++
+		}
 	}
-	values := make([]string, 0, len(types))
-	for index, node := range types {
+	types := call.TypeArguments()
+	if len(types) < required || len(types) > len(parameters) {
+		count := strconv.Itoa(len(parameters))
+		if required != len(parameters) {
+			count = strconv.Itoa(required) + " or " + count
+		}
+		return None[spectreCall](), errors.Errorf("%s: spectre.%s needs %s explicit type argument(s)", ts.Location(call), display, count)
+	}
+	return Some(spectreCall{node: call, function: function, display: display, types: types}), nil
+}
+
+type insertion struct {
+	offset int
+	text   string
+}
+
+// insertTypeArguments applies insertions to source, so the runtime receives each spectre
+// call's type arguments as its first arguments.
+func insertTypeArguments(source string, insertions []insertion) string {
+	insertions = slices.Clone(insertions)
+	// Later offsets are applied first so earlier ones stay valid.
+	slices.SortFunc(insertions, func(left, right insertion) int { return cmp.Compare(right.offset, left.offset) })
+	for _, inserted := range insertions {
+		source = source[:inserted.offset] + inserted.text + source[inserted.offset:]
+	}
+	return source
+}
+
+// typeArguments returns the arguments to insert after a spectre call's opening
+// parenthesis, and the type arguments that name schema types.
+func typeArguments(checker *ts.Checker, call spectreCall) (insertion, []*ts.Node, error) {
+	values := make([]string, 0, len(call.types))
+	references := []*ts.Node{}
+	for index, node := range call.types {
 		resolved := checker.GetTypeFromTypeNode(node)
-		if function == string(targetField) && index == 1 {
+		if call.function == string(targetField) && index == 1 {
 			path, ok := ts.StringLiteral(resolved)
 			if !ok {
-				return None[insertion](), errors.Errorf("%s: spectre.field path must be one string literal type", ts.Location(node))
+				return insertion{}, nil, errors.Errorf("%s: spectre.field path must be one string literal type", ts.Location(node))
 			}
 			values = append(values, path)
 			continue
 		}
-		name, err := bodyTypeName(resolved, index == 0 && display == "IngressHTTPRule."+matchMethod)
-		if err == nil && name != textTypeName && name != unknownTypeName {
-			_, err = loaded.Type(name)
-		}
+		name, err := bodyTypeName(resolved, index == 0 && call.display == "IngressHTTPRule."+matchMethod)
 		if err != nil {
-			return None[insertion](), errors.Errorf("%s: spectre.%s type argument %s: %v", ts.Location(node), display, checker.TypeToString(resolved), err)
+			return insertion{}, nil, errors.Errorf("%s: spectre.%s type argument %s: %v", ts.Location(node), call.display, checker.TypeToString(resolved), err)
+		}
+		if name != textTypeName && name != unknownTypeName {
+			references = append(references, node)
 		}
 		values = append(values, string(name))
 	}
@@ -157,10 +203,10 @@ func typeArguments(checker *ts.Checker, loaded *schema.Schema, call *ts.Node) (O
 		literal, _ := json.Marshal(value) //nolint:errcheck // Strings always encode.
 		encoded = append(encoded, string(literal))
 	}
-	if len(call.Arguments()) > 0 {
+	if len(call.node.Arguments()) > 0 {
 		encoded = append(encoded, "")
 	}
-	return Some(insertion{offset: call.AsCallExpression().Arguments.Loc.Pos(), text: strings.Join(encoded, ", ")}), nil
+	return insertion{offset: call.node.AsCallExpression().Arguments.Loc.Pos(), text: strings.Join(encoded, ", ")}, references, nil
 }
 
 // bodyTypeName names a schema type, or the spectre Text type or unknown where an ingress

@@ -39,7 +39,7 @@ type Program struct {
 	replacements []Replacement
 	statements   []StatementReplacement
 	fields       []FieldTarget
-	messages     []schema.TypeRef
+	messages     []MessageTarget
 }
 
 // NewProgram type-checks scripts against the schema declarations with their variables, links
@@ -148,8 +148,8 @@ func (p *Program) Fields() []FieldTarget {
 	return slices.Clone(p.fields)
 }
 
-// Messages returns the object type names declared by the scripts.
-func (p *Program) Messages() []schema.TypeRef {
+// Messages returns the spectre.message declarations, sorted by type.
+func (p *Program) Messages() []MessageTarget {
 	return slices.Clone(p.messages)
 }
 

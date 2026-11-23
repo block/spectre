@@ -15,7 +15,7 @@ import (
 )
 
 // Value is an immutable JSON value and its type. New functions build unknown values,
-// As and Decode check JSON against a type, and only Without may drop a required field.
+// and As, Decode, With and Without keep every value valid for its type.
 //
 //sumtype:decl
 type Value interface {
@@ -424,8 +424,7 @@ func (v ListValue) Element(index int) (element Value, ok bool) {
 // Elements returns a copy of the elements.
 func (v ListValue) Elements() []Value { return slices.Clone(v.elements) }
 
-// With returns the list with element at index, checked against the element type
-// unless it already has that type.
+// With returns the list with element at index, checked against the element type.
 func (v ListValue) With(index int, element Value) (Value, error) {
 	if index < 0 || index >= len(v.elements) {
 		return nil, errors.New("list has no element at the index")
@@ -434,7 +433,7 @@ func (v ListValue) With(index int, element Value) (Value, error) {
 	if list, ok := NonNull(v.declared).(ListType); ok {
 		slot = list.Element
 	}
-	assigned, err := asMember(slot, element)
+	assigned, err := As(slot, element)
 	if err != nil {
 		return nil, err
 	}
@@ -449,18 +448,6 @@ func (v ListValue) Without(index int) Value {
 		return v
 	}
 	return typedList(v.declared, slices.Delete(slices.Clone(v.elements), index, index+1))
-}
-
-// asMember returns value typed to fill a container slot. A value that already has the
-// slot's type is used as it is, because Without may have removed required fields from it.
-func asMember(slot Type, value Value) (Value, error) {
-	if value == nil {
-		return nil, errors.New("value is missing")
-	}
-	if slot.Equal(value.Type()) {
-		return value, nil
-	}
-	return assign(slot, value, "$")
 }
 
 // typedList returns a list of type declared, which must already type its elements.
@@ -500,8 +487,7 @@ func (v ObjectValue) Keys() []string { return slices.Sorted(maps.Keys(v.members)
 // Members returns a copy of the members.
 func (v ObjectValue) Members() map[string]Value { return maps.Clone(v.members) }
 
-// With returns the object with member at key, checked against the key's declared type
-// unless it already has that type.
+// With returns the object with member at key, checked against the key's declared type.
 func (v ObjectValue) With(key string, member Value) (Value, error) {
 	slot := Type(UnknownType{})
 	switch declared := NonNull(v.declared).(type) {
@@ -516,7 +502,7 @@ func (v ObjectValue) With(key string, member Value) (Value, error) {
 		slot = declared.Element
 	case StringType, NumberType, BooleanType, EnumType, UnknownType, NullableType, ListType:
 	}
-	assigned, err := asMember(slot, member)
+	assigned, err := As(slot, member)
 	if err != nil {
 		return nil, err
 	}
@@ -528,12 +514,16 @@ func (v ObjectValue) With(key string, member Value) (Value, error) {
 	return typedObject(v.declared, members), nil
 }
 
-// Without returns the object without the member at key. It keeps the object's type
-// even when the member is required, as normalisers remove values to skip comparing them.
-func (v ObjectValue) Without(key string) Value {
+// Without returns the object without the member at key, which its type must not require.
+func (v ObjectValue) Without(key string) (Value, error) {
+	if declared, ok := NonNull(v.declared).(*ObjectType); ok {
+		if field, found := declared.Field(key); found && !field.Optional {
+			return nil, errors.Errorf("type %q requires field %q", declared.Name, key)
+		}
+	}
 	members := maps.Clone(v.members)
 	delete(members, key)
-	return typedObject(v.declared, members)
+	return typedObject(v.declared, members), nil
 }
 
 // typedObject returns an object of type declared, which must already type its members.

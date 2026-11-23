@@ -375,11 +375,25 @@ func TestCompareAppliesNormalisers(t *testing.T) {
 			reference: `{"stable":"same","users":[{"name":"ALICE"},{"name":"BOB"}]}`,
 			candidate: `{"stable":"same","users":[{"name":"alice"},{"name":"bob"}]}`,
 		},
-		"FieldNormaliserCanRemoveRequiredNestedField": {
-			typeName:  response,
-			script:    `spectre.field<v1.User, "name">(() => undefined);`,
+		"NormalisedTypeLetsFieldNormaliserRemoveRequiredField": {
+			typeName: response,
+			script: `
+				interface NormalisedUser { name?: string }
+				spectre.message<v1.User, NormalisedUser>();
+				spectre.field<NormalisedUser, "name">(() => undefined);
+			`,
 			reference: `{"owner":{"name":"ALICE"},"users":[{"name":"ALICE"},{"name":"BOB"}]}`,
 			candidate: `{"owner":{"name":"alice"},"users":[{"name":"alice"},{"name":"bob"}]}`,
+		},
+		"MessageNormaliserReceivesNormalisedType": {
+			typeName: response,
+			script: `
+				interface NormalisedUser { name?: string }
+				spectre.field<NormalisedUser, "name">(() => undefined);
+				spectre.message<v1.User, NormalisedUser>((user) => user);
+			`,
+			reference: `{"owner":{"name":"ALICE"}}`,
+			candidate: `{"owner":{"name":"alice"}}`,
 		},
 		"MessageNormaliserCanRemoveRepeatedElement": {
 			typeName: response,
@@ -548,6 +562,62 @@ func TestCompareRejectsNormaliserResultOfAnotherType(t *testing.T) {
 			_, _, err := scripts.Compare(t.Context(), instance(t, scripts, "raw.Response", `{"stable":"first"}`),
 				instance(t, scripts, "raw.Response", `{"stable":"second"}`))
 
+			assert.Error(t, err)
+			assert.Contains(t, err.Error(), test.error)
+		})
+	}
+}
+
+func TestCompareRejectsRemovingRequiredField(t *testing.T) {
+	// The optional owner lets TypeScript accept undefined, but User requires its name.
+	scripts := newScripts(t, `spectre.field<v1.Response, "owner.name">(() => undefined);`)
+
+	_, _, err := scripts.Compare(t.Context(), instance(t, scripts, response, `{"owner":{"name":"alice"}}`),
+		instance(t, scripts, response, `{"owner":{"name":"alice"}}`))
+
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), `remove normalised value: type "test.v1.User" requires field "name"`)
+}
+
+func TestRejectsInvalidNormalisedTypes(t *testing.T) {
+	normalisedUser := `interface NormalisedUser { name?: string } spectre.message<v1.User, NormalisedUser>();`
+	for name, test := range map[string]struct {
+		script string
+		error  string
+	}{
+		"MissingField": {
+			script: `interface Empty {} spectre.message<v1.User, Empty>();`,
+			error:  `"Empty" must declare field "name" of "test.v1.User"`,
+		},
+		"ExtraField": {
+			script: `interface Extra { name: string; extra?: string } spectre.message<v1.User, Extra>();`,
+			error:  `"Extra" declares field "extra", which "test.v1.User" does not have`,
+		},
+		"RequiredField": {
+			script: `interface Required { minDays: number } spectre.message<v1.Filter, Required>();`,
+			error:  `field "minDays" of "Required" must be optional, as it is in "test.v1.Filter"`,
+		},
+		"OtherType": {
+			script: `interface Numbered { name?: number } spectre.message<v1.User, Numbered>();`,
+			error:  `field "name" of "Numbered" must have type string`,
+		},
+		"NestedTypeNotNormalised": {
+			script: normalisedUser + `
+				interface NormalisedResponse {
+					stable?: string; ignored?: string; roles?: string[]; users?: v1.User[]; count?: string;
+					owner?: NormalisedUser | null; labels?: Record<string, string>;
+				}
+				spectre.message<v1.Response, NormalisedResponse>();
+			`,
+			error: `field "users" of "NormalisedResponse" must have type NormalisedUser[]`,
+		},
+		"FieldNamesIncomingType": {
+			script: normalisedUser + `spectre.field<v1.User, "name">((name) => name);`,
+			error:  `"test.v1.User" normalises to "NormalisedUser", which field normalisers must name instead`,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := comparison.New(t.Context(), newConfig(t, map[string]string{"test.ts": module(test.script)}))
 			assert.Error(t, err)
 			assert.Contains(t, err.Error(), test.error)
 		})

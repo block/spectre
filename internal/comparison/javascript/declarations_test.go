@@ -59,7 +59,6 @@ declare module "test" {
 				field<Root, "preferences">((value) => ({ ...value }));
 				field<Root, "parent">((value) => value);
 				message<Root>((value) => value);
-				field<Address, "postalCode">(() => undefined);
 			`,
 			valid: true,
 		},
@@ -87,6 +86,7 @@ declare module "test" {
 		"OptionalAncestor":       {body: `field<Root, "address.postalCode">((value: string) => value);`},
 		"OptionalLeaf":           {body: `field<Preference, "enabled">((value: boolean) => value);`},
 		"WrongEnum":              {body: `field<Root, "state">(() => "other");`},
+		"RemovesRequiredField":   {body: `field<Address, "postalCode">(() => undefined);`},
 		"MessageMissingAllowed":  {body: `message<Root>((value: object) => undefined);`},
 		"WrongMessageOutput":     {body: `message<Root>(() => ({ count: "changed" }));`},
 	} {

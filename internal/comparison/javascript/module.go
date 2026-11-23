@@ -88,6 +88,34 @@ func (t FieldTarget) String() string {
 	return string(t.typeName) + "." + t.path
 }
 
+// MessageTarget is one spectre.message declaration: every value of an object type
+// normalises to a normalised type, through a script normaliser if Normalises.
+type MessageTarget struct {
+	typeName   schema.TypeRef
+	normalised schema.TypeRef
+	normalises bool
+}
+
+// NewMessageTarget creates a declaration without resolving it against a schema.
+func NewMessageTarget(typeName, normalised schema.TypeRef, normalises bool) MessageTarget {
+	return MessageTarget{typeName: typeName, normalised: normalised, normalises: normalises}
+}
+
+// Type returns the fully qualified name of the declared object type.
+func (t MessageTarget) Type() schema.TypeRef {
+	return t.typeName
+}
+
+// Normalised returns the name of the type the object type's values normalise to.
+func (t MessageTarget) Normalised() schema.TypeRef {
+	return t.normalised
+}
+
+// Normalises reports whether a script normaliser runs for every value of the type.
+func (t MessageTarget) Normalises() bool {
+	return t.normalises
+}
+
 // registrations are the declarations one evaluation of a program produced.
 type registrations struct {
 	endpoints    []Endpoint
@@ -95,7 +123,7 @@ type registrations struct {
 	replacements []Replacement
 	statements   []StatementReplacement
 	fields       []FieldTarget
-	messages     []schema.TypeRef
+	messages     []MessageTarget
 }
 
 // spectreModule is an immutable module record shared safely across isolated runtimes.
@@ -155,7 +183,13 @@ type callbackRegistry struct {
 	statements     []StatementReplacement
 	statementUsers []sobek.Callable
 	fields         map[FieldTarget]sobek.Callable
-	messages       map[schema.TypeRef]sobek.Callable
+	messages       map[schema.TypeRef]messageRegistration
+}
+
+// messageRegistration is one spectre.message call's normalised type and normaliser.
+type messageRegistration struct {
+	normalised schema.TypeRef
+	callback   Option[sobek.Callable]
 }
 
 // ruleCallbacks are the script functions of one rule, indexed like the rules.
@@ -179,7 +213,7 @@ func newCallbackRegistry(runtime *sobek.Runtime, loaded *schema.Schema, variable
 		runtime:  runtime,
 		loaded:   loaded,
 		fields:   map[FieldTarget]sobek.Callable{},
-		messages: map[schema.TypeRef]sobek.Callable{},
+		messages: map[schema.TypeRef]messageRegistration{},
 	}
 	ingress := runtime.NewObject()
 	registry.defineMethod(ingress, "ingress."+string(model.ProtocolHTTP), string(model.ProtocolHTTP), registry.httpRule)
@@ -194,8 +228,8 @@ func newCallbackRegistry(runtime *sobek.Runtime, loaded *schema.Schema, variable
 	registry.functions = map[string]sobek.Value{
 		string(model.Ingress): ingress,
 		string(model.Egress):  egress,
-		string(targetField):   runtime.ToValue(registry.registration(targetField)),
-		string(targetMessage): runtime.ToValue(registry.registration(targetMessage)),
+		string(targetField):   runtime.ToValue(registry.registerField),
+		string(targetMessage): runtime.ToValue(registry.registerMessage),
 		variableFunction:      runtime.ToValue(registry.variable(variables)),
 	}
 	return registry
@@ -567,35 +601,47 @@ func (r *callbackRegistry) GetBindingValue(name string) sobek.Value {
 	return r.functions[name]
 }
 
-func (r *callbackRegistry) registration(kind targetKind) func(sobek.FunctionCall) sobek.Value {
-	return func(call sobek.FunctionCall) sobek.Value {
-		argumentCount := 2
-		if kind == targetField {
-			argumentCount = 3
-		}
-		if len(call.Arguments) != argumentCount {
-			panic(r.runtime.NewTypeError("spectre.%s requires exactly %d arguments", kind, argumentCount))
-		}
-		typeName := schema.TypeRef(r.stringArgument(call, 0, string(kind), "type name"))
-		callback, ok := sobek.AssertFunction(call.Argument(argumentCount - 1))
-		if !ok {
-			panic(r.runtime.NewTypeError("spectre.%s normaliser must be a function", kind))
-		}
-		if kind == targetField {
-			path := r.stringArgument(call, 1, string(kind), "path")
-			target := NewFieldTarget(typeName, path)
-			if _, duplicate := r.fields[target]; duplicate {
-				panic(r.runtime.NewTypeError("duplicate normaliser target %q", target.String()))
-			}
-			r.fields[target] = callback
-			return sobek.Undefined()
-		}
-		if _, duplicate := r.messages[typeName]; duplicate {
-			panic(r.runtime.NewTypeError("duplicate normaliser target %q", typeName))
-		}
-		r.messages[typeName] = callback
-		return sobek.Undefined()
+func (r *callbackRegistry) registerField(call sobek.FunctionCall) sobek.Value {
+	if len(call.Arguments) != 3 {
+		panic(r.runtime.NewTypeError("spectre.%s requires exactly 3 arguments", targetField))
 	}
+	typeName := schema.TypeRef(r.stringArgument(call, 0, string(targetField), "type name"))
+	path := r.stringArgument(call, 1, string(targetField), "path")
+	callback, ok := sobek.AssertFunction(call.Argument(2))
+	if !ok {
+		panic(r.runtime.NewTypeError("spectre.%s normaliser must be a function", targetField))
+	}
+	target := NewFieldTarget(typeName, path)
+	if _, duplicate := r.fields[target]; duplicate {
+		panic(r.runtime.NewTypeError("duplicate normaliser target %q", target.String()))
+	}
+	r.fields[target] = callback
+	return sobek.Undefined()
+}
+
+// registerMessage takes the type name, the normalised type's name if the script
+// gave one, and the normaliser if it gave one.
+func (r *callbackRegistry) registerMessage(call sobek.FunctionCall) sobek.Value {
+	kind := string(targetMessage)
+	typeName := schema.TypeRef(r.stringArgument(call, 0, kind, "type name"))
+	registration := messageRegistration{normalised: typeName}
+	next := 1
+	if _, named := call.Argument(next).Export().(string); named {
+		registration.normalised = schema.TypeRef(r.stringArgument(call, next, kind, "normalised type name"))
+		next++
+	}
+	if len(call.Arguments) > next {
+		callback, ok := sobek.AssertFunction(call.Argument(next))
+		if !ok || len(call.Arguments) > next+1 {
+			panic(r.runtime.NewTypeError("spectre.%s takes at most one normaliser function", kind))
+		}
+		registration.callback = Some(callback)
+	}
+	if _, duplicate := r.messages[typeName]; duplicate {
+		panic(r.runtime.NewTypeError("duplicate normaliser target %q", typeName))
+	}
+	r.messages[typeName] = registration
+	return sobek.Undefined()
 }
 
 func (r *callbackRegistry) stringArgument(call sobek.FunctionCall, index int, name, argument string) string {
@@ -612,8 +658,7 @@ func (r *callbackRegistry) field(target FieldTarget) (sobek.Callable, bool) {
 }
 
 func (r *callbackRegistry) message(typeName schema.TypeRef) (sobek.Callable, bool) {
-	callback, ok := r.messages[typeName]
-	return callback, ok
+	return r.messages[typeName].callback.Get()
 }
 
 // replacer returns the callbacks of the replacement at index.
@@ -651,7 +696,11 @@ func (r *callbackRegistry) registrations() registrations {
 		}
 		return cmp.Compare(left.Path(), right.Path())
 	})
-	messages := slices.Sorted(maps.Keys(r.messages))
+	messages := make([]MessageTarget, 0, len(r.messages))
+	for _, typeName := range slices.Sorted(maps.Keys(r.messages)) {
+		registration := r.messages[typeName]
+		messages = append(messages, NewMessageTarget(typeName, registration.normalised, registration.callback.Ok()))
+	}
 	return registrations{
 		endpoints: slices.Clone(r.endpoints), rules: slices.Clone(r.rules), replacements: slices.Clone(r.replacements),
 		statements: slices.Clone(r.statements), fields: fields, messages: messages,

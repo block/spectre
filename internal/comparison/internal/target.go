@@ -75,8 +75,10 @@ func (t *fieldTarget) normalise(evaluator *javascript.Evaluator, value documentV
 	return checkNormalised(t.steps[len(t.steps)-1].declared(), normalised)
 }
 
-// messageTarget normalises every nested occurrence of one object type.
+// messageTarget normalises every nested occurrence of one object type, whose values
+// have the declared normalised type.
 type messageTarget struct {
+	incoming schema.TypeRef
 	declared *schema.ObjectType
 }
 
@@ -89,7 +91,7 @@ func (t *messageTarget) kind() targetKind {
 }
 
 func (t *messageTarget) name() string {
-	return string(t.declared.Name)
+	return string(t.incoming)
 }
 
 func (t *messageTarget) priority() int {
@@ -106,7 +108,7 @@ func (t *messageTarget) occurrences(root *schema.ObjectType, payload *document) 
 }
 
 func (t *messageTarget) normalise(evaluator *javascript.Evaluator, value documentValue) (documentValue, error) {
-	normalised, err := evaluator.NormaliseMessage(t.declared.Name, value.normaliserArgument())
+	normalised, err := evaluator.NormaliseMessage(t.incoming, value.normaliserArgument())
 	if err != nil {
 		return newDocumentValue(None[schema.Value]()), errors.Wrap(err, "invoke message normaliser")
 	}
@@ -153,17 +155,13 @@ func newFieldTarget(declared javascript.FieldTarget, steps []fieldStep) *fieldTa
 	return &fieldTarget{declared: declared, steps: steps}
 }
 
-func newMessageTarget(declared *schema.ObjectType) *messageTarget {
-	return &messageTarget{declared: declared}
+func newMessageTarget(incoming schema.TypeRef, declared *schema.ObjectType) *messageTarget {
+	return &messageTarget{incoming: incoming, declared: declared}
 }
 
-// resolveField resolves a field path relative to its explicitly named root type.
-func resolveField(loaded *schema.Schema, declared javascript.FieldTarget) ([]fieldStep, error) {
-	root, err := loaded.Type(declared.Type())
-	if err != nil {
-		return nil, errors.WithStack(err)
-	}
-	parts := strings.Split(declared.Path(), ".")
+// resolveField resolves a field path relative to its root type.
+func resolveField(root *schema.ObjectType, path string) ([]fieldStep, error) {
+	parts := strings.Split(path, ".")
 	steps := make([]fieldStep, 0, len(parts))
 	current := root
 	for index, part := range parts {

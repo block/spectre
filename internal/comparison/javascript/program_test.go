@@ -46,10 +46,32 @@ func TestProgramOwnsDeclarations(t *testing.T) {
 	assert.Equal(t, []rule{{`http("GET /v1/forecast")`, typed}, {`http("GET /v2/forecast")`, typed}}, rules(program))
 	assert.Equal(t, []endpoint{{"http", "GET weather.example/v1/forecast", "test.v1.Response"}}, endpoints(program, model.Egress))
 	assert.Equal(t, []javascript.FieldTarget{javascript.NewFieldTarget("test.v1.Response", "value")}, program.Fields())
-	assert.Equal(t, []schema.TypeRef{"test.v1.User"}, program.Messages())
+	assert.Equal(t, []javascript.MessageTarget{javascript.NewMessageTarget("test.v1.User", "test.v1.User", true)}, program.Messages())
 	operation, err := program.Schema().Operation("test.v1.UserService.GetUser")
 	assert.NoError(t, err)
 	assert.Equal(t, "test.v1.User", operation.Request)
+}
+
+func TestDeclaresNormalisedTypes(t *testing.T) {
+	program, err := compile(t, fstest.MapFS{
+		"users.ts": script(`
+			export interface NormalisedUser { name?: string }
+			spectre.message<v1.User, NormalisedUser>();
+			spectre.field<NormalisedUser, "name">(() => undefined);
+		`),
+	})
+	assert.NoError(t, err)
+	assert.Equal(t, []javascript.MessageTarget{javascript.NewMessageTarget("test.v1.User", "NormalisedUser", false)}, program.Messages())
+	assert.Equal(t, []javascript.FieldTarget{javascript.NewFieldTarget("NormalisedUser", "name")}, program.Fields())
+	normalised, err := program.Schema().Type("NormalisedUser")
+	assert.NoError(t, err)
+	assert.Equal(t, &schema.ObjectType{Name: "NormalisedUser", Fields: []schema.Field{{Name: "name", Optional: true, Type: schema.StringType{}}}}, normalised)
+}
+
+func TestFieldNormaliserCannotRemoveRequiredField(t *testing.T) {
+	_, err := newProgram(t, `spectre.field<v1.User, "name">(() => undefined);`)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "Type 'undefined' is not assignable to type 'string'")
 }
 
 func TestDeclaresOptionalEgressEndpoints(t *testing.T) {
@@ -199,7 +221,7 @@ func TestResolvesTypeArgumentsWithTheChecker(t *testing.T) {
 		`)},
 	})
 	assert.NoError(t, err)
-	assert.Equal(t, []schema.TypeRef{"test.v1.User"}, program.Messages())
+	assert.Equal(t, []javascript.MessageTarget{javascript.NewMessageTarget("test.v1.User", "test.v1.User", true)}, program.Messages())
 	assert.Equal(t, []javascript.FieldTarget{javascript.NewFieldTarget("test.A", "B.value")}, program.Fields())
 }
 
@@ -260,9 +282,16 @@ func TestRejectsUncheckedRegistrations(t *testing.T) {
 			files:   fstest.MapFS{"test.ts": script(`spectre.field<v1.Response, "value" | "owner">(() => undefined);`)},
 			message: "spectre.field path must be one string literal type",
 		},
-		"LocalType": {
-			files:   fstest.MapFS{"test.ts": script(`interface Local { name: string } spectre.message<Local>((value) => value);`)},
-			message: `spectre.message type argument Local: type "Local" is not exported from a schema module`,
+		"NestedLocalType": {
+			files:   fstest.MapFS{"test.ts": script(`function register() { interface Local { name: string } spectre.message<Local>((value) => value); }`)},
+			message: `spectre.message type argument Local: type "Local" is not exported from a schema module or declared at the top level of a script`,
+		},
+		"DuplicateScriptTypeName": {
+			files: fstest.MapFS{
+				"a.ts": script(`export interface Same { value: string } spectre.egress.http("GET a.example/x").match<Same>();`),
+				"b.ts": script(`interface Same { value: string } spectre.egress.http("GET b.example/y").match<Same>();`),
+			},
+			message: `types declared at scripts/a.ts:1:`,
 		},
 		"InlineType": {
 			files:   fstest.MapFS{"test.ts": script(`spectre.message<{ name: string }>((value) => value);`)},
@@ -274,14 +303,14 @@ func TestRejectsUncheckedRegistrations(t *testing.T) {
 		},
 		"Service": {
 			files:   fstest.MapFS{"test.ts": script(`spectre.message<v1.UserService>((value) => value);`)},
-			message: `type "test.v1.UserService" is not declared`,
+			message: `object types may only declare properties; test.v1.UserService mixes them with methods`,
 		},
 		"Augmentation": {
 			files: fstest.MapFS{"test.ts": script(`
 				declare module "test.v1" { interface Extra { name: string } }
 				spectre.message<v1.Extra>((value) => value);
 			`)},
-			message: "scripts/test.ts:2:32: Extra augments a schema module; only schema files may declare its members",
+			message: `scripts/test.ts:2:32: Extra is declared in module "test.v1", but only schema files may declare modules`,
 		},
 		"AugmentedField": {
 			files: fstest.MapFS{"test.ts": script(`
@@ -435,7 +464,7 @@ func TestEvaluatesEachScriptOnce(t *testing.T) {
 	assert.NoError(t, err)
 
 	assert.Equal(t, []javascript.FieldTarget{javascript.NewFieldTarget("test.v1.Response", "owner"), javascript.NewFieldTarget("test.v1.Response", "value")}, program.Fields())
-	assert.Equal(t, []schema.TypeRef{"test.v1.User"}, program.Messages())
+	assert.Equal(t, []javascript.MessageTarget{javascript.NewMessageTarget("test.v1.User", "test.v1.User", true)}, program.Messages())
 	evaluator, err := program.NewEvaluator(t.Context())
 	assert.NoError(t, err)
 	defer evaluator.Close()
@@ -611,18 +640,18 @@ func TestNormalisersCannotReplaceJSONHelpers(t *testing.T) {
 
 func TestRejectsInvalidNormaliserDeclarations(t *testing.T) {
 	tests := map[string]string{
-		"FieldMissing":       `field();`,
-		"MessageOne":         `message("test.v1.Response");`,
-		"FieldTwo":           `field("test.v1.Response.value", () => true);`,
-		"FieldFour":          `field("test.v1.Response", "value", () => true, "extra");`,
-		"MessageThree":       `message("test.v1.Response", () => true, "extra");`,
-		"FieldEmptyType":     `field("", "value", () => true);`,
-		"FieldNonStringType": `field({}, "value", () => true);`,
-		"FieldEmptyPath":     `field("test.v1.Response", "", () => true);`,
-		"FieldNonStringPath": `field("test.v1.Response", 1, () => true);`,
-		"FieldNonFunction":   `field("test.v1.Response", "value", true);`,
-		"MessageEmptyType":   `message("", () => true);`,
-		"MessageNonFunction": `message("test.v1.Response", true);`,
+		"FieldMissing":           `field();`,
+		"MessageEmptyNormalised": `message("test.v1.Response", "", () => true);`,
+		"FieldTwo":               `field("test.v1.Response.value", () => true);`,
+		"FieldFour":              `field("test.v1.Response", "value", () => true, "extra");`,
+		"MessageThree":           `message("test.v1.Response", () => true, "extra");`,
+		"FieldEmptyType":         `field("", "value", () => true);`,
+		"FieldNonStringType":     `field({}, "value", () => true);`,
+		"FieldEmptyPath":         `field("test.v1.Response", "", () => true);`,
+		"FieldNonStringPath":     `field("test.v1.Response", 1, () => true);`,
+		"FieldNonFunction":       `field("test.v1.Response", "value", true);`,
+		"MessageEmptyType":       `message("", () => true);`,
+		"MessageNonFunction":     `message("test.v1.Response", true);`,
 	}
 	for name, call := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -739,7 +768,7 @@ func TestExplicitTypeScriptImportsShareModuleRecord(t *testing.T) {
 		"lib/register.ts": script(`spectre.message<v1.User>((user) => user);`),
 	})
 	assert.NoError(t, err)
-	assert.Equal(t, []schema.TypeRef{"test.v1.User"}, program.Messages())
+	assert.Equal(t, []javascript.MessageTarget{javascript.NewMessageTarget("test.v1.User", "test.v1.User", true)}, program.Messages())
 }
 
 func TestRejectsMalformedTypeScript(t *testing.T) {

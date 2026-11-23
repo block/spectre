@@ -15,31 +15,43 @@ import (
 // Plan binds JavaScript normaliser declarations to one declared schema.
 // It is immutable after construction and safe to share across normalisations.
 type Plan struct {
+	types    *normalisedTypes
 	resolved []normalisationTarget
 }
 
 // NewPlan resolves and validates every declared normaliser target before activation.
-func NewPlan(loaded *schema.Schema, fields []javascript.FieldTarget, messages []schema.TypeRef) (*Plan, error) {
+func NewPlan(loaded *schema.Schema, fields []javascript.FieldTarget, messages []javascript.MessageTarget) (*Plan, error) {
+	types, err := newNormalisedTypes(loaded, messages)
+	if err != nil {
+		return nil, err
+	}
 	targets := make([]normalisationTarget, 0, len(fields)+len(messages))
 	for _, declared := range fields {
-		steps, err := resolveField(loaded, declared)
+		root, err := types.fieldRoot(declared.Type())
+		if err != nil {
+			return nil, errors.Wrapf(err, "validate normaliser target %q", declared.String())
+		}
+		steps, err := resolveField(root, declared.Path())
 		if err != nil {
 			return nil, errors.Wrapf(err, "validate normaliser target %q", declared.String())
 		}
 		targets = append(targets, newFieldTarget(declared, steps))
 	}
-	for _, name := range messages {
-		declared, err := loaded.Type(name)
-		if err != nil {
-			return nil, errors.Wrapf(err, "validate normaliser target %q", name)
+	for _, message := range messages {
+		if !message.Normalises() {
+			continue
 		}
-		targets = append(targets, newMessageTarget(declared))
+		incoming, err := loaded.Type(message.Type())
+		if err != nil {
+			return nil, errors.Wrapf(err, "validate normaliser target %q", message.Type())
+		}
+		targets = append(targets, newMessageTarget(incoming.Name, types.of(incoming)))
 	}
-	return &Plan{resolved: targets}, nil
+	return &Plan{types: types, resolved: targets}, nil
 }
 
-// Normalise applies the plan to a copy of one payload of type root. evaluator is called
-// only once a normaliser applies, and the caller closes what it returns. side only labels log records.
+// Normalise gives a copy of one payload of type root its normalised type, then applies the plan.
+// evaluator is called only once a normaliser applies, and the caller closes what it returns. side only labels log records.
 func (p *Plan) Normalise(
 	ctx context.Context,
 	evaluator func() (*javascript.Evaluator, error),
@@ -47,8 +59,16 @@ func (p *Plan) Normalise(
 	side string,
 	payload schema.Value,
 ) (*Normalised, error) {
+	if normalised := p.types.slot(payload.Type()); !sameType(normalised, payload.Type()) {
+		// Every value of a type is a value of its normalised type, which only relaxes it.
+		retyped, err := schema.As(normalised, payload)
+		if err != nil {
+			return nil, errors.Wrap(err, "give the payload its normalised type")
+		}
+		payload = retyped
+	}
 	document := newDocument(payload)
-	run := newNormalisationRun(evaluator, root, slices.Clone(p.resolved), side, document)
+	run := newNormalisationRun(evaluator, p.types.of(root), slices.Clone(p.resolved), side, document)
 	if err := run.normalise(ctx); err != nil {
 		return nil, err
 	}
@@ -56,7 +76,7 @@ func (p *Plan) Normalise(
 }
 
 // Normalised is one payload after every applicable normaliser has run. Normalisers
-// may remove the root or change its members, but every value keeps its declared type.
+// may remove the root or change its members, but every value keeps its normalised type.
 type Normalised struct {
 	payload *document
 }

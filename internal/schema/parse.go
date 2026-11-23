@@ -19,6 +19,10 @@ import (
 // on it to tell schema declarations from script and library declarations.
 const programRoot = "/schema/"
 
+// ScriptRoot is where comparison scripts live in a TypeScript program. A type declared
+// at the top level of a script is named by its own name.
+const ScriptRoot = "/scripts/"
+
 // reservedModule is the script API, which a schema cannot redeclare.
 const reservedModule = "spectre"
 
@@ -87,12 +91,12 @@ func ParseSources(ctx context.Context, sources map[string]string) (*Schema, erro
 	if err != nil {
 		return nil, errors.Wrap(err, "check schema declarations")
 	}
-	return FromProgram(program, sources)
+	return FromProgram(program, sources, nil)
 }
 
-// FromProgram reads the schema sources and the built-in declarations declare in a checked
-// program built from ProgramFiles(sources). A type's name is its module name and namespace path.
-func FromProgram(program *ts.Program, sources map[string]string) (*Schema, error) {
+// FromProgram reads the types that the schema sources, the built-in declarations, and
+// references declare in a checked program built from ProgramFiles(sources).
+func FromProgram(program *ts.Program, sources map[string]string, references []*ts.Node) (*Schema, error) {
 	builtin := program.SourceFile(builtinFile)
 	if builtin == nil {
 		return nil, errors.New("built-in declarations are not in the program")
@@ -119,7 +123,7 @@ func FromProgram(program *ts.Program, sources map[string]string) (*Schema, error
 		}
 		maps.Copy(modules, declared)
 	}
-	return newReader(program.Checker()).read(modules)
+	return newReader(program.Checker()).read(modules, references)
 }
 
 // declaredModules returns the names of the modules a schema file declares.
@@ -135,17 +139,17 @@ func declaredModules(file *ts.SourceFile) (map[string]bool, error) {
 }
 
 // TypeName returns the schema name of a named object type, which is how scripts and
-// the host refer to it. Types declared outside a schema module have no name.
+// the host refer to it. Types declared outside a schema module or script have no name.
 func TypeName(t *ts.Type) (TypeRef, error) {
-	symbol := t.Symbol()
-	if alias := t.Alias(); alias != nil && (symbol == nil || symbol.Flags()&ts.SymbolFlagsTypeLiteral != 0) {
-		if len(alias.TypeArguments()) > 0 {
+	if alias := t.Alias(); alias != nil && len(alias.TypeArguments()) > 0 {
+		symbol := t.Symbol()
+		if symbol == nil || symbol.Flags()&ts.SymbolFlagsTypeLiteral != 0 {
 			return "", errors.Errorf("generic type %q is not supported", alias.Symbol().Name())
 		}
-		symbol = alias.Symbol()
 	}
+	symbol := namedSymbol(t)
 	if symbol == nil || symbol.Flags()&(ts.SymbolFlagsInterface|ts.SymbolFlagsTypeAlias) == 0 {
-		return "", errors.New("object types must be declared by name in a schema module")
+		return "", errors.New("object types must be declared by name in a schema module or at the top level of a script")
 	}
 	return qualifiedName(symbol)
 }
@@ -153,21 +157,42 @@ func TypeName(t *ts.Type) (TypeRef, error) {
 // qualifiedName walks a symbol's parents up to its ambient module, which must be
 // declared in a schema file rather than augmented by a script.
 func qualifiedName(symbol *ts.Symbol) (TypeRef, error) {
+	if name, ok := scriptName(symbol); ok {
+		return name, nil
+	}
 	names := []string{}
 	for current := symbol; current != nil; current = current.Parent() {
 		if len(current.Declarations()) > 0 {
 			declaration := current.Declarations()[0]
 			if declaration.Kind == ts.KindModuleDeclaration && declaration.Name().Kind == ts.KindStringLiteral {
-				if !inSchemaFile(declaration) {
-					break
+				module := declaration.Name().Text()
+				if !slices.ContainsFunc(current.Declarations(), inSchemaFile) {
+					return "", errors.Errorf("%s: %s is declared in module %q, but only schema files may declare modules",
+						ts.Location(symbol.Declarations()[0]), symbol.Name(), module)
+				}
+				if err := checkDeclaredInSchema(symbol); err != nil {
+					return "", err
 				}
 				slices.Reverse(names)
-				return TypeRef(declaration.Name().Text() + "." + strings.Join(names, ".")), nil
+				return TypeRef(module + "." + strings.Join(names, ".")), nil
 			}
 		}
 		names = append(names, current.Name())
 	}
-	return "", errors.Errorf("type %q is not exported from a schema module", symbol.Name())
+	return "", errors.Errorf("type %q is not exported from a schema module or declared at the top level of a script", symbol.Name())
+}
+
+// scriptName names a type declared at the top level of a script by its own name.
+func scriptName(symbol *ts.Symbol) (name TypeRef, ok bool) {
+	if len(symbol.Declarations()) == 0 {
+		return "", false
+	}
+	declaration := symbol.Declarations()[0]
+	file := ts.SourceFileOf(declaration).FileName().AsString()
+	if declaration.Parent.Kind != ts.KindSourceFile || !strings.HasPrefix(file, ScriptRoot) {
+		return "", false
+	}
+	return TypeRef(symbol.Name()), true
 }
 
 func inSchemaFile(node *ts.Node) bool {
@@ -197,16 +222,22 @@ type reader struct {
 	checker    *ts.Checker
 	pending    []pendingType
 	objects    map[TypeRef]*ObjectType
+	symbols    map[TypeRef]*ts.Symbol
 	operations []Operation
 }
 
 func newReader(checker *ts.Checker) *reader {
-	return &reader{checker: checker, objects: map[TypeRef]*ObjectType{}}
+	return &reader{checker: checker, objects: map[TypeRef]*ObjectType{}, symbols: map[TypeRef]*ts.Symbol{}}
 }
 
-func (r *reader) read(modules map[string]bool) (*Schema, error) {
+func (r *reader) read(modules map[string]bool, references []*ts.Node) (*Schema, error) {
 	for _, module := range slices.Sorted(maps.Keys(modules)) {
 		if err := r.members(r.checker.TryFindAmbientModule(module)); err != nil {
+			return nil, err
+		}
+	}
+	for _, reference := range references {
+		if _, err := r.objectReference(r.checker.GetTypeFromTypeNode(reference), reference); err != nil {
 			return nil, err
 		}
 	}
@@ -420,13 +451,28 @@ func (r *reader) object(t *ts.Type, at *ts.Node) (Type, error) {
 	if err != nil {
 		return nil, errors.Errorf("%s: %s: %v", ts.Location(at), r.checker.TypeToString(t), err)
 	}
+	symbol := namedSymbol(t)
 	declared, queued := r.objects[name]
 	if !queued {
 		declared = &ObjectType{Name: name}
 		r.objects[name] = declared
+		r.symbols[name] = symbol
 		r.pending = append(r.pending, pendingType{declared: declared, t: t})
 	}
+	if other := r.symbols[name]; other != symbol {
+		return nil, errors.Errorf("%s: types declared at %s and %s are both named %q", ts.Location(at),
+			ts.Location(other.Declarations()[0]), ts.Location(symbol.Declarations()[0]), name)
+	}
 	return declared, nil
+}
+
+// namedSymbol returns the symbol TypeName names t by: its own, or the alias of a type literal.
+func namedSymbol(t *ts.Type) *ts.Symbol {
+	symbol := t.Symbol()
+	if alias := t.Alias(); alias != nil && (symbol == nil || symbol.Flags()&ts.SymbolFlagsTypeLiteral != 0) {
+		return alias.Symbol()
+	}
+	return symbol
 }
 
 func (r *reader) objectType(declared *ObjectType, t *ts.Type) error {
@@ -444,8 +490,10 @@ func (r *reader) objectType(declared *ObjectType, t *ts.Type) error {
 	properties := r.checker.GetPropertiesOfType(t)
 	declared.Fields = make([]Field, 0, len(properties))
 	for _, property := range properties {
-		if err := checkDeclaredInSchema(property); err != nil {
-			return err
+		if inSchemaFile(declaration) {
+			if err := checkDeclaredInSchema(property); err != nil {
+				return err
+			}
 		}
 		at := property.Declarations()[0]
 		if isMethod(property) {
