@@ -6,6 +6,8 @@ import (
 
 	"github.com/alecthomas/errors"
 	"github.com/pelletier/go-toml/v2"
+
+	"github.com/block/spectre/internal/model"
 )
 
 // MarkMigrated sets the status of each node in ids to migrated and rewrites
@@ -35,13 +37,13 @@ func MarkMigrated(data []byte, catalog *Catalog, ids []string) (updated []byte, 
 	if len(marked) == 0 {
 		return data, nil, nil
 	}
-	var root map[string]any
+	var root map[string]model.DynamicValue
 	if err := toml.Unmarshal(data, &root); err != nil {
 		return nil, nil, errors.Wrap(err, "decode migration state")
 	}
-	nodes, _ := root[nodesKey].(map[string]any)
+	nodes, _ := root[nodesKey].(map[string]model.DynamicValue)
 	for _, id := range marked {
-		node, _ := nodes[id].(map[string]any)
+		node, _ := nodes[id].(map[string]model.DynamicValue)
 		node[statusKey] = string(Migrated)
 	}
 	updated, err = toml.Marshal(root)

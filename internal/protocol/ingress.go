@@ -248,7 +248,7 @@ func normaliseResponse(ctx context.Context, scripts *comparison.Scripts, content
 	if err != nil {
 		return Content{}, errors.Errorf("rule %s needs an HTTP status", rule)
 	}
-	body := None[any]()
+	body := None[model.DynamicValue]()
 	if message, present := content.Message.Get(); present {
 		body = Some(message.Value)
 	}

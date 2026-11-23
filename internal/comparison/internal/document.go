@@ -6,15 +6,17 @@ import (
 
 	"github.com/alecthomas/errors"
 	. "github.com/alecthomas/types/optional"
+
+	"github.com/block/spectre/internal/model"
 )
 
 // document is one mutable normalisation copy; changing it never mutates captured data.
 // Its root is None once a normaliser removes it.
 type document struct {
-	root Option[any]
+	root Option[model.DynamicValue]
 }
 
-func newDocument(root any) *document {
+func newDocument(root model.DynamicValue) *document {
 	return &document{root: Some(root)}
 }
 
@@ -28,7 +30,7 @@ func (d *document) Delete(path documentPath) error {
 		return nil
 	}
 	if path.empty() {
-		d.root = None[any]()
+		d.root = None[model.DynamicValue]()
 		return nil
 	}
 	updated, err := path.delete(root)
@@ -40,7 +42,7 @@ func (d *document) Delete(path documentPath) error {
 }
 
 // Set replaces the value at path, whose parent must already exist.
-func (d *document) Set(path documentPath, value any) error {
+func (d *document) Set(path documentPath, value model.DynamicValue) error {
 	if path.empty() {
 		d.root = Some(value)
 		return nil
@@ -52,16 +54,16 @@ func (d *document) Set(path documentPath, value any) error {
 	return path.set(root, value)
 }
 
-func (d *document) Export() Option[any] {
+func (d *document) Export() Option[model.DynamicValue] {
 	return d.root
 }
 
 // documentValue distinguishes an absent path, None, from a present JSON null value.
 type documentValue struct {
-	value Option[any]
+	value Option[model.DynamicValue]
 }
 
-func newDocumentValue(value Option[any]) documentValue {
+func newDocumentValue(value Option[model.DynamicValue]) documentValue {
 	return documentValue{value: value}
 }
 
@@ -74,17 +76,17 @@ func (v documentValue) isNull() bool {
 	return present && value == nil
 }
 
-func (v documentValue) normaliserArgument() Option[any] {
+func (v documentValue) normaliserArgument() Option[model.DynamicValue] {
 	return v.value
 }
 
-func (v documentValue) array() ([]any, bool) {
-	array, ok := v.value.Default(nil).([]any)
+func (v documentValue) array() ([]model.DynamicValue, bool) {
+	array, ok := v.value.Default(nil).([]model.DynamicValue)
 	return array, ok
 }
 
-func (v documentValue) object() (map[string]any, bool) {
-	object, ok := v.value.Default(nil).(map[string]any)
+func (v documentValue) object() (map[string]model.DynamicValue, bool) {
+	object, ok := v.value.Default(nil).(map[string]model.DynamicValue)
 	return object, ok
 }
 
@@ -136,15 +138,15 @@ func (p documentPath) indexedSiblingBefore(other documentPath) bool {
 	return leftIndex > rightIndex
 }
 
-func (p documentPath) value(root Option[any]) documentValue {
-	absent := newDocumentValue(None[any]())
+func (p documentPath) value(root Option[model.DynamicValue]) documentValue {
+	absent := newDocumentValue(None[model.DynamicValue]())
 	value, present := root.Get()
 	if !present {
 		return absent
 	}
 	for _, part := range p.parts {
 		if index, indexed := part.arrayIndex(); indexed {
-			array, ok := value.([]any)
+			array, ok := value.([]model.DynamicValue)
 			if !ok || index < 0 || index >= len(array) {
 				return absent
 			}
@@ -155,7 +157,7 @@ func (p documentPath) value(root Option[any]) documentValue {
 		if !named {
 			return absent
 		}
-		object, ok := value.(map[string]any)
+		object, ok := value.(map[string]model.DynamicValue)
 		if !ok {
 			return absent
 		}
@@ -168,11 +170,11 @@ func (p documentPath) value(root Option[any]) documentValue {
 	return newDocumentValue(Some(value))
 }
 
-func (p documentPath) delete(root any) (any, error) {
+func (p documentPath) delete(root model.DynamicValue) (model.DynamicValue, error) {
 	return deleteDocumentValue(root, p.parts)
 }
 
-func (p documentPath) set(root any, value any) error {
+func (p documentPath) set(root model.DynamicValue, value model.DynamicValue) error {
 	parent := p.parent().value(Some(root))
 	if !parent.isPresent() {
 		return errors.New("normalisation path parent is absent")
@@ -278,10 +280,10 @@ func (p pathPart) equals(other pathPart) bool {
 }
 
 // deleteDocumentValue mutates only maps and slices owned by its document.
-func deleteDocumentValue(value any, parts []pathPart) (any, error) {
+func deleteDocumentValue(value model.DynamicValue, parts []pathPart) (model.DynamicValue, error) {
 	part := parts[0]
 	if index, indexed := part.arrayIndex(); indexed {
-		array, ok := value.([]any)
+		array, ok := value.([]model.DynamicValue)
 		if !ok {
 			if value == nil {
 				return value, nil
@@ -305,7 +307,7 @@ func deleteDocumentValue(value any, parts []pathPart) (any, error) {
 	if !named {
 		return nil, errors.New("comparison path contains an invalid part")
 	}
-	object, ok := value.(map[string]any)
+	object, ok := value.(map[string]model.DynamicValue)
 	if !ok {
 		if value == nil {
 			return value, nil

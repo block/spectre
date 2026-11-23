@@ -11,6 +11,8 @@ import (
 
 	"github.com/alecthomas/errors"
 	. "github.com/alecthomas/types/optional"
+
+	"github.com/block/spectre/internal/model"
 )
 
 // Kind is the JSON shape of a value.
@@ -311,11 +313,11 @@ func (s *Schema) Operations() []Operation {
 
 // Validate checks that a value is an instance of the named type, rejecting unknown
 // keys and nulls outside nullable members. Errors never quote payload keys.
-func (s *Schema) Validate(name TypeRef, value any) error {
+func (s *Schema) Validate(name TypeRef, value model.DynamicValue) error {
 	return s.validate(Value{Kind: KindObject, Type: name}, value, "$")
 }
 
-func (s *Schema) validate(expected Value, value any, path string) error {
+func (s *Schema) validate(expected Value, value model.DynamicValue, path string) error {
 	switch expected.Kind {
 	case KindString:
 		if _, ok := value.(string); ok {
@@ -344,7 +346,7 @@ func (s *Schema) validate(expected Value, value any, path string) error {
 		if !hasElement {
 			return errors.Errorf("%s: list has no element type", path)
 		}
-		if items, ok := value.([]any); ok {
+		if items, ok := value.([]model.DynamicValue); ok {
 			for index, item := range items {
 				if err := s.validate(*element, item, path+"["+strconv.Itoa(index)+"]"); err != nil {
 					return err
@@ -357,7 +359,7 @@ func (s *Schema) validate(expected Value, value any, path string) error {
 		if !hasElement {
 			return errors.Errorf("%s: map has no element type", path)
 		}
-		if entries, ok := value.(map[string]any); ok {
+		if entries, ok := value.(map[string]model.DynamicValue); ok {
 			for _, key := range slices.Sorted(maps.Keys(entries)) {
 				// A map key is payload data, so the path holds a wildcard instead.
 				if err := s.validate(*element, entries[key], path+"[*]"); err != nil {
@@ -367,14 +369,14 @@ func (s *Schema) validate(expected Value, value any, path string) error {
 			return nil
 		}
 	case KindObject:
-		if object, ok := value.(map[string]any); ok {
+		if object, ok := value.(map[string]model.DynamicValue); ok {
 			return s.validateObject(expected.Type, object, path)
 		}
 	}
 	return errors.Errorf("%s: expected %s, found %s", path, expected, jsonKind(value))
 }
 
-func (s *Schema) validateObject(name TypeRef, object map[string]any, path string) error {
+func (s *Schema) validateObject(name TypeRef, object map[string]model.DynamicValue, path string) error {
 	declared, err := s.Type(name)
 	if err != nil {
 		return errors.Wrap(err, path)
@@ -403,7 +405,7 @@ func (s *Schema) validateObject(name TypeRef, object map[string]any, path string
 	return nil
 }
 
-func jsonKind(value any) string {
+func jsonKind(value model.DynamicValue) string {
 	switch value.(type) {
 	case nil:
 		return "null"
@@ -413,9 +415,9 @@ func jsonKind(value any) string {
 		return "a number"
 	case bool:
 		return "a boolean"
-	case []any:
+	case []model.DynamicValue:
 		return "an array"
-	case map[string]any:
+	case map[string]model.DynamicValue:
 		return "an object"
 	default:
 		return "an unsupported value"

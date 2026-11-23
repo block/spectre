@@ -81,7 +81,7 @@ type Raw interface {
 // Message is a decoded payload. One without a Type is compared without normalisers.
 type Message struct {
 	Type  Option[schema.TypeRef]
-	Value any
+	Value model.DynamicValue
 }
 
 // Response is what a server received for a forwarded request.

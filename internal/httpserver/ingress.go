@@ -158,7 +158,7 @@ func stateRoutes(migration Option[state.State]) (Option[*route.Map[stateRoute]],
 	kind := model.IOKind{Direction: model.Ingress, Protocol: model.ProtocolHTTP}
 	routes := route.New[stateRoute]()
 	for _, node := range nodes.Nodes {
-		entries, _ := node.IO[kind][routesSetting].(map[string]any)
+		entries, _ := node.IO[kind][routesSetting].(map[string]model.DynamicValue)
 		for _, pattern := range slices.Sorted(maps.Keys(entries)) {
 			listed := stateRoute{pattern: model.Route(pattern), nodeID: node.ID, migrated: node.Status == state.Migrated}
 			if err := routes.Add(pattern, listed); err != nil {

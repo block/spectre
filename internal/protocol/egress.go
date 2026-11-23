@@ -338,7 +338,7 @@ func (q *egressQueue) respond(ctx context.Context, requestID RequestID, protocol
 // translate. Hashing normalises the value in place, and replacement functions see only its JSON.
 func (q *egressQueue) identify(ctx context.Context, protocol model.Protocol, route model.Route,
 	request func(ctx context.Context) (Message, error),
-) (comparison.Hash, any, error) {
+) (comparison.Hash, model.DynamicValue, error) {
 	message, err := request(ctx)
 	if err != nil {
 		return comparison.Hash{}, nil, errors.Wrap(err, "identify candidate request")
@@ -349,7 +349,7 @@ func (q *egressQueue) identify(ctx context.Context, protocol model.Protocol, rou
 	}
 	decoder := json.NewDecoder(bytes.NewReader(encoded))
 	decoder.UseNumber()
-	var value any
+	var value model.DynamicValue
 	if err := decoder.Decode(&value); err != nil {
 		return comparison.Hash{}, nil, errors.Wrap(err, "copy candidate request")
 	}
@@ -774,7 +774,7 @@ func (e *egressExchange) wait(ctx context.Context) (Raw, error) {
 
 // decoded waits for a source reference response and returns its value. It
 // outlives the recorded response, so it never claims or releases it.
-func (e *egressExchange) decoded(ctx context.Context) (any, error) {
+func (e *egressExchange) decoded(ctx context.Context) (model.DynamicValue, error) {
 	outcome, err := e.outcome.Wait(ctx)
 	if err != nil {
 		return nil, errors.Wrap(err, "wait for source reference response")
