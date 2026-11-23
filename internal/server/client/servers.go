@@ -57,8 +57,7 @@ func (s *Servers) ListDivergences(ctx context.Context, filter model.DivergenceFi
 	}
 	var status model.Status
 	for _, listed := range statuses {
-		status.States = append(status.States, listed.States...)
-		status.Divergences = append(status.Divergences, listed.Divergences...)
+		status = status.Plus(listed)
 	}
 	return status, nil
 }

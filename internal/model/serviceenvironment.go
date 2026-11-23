@@ -11,8 +11,8 @@ import (
 // in one environment. Its history outlives its reporting mirror.
 type ServiceEnvironment struct {
 	EnvironmentStatus
-	Received time.Time
-	Cleared  Option[time.Time]
+	Received time.Time         `json:"received"`
+	Cleared  Option[time.Time] `json:"cleared,omitzero"`
 }
 
 // Observed replaces the live state and optionally records its quarantines.
@@ -61,4 +61,21 @@ func (e ServiceEnvironment) ForgetStateBefore(since time.Time) ServiceEnvironmen
 		e.State = None[State]()
 	}
 	return e
+}
+
+// Retained omits records that have neither live state nor recorded history.
+func (e ServiceEnvironment) Retained() Option[ServiceEnvironment] {
+	if !e.State.Ok() && len(e.Divergences) == 0 && !e.Cleared.Ok() {
+		return None[ServiceEnvironment]()
+	}
+	return Some(e)
+}
+
+// Listed projects live state and divergence history into a status response.
+func (e ServiceEnvironment) Listed() Status {
+	status := Status{Divergences: e.Divergences}
+	if state, ok := e.State.Get(); ok {
+		status.States = []State{state}
+	}
+	return status
 }

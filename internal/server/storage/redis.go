@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"net/url"
 	"strings"
-	"time"
 
 	"github.com/alecthomas/errors"
 	. "github.com/alecthomas/types/optional"
@@ -32,34 +31,32 @@ func init() {
 // cluster URLs with the plain schemes, so the suffix is the only way to tell.
 const clusterSuffix = "-cluster"
 
-// statesKey is the Redis hash that maps each stateKey to its stored state as JSON.
-const statesKey = "spectre:states"
+// environmentsKey stores one JSON aggregate per service environment.
+const environmentsKey = "spectre:environments"
 
-// divergencesKey is the Redis hash that maps each sourceField to its divergence
-// as JSON, and each clearedField to when its divergences were last cleared.
-const divergencesKey = "spectre:divergences"
-
-// clearedSuffix ends every clearedField. A quoted environment ends with a
-// quote, so no sourceField ends with it.
-const clearedSuffix = `" cleared`
-
-// forgetIfUnchanged deletes a hash field only if it still holds the given value,
-// so forgetting a stale state never deletes a newer one.
-const forgetIfUnchanged = `
-if redis.call("HGET", KEYS[1], ARGV[1]) == ARGV[2] then
-  return redis.call("HDEL", KEYS[1], ARGV[1])
+// replaceIfUnchanged compares one field, so unrelated environments do not conflict.
+const replaceIfUnchanged = `
+local current=redis.call("HGET",KEYS[1],ARGV[1]) or ""
+if current~=ARGV[2] then return 0 end
+if ARGV[3]=="" then
+ redis.call("HDEL",KEYS[1],ARGV[1])
+else
+ redis.call("HSET",KEYS[1],ARGV[1],ARGV[3])
 end
-return 0
+return 1
 `
 
-// Redis keeps states and divergences in two hashes, shared by servers using the
-// same database. Each command touches one key, so it works in a cluster.
+// Redis stores immutable service-environment aggregates in one cluster-compatible hash.
 type Redis struct {
 	client redis.UniversalClient
-	forget *redis.Script
 }
 
 var _ Store = (*Redis)(nil)
+
+type replaceCommand struct{ *redis.Cmd }
+
+// NoRetry prevents reapplying a transition if Redis commits it but loses the reply.
+func (replaceCommand) NoRetry() bool { return true }
 
 // NewRedis connects to the Redis server at a redis:// or rediss:// URL, or to
 // the Redis Cluster at a redis-cluster:// or rediss-cluster:// URL.
@@ -72,7 +69,17 @@ func NewRedis(ctx context.Context, storageURL *url.URL) (*Redis, error) {
 		_ = client.Close() //nolint:errcheck // The connection failed, so closing has nothing to report.
 		return nil, errors.Wrap(err, "connect to Redis")
 	}
-	return &Redis{client: client, forget: redis.NewScript(forgetIfUnchanged)}, nil
+	for _, key := range []string{"spectre:states", "spectre:divergences", "spectre:calls:{spectre:divergences}"} {
+		exists, err := client.Exists(ctx, key).Result()
+		if err != nil || exists > 0 {
+			_ = client.Close() //nolint:errcheck // Opening failed; close the unused client.
+			if err != nil {
+				return nil, errors.Wrap(err, "check Redis storage format")
+			}
+			return nil, errors.Errorf("Redis contains previous-format SPECTRE data in %s; keep the previous server or use a fresh database", key)
+		}
+	}
+	return &Redis{client: client}, nil
 }
 
 func newRedisClient(storageURL *url.URL) (redis.UniversalClient, error) {
@@ -98,202 +105,71 @@ func newRedisClient(storageURL *url.URL) (redis.UniversalClient, error) {
 	return redis.NewClusterClient(options), nil
 }
 
-// Observe replaces a mirror's state and optionally records its quarantines.
-// State and history retain their separate Redis writes and persistence formats.
-func (r *Redis) Observe(ctx context.Context, state model.State, at time.Time, recordQuarantines bool) error {
-	if err := r.put(ctx, state, at); err != nil {
-		return err
-	}
-	if recordQuarantines {
-		for _, divergence := range state.Divergences() {
-			if err := r.record(ctx, divergence); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
-// List returns live states and recorded divergences, forgetting expired states.
-func (r *Redis) List(ctx context.Context, since time.Time) (model.Status, error) {
-	states, err := r.states(ctx, since)
-	if err != nil {
-		return model.Status{}, err
-	}
-	divergences, err := r.divergences(ctx)
-	if err != nil {
-		return model.Status{}, err
-	}
-	return model.Status{States: states, Divergences: divergences}, nil
-}
-
-// put replaces the state of a service environment's mirror.
-func (r *Redis) put(ctx context.Context, state model.State, at time.Time) error {
-	value, err := json.Marshal(received{State: state, Received: at})
-	if err != nil {
-		return errors.Wrap(err, "encode state")
-	}
-	err = r.client.HSet(ctx, statesKey, stateKey(state.Service, state.Environment), value).Err()
-	return errors.Wrap(err, "store state")
-}
-
-// states returns the states received at or after since, in no particular
-// order, and forgets older ones.
-func (r *Redis) states(ctx context.Context, since time.Time) ([]model.State, error) {
-	values, err := r.client.HGetAll(ctx, statesKey).Result()
-	if err != nil {
-		return nil, errors.Wrap(err, "list states")
-	}
-	states := make([]model.State, 0, len(values))
-	for field, value := range values {
-		stored, err := decodeState([]byte(value))
-		if err != nil {
-			return nil, err
-		}
-		if !stored.Received.Before(since) {
-			states = append(states, stored.State)
-			continue
-		}
-		if err := r.forget.Run(ctx, r.client, []string{statesKey}, field, value).Err(); err != nil {
-			return nil, errors.Wrap(err, "forget stale state")
-		}
-	}
-	return states, nil
-}
-
-// record keeps a divergence unless its source has already reported a later
-// quarantine, or its service environment was cleared after it began.
-func (r *Redis) record(ctx context.Context, divergence model.Divergence) error {
-	field := sourceField(divergence.Service, divergence.Environment, divergence.Direction)
-	cleared := clearedField(divergence.Service, divergence.Environment)
-	value, err := json.Marshal(divergence)
-	if err != nil {
-		return errors.Wrap(err, "encode divergence")
-	}
-	// The comparison happens in Go, so watch the hash and retry whenever another
-	// write lands between reading the stored values and replacing the divergence.
+// Update retries a pure transition if another writer changes the same aggregate.
+func (r *Redis) Update(ctx context.Context, service, environment string, change func(current model.ServiceEnvironment) Option[model.ServiceEnvironment]) error {
+	field := stateKey(service, environment)
 	for {
-		err := r.client.Watch(ctx, func(tx *redis.Tx) error {
-			values, err := tx.HMGet(ctx, divergencesKey, field, cleared).Result()
-			if err != nil {
-				return errors.Wrap(err, "read divergence")
-			}
-			storedText, storedFound := values[0].(string)
-			stored, err := decodeOptional(From(storedText, storedFound), func(data []byte) (model.Quarantine, error) {
-				existing, err := decodeDivergence(data)
-				return existing.Quarantine, err
-			})
+		value, err := r.client.HGet(ctx, environmentsKey, field).Result()
+		if err != nil && !errors.Is(err, redis.Nil) {
+			return errors.Wrap(err, "read service environment")
+		}
+		current := newEnvironment(service, environment)
+		if err == nil {
+			current, err = decodeEnvironment([]byte(value))
 			if err != nil {
 				return err
 			}
-			clearedText, clearedFound := values[1].(string)
-			clearedAt, err := decodeOptional(From(clearedText, clearedFound), decodeCleared)
+		}
+		replacement := ""
+		if next, ok := change(current).Get(); ok {
+			data, err := json.Marshal(next)
 			if err != nil {
-				return err
+				return errors.Wrap(err, "encode service environment")
 			}
-			if divergence.Quarantine.SupersededBy(stored, clearedAt) {
-				return nil
-			}
-			_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
-				return errors.WithStack(pipe.HSet(ctx, divergencesKey, field, value).Err())
-			})
-			return errors.WithStack(err)
-		}, divergencesKey)
-		if !errors.Is(err, redis.TxFailedErr) {
-			return errors.Wrap(err, "record divergence")
+			replacement = string(data)
+		}
+		command := replaceCommand{redis.NewCmd(ctx, "eval", replaceIfUnchanged, 1, environmentsKey, field, value, replacement)}
+		command.SetFirstKeyPos(3)
+		if err := r.client.Process(ctx, command); err != nil {
+			return errors.Wrap(err, "replace service environment")
+		}
+		changed, err := command.Int64()
+		if err != nil {
+			return errors.Wrap(err, "replace service environment")
+		}
+		if changed == 1 {
+			return nil
 		}
 	}
 }
 
-// Clear removes the divergences of a service environment's mirror, and
-// ignores its quarantines that began before at.
-func (r *Redis) Clear(ctx context.Context, service, environment string, at time.Time) error {
-	value, err := json.Marshal(at)
+// List returns immutable aggregate snapshots in no particular order.
+func (r *Redis) List(ctx context.Context) ([]model.ServiceEnvironment, error) {
+	values, err := r.client.HGetAll(ctx, environmentsKey).Result()
 	if err != nil {
-		return errors.Wrap(err, "encode clear time")
+		return nil, errors.Wrap(err, "list service environments")
 	}
-	_, err = r.client.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
-		pipe.HDel(ctx, divergencesKey, sourceField(service, environment, model.Ingress), sourceField(service, environment, model.Egress))
-		pipe.HSet(ctx, divergencesKey, clearedField(service, environment), value)
-		return nil
-	})
-	return errors.Wrap(err, "clear divergences")
-}
-
-// divergences returns every stored divergence, in no particular order.
-func (r *Redis) divergences(ctx context.Context) ([]model.Divergence, error) {
-	values, err := r.client.HGetAll(ctx, divergencesKey).Result()
-	if err != nil {
-		return nil, errors.Wrap(err, "list divergences")
-	}
-	divergences := make([]model.Divergence, 0, len(values))
-	for field, value := range values {
-		if strings.HasSuffix(field, clearedSuffix) {
-			continue
-		}
-		divergence, err := decodeDivergence([]byte(value))
+	environments := make([]model.ServiceEnvironment, 0, len(values))
+	for _, value := range values {
+		environment, err := decodeEnvironment([]byte(value))
 		if err != nil {
 			return nil, err
 		}
-		divergences = append(divergences, divergence)
+		environments = append(environments, environment)
 	}
-	return divergences, nil
+	return environments, nil
 }
 
 // Close disconnects from Redis.
-func (r *Redis) Close() error {
-	return errors.Wrap(r.client.Close(), "close Redis client")
-}
+func (r *Redis) Close() error { return errors.Wrap(r.client.Close(), "close Redis client") }
 
-// decodeState rejects unknown fields, so a stored format that has drifted
-// fails loudly instead of losing data.
-func decodeState(data []byte) (received, error) {
+// decodeEnvironment rejects unknown fields throughout the persisted aggregate.
+func decodeEnvironment(data []byte) (model.ServiceEnvironment, error) {
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
-	var stored received
-	if err := decoder.Decode(&stored); err != nil {
-		return received{}, errors.Wrap(err, "decode state")
+	var environment model.ServiceEnvironment
+	if err := decoder.Decode(&environment); err != nil {
+		return model.ServiceEnvironment{}, errors.Wrap(err, "decode service environment")
 	}
-	return stored, nil
-}
-
-// sourceField identifies the proxy of one direction of a service environment's mirror.
-func sourceField(service, environment string, direction model.Direction) string {
-	return stateKey(service, environment) + " " + string(direction)
-}
-
-// clearedField holds when the divergences of a service environment were last cleared.
-func clearedField(service, environment string) string {
-	return stateKey(service, environment) + " cleared"
-}
-
-// decodeOptional decodes a hash field, which is absent when HMGET found none.
-func decodeOptional[T any](field Option[string], decode func(data []byte) (T, error)) (Option[T], error) {
-	text, ok := field.Get()
-	if !ok {
-		return None[T](), nil
-	}
-	decoded, err := decode([]byte(text))
-	if err != nil {
-		return None[T](), err
-	}
-	return Some(decoded), nil
-}
-
-// decodeDivergence rejects unknown fields, so a stored format that has drifted
-// fails loudly instead of losing data.
-func decodeDivergence(data []byte) (model.Divergence, error) {
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.DisallowUnknownFields()
-	var divergence model.Divergence
-	if err := decoder.Decode(&divergence); err != nil {
-		return model.Divergence{}, errors.Wrap(err, "decode divergence")
-	}
-	return divergence, nil
-}
-
-func decodeCleared(data []byte) (time.Time, error) {
-	var at time.Time
-	err := json.Unmarshal(data, &at)
-	return at, errors.Wrap(err, "decode clear time")
+	return environment, nil
 }

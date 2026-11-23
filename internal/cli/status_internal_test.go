@@ -18,10 +18,11 @@ import (
 
 func TestStatusCommands(t *testing.T) {
 	// Production and staging mirrors report to servers of their own.
-	store, stagingStore := storage.NewMemory(), storage.NewMemory()
-	httpServer := httptest.NewServer(server.NewService(store, time.Hour).Handler())
+	backend, stagingBackend := storage.NewMemory(), storage.NewMemory()
+	store, stagingStore := storage.NewRepository(backend), storage.NewRepository(stagingBackend)
+	httpServer := httptest.NewServer(server.NewService(backend, time.Hour).Handler())
 	t.Cleanup(httpServer.Close)
-	stagingServer := httptest.NewServer(server.NewService(stagingStore, time.Hour).Handler())
+	stagingServer := httptest.NewServer(server.NewService(stagingBackend, time.Hour).Handler())
 	t.Cleanup(stagingServer.Close)
 	spectre := client.NewServers(client.ServersConfig{URLs: []string{httpServer.URL, stagingServer.URL}})
 	first := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)

@@ -1,6 +1,9 @@
 package model
 
 import (
+	"bytes"
+	"encoding/json"
+	"github.com/alecthomas/errors"
 	"maps"
 	"time"
 )
@@ -44,4 +47,12 @@ func (s State) Divergences() []Divergence {
 		}
 	}
 	return divergences
+}
+
+// UnmarshalJSON retains strict decoding when a state is held in an Option.
+func (s *State) UnmarshalJSON(data []byte) error {
+	type plain State
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	return errors.Wrap(decoder.Decode((*plain)(s)), "decode state")
 }

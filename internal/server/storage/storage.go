@@ -7,9 +7,9 @@ import (
 	"context"
 	"net/url"
 	"strconv"
-	"time"
 
 	"github.com/alecthomas/errors"
+	. "github.com/alecthomas/types/optional"
 
 	"github.com/block/spectre/internal/model"
 )
@@ -48,17 +48,13 @@ func (c Config) constructor() (Constructor, error) {
 	return constructor, nil
 }
 
-// Store keeps live state and recorded history for service environments.
-// Callers validate reports and never mutate stored values.
+// Store persists immutable service-environment snapshots.
+// Update callbacks may run more than once and must not mutate shared values.
 type Store interface {
-	// Observe replaces live state and optionally records its quarantines.
-	Observe(ctx context.Context, state model.State, received time.Time, recordQuarantines bool) error
-	// List returns states received at or after since and recorded divergences.
-	// It forgets older states; the two collections need not be an atomic snapshot.
-	List(ctx context.Context, since time.Time) (model.Status, error)
-	// Clear removes the divergences of a service environment's mirror, and
-	// ignores its quarantines that began at or before at.
-	Clear(ctx context.Context, service, environment string, at time.Time) error
+	// Update atomically changes one aggregate, creating it if absent or deleting it for None.
+	Update(ctx context.Context, service, environment string, change func(current model.ServiceEnvironment) Option[model.ServiceEnvironment]) error
+	// List returns snapshots in no particular order.
+	List(ctx context.Context) ([]model.ServiceEnvironment, error)
 	Close() error
 }
 
@@ -77,8 +73,7 @@ func stateKey(service, environment string) string {
 	return strconv.Quote(service) + " " + strconv.Quote(environment)
 }
 
-// received is a state as stored, with when the server received it.
-type received struct {
-	State    model.State `json:"state"`
-	Received time.Time   `json:"received"`
+// newEnvironment supplies the identity of an aggregate that is not stored yet.
+func newEnvironment(service, environment string) model.ServiceEnvironment {
+	return model.ServiceEnvironment{EnvironmentStatus: model.EnvironmentStatus{Service: service, Environment: environment}}
 }

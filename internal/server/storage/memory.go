@@ -2,10 +2,12 @@ package storage
 
 import (
 	"context"
+	"maps"
 	"net/url"
+	"slices"
 	"sync"
-	"time"
 
+	. "github.com/alecthomas/types/optional"
 	"github.com/block/spectre/internal/model"
 )
 
@@ -13,8 +15,7 @@ func init() {
 	register("memory", func(context.Context, *url.URL) (Store, error) { return NewMemory(), nil })
 }
 
-// Memory keeps service environments in memory, so a restart loses them.
-// Stored values share their maps with callers, who never mutate them.
+// Memory persists immutable aggregates under a mutex. A restart loses them.
 type Memory struct {
 	mu           sync.Mutex
 	environments map[string]model.ServiceEnvironment
@@ -23,48 +24,31 @@ type Memory struct {
 var _ Store = (*Memory)(nil)
 
 // NewMemory returns an empty in-memory store.
-func NewMemory() *Memory {
-	return &Memory{environments: map[string]model.ServiceEnvironment{}}
-}
+func NewMemory() *Memory { return &Memory{environments: map[string]model.ServiceEnvironment{}} }
 
-// Observe replaces a mirror's state and optionally records its quarantines.
-func (m *Memory) Observe(_ context.Context, state model.State, at time.Time, recordQuarantines bool) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	key := stateKey(state.Service, state.Environment)
-	m.environments[key] = m.environments[key].Observed(state, at, recordQuarantines)
-	return nil
-}
-
-// List returns live states and recorded divergences, forgetting expired states.
-func (m *Memory) List(_ context.Context, since time.Time) (model.Status, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	status := model.Status{States: []model.State{}, Divergences: []model.Divergence{}}
-	for key, environment := range m.environments {
-		environment = environment.ForgetStateBefore(since)
-		m.environments[key] = environment
-		state, reporting := environment.State.Get()
-		if reporting {
-			status.States = append(status.States, state)
-		} else if len(environment.Divergences) == 0 && !environment.Cleared.Ok() {
-			delete(m.environments, key)
-		}
-		status.Divergences = append(status.Divergences, environment.Divergences...)
-	}
-	return status, nil
-}
-
-// Clear removes recorded divergences and ignores quarantines from at or before.
-func (m *Memory) Clear(_ context.Context, service, environment string, at time.Time) error {
+// Update atomically changes or deletes one environment.
+func (m *Memory) Update(_ context.Context, service, environment string, change func(current model.ServiceEnvironment) Option[model.ServiceEnvironment]) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	key := stateKey(service, environment)
-	stored := m.environments[key]
-	stored.Service, stored.Environment = service, environment
-	m.environments[key] = stored.ClearedAt(at)
+	current, found := m.environments[key]
+	if !found {
+		current = newEnvironment(service, environment)
+	}
+	if next, ok := change(current).Get(); ok {
+		m.environments[key] = next
+	} else {
+		delete(m.environments, key)
+	}
 	return nil
 }
 
-// Close does nothing, because memory holds no resources.
+// List returns immutable snapshots in no particular order.
+func (m *Memory) List(_ context.Context) ([]model.ServiceEnvironment, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return slices.Collect(maps.Values(m.environments)), nil
+}
+
+// Close does nothing because memory holds no resources.
 func (m *Memory) Close() error { return nil }

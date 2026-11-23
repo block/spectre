@@ -68,3 +68,10 @@ func (s Status) Environments() []EnvironmentStatus {
 func compareEnvironment(aService, aEnvironment, bService, bEnvironment string) int {
 	return cmp.Or(cmp.Compare(aService, bService), cmp.Compare(aEnvironment, bEnvironment))
 }
+
+// Plus combines server responses without grouping their reports.
+func (s Status) Plus(other Status) Status {
+	s.States = append(s.States, other.States...)
+	s.Divergences = append(s.Divergences, other.Divergences...)
+	return s
+}

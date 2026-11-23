@@ -1,4 +1,7 @@
 import { defineAnalyzer } from "tsk";
+import { inspect } from "tsk/passes";
+import * as ast from "go/ast";
+import * as typeutil from "golang.org/x/tools/go/types/typeutil";
 
 // Module-relative path of the command line, which owns all terminal output.
 const cliPackage = "internal/cli";
@@ -21,7 +24,11 @@ terminal output is the domain of the command line. Domain packages return data.
 
 Only the SPECTRE server's API boundary, ${protocolBoundary.join(", ")}, may
 import ${protocolPackages.join(" or ")}, because protocol messages stop at the
-API. Everything else uses internal/model types, which the boundary converts.`,
+API. Everything else uses internal/model types, which the boundary converts.
+
+Storage adapters persist aggregates. Domain transitions belong in the storage
+repository, so backend files must not call methods from internal/model.`,
+  requires: [inspect],
   run(pass) {
     // Generated test main packages live in the build cache, not the source tree.
     if (pass.pkg.path().endsWith(".test")) {
@@ -34,6 +41,19 @@ API. Everything else uses internal/model types, which the boundary converts.`,
     const owner = relative(pass.pkg.path()).replace(/_test$/, "");
     const inCLI = owner === cliPackage || owner.startsWith(cliPackage + "/");
     const atProtocolBoundary = protocolBoundary.includes(owner) || protocolPackages.includes(owner);
+    if (owner === "internal/server/storage") {
+      for (const cursor of pass.resultOf(inspect).root().preorder(ast.CallExpr)) {
+        const call = cursor.node() as ast.CallExpr;
+        const filename = pass.fset.position(call.pos()).filename;
+        if (/(?:repository|storage)(?:_test)?\.go$|_test\.go$/.test(filename)) {
+          continue;
+        }
+        const fn = typeutil.callee(pass.typesInfo, call);
+        if (fn?.$type === "Func" && relative(fn.pkg()?.path() ?? "") === "internal/model" && fn.signature()?.recv() !== null) {
+          pass.report({ pos: call.pos(), message: "storage adapters persist aggregates; apply domain transitions in the repository" });
+        }
+      }
+    }
     for (const file of pass.files) {
       for (const spec of file.imports) {
         const path = spec?.path?.value.slice(1, -1);

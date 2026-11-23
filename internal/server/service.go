@@ -26,14 +26,14 @@ import (
 
 // Service serves the SPECTRE service API.
 type Service struct {
-	store storage.Store
+	store *storage.Repository
 	ttl   time.Duration
 }
 
 // NewService returns a SPECTRE server that keeps mirror states and divergences
 // in store, and lists the states received within ttl.
 func NewService(store storage.Store, ttl time.Duration) *Service {
-	return &Service{store: store, ttl: ttl}
+	return &Service{store: storage.NewRepository(store), ttl: ttl}
 }
 
 // Handler serves the API.
