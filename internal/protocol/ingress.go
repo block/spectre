@@ -2,6 +2,7 @@ package protocol
 
 import (
 	"context"
+	"log/slog"
 	"strconv"
 	"sync"
 	"time"
@@ -113,8 +114,8 @@ func (p *ingressPair) id() RequestID {
 }
 
 // describe returns the log attributes that identify the pair.
-func (p *ingressPair) describe() []any {
-	return []any{"protocol", p.protocol, "route", p.route}
+func (p *ingressPair) describe() []slog.Attr {
+	return []slog.Attr{slog.Any("protocol", p.protocol), slog.Any("route", p.route)}
 }
 
 func (p *ingressPair) traffic() model.Traffic {
@@ -426,8 +427,8 @@ func (p *ingressPairs) candidateResponse(ctx context.Context, exchange Exchange,
 	p.report(ctx, pair, result, response.Latency)
 }
 
-func (p *ingressPairs) unfinished(ctx context.Context, attributes []any, err error) {
-	logger.FromContext(ctx).WarnContext(context.WithoutCancel(ctx), "Response comparison did not finish", append(attributes, "error", err)...)
+func (p *ingressPairs) unfinished(ctx context.Context, attributes []slog.Attr, err error) {
+	logger.FromContext(ctx).LogAttrs(context.WithoutCancel(ctx), slog.LevelWarn, "Response comparison did not finish", append(attributes, slog.Any("error", err))...)
 }
 
 // candidateUnable reports a candidate that did not respond. Cancelled work never
@@ -454,18 +455,18 @@ func (p *ingressPairs) candidateUnable(ctx context.Context, exchange Exchange, r
 
 // report logs and counts a comparison, and applies the fail-closed policy to it.
 func (p *ingressPairs) report(ctx context.Context, pair *ingressPair, result comparisonResult, latency time.Duration) {
-	attributes := append([]any{"event", logger.EventCorrelation}, pair.describe()...)
-	attributes = append(attributes, "outcome", result.outcome)
+	attributes := append([]slog.Attr{slog.String("event", logger.EventCorrelation)}, pair.describe()...)
+	attributes = append(attributes, slog.Any("outcome", result.outcome))
 	if len(result.differences) > 0 {
-		attributes = append(attributes, "differences", model.DifferenceLines(result.differences, result.truncated))
+		attributes = append(attributes, slog.Any("differences", model.DifferenceLines(result.differences, result.truncated)))
 	}
 	if result.reason != "" {
-		attributes = append(attributes, "reason", result.reason)
+		attributes = append(attributes, slog.String("reason", result.reason))
 	}
 	if dt, ok := pair.latencyDelta(latency).Get(); ok {
-		attributes = append(attributes, "dt", dt)
+		attributes = append(attributes, slog.Duration("dt", dt))
 	}
-	logger.FromContext(ctx).InfoContext(ctx, "Response comparison completed", attributes...)
+	logger.FromContext(ctx).LogAttrs(ctx, slog.LevelInfo, "Response comparison completed", attributes...)
 	switch result.outcome {
 	case outcomeEquivalent, outcomeSkipped:
 	case outcomeDivergent:

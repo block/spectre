@@ -1,7 +1,6 @@
 package sample
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -81,18 +80,14 @@ func (w *Weather) forecast(ctx context.Context, baggage []string, name string) (
 // parseLocations decodes a JSON object mapping locations to
 // GetForecastV2Response values.
 func parseLocations(data []byte) (map[string]GetForecastV2Response, error) {
-	raw := map[string]json.RawMessage{}
-	if err := json.Unmarshal(data, &raw); err != nil {
+	// GetForecastV2Response rejects unknown fields itself, because Option bypasses decoder settings.
+	decoded := map[string]Option[GetForecastV2Response]{}
+	if err := json.Unmarshal(data, &decoded); err != nil {
 		return nil, errors.Wrap(err, "decode sample weather")
 	}
-	locations := make(map[string]GetForecastV2Response, len(raw))
-	for name, message := range raw {
-		// GetForecastV2Response rejects unknown fields itself, because Option bypasses decoder settings.
-		var decoded Option[GetForecastV2Response]
-		if err := json.NewDecoder(bytes.NewReader(message)).Decode(&decoded); err != nil {
-			return nil, errors.Wrapf(err, "decode sample weather for %q", name)
-		}
-		location, ok := decoded.Get()
+	locations := make(map[string]GetForecastV2Response, len(decoded))
+	for name, entry := range decoded {
+		location, ok := entry.Get()
 		if !ok {
 			return nil, errors.Errorf("decode sample weather for %q: expected an object", name)
 		}
@@ -108,7 +103,7 @@ func writeWeatherError(writer http.ResponseWriter, status int) {
 	})
 }
 
-func writeJSON(writer http.ResponseWriter, status int, message any) {
+func writeJSON[T any](writer http.ResponseWriter, status int, message T) {
 	body, err := json.Marshal(message)
 	if err != nil {
 		http.Error(writer, "encode response", http.StatusInternalServerError)

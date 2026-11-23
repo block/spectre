@@ -2,6 +2,7 @@ package comparisoninternal
 
 import (
 	"context"
+	"log/slog"
 
 	"github.com/block/spectre/internal/comparison/javascript"
 	"github.com/block/spectre/internal/logger"
@@ -65,7 +66,7 @@ func (r *normalisationRun) normalise(ctx context.Context) error {
 func (r *normalisationRun) logResult(ctx context.Context, occurrence occurrence, reason string) {
 	attributes := occurrence.logAttributes(r.side)
 	if reason != "" {
-		attributes = append(attributes, "outcome", "unable", "reason", reason)
+		attributes = append(attributes, slog.String("outcome", "unable"), slog.String("reason", reason))
 	}
-	logger.FromContext(ctx).DebugContext(ctx, "Payload normaliser completed", attributes...)
+	logger.FromContext(ctx).LogAttrs(ctx, slog.LevelDebug, "Payload normaliser completed", attributes...)
 }

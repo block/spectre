@@ -149,14 +149,16 @@ func (r *Redis) Record(ctx context.Context, divergence model.Divergence) error {
 			if err != nil {
 				return errors.Wrap(err, "read divergence")
 			}
-			stored, err := decodeOptional(values[0], func(data []byte) (model.Quarantine, error) {
+			storedText, storedFound := values[0].(string)
+			stored, err := decodeOptional(From(storedText, storedFound), func(data []byte) (model.Quarantine, error) {
 				existing, err := decodeDivergence(data)
 				return existing.Quarantine, err
 			})
 			if err != nil {
 				return err
 			}
-			clearedAt, err := decodeOptional(values[1], decodeCleared)
+			clearedText, clearedFound := values[1].(string)
+			clearedAt, err := decodeOptional(From(clearedText, clearedFound), decodeCleared)
 			if err != nil {
 				return err
 			}
@@ -236,9 +238,9 @@ func clearedField(service, environment string) string {
 	return stateKey(service, environment) + " cleared"
 }
 
-// decodeOptional decodes a value HMGET returned, which is nil for a missing field.
-func decodeOptional[T any](value any, decode func(data []byte) (T, error)) (Option[T], error) {
-	text, ok := value.(string)
+// decodeOptional decodes a hash field, which is absent when HMGET found none.
+func decodeOptional[T any](field Option[string], decode func(data []byte) (T, error)) (Option[T], error) {
+	text, ok := field.Get()
 	if !ok {
 		return None[T](), nil
 	}

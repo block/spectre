@@ -1,7 +1,9 @@
 package jsonschema
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"maps"
 	"net/url"
@@ -25,27 +27,20 @@ func Declarations(ctx context.Context, config Config) (string, error) {
 	}
 	compiler := compiled.NewCompiler()
 	compiler.DefaultDraft(compiled.Draft2020)
-	documents := make([]any, 0, len(config.Schemas))
+	roots := make([]documentRoot, 0, len(config.Schemas))
 	locations := make([]string, 0, len(config.Schemas))
 	for _, path := range config.Schemas {
-		document, err := readDocument(path)
-		if err != nil {
-			return "", err
-		}
-		location, err := documentLocation(path, document)
-		if err != nil {
-			return "", err
-		}
 		// Adding every input before compiling lets inputs refer to each other.
-		if err := compiler.AddResource(location, document); err != nil {
-			return "", errors.Wrapf(err, "add %q", path)
+		location, root, err := addDocument(compiler, path)
+		if err != nil {
+			return "", err
 		}
-		documents = append(documents, document)
+		roots = append(roots, root)
 		locations = append(locations, location)
 	}
 	converter := newConverter(config.Module)
 	for index, location := range locations {
-		if err := converter.declareDocument(compiler, location, documents[index]); err != nil {
+		if err := converter.declareDocument(compiler, location, roots[index]); err != nil {
 			return "", err
 		}
 	}
@@ -73,24 +68,61 @@ func WriteDeclarations(ctx context.Context, config Config, output string) error 
 	return errors.Wrapf(os.WriteFile(output, []byte(declarations), 0o600), "write %q", output)
 }
 
-func readDocument(path string) (any, error) {
-	file, err := os.Open(path)
+// addDocument registers the schema at path with the compiler under its location.
+func addDocument(compiler *compiled.Compiler, path string) (location string, root documentRoot, err error) {
+	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, errors.Wrap(err, "open schema")
+		return "", documentRoot{}, errors.Wrap(err, "open schema")
 	}
-	defer file.Close() //nolint:errcheck // Closing a read-only file cannot lose data.
-	document, err := compiled.UnmarshalJSON(file)
-	return document, errors.Wrapf(err, "read %q", path)
+	document, err := compiled.UnmarshalJSON(bytes.NewReader(data))
+	if err != nil {
+		return "", documentRoot{}, errors.Wrapf(err, "read %q", path)
+	}
+	root, err = readRoot(data)
+	if err != nil {
+		return "", documentRoot{}, errors.Wrapf(err, "read %q", path)
+	}
+	location, err = documentLocation(path, root.ID)
+	if err != nil {
+		return "", documentRoot{}, err
+	}
+	return location, root, errors.Wrapf(compiler.AddResource(location, document), "add %q", path)
+}
+
+// documentRoot holds the root keywords that locate a document and name its
+// definitions. Only keys are kept, because the compiler reads each definition.
+type documentRoot struct {
+	ID          string              `json:"$id"`
+	Schema      string              `json:"$schema"`
+	Defs        map[string]struct{} `json:"$defs"`
+	Definitions map[string]struct{} `json:"definitions"`
+}
+
+// readRoot decodes the root keywords of an object schema. A boolean schema has none.
+func readRoot(data []byte) (documentRoot, error) {
+	var root documentRoot
+	if !bytes.HasPrefix(bytes.TrimSpace(data), []byte("{")) {
+		return root, nil
+	}
+	if err := json.Unmarshal(data, &root); err != nil {
+		return documentRoot{}, errors.Wrap(err, "decode root keywords")
+	}
+	// Draft-04 names the document with id, which later drafts leave to any use.
+	if root.ID == "" && strings.Contains(root.Schema, "draft-04") {
+		var draft04 struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(data, &draft04); err != nil {
+			return documentRoot{}, errors.Wrap(err, "decode draft-04 id")
+		}
+		root.ID = draft04.ID
+	}
+	return root, nil
 }
 
 // documentLocation returns the URL an input is registered and compiled under. A
 // root $id, resolved against the file, names the document that references find.
-func documentLocation(path string, document any) (string, error) {
-	object, _ := document.(map[string]any)
-	id, _ := object["$id"].(string)
-	if draft, _ := object["$schema"].(string); id == "" && strings.Contains(draft, "draft-04") {
-		id, _ = object["id"].(string)
-	}
+func documentLocation(path string, id string) (string, error) {
 	if id == "" {
 		return path, nil
 	}
@@ -148,7 +180,7 @@ func newConverter(module string) *converter {
 
 // declareDocument names a document's root schema after its title, if any, and
 // each definition after its key.
-func (c *converter) declareDocument(compiler *compiled.Compiler, path string, document any) error {
+func (c *converter) declareDocument(compiler *compiled.Compiler, path string, document documentRoot) error {
 	root, err := compiler.Compile(path)
 	if err != nil {
 		return errors.Wrapf(err, "compile %q", path)
@@ -158,18 +190,22 @@ func (c *converter) declareDocument(compiler *compiled.Compiler, path string, do
 			return err
 		}
 	}
-	object, _ := document.(map[string]any)
 	// Schemas often use either container regardless of their draft, so read both.
-	for _, keyword := range []string{"$defs", "definitions"} {
-		definitions, _ := object[keyword].(map[string]any)
-		for _, key := range slices.Sorted(maps.Keys(definitions)) {
-			definition, err := compiler.Compile(path + "#/" + keyword + "/" + pointerToken(key))
-			if err != nil {
-				return errors.Wrapf(err, "compile %q", path)
-			}
-			if err := c.declare(definition, None[*declaration](), key); err != nil {
-				return err
-			}
+	if err := c.declareDefinitions(compiler, path, "$defs", document.Defs); err != nil {
+		return err
+	}
+	return c.declareDefinitions(compiler, path, "definitions", document.Definitions)
+}
+
+// declareDefinitions names each definition in one container after its key.
+func (c *converter) declareDefinitions(compiler *compiled.Compiler, path string, keyword string, definitions map[string]struct{}) error {
+	for _, key := range slices.Sorted(maps.Keys(definitions)) {
+		definition, err := compiler.Compile(path + "#/" + keyword + "/" + pointerToken(key))
+		if err != nil {
+			return errors.Wrapf(err, "compile %q", path)
+		}
+		if err := c.declare(definition, None[*declaration](), key); err != nil {
+			return err
 		}
 	}
 	return nil
