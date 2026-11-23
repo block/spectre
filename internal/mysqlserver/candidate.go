@@ -18,13 +18,14 @@ const unsupportedRoute = model.Route("command")
 // candidateConn answers one candidate connection's commands from reference replies
 // that its normaliser claims. It has no connection to a database.
 type candidateConn struct {
-	ctx     context.Context //nolint:containedctx // The wire library's handler methods take no context.
-	server  *Server
-	session normaliser.Session
+	ctx          context.Context //nolint:containedctx // The wire library's handler methods take no context.
+	server       *Server
+	session      normaliser.Session
+	transactions *candidateTransactions
 }
 
 func newCandidateConn(ctx context.Context, server *Server, session normaliser.Session) *candidateConn {
-	return &candidateConn{ctx: ctx, server: server, session: session}
+	return &candidateConn{ctx: ctx, server: server, session: session, transactions: newCandidateTransactions()}
 }
 
 // UseDB selects the default database through the normaliser. It needs no reference
@@ -86,8 +87,14 @@ func (c *candidateConn) answer(command normaliser.Command) (*mysql.Result, error
 			saved.Release()
 		}
 	}()
-	reply, err := c.session.Candidate(ctx, command, func(ctx context.Context, route model.Route, key any) (normaliser.Reply, error) {
-		return c.server.claim(ctx, &claimed, route, key)
+	c.transactions.next(command)
+	reply, err := c.session.Candidate(ctx, command, func(ctx context.Context, route model.Route, key normaliser.Key) (normaliser.Reply, error) {
+		saved, err := c.server.claim(ctx, &claimed, route, c.transactions.key(key))
+		if err != nil {
+			return nil, err
+		}
+		c.transactions.claimed(saved.names())
+		return saved.value(), nil
 	})
 	if unsupported, ok := errors.AsType[normaliser.UnsupportedError](err); ok {
 		c.server.unable(ctx, unsupported.Route, unsupported.Reason)
@@ -111,6 +118,6 @@ func refusal(reason string) error {
 }
 
 // unclaimed is the claim of a command that needs no reference reply.
-func unclaimed(_ context.Context, route model.Route, _ any) (normaliser.Reply, error) {
+func unclaimed(_ context.Context, route model.Route, _ normaliser.Key) (normaliser.Reply, error) {
 	return nil, errors.Errorf("%s needs no reference reply", route)
 }

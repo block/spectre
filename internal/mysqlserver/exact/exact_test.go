@@ -15,7 +15,7 @@ import (
 // claim is one claim a candidate session made.
 type claim struct {
 	route model.Route
-	key   any
+	key   normaliser.Key
 }
 
 func TestReferenceOffersTheReplyUnderTheStatementAndDatabase(t *testing.T) {
@@ -29,7 +29,7 @@ func TestReferenceOffersTheReplyUnderTheStatementAndDatabase(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, []normaliser.Unit{{
 		Route: "SELECT",
-		Key:   map[string]any{"database": "shop", "statement": "SELECT `id` FROM `orders`"},
+		Key:   normaliser.Key{Database: "shop", Statement: "SELECT `id` FROM `orders`"},
 		Reply: rows,
 	}}, units)
 }
@@ -43,7 +43,7 @@ func TestReferenceKeepsTheDatabaseThatCouldNotBeSelected(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, []normaliser.Unit{{
 		Route: "COMMIT",
-		Key:   map[string]any{"database": "", "statement": "COMMIT"},
+		Key:   normaliser.Key{Database: "", Statement: "COMMIT"},
 		Reply: normaliser.OK{},
 	}}, units)
 }
@@ -51,7 +51,7 @@ func TestReferenceKeepsTheDatabaseThatCouldNotBeSelected(t *testing.T) {
 func TestCandidateReplaysTheClaimedReply(t *testing.T) {
 	session := exact.New().NewSession()
 	claims := []claim{}
-	replay := func(_ context.Context, route model.Route, key any) (normaliser.Reply, error) {
+	replay := func(_ context.Context, route model.Route, key normaliser.Key) (normaliser.Reply, error) {
 		claims = append(claims, claim{route: route, key: key})
 		return normaliser.OK{AffectedRows: 1}, nil
 	}
@@ -66,15 +66,15 @@ func TestCandidateReplaysTheClaimedReply(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, normaliser.Reply(normaliser.OK{AffectedRows: 1}), reply)
 	assert.Equal(t, []claim{
-		{route: "SELECT", key: map[string]any{"database": "shop", "statement": "(SELECT 1)"}},
-		{route: "SELECT", key: map[string]any{"database": "shop", "statement": "SELECT 1"}},
+		{route: "SELECT", key: normaliser.Key{Database: "shop", Statement: "(SELECT 1)"}},
+		{route: "SELECT", key: normaliser.Key{Database: "shop", Statement: "SELECT 1"}},
 	}, claims)
 }
 
 func TestUseStatementsSelectTheDatabase(t *testing.T) {
 	reference, candidate := exact.New().NewSession(), exact.New().NewSession()
-	keys := []any{}
-	replay := func(_ context.Context, _ model.Route, key any) (normaliser.Reply, error) {
+	keys := []normaliser.Key{}
+	replay := func(_ context.Context, _ model.Route, key normaliser.Key) (normaliser.Reply, error) {
 		keys = append(keys, key)
 		return normaliser.OK{}, nil
 	}
@@ -95,9 +95,9 @@ func TestUseStatementsSelectTheDatabase(t *testing.T) {
 		_, err = candidate.Candidate(t.Context(), statement("SELECT 1"), replay)
 		assert.NoError(t, err)
 	}
-	expected := []any{}
+	expected := []normaliser.Key{}
 	for _, database := range []string{"tenant_a", "tenant`b", "shop", "tenant_c", "tenant_d", "tenant/*e*/"} {
-		key := map[string]any{"database": database, "statement": "SELECT 1"}
+		key := normaliser.Key{Database: database, Statement: "SELECT 1"}
 		expected = append(expected, key, key)
 	}
 	assert.Equal(t, expected, keys)
@@ -148,7 +148,7 @@ func TestStatementsThatDifferDoNotPair(t *testing.T) {
 }
 
 func TestStatementsThatDoNotParsePairByTheirText(t *testing.T) {
-	assert.Equal(t, any(map[string]any{"database": "", "statement": "SELEKT 1 /* x */"}), keyOf(t, "SELEKT 1 /* x */"))
+	assert.Equal(t, normaliser.Key{Database: "", Statement: "SELEKT 1 /* x */"}, keyOf(t, "SELEKT 1 /* x */"))
 }
 
 func TestFailedUseStatementsKeepTheDatabase(t *testing.T) {
@@ -160,11 +160,11 @@ func TestFailedUseStatementsKeepTheDatabase(t *testing.T) {
 	assert.NoError(t, err)
 	units, err := session.Reference(t.Context(), statement("SELECT 1"), normaliser.OK{})
 	assert.NoError(t, err)
-	assert.Equal(t, any(map[string]any{"database": "shop", "statement": "SELECT 1"}), units[0].Key)
+	assert.Equal(t, normaliser.Key{Database: "shop", Statement: "SELECT 1"}, units[0].Key)
 }
 
 // keyOf is the key a reference statement offers its reply under.
-func keyOf(t *testing.T, sql string) any {
+func keyOf(t *testing.T, sql string) normaliser.Key {
 	t.Helper()
 	units, err := exact.New().NewSession().Reference(t.Context(), statement(sql), normaliser.OK{})
 	assert.NoError(t, err)

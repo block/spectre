@@ -317,19 +317,20 @@ func (s *Server) release(size int) {
 	s.budget.Release(size)
 }
 
-// offer hands the units of one reference command to the engine, which keeps them
-// for candidate claims. Replies beyond the budget quarantine the candidate.
-func (s *Server) offer(ctx context.Context, units []normaliser.Unit) {
+// offer hands the units of one reference command to the engine, which keeps them for
+// candidate claims. Replies beyond the budget quarantine the candidate.
+func (s *Server) offer(ctx context.Context, units []scopedUnit) {
 	if !s.offering() {
 		return
 	}
 	for _, unit := range units {
 		saved, reserved := reserveReply(s.budget, unit.Reply)
 		if !reserved {
-			s.exceed(ctx, []normaliser.Unit{unit})
+			s.exceed(ctx, []scopedUnit{unit})
 			return
 		}
-		decision, err := s.reference.ProcessRequest(ctx, Some(s.scope), unit.Route, None[string](), request(unit.Key))
+		saved.name(unit.names)
+		decision, err := s.reference.ProcessRequest(ctx, Some(s.scope), unit.Route, None[string](), request(unit.pairing))
 		forward, ok := decision.(protocol.DecisionForward)
 		if err != nil || !ok {
 			saved.Release()
@@ -341,7 +342,7 @@ func (s *Server) offer(ctx context.Context, units []normaliser.Unit) {
 }
 
 // exceed quarantines the candidate for units whose replies are beyond the budget.
-func (s *Server) exceed(ctx context.Context, units []normaliser.Unit) {
+func (s *Server) exceed(ctx context.Context, units []scopedUnit) {
 	for _, unit := range units {
 		s.candidates.Quarantine(ctx, model.QuarantineReason{
 			Kind:    model.QuarantineCapacity,
@@ -363,8 +364,8 @@ func (s *Server) admit(ctx context.Context, stop context.CancelFunc) (finish fun
 
 // claim waits for the reply of an equivalent reference unit, and keeps it in claimed
 // until released. The engine quarantines the candidate when there is none.
-func (s *Server) claim(ctx context.Context, claimed *[]*savedReply, route model.Route, key any) (normaliser.Reply, error) { //nolint:ireturn // Replies are a sum type.
-	decision, err := s.candidate.ProcessRequest(ctx, Some(s.scope), route, None[string](), request(key))
+func (s *Server) claim(ctx context.Context, claimed *[]*savedReply, route model.Route, by pairing) (*savedReply, error) {
+	decision, err := s.candidate.ProcessRequest(ctx, Some(s.scope), route, None[string](), request(by))
 	if err != nil {
 		return nil, errors.WithStack(err)
 	}
@@ -378,7 +379,7 @@ func (s *Server) claim(ctx context.Context, claimed *[]*savedReply, route model.
 		return nil, errors.Errorf("engine replayed %T for a candidate unit", intercept.Raw)
 	}
 	*claimed = append(*claimed, saved)
-	return saved.value(), nil
+	return saved, nil
 }
 
 // unable quarantines the candidate for a command that cannot be answered, unless
@@ -394,10 +395,10 @@ func (s *Server) unable(ctx context.Context, route model.Route, reason string) {
 	})
 }
 
-// request is the payload egress hashes for a unit's key.
-func request(key any) func(ctx context.Context) (protocol.Message, error) {
+// request is the payload egress hashes to pair a unit.
+func request(by pairing) func(ctx context.Context) (protocol.Message, error) {
 	return func(context.Context) (protocol.Message, error) {
-		return protocol.Message{Type: None[schema.TypeRef](), Value: key}, nil
+		return protocol.Message{Type: None[schema.TypeRef](), Value: by}, nil
 	}
 }
 

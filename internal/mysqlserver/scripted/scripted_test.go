@@ -419,7 +419,7 @@ func (e *engine) offer(t *testing.T, session normaliser.Session, sql string, rep
 	}
 }
 
-func (e *engine) claim(_ context.Context, route model.Route, key any) (normaliser.Reply, error) { //nolint:ireturn // Replies are a sum type.
+func (e *engine) claim(_ context.Context, route model.Route, key normaliser.Key) (normaliser.Reply, error) { //nolint:ireturn // Replies are a sum type.
 	identified := identity(route, key)
 	reply, ok := e.units[identified]
 	if !ok {
@@ -429,7 +429,7 @@ func (e *engine) claim(_ context.Context, route model.Route, key any) (normalise
 	return reply, nil
 }
 
-func identity(route model.Route, key any) string {
+func identity(route model.Route, key normaliser.Key) string {
 	encoded, _ := json.Marshal(key) //nolint:errcheck,errchkjson // Keys are JSON values.
 	return string(route) + " " + string(encoded)
 }

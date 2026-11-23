@@ -4,6 +4,7 @@ import (
 	"sync"
 
 	"github.com/alecthomas/errors"
+	. "github.com/alecthomas/types/optional"
 	"github.com/go-mysql-org/go-mysql/mysql"
 
 	"github.com/block/spectre/internal/mysqlserver/normaliser"
@@ -21,10 +22,12 @@ const (
 // savedReply is a reference reply kept for a candidate claim. It holds memory from
 // the budget until released.
 type savedReply struct {
-	reply   normaliser.Reply
-	budget  *proxy.Budget
-	size    int
-	release sync.Once
+	reply normaliser.Reply
+	// transaction is the reference transaction the reply names, if it is the first unit of one.
+	transaction Option[transactionID]
+	budget      *proxy.Budget
+	size        int
+	release     sync.Once
 }
 
 // reserveReply claims a reply's memory from budget, and reports whether it fits.
@@ -34,6 +37,16 @@ func reserveReply(budget *proxy.Budget, reply normaliser.Reply) (*savedReply, bo
 		return nil, false
 	}
 	return &savedReply{reply: reply, budget: budget, size: size}, true
+}
+
+// name records the reference transaction that the reply is the first unit of, if any.
+func (s *savedReply) name(transaction Option[transactionID]) {
+	s.transaction = transaction
+}
+
+// names is the reference transaction that the reply is the first unit of, if any.
+func (s *savedReply) names() Option[transactionID] {
+	return s.transaction
 }
 
 // value is the saved reply.

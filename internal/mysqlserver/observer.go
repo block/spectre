@@ -16,6 +16,8 @@ import (
 type observer struct {
 	ctx    context.Context //nolint:containedctx // The relay's goroutines share the connection's context.
 	server *Server
+	// transactions is only used by the connection's offers, which run in order, so it needs no lock.
+	transactions *referenceTransactions
 	// capability is what the reference and the database agreed on, which shapes replies.
 	capability uint32
 	mu         sync.Mutex
@@ -29,7 +31,10 @@ type observer struct {
 }
 
 func newObserver(ctx context.Context, server *Server, session normaliser.Session, capability uint32) *observer {
-	return &observer{ctx: ctx, server: server, capability: capability, session: session, framer: newFramer()}
+	return &observer{
+		ctx: ctx, server: server, capability: capability, session: session, framer: newFramer(),
+		transactions: newReferenceTransactions(),
+	}
 }
 
 // sent starts a command, whose reply is everything the database sends until the next.
@@ -64,16 +69,18 @@ func (o *observer) received(data []byte) (offer Option[func()]) {
 			if reply, err = reader.read(payload); err != nil {
 				o.stop()
 				logger.FromContext(o.ctx).WarnContext(o.ctx, "MySQL reply is not offered", "event", logger.EventCorrelation, "reason", err)
-				return None[func()]()
+				return Some(o.follow(o.pending))
 			}
 			if !reader.offerable() {
 				o.stop()
-				return None[func()]()
+				return Some(o.follow(o.pending))
 			}
 		}
 		if !o.hold(reader.size() + o.framer.pending()) {
 			o.stop()
-			return Some(o.units(o.pending, normaliser.Rows{}, o.server.exceed))
+			return Some(o.units(o.pending, normaliser.Rows{}, func(ctx context.Context, units []scopedUnit) {
+				o.server.exceed(ctx, units)
+			}))
 		}
 		finished, ok := reply.Get()
 		if !framed {
@@ -86,7 +93,7 @@ func (o *observer) received(data []byte) (offer Option[func()]) {
 		held := o.held
 		o.held = 0
 		o.stop()
-		return Some(o.units(o.pending, finished, func(ctx context.Context, units []normaliser.Unit) {
+		return Some(o.units(o.pending, finished, func(ctx context.Context, units []scopedUnit) {
 			o.server.release(held)
 			o.server.offer(ctx, units)
 		}))
@@ -122,17 +129,28 @@ func (o *observer) stop() {
 // units returns what turns a finished command into units, and hands them to use.
 // The relay queues it once the reference has the reply, so normalising never delays it.
 func (o *observer) units(sent sentCommand, reply normaliser.Reply,
-	use func(ctx context.Context, units []normaliser.Unit),
+	use func(ctx context.Context, units []scopedUnit),
 ) (deliver func()) {
 	return func() {
 		// A connection's offers run in order on one goroutine, so the session sees commands in order.
-		units, err := o.session.Reference(o.ctx, o.server.command(sent.code, sent.text), reply)
-		if err != nil {
-			logger.FromContext(o.ctx).WarnContext(o.ctx, "Reference command is not offered", "event", logger.EventCorrelation, "reason", err)
-			// use still gets no units, so the reply's hold on the budget is returned.
-			units = nil
-		}
+		command := o.server.command(sent.code, sent.text)
+		units := o.transactions.scope(command, func() []normaliser.Unit {
+			units, err := o.session.Reference(o.ctx, command, reply)
+			if err != nil {
+				logger.FromContext(o.ctx).WarnContext(o.ctx, "Reference command is not offered", "event", logger.EventCorrelation, "reason", err)
+				// use still gets no units, so the reply's hold on the budget is returned.
+				return nil
+			}
+			return units
+		})
 		use(o.ctx, units)
+	}
+}
+
+// follow returns what follows a command whose reply is not offered through the connection's transactions.
+func (o *observer) follow(sent sentCommand) (deliver func()) {
+	return func() {
+		o.transactions.follow(o.server.command(sent.code, sent.text))
 	}
 }
 

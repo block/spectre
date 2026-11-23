@@ -35,16 +35,25 @@ type Session interface {
 }
 
 // Unit is what one candidate claim pairs with. Its route names the traffic and must
-// hold no values. Its key decides the pairing, and must be JSON-like data.
+// hold no values. Its key decides the pairing.
 type Unit struct {
 	Route model.Route
-	Key   any
+	Key   Key
 	Reply Reply
+}
+
+// Key pairs a unit with units of the same statement in the same default database. A
+// statement is named by its text, or by the pattern it matched and its values.
+type Key struct {
+	Database  string  `json:"database"`
+	Statement string  `json:"statement,omitzero"`
+	Pattern   string  `json:"pattern,omitzero"`
+	Values    []Value `json:"values,omitzero"`
 }
 
 // Claim waits for the reply of the reference unit with the same route and key. It
 // fails, and the candidate is quarantined, when there is none.
-type Claim func(ctx context.Context, route model.Route, key any) (Reply, error)
+type Claim func(ctx context.Context, route model.Route, key Key) (Reply, error)
 
 // UnsupportedError reports a candidate command that the normaliser cannot answer.
 type UnsupportedError struct {

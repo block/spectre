@@ -134,6 +134,69 @@ func TestMySQLCandidateWritesReplayTheReferenceReplies(t *testing.T) {
 	})
 }
 
+// Two transactions each add an order for merchant 3, then read only their own uncommitted
+// order. The candidate's run in the other order, and each still reads its own.
+func TestMySQLCandidateTransactionsReadTheirOwnReferenceTransaction(t *testing.T) {
+	const selectOrders = "SELECT id, label FROM orders WHERE merchant_id = 3 ORDER BY id"
+	m := startOrdersMirror(t, it.Reference(idleService), it.Candidate(idleService))
+	begin := func(database *sql.DB) *sql.Tx {
+		transaction, err := database.BeginTx(t.Context(), nil)
+		assert.NoError(t, err)
+		t.Cleanup(func() { _ = transaction.Rollback() })
+		return transaction
+	}
+	insert := func(transaction *sql.Tx, id int, label string) {
+		_, err := transaction.ExecContext(t.Context(), "INSERT INTO orders (id, merchant_id, label) VALUES (?, 3, ?)", id, label)
+		assert.NoError(t, err)
+	}
+	commit := func(transaction *sql.Tx) {
+		assert.NoError(t, transaction.Commit())
+	}
+
+	first, second := begin(m.MySQL().Reference), begin(m.MySQL().Reference)
+	insert(first, 100, "first")
+	insert(second, 200, "second")
+	_, firstOrders := queried(t, first, selectOrders)
+	_, secondOrders := queried(t, second, selectOrders)
+	commit(first)
+	commit(second)
+	assert.Equal(t, [][]Option[string]{{Some("100"), Some("first")}}, firstOrders)
+	assert.Equal(t, [][]Option[string]{{Some("200"), Some("second")}}, secondOrders)
+
+	// The second request's transaction reads first, as the first's did on the reference.
+	candidateSecond, candidateFirst := begin(m.MySQL().Candidate), begin(m.MySQL().Candidate)
+	insert(candidateSecond, 200, "second")
+	insert(candidateFirst, 100, "first")
+	_, candidateSecondOrders := queried(t, candidateSecond, selectOrders)
+	_, candidateFirstOrders := queried(t, candidateFirst, selectOrders)
+	commit(candidateSecond)
+	commit(candidateFirst)
+	assert.Equal(t, secondOrders, candidateSecondOrders)
+	assert.Equal(t, firstOrders, candidateFirstOrders)
+	m.ExpectCalls(it.Calls{})
+}
+
+// The reference reads merchant 1's orders on their own, then in a transaction; the
+// candidate runs its transaction first, which still pairs with the reference's transaction.
+func TestMySQLCandidateTransactionsPairOnlyWithReferenceTransactions(t *testing.T) {
+	const selectOrders = "SELECT id, label FROM orders WHERE merchant_id = 1 ORDER BY id"
+	m := startOrdersMirror(t, it.Reference(idleService), it.Candidate(idleService))
+	inTransaction := func(database *sql.DB) {
+		transaction, err := database.BeginTx(t.Context(), nil)
+		assert.NoError(t, err)
+		defer transaction.Rollback() //nolint:errcheck // Rolling back after a commit does nothing.
+		queried(t, transaction, selectOrders)
+		assert.NoError(t, transaction.Commit())
+	}
+
+	queried(t, m.MySQL().Reference, selectOrders)
+	inTransaction(m.MySQL().Reference)
+	inTransaction(m.MySQL().Candidate)
+	queried(t, m.MySQL().Candidate, selectOrders)
+
+	m.ExpectCalls(it.Calls{})
+}
+
 func TestMySQLCandidateReplaysTheReferenceDatabaseError(t *testing.T) {
 	m := startOrdersMirror(t)
 
@@ -807,7 +870,6 @@ func selectJoinedOrders(ctx context.Context, database *sql.DB, merchant string) 
 // The services do nothing; the tests send each side's statements themselves.
 func startStaffMirror(t *testing.T, script string) *it.Mirror {
 	t.Helper()
-	idle := func(*testing.T, it.Backend) {}
 	return it.Start(t,
 		it.Scripts(script),
 		it.MySQL(
@@ -816,7 +878,7 @@ func startStaffMirror(t *testing.T, script string) *it.Mirror {
 			"INSERT INTO departments VALUES (1, 'Engineering'), (2, 'Sales')",
 			"INSERT INTO employees VALUES (1, 'Ada', NULL, 1), (2, 'Grace', 1, 1), (3, 'Linus', 2, 1), (4, 'Mary', 1, 2)",
 		),
-		it.Reference(idle), it.Candidate(idle),
+		it.Reference(idleService), it.Candidate(idleService),
 	)
 }
 
@@ -1015,3 +1077,6 @@ func command(t *testing.T, conn *client.Conn, code byte, arguments ...byte) byte
 	assert.NoError(t, err)
 	return reply[0]
 }
+
+// idleService is a service that the test itself stands in for.
+func idleService(*testing.T, it.Backend) {}

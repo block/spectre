@@ -91,8 +91,8 @@ func pairing(command normaliser.Command) (text, database string, selects bool) {
 }
 
 // key is what pairs a statement: its text, and the database that unqualified names are in.
-func (s *session) key(text string) map[string]any {
-	return map[string]any{"database": s.database, "statement": text}
+func (s *session) key(text string) normaliser.Key {
+	return normaliser.Key{Database: s.database, Statement: text}
 }
 
 // route is the statement's leading keyword in upper case, which names it without values.
