@@ -20,21 +20,21 @@ type rules struct {
 	produced map[string]script.Produced
 	// compared types each route's payloads, for the produced types the scripts declared.
 	compared map[model.Route]schema.TypeRef
-	// starting holds both sides' types of every start, which the candidate never reports.
-	starting map[string]bool
+	// candidateStarts are the candidate's types that start work. Each side names its own types,
+	// so a reference start's type may also be a candidate type that work produces.
+	candidateStarts map[string]bool
 }
 
 func newRules(declared script.Declarations) rules {
 	r := rules{
-		starts:   map[string]script.Start{},
-		produced: map[string]script.Produced{},
-		compared: map[model.Route]schema.TypeRef{},
-		starting: map[string]bool{},
+		starts:          map[string]script.Start{},
+		produced:        map[string]script.Produced{},
+		compared:        map[model.Route]schema.TypeRef{},
+		candidateStarts: map[string]bool{},
 	}
 	for _, start := range declared.Starts {
 		r.starts[start.Type] = start
-		r.starting[start.Type] = true
-		r.starting[start.Candidate] = true
+		r.candidateStarts[start.Candidate] = true
 	}
 	for _, produced := range declared.Produced {
 		r.produced[produced.Type] = produced
@@ -55,9 +55,9 @@ func (r rules) producedBy(eventType string) (produced script.Produced, ok bool) 
 	return produced, ok
 }
 
-// startsWork reports whether either side's events of eventType start work.
-func (r rules) startsWork(eventType string) bool {
-	return r.starting[eventType]
+// candidateStartsWork reports whether the candidate's events of eventType start work.
+func (r rules) candidateStartsWork(eventType string) bool {
+	return r.candidateStarts[eventType]
 }
 
 // route is the route the reference's events of eventType pair under: the candidate's type.

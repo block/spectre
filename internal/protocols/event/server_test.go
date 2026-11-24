@@ -62,12 +62,14 @@ spectre.ingress.event("sidekiq/perform/VerifySiretWorker")
   .triggers("jsc/handle/VerifySiretJob")
   .payload<VerifySiretWorker, VerifySiretJob>(toJob);
 spectre.ingress.event("cron/refresh-rates").triggers();
+spectre.ingress.event("jobs/run").triggers("jobs/execute");
 
 spectre.egress.event("sidekiq/push/VerifySiretWorker")
   .pairs("jsc/enqueue/VerifySiretJob")
   .payload<VerifySiretWorker, VerifySiretJob>(toJob)
   .result<SidekiqPush, EnqueuedJob>((pushed) => ({ jobId: pushed.jid }));
 spectre.egress.event("audit/record").optional().match<SidekiqPush>();
+spectre.egress.event("jobs/enqueue").pairs("jobs/run").match<SidekiqPush>();
 `
 
 const (
@@ -387,6 +389,25 @@ func TestOptionalReferenceEventMayBeLeftOut(t *testing.T) {
 	})
 	assert.NoError(t, err)
 	time.Sleep(400 * time.Millisecond)
+	m.assertNotQuarantined(t)
+}
+
+func TestCandidateEventNamedLikeReferenceStartPairs(t *testing.T) {
+	m := newMirror(t, None[[]state.KindNode]())
+	runs := m.receive(t)
+	runID := m.start(t, "cron/refresh-rates", "")
+	next(t, runs)
+	_, err := m.reference.Report(t.Context(), &eventpb.ReportRequest{
+		Event: &eventpb.Event{Type: "jobs/enqueue", Payload: []byte(`{"jid":"J1"}`)},
+		RunId: &runID,
+	})
+	assert.NoError(t, err)
+	response, err := m.candidate.Report(t.Context(), &eventpb.ReportRequest{
+		Event: &eventpb.Event{Type: "jobs/run", Payload: []byte(`{"jid":"J1"}`)},
+		RunId: &runID,
+	})
+	assert.NoError(t, err)
+	assert.Zero(t, response.GetResult())
 	m.assertNotQuarantined(t)
 }
 

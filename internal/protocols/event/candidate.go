@@ -50,7 +50,7 @@ func (c *candidateService) Report(ctx context.Context, request *eventpb.ReportRe
 	defer finish()
 	logger.FromContext(ctx).DebugContext(ctx, "Candidate reported an event",
 		"event", logger.EventCorrelation, "type", event.GetType(), "attributes", event.GetAttributes())
-	if c.rules.startsWork(event.GetType()) {
+	if c.rules.candidateStartsWork(event.GetType()) {
 		c.starts.Quarantine(ctx, reason(model.QuarantineUnmatched, model.Ingress, event.GetType(),
 			"the candidate reported an event that starts work, which only the reference does"))
 		return nil, connect.NewError(connect.CodeFailedPrecondition, "only the reference starts work")
