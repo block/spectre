@@ -36,7 +36,7 @@ func TestStateRoundTrip(t *testing.T) {
 			Quarantines: map[model.Direction]model.Quarantine{
 				model.Ingress: {Since: since, Reason: model.QuarantineReason{
 					Kind:    model.QuarantineDivergent,
-					Traffic: Some(model.Traffic{Direction: model.Ingress, Protocol: model.ProtocolHTTP, Route: "GET /v1/users"}),
+					Traffic: Some(model.Traffic{Direction: model.Ingress, Protocol: "fake", Route: "GET /v1/users"}),
 					Node:    Some("users"),
 					Differences: []model.Difference{
 						{Path: "$.name", Change: model.ChangeChanged, Count: 1},
@@ -144,7 +144,7 @@ func TestListRoundTrip(t *testing.T) {
 		Direction:   model.Egress,
 		Quarantine: model.Quarantine{Since: time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC), Reason: model.QuarantineReason{
 			Kind:    model.QuarantineUnmatched,
-			Traffic: Some(model.Traffic{Direction: model.Egress, Protocol: model.ProtocolHTTP, Route: "POST api.example/v1/charges"}),
+			Traffic: Some(model.Traffic{Direction: model.Egress, Protocol: "fake", Route: "POST api.example/v1/charges"}),
 			Detail:  "no matching reference call",
 		}},
 	}}

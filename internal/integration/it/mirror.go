@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -24,7 +25,12 @@ import (
 	. "github.com/alecthomas/types/optional"
 
 	"github.com/block/spectre/internal/model"
-	"github.com/block/spectre/internal/mysqlserver"
+	"github.com/block/spectre/internal/protocols"
+	httpprotocol "github.com/block/spectre/internal/protocols/http"
+	"github.com/block/spectre/internal/protocols/http/script"
+	mysqlprotocol "github.com/block/spectre/internal/protocols/mysql"
+	"github.com/block/spectre/internal/protocols/mysql/scripted"
+	"github.com/block/spectre/internal/protocols/protocolstest"
 	"github.com/block/spectre/internal/proxies"
 	spectreserver "github.com/block/spectre/internal/server"
 	"github.com/block/spectre/internal/server/client"
@@ -44,6 +50,12 @@ const (
 	keepaliveInterval = 20 * time.Millisecond
 	// defaultMatchWindow keeps tests that wait out the match window fast.
 	defaultMatchWindow = 500 * time.Millisecond
+)
+
+// The protocols the harness mirrors, which name each one's listeners.
+const (
+	httpProtocol  = script.Protocol
+	mysqlProtocol = scripted.Protocol
 )
 
 // Egress is where a service sends its dependency calls, with the transport to
@@ -169,19 +181,21 @@ func (s *setup) serveDependencies(t *testing.T) (received map[string]*Counter, d
 }
 
 // createDatabase creates the mirror's MySQL database, if it has one, and returns how
-// the proxy reaches it. It opens the proxy's MySQL listeners in listeners.
-func (s *setup) createDatabase(t *testing.T, w *watch, listeners *proxies.Listeners) (mysqlserver.Config, Option[*Database]) {
+// the proxy reaches it, as flags. It opens the MySQL provider's listeners in listeners.
+func (s *setup) createDatabase(t *testing.T, w *watch, listeners proxies.Listeners) (args []string, database Option[*Database]) {
 	t.Helper()
 	statements, ok := s.mysql.Get()
 	if !ok {
-		return mysqlserver.NewConfig(), None[*Database]()
+		return nil, None[*Database]()
 	}
-	database := newDatabase(t, w, statements)
+	created := newDatabase(t, w, statements)
 	reference, candidate := listen(t), listen(t)
-	listeners.MySQLReference, listeners.MySQLCandidate = Some(reference), Some(candidate)
-	config := database.connect(reference, candidate)
-	config.SavedRepliesBytes = s.mysqlSavedRepliesSize.Default(config.SavedRepliesBytes)
-	return config, Some(database)
+	listeners.Providers[mysqlProtocol] = map[string]net.Listener{mysqlprotocol.ReferenceListener: reference, mysqlprotocol.CandidateListener: candidate}
+	args = created.connect(reference, candidate)
+	if size, found := s.mysqlSavedRepliesSize.Get(); found {
+		args = append(args, "--mysql-saved-replies-bytes="+strconv.Itoa(size))
+	}
+	return args, Some(created)
 }
 
 // writeScripts returns the directory of the comparison scripts, writing those
@@ -218,29 +232,35 @@ func (s *setup) writeSchema(t *testing.T) string {
 	return dir
 }
 
-// proxyConfig configures the proxy in front of the services on listeners.
+// proxyConfig configures the mirror shared by the protocols, and returns the flags of the HTTP
+// protocol in front of the services on listeners.
 func (s *setup) proxyConfig(listeners proxies.Listeners, reference, candidate net.Listener,
 	destinations map[string]string, scriptsDir, schemaDir, serverURL string,
-) proxies.ProxyConfig {
-	config := proxies.ProxyConfig{
-		Listen:                listeners.Ingress.Addr().String(),
-		ReferenceURL:          "h2c://" + reference.Addr().String(),
-		CandidateURL:          "h2c://" + candidate.Addr().String(),
-		ReferenceEgressListen: listeners.ReferenceEgress.Addr().String(),
-		CandidateEgressListen: listeners.CandidateEgress.Addr().String(),
-		EgressHealthListen:    listeners.EgressHealth.Addr().String(),
-		HealthListen:          listeners.Health.Addr().String(),
-		Mirror:                proxies.NewConfig(),
+) (config proxies.Config, httpArgs []string) {
+	bound := listeners.Providers[httpProtocol]
+	httpArgs = []string{
+		"--listen=" + bound[httpprotocol.IngressListener].Addr().String(),
+		"--reference-url=h2c://" + reference.Addr().String(),
+		"--candidate-url=h2c://" + candidate.Addr().String(),
+		"--reference-egress-listen=" + bound[httpprotocol.ReferenceEgressListener].Addr().String(),
+		"--candidate-egress-listen=" + bound[httpprotocol.CandidateEgressListener].Addr().String(),
 	}
-	config.Mirror.Destinations = destinations
-	config.Mirror.ScriptsDir = scriptsDir
-	config.Mirror.SchemaDir = schemaDir
-	config.Mirror.Descriptors.DescriptorsDir = s.descriptorsDir
-	config.Mirror.MatchWindow = s.matchWindow
-	config.Mirror.Server.Client.URL = serverURL
-	config.Mirror.Server.KeepaliveInterval = keepaliveInterval
-	config.Mirror.Server.Service, config.Mirror.Server.Environment, config.Mirror.Server.Revision = "integration", "integration", "candidate"
-	return config
+	for host, url := range destinations {
+		httpArgs = append(httpArgs, "--destination="+host+"="+url)
+	}
+	if s.descriptorsDir != "" {
+		httpArgs = append(httpArgs, "--descriptors-dir="+s.descriptorsDir)
+	}
+	config = proxies.NewConfig()
+	config.EgressHealthListen = listeners.EgressHealth.Addr().String()
+	config.HealthListen = listeners.Health.Addr().String()
+	config.ScriptsDir = scriptsDir
+	config.SchemaDir = schemaDir
+	config.MatchWindow = s.matchWindow
+	config.Server.Client.URL = serverURL
+	config.Server.KeepaliveInterval = keepaliveInterval
+	config.Server.Service, config.Server.Environment, config.Server.Revision = "integration", "integration", "candidate"
+	return config, httpArgs
 }
 
 // Mirror is a running mirror, which stops when its test ends.
@@ -286,11 +306,20 @@ func Start(t *testing.T, settings ...Setting) *Mirror {
 		return errors.WithStack(spectreserver.ServeListener(ctx, spectreserver.NewServeConfig(), server))
 	})
 
-	listeners := proxies.Listeners{Ingress: listen(t), ReferenceEgress: listen(t), CandidateEgress: listen(t), EgressHealth: listen(t), Health: listen(t)}
-	m.Ingress = newIngressEndpoint(t, httpClient, baseURL(listeners.Ingress))
-	m.ReferenceEgress = newEgressEndpoint(t, httpClient, baseURL(listeners.ReferenceEgress))
-	m.CandidateEgress = newEgressEndpoint(t, httpClient, baseURL(listeners.CandidateEgress))
-	mysqlConfig, database := setup.createDatabase(t, m.watch, &listeners)
+	bound := map[string]net.Listener{
+		httpprotocol.IngressListener:         listen(t),
+		httpprotocol.ReferenceEgressListener: listen(t),
+		httpprotocol.CandidateEgressListener: listen(t),
+	}
+	listeners := proxies.Listeners{
+		Providers:    map[model.Protocol]map[string]net.Listener{httpProtocol: bound},
+		EgressHealth: listen(t),
+		Health:       listen(t),
+	}
+	m.Ingress = newIngressEndpoint(t, httpClient, baseURL(bound[httpprotocol.IngressListener]))
+	m.ReferenceEgress = newEgressEndpoint(t, httpClient, baseURL(bound[httpprotocol.ReferenceEgressListener]))
+	m.CandidateEgress = newEgressEndpoint(t, httpClient, baseURL(bound[httpprotocol.CandidateEgressListener]))
+	mysqlArgs, database := setup.createDatabase(t, m.watch, listeners)
 	m.mysql = database
 	referenceListener, candidateListener := listen(t), listen(t)
 	m.Reference = serveService(t, referenceListener, referenceService, m.ReferenceEgress.url(), m.mysqlHandle(false))
@@ -298,9 +327,12 @@ func Start(t *testing.T, settings ...Setting) *Mirror {
 	dependencies, destinations := setup.serveDependencies(t)
 	m.dependencies = dependencies
 
-	proxyConfig := setup.proxyConfig(listeners, referenceListener, candidateListener, destinations, scriptsDir, schemaDir, serverURL)
-	proxyConfig.Mirror.MySQL = mysqlConfig
-	proxy, err := proxies.New(ctx, proxyConfig)
+	proxyConfig, httpArgs := setup.proxyConfig(listeners, referenceListener, candidateListener, destinations, scriptsDir, schemaDir, serverURL)
+	registry := protocols.NewRegistry()
+	assert.NoError(t, registry.Register(httpprotocol.NewProvider()))
+	assert.NoError(t, registry.Register(mysqlprotocol.NewProvider()))
+	protocolstest.Configure(t, registry.Plugins(), append(httpArgs, mysqlArgs...)...)
+	proxy, err := proxies.New(ctx, proxyConfig, registry)
 	assert.NoError(t, err)
 	assert.NoError(t, proxy.StartListeners(ctx, listeners))
 	m.watch.run(ctx, t, "proxy", func(ctx context.Context) error { return proxy.Wait(ctx) })
@@ -421,7 +453,7 @@ func (m *Mirror) ready(url string) bool {
 func UnmatchedEgress(route model.Route, detail string) model.QuarantineReason {
 	return model.QuarantineReason{
 		Kind:    model.QuarantineUnmatched,
-		Traffic: Some(model.Traffic{Direction: model.Egress, Protocol: model.ProtocolHTTP, Route: route}),
+		Traffic: Some(model.Traffic{Direction: model.Egress, Protocol: script.Protocol, Route: route}),
 		Detail:  detail,
 	}
 }
@@ -430,7 +462,7 @@ func UnmatchedEgress(route model.Route, detail string) model.QuarantineReason {
 func UnpairedEgress(route model.Route, detail string) model.QuarantineReason {
 	return model.QuarantineReason{
 		Kind:    model.QuarantinePairing,
-		Traffic: Some(model.Traffic{Direction: model.Egress, Protocol: model.ProtocolHTTP, Route: route}),
+		Traffic: Some(model.Traffic{Direction: model.Egress, Protocol: script.Protocol, Route: route}),
 		Detail:  detail,
 	}
 }
@@ -440,7 +472,7 @@ func UnpairedEgress(route model.Route, detail string) model.QuarantineReason {
 func DivergentIngress(route model.Route, differences ...model.Difference) model.QuarantineReason {
 	return model.QuarantineReason{
 		Kind:        model.QuarantineDivergent,
-		Traffic:     Some(model.Traffic{Direction: model.Ingress, Protocol: model.ProtocolHTTP, Route: route}),
+		Traffic:     Some(model.Traffic{Direction: model.Ingress, Protocol: script.Protocol, Route: route}),
 		Differences: differences,
 	}
 }

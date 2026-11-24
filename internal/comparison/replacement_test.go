@@ -12,11 +12,11 @@ import (
 const user schema.TypeRef = "test.v1.User"
 
 // usersSource is a source endpoint replaced by user lookups.
-const usersSource = `spectre.egress.http("POST users.example/v1/users").match<v1.Query>();`
+const usersSource = `spectre.egress.fake("POST users.example/v1/users").match<v1.Query>();`
 
 func TestReplacesWithValidatedRequestsAndResponses(t *testing.T) {
 	scripts := newScripts(t, usersSource+`
-		spectre.egress.http("POST users.example/v1/user").replaces<v1.Query, v1.Response>("POST users.example/v1/users").using<v1.User, v1.User>(
+		spectre.egress.fake("POST users.example/v1/user").replaces<v1.Query, v1.Response>("POST users.example/v1/users").using<v1.User, v1.User>(
 			(request) => ({ location: request.name, tags: [] }),
 			(request, reference) => reference.users?.find((user) => user.name === request.name) ?? { name: "" },
 		);
@@ -37,7 +37,7 @@ func TestReplacesWithValidatedRequestsAndResponses(t *testing.T) {
 func TestRejectsInvalidTranslatedValues(t *testing.T) {
 	// The casts skip type checking, so the results reach schema validation.
 	scripts := newScripts(t, usersSource+`
-		spectre.egress.http("POST users.example/v1/user").replaces<v1.Query, v1.Response>("POST users.example/v1/users").using<v1.User, v1.User>(
+		spectre.egress.fake("POST users.example/v1/user").replaces<v1.Query, v1.Response>("POST users.example/v1/users").using<v1.User, v1.User>(
 			() => ({ days: "many" }) as any,
 			() => ({}) as any,
 		);
@@ -55,7 +55,7 @@ func TestRejectsInvalidTranslatedValues(t *testing.T) {
 }
 
 func TestRejectsInvalidReplacementSources(t *testing.T) {
-	const rule = `spectre.egress.http("POST users.example/v1/user")`
+	const rule = `spectre.egress.fake("POST users.example/v1/user")`
 	const using = `.using<v1.User, v1.User>((request) => ({ location: request.name, tags: [] }), () => ({ name: "" }));`
 	for name, test := range map[string]struct {
 		script  string
@@ -63,7 +63,7 @@ func TestRejectsInvalidReplacementSources(t *testing.T) {
 	}{
 		"Undeclared": {
 			script:  rule + `.replaces<v1.Query, v1.Response>("POST users.example/v1/users")` + using,
-			message: `http("POST users.example/v1/user").replaces("POST users.example/v1/users").using(): source endpoint is not declared`,
+			message: `fake("POST users.example/v1/user").replaces("POST users.example/v1/users").using(): source endpoint is not declared`,
 		},
 		"SourceWithoutHost": {
 			script:  rule + `.replaces<v1.Query, v1.Response>("POST /v1/users")` + using,
@@ -74,24 +74,24 @@ func TestRejectsInvalidReplacementSources(t *testing.T) {
 			message: "source endpoint itself replaces another",
 		},
 		"OtherRequestType": {
-			script:  `spectre.egress.http("POST users.example/v1/users").match<v1.Request>();` + rule + `.replaces<v1.Query, v1.Response>("POST users.example/v1/users")` + using,
+			script:  `spectre.egress.fake("POST users.example/v1/users").match<v1.Request>();` + rule + `.replaces<v1.Query, v1.Response>("POST users.example/v1/users")` + using,
 			message: "source requests are test.v1.Request, not test.v1.Query",
 		},
 		"ReplacingSource": {
 			script: rule + `.replaces<v1.Query, v1.Response>("POST users.example/v1/users")` + using + `
-				spectre.egress.http("POST users.example/v1/users").replaces<v1.User, v1.User>("POST users.example/v1/user").using<v1.Query, v1.Response>(
+				spectre.egress.fake("POST users.example/v1/users").replaces<v1.User, v1.User>("POST users.example/v1/user").using<v1.Query, v1.Response>(
 					() => ({ name: "" }), () => ({ stable: "", roles: [], users: [], count: "0", labels: {} }));`,
 			message: "source endpoint itself replaces another",
 		},
 		"OtherResponseType": {
 			script: usersSource + rule + `.replaces<v1.Query, v1.Response>("POST users.example/v1/users")` + using + `
-				spectre.egress.http("POST users.example/v1/other").replaces<v1.Query, v1.User>("POST users.example/v1/users").using<v1.User, v1.User>(
+				spectre.egress.fake("POST users.example/v1/other").replaces<v1.Query, v1.User>("POST users.example/v1/users").using<v1.User, v1.User>(
 					(request) => ({ location: request.name, tags: [] }), (_, reference) => reference);`,
 			message: "source responses are decoded as both test.v1.Response and test.v1.User",
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			scripts, err := comparison.New(t.Context(), newConfig(t, map[string]string{"test.ts": module(test.script)}))
+			scripts, err := comparison.New(t.Context(), newConfig(t, map[string]string{"test.ts": module(test.script)}), bindings())
 			assert.Error(t, err)
 			assert.Contains(t, err.Error(), test.message)
 			assert.Equal(t, (*comparison.Scripts)(nil), scripts)

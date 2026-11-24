@@ -3,7 +3,6 @@ package comparison
 import (
 	"context"
 	"crypto/sha256"
-	"math"
 	"os"
 	"slices"
 	"time"
@@ -25,9 +24,9 @@ type Scripts struct {
 	timeout time.Duration
 }
 
-// New loads every script in the configured directory and checks that each
-// declared endpoint type exists.
-func New(ctx context.Context, config Config) (*Scripts, error) {
+// New loads every script in the configured directory, type-checked against the bindings'
+// script API, and checks that each declared endpoint type exists.
+func New(ctx context.Context, config Config, bindings []javascript.Binding) (*Scripts, error) {
 	if err := config.Validate(); err != nil {
 		return nil, err
 	}
@@ -36,7 +35,7 @@ func New(ctx context.Context, config Config) (*Scripts, error) {
 		return nil, errors.Wrap(err, "open scripts directory")
 	}
 	defer root.Close() //nolint:errcheck // Module source is fully loaded before closing.
-	program, err := javascript.NewProgram(ctx, config.ComparisonTimeout, os.DirFS(config.Schema.SchemaDir), root.FS(), config.Variables)
+	program, err := javascript.NewProgram(ctx, config.ComparisonTimeout, os.DirFS(config.Schema.SchemaDir), root.FS(), config.Variables, bindings)
 	if err != nil {
 		return nil, errors.Wrap(err, "compile comparison scripts")
 	}
@@ -62,14 +61,35 @@ func (s *Scripts) Schema() *schema.Schema {
 	return s.program.Schema()
 }
 
+// Program returns what the scripts declared, which a binding's Handle reads its declarations from.
+func (s *Scripts) Program() *javascript.Program {
+	return s.program
+}
+
+// Evaluate runs function in a fresh evaluator. The comparison timeout limits the evaluator's start,
+// and the time that bindings' callbacks run for, so function may wait without being interrupted.
+func (s *Scripts) Evaluate(ctx context.Context, function func(evaluator *javascript.Evaluator) error) error {
+	if err := ctx.Err(); err != nil {
+		return errors.Wrap(err, "initialise JavaScript evaluator")
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	limit := time.AfterFunc(s.timeout, cancel)
+	evaluator, err := s.program.NewEvaluator(ctx)
+	if !limit.Stop() && err == nil {
+		evaluator.Close()
+		err = context.DeadlineExceeded
+	}
+	if err != nil {
+		return errors.Wrap(err, "initialise JavaScript evaluator")
+	}
+	defer evaluator.Close()
+	return function(evaluator)
+}
+
 // Endpoints returns every declared endpoint, ingress first, in declaration order.
 func (s *Scripts) Endpoints() []javascript.Endpoint {
 	return append(s.program.Endpoints(model.Ingress), s.program.Endpoints(model.Egress)...)
-}
-
-// Rules returns the ingress rules in declaration order.
-func (s *Scripts) Rules() []javascript.Rule {
-	return s.program.Rules()
 }
 
 // Replacements returns the egress replacements in declaration order.
@@ -146,232 +166,6 @@ func (s *Scripts) replace(ctx context.Context, typeName schema.TypeRef, function
 		return nil, errors.Wrapf(err, "validate translated %s", typeName)
 	}
 	return checked, nil
-}
-
-// StatementReplacements returns the MySQL statement replacements in declaration order.
-func (s *Scripts) StatementReplacements() []javascript.StatementReplacement {
-	return s.program.StatementReplacements()
-}
-
-// CombineStatements answers a candidate statement from the reference statements it claims.
-// Waiting in claims does not count against the comparison timeout.
-func (s *Scripts) CombineStatements(ctx context.Context, replacement javascript.StatementReplacement, values []Option[string],
-	claims []javascript.Claim,
-) ([]javascript.Row, error) {
-	evaluator, closer, err := s.statementEvaluator(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer closer()
-	return errors.WithStack2(evaluator.CombineStatements(s.timeout, replacement, values, claims))
-}
-
-// SplitStatement offers the replies that a reference statement's reply splits into.
-func (s *Scripts) SplitStatement(ctx context.Context, replacement javascript.StatementReplacement, values []Option[string],
-	rows []javascript.Row, offer javascript.Offer,
-) error {
-	evaluator, closer, err := s.statementEvaluator(ctx)
-	if err != nil {
-		return err
-	}
-	defer closer()
-	return errors.WithStack(evaluator.SplitStatement(s.timeout, replacement, values, rows, offer))
-}
-
-// statementEvaluator starts an evaluator within the comparison timeout, and returns it
-// with what closes it. Only a slow start ends its context, so claims are never interrupted.
-func (s *Scripts) statementEvaluator(ctx context.Context) (evaluator *javascript.Evaluator, closer func(), err error) {
-	ctx, cancel := context.WithCancel(ctx)
-	limit := time.AfterFunc(s.timeout, cancel)
-	evaluator, err = s.program.NewEvaluator(ctx)
-	if !limit.Stop() && err == nil {
-		evaluator.Close()
-		err = context.DeadlineExceeded
-	}
-	if err != nil {
-		cancel()
-		return nil, nil, errors.Wrap(err, "initialise JavaScript evaluator")
-	}
-	return evaluator, func() {
-		evaluator.Close()
-		cancel()
-	}, nil
-}
-
-// SelectRule returns the first rule that selects a response. rules must be in
-// declaration order, and the request must match each rule's pattern, if it has one.
-func (s *Scripts) SelectRule(ctx context.Context, rules []javascript.Rule, request javascript.Request, response javascript.Response) (Option[javascript.Rule], error) {
-	ctx, cancel := context.WithTimeout(ctx, s.timeout)
-	defer cancel()
-	evaluator := None[*javascript.Evaluator]()
-	defer func() {
-		if created, ok := evaluator.Get(); ok {
-			created.Close()
-		}
-	}()
-	// Functions share one evaluator, created only once a rule needs it.
-	script := func() (*javascript.Evaluator, error) {
-		if created, ok := evaluator.Get(); ok {
-			return created, nil
-		}
-		created, err := s.program.NewEvaluator(ctx)
-		if err != nil {
-			return nil, errors.Wrap(err, "initialise JavaScript evaluator")
-		}
-		evaluator = Some(created)
-		return created, nil
-	}
-	for _, rule := range rules {
-		selected, err := selects(rule, request, response, script)
-		if err != nil {
-			return None[javascript.Rule](), err
-		}
-		if selected {
-			return Some(rule), nil
-		}
-	}
-	return None[javascript.Rule](), nil
-}
-
-func selects(rule javascript.Rule, request javascript.Request, response javascript.Response, script func() (*javascript.Evaluator, error)) (bool, error) {
-	if _, scripted := rule.Request().(javascript.RequestScript); scripted {
-		evaluator, err := script()
-		if err != nil {
-			return false, err
-		}
-		if selected, err := evaluator.SelectsRequest(rule, request); err != nil || !selected {
-			return false, errors.WithStack(err)
-		}
-	}
-	requestHeader := func(evaluator *javascript.Evaluator, name string, value Option[string]) (bool, error) {
-		return errors.WithStack2(evaluator.SelectsRequestHeader(rule, name, value))
-	}
-	if selected, err := selectsHeaders(rule, rule.RequestHeaders(), request.HeaderValue, requestHeader, script); err != nil || !selected {
-		return false, err
-	}
-	if selected, err := selectsStatus(rule, response.Status, script); err != nil || !selected {
-		return false, err
-	}
-	responseHeader := func(evaluator *javascript.Evaluator, name string, value Option[string]) (bool, error) {
-		return errors.WithStack2(evaluator.SelectsResponseHeader(rule, name, value))
-	}
-	return selectsHeaders(rule, rule.ResponseHeaders(), response.HeaderValue, responseHeader, script)
-}
-
-func selectsStatus(rule javascript.Rule, status int, script func() (*javascript.Evaluator, error)) (bool, error) {
-	switch selector := rule.Status().(type) {
-	case javascript.StatusAny:
-		return true, nil
-	case javascript.StatusCodes:
-		return slices.Contains(selector.Codes, status), nil
-	case javascript.StatusScript:
-		evaluator, err := script()
-		if err != nil {
-			return false, err
-		}
-		return errors.WithStack2(evaluator.SelectsStatus(rule, status))
-	}
-	return false, errors.Errorf("rule %s has an unknown status selector", rule)
-}
-
-// selectsHeaders reports whether a message satisfies every header selector.
-// lookup reads the message's joined header values, and evaluate runs a function.
-func selectsHeaders(
-	rule javascript.Rule,
-	headers []javascript.HeaderSelector,
-	lookup func(name string) Option[string],
-	evaluate func(evaluator *javascript.Evaluator, name string, value Option[string]) (bool, error),
-	script func() (*javascript.Evaluator, error),
-) (bool, error) {
-	for _, header := range headers {
-		switch selector := header.(type) {
-		case javascript.HeaderValue:
-			if !selector.Selects(lookup(selector.Name)) {
-				return false, nil
-			}
-		case javascript.HeaderScript:
-			evaluator, err := script()
-			if err != nil {
-				return false, err
-			}
-			if selected, err := evaluate(evaluator, selector.Name, lookup(selector.Name)); err != nil || !selected {
-				return false, err
-			}
-		default:
-			return false, errors.Errorf("rule %s has an unknown header selector", rule)
-		}
-	}
-	return true, nil
-}
-
-// NormaliseResponse applies a rule's normaliser to one response. A None status
-// or body is not compared, and a returned body must still be the rule's type.
-func (s *Scripts) NormaliseResponse(ctx context.Context, rule javascript.Rule, status int, body Option[schema.Value]) (Option[int], Option[schema.Value], error) {
-	match, ok := rule.Action().(javascript.ActionMatch)
-	if !ok || !match.Normalises {
-		return Some(status), body, nil
-	}
-	code, err := schema.NewNumber(float64(status))
-	if err != nil {
-		return None[int](), None[schema.Value](), errors.WithStack(err)
-	}
-	members := map[string]schema.Value{"status": code}
-	if value, present := body.Get(); present {
-		members["body"] = value
-	}
-	argument, err := schema.NewObject(members)
-	if err != nil {
-		return None[int](), None[schema.Value](), errors.WithStack(err)
-	}
-	ctx, cancel := context.WithTimeout(ctx, s.timeout)
-	defer cancel()
-	evaluator, err := s.program.NewEvaluator(ctx)
-	if err != nil {
-		return None[int](), None[schema.Value](), errors.Wrap(err, "initialise JavaScript evaluator")
-	}
-	defer evaluator.Close()
-	result, err := evaluator.NormaliseResponse(rule, argument)
-	if err != nil {
-		return None[int](), None[schema.Value](), errors.WithStack(err)
-	}
-	return normalisedResponse(match, result)
-}
-
-// normalisedResponse checks a normaliser's result: an object with at most a
-// status and a body of the rule's type.
-func normalisedResponse(match javascript.ActionMatch, result Option[schema.Value]) (Option[int], Option[schema.Value], error) {
-	value, _ := result.Get()
-	response, ok := value.(schema.ObjectValue)
-	if !ok {
-		return None[int](), None[schema.Value](), errors.New("response normaliser must return an object")
-	}
-	status := None[int]()
-	body := None[schema.Value]()
-	for _, key := range response.Keys() {
-		member, _ := response.Member(key)
-		switch key {
-		case "status":
-			number, isNumber := member.(schema.NumberValue)
-			code := number.Float()
-			if !isNumber || code != math.Trunc(code) || code < 100 || code > 599 {
-				return None[int](), None[schema.Value](), errors.New("normalised status must be an integer from 100 to 599")
-			}
-			status = Some(int(code))
-		case "body":
-			body = Some(member)
-		default:
-			return None[int](), None[schema.Value](), errors.Errorf("normalised response has an unknown member %q", key)
-		}
-	}
-	member, present := body.Get()
-	if !present {
-		return status, None[schema.Value](), nil
-	}
-	checked, err := schema.As(match.Type, member)
-	if err != nil {
-		return None[int](), None[schema.Value](), errors.Wrap(err, "validate normalised body")
-	}
-	return status, Some(checked), nil
 }
 
 // Compare normalises both payloads and returns where they differ, and whether they

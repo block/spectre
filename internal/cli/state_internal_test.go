@@ -9,8 +9,20 @@ import (
 	"github.com/alecthomas/assert/v2"
 
 	"github.com/block/spectre/internal/cli/terminal"
+	"github.com/block/spectre/internal/protocols"
+	httpprotocol "github.com/block/spectre/internal/protocols/http"
+	mysqlprotocol "github.com/block/spectre/internal/protocols/mysql"
 	"github.com/block/spectre/internal/state"
 )
+
+// testKinds are the kinds of the built-in protocols, which the state commands list.
+func testKinds(t *testing.T) state.Kinds {
+	t.Helper()
+	registry := protocols.NewRegistry()
+	assert.NoError(t, registry.Register(httpprotocol.NewProvider()))
+	assert.NoError(t, registry.Register(mysqlprotocol.NewProvider()))
+	return registry.Kinds()
+}
 
 func TestStateTypesCommand(t *testing.T) {
 	for name, test := range map[string]struct {
@@ -31,6 +43,9 @@ func TestStateTypesCommand(t *testing.T) {
 				"egress[http] [nodes.<id>.egress.http]\n" +
 				"  Module that sends HTTP requests to another service, including gRPC and\n" +
 				"  Connect.\n\n" +
+				"  No settings.\n\n" +
+				"egress[mysql] [nodes.<id>.egress.mysql]\n" +
+				"  Module that sends statements to a MySQL database.\n\n" +
 				"  No settings.\n",
 		},
 		"Color": {
@@ -46,6 +61,9 @@ func TestStateTypesCommand(t *testing.T) {
 				"\033[1megress[http]\033[0m \033[2m[nodes.<id>.egress.http]\033[0m\n" +
 				"  Module that sends HTTP requests to another service, including gRPC and\n" +
 				"  Connect.\n\n" +
+				"  \033[2mNo settings.\033[0m\n\n" +
+				"\033[1megress[mysql]\033[0m \033[2m[nodes.<id>.egress.mysql]\033[0m\n" +
+				"  Module that sends statements to a MySQL database.\n\n" +
 				"  \033[2mNo settings.\033[0m\n",
 		},
 		"JSON": {
@@ -74,6 +92,11 @@ func TestStateTypesCommand(t *testing.T) {
     "name": "egress[http]",
     "description": "Module that sends HTTP requests to another service, including gRPC and Connect.",
     "table": "nodes.<id>.egress.http"
+  },
+  {
+    "name": "egress[mysql]",
+    "description": "Module that sends statements to a MySQL database.",
+    "table": "nodes.<id>.egress.mysql"
   }
 ]
 `,
@@ -82,7 +105,7 @@ func TestStateTypesCommand(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			var out bytes.Buffer
 
-			assert.NoError(t, test.command.Run(Output{Writer: &out, Palette: test.palette}))
+			assert.NoError(t, test.command.Run(Output{Writer: &out, Palette: test.palette}, testKinds(t).NodeTypes()))
 
 			assert.Equal(t, test.expected, out.String())
 		})
@@ -111,7 +134,7 @@ func TestStateValidateCommand(t *testing.T) {
 			command := stateValidateCommand{State: state.Config{StateFile: path}}
 			var out bytes.Buffer
 
-			err := command.Run(Output{Writer: &out})
+			err := command.Run(Output{Writer: &out}, testKinds(t))
 
 			if test.err != "" {
 				assert.EqualError(t, err, replacePath(test.err, path))
@@ -125,7 +148,7 @@ func TestStateValidateCommand(t *testing.T) {
 
 func TestStateValidateCommandMissingFile(t *testing.T) {
 	command := stateValidateCommand{State: state.Config{StateFile: filepath.Join(t.TempDir(), "state.toml")}}
-	err := command.Run(Output{Writer: &bytes.Buffer{}})
+	err := command.Run(Output{Writer: &bytes.Buffer{}}, testKinds(t))
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "read migration state")
 }
@@ -203,7 +226,7 @@ func TestNextCommand(t *testing.T) {
 			test.command.State = state.Config{StateFile: path}
 			var out bytes.Buffer
 
-			err := test.command.Run(Output{Writer: &out, Palette: test.palette})
+			err := test.command.Run(Output{Writer: &out, Palette: test.palette}, testKinds(t))
 
 			if test.err != "" {
 				assert.EqualError(t, err, replacePath(test.err, path))
@@ -256,7 +279,7 @@ func TestDoneCommand(t *testing.T) {
 			command := doneCommand{State: state.Config{StateFile: path}, Nodes: test.nodes}
 			var out bytes.Buffer
 
-			err := command.Run(Output{Writer: &out})
+			err := command.Run(Output{Writer: &out}, testKinds(t))
 
 			if test.err != "" {
 				assert.EqualError(t, err, replacePath(test.err, path))
@@ -273,7 +296,7 @@ func TestDoneCommand(t *testing.T) {
 
 func TestDoneCommandMissingFile(t *testing.T) {
 	command := doneCommand{State: state.Config{StateFile: filepath.Join(t.TempDir(), "state.toml")}, Nodes: []string{"a"}}
-	err := command.Run(Output{Writer: &bytes.Buffer{}})
+	err := command.Run(Output{Writer: &bytes.Buffer{}}, testKinds(t))
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "read migration state")
 }

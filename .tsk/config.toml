@@ -143,6 +143,12 @@ linters = ['revive']
 path = '(internal/httputil/|internal/metrics/)'
 text = 'avoid package names that conflict with Go standard library'
 
+# internal/protocols/http intentionally shadows net/http.
+[[exclude]]
+linters = ['revive']
+path = '^internal/protocols/http/[^/]+\.go$'
+text = 'avoid package names that conflict with Go standard library'
+
 [[exclude]]
 linters = ['forbidigo']
 path = '_test\.go'

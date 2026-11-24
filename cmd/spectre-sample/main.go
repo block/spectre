@@ -15,7 +15,7 @@ import (
 	. "github.com/alecthomas/types/optional"
 
 	"github.com/block/spectre/internal"
-	"github.com/block/spectre/internal/httpserver"
+	"github.com/block/spectre/internal/httpservice"
 	"github.com/block/spectre/internal/logger"
 	"github.com/block/spectre/internal/netaddr"
 	"github.com/block/spectre/internal/sample"
@@ -55,7 +55,7 @@ func main() {
 		if !ok {
 			kctx.Fatalf("forecast provider %q is not a backend", cli.Forecasts)
 		}
-		transport := httpserver.NewTransport(httpserver.NewConfig().TransportConfig)
+		transport := httpservice.NewTransport(httpservice.NewTransportConfig())
 		defer transport.CloseIdleConnections()
 		forecasts = Some(sample.NewForecastClient(target, cli.ForecastsHost, transport.ForBackend(provider)))
 	}

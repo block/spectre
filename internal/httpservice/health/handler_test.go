@@ -1,0 +1,86 @@
+package health_test
+
+import (
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"github.com/alecthomas/assert/v2"
+
+	"github.com/block/spectre/internal/httpservice/health"
+)
+
+func TestHealthEndpoints(t *testing.T) {
+	next := http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.WriteHeader(http.StatusCreated)
+	})
+	handler := health.New(next)
+	for _, test := range []struct {
+		name   string
+		method string
+		path   string
+		status int
+		allow  string
+	}{
+		{name: "Liveness", method: http.MethodGet, path: "/livez", status: http.StatusNoContent},
+		{name: "NotReady", method: http.MethodGet, path: "/readyz", status: http.StatusServiceUnavailable},
+		{name: "Head", method: http.MethodHead, path: "/livez", status: http.StatusNoContent},
+		{name: "MethodNotAllowed", method: http.MethodPost, path: "/livez", status: http.StatusMethodNotAllowed, allow: "GET, HEAD"},
+		{name: "Delegates", method: http.MethodGet, path: "/users", status: http.StatusCreated},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, httptest.NewRequest(test.method, test.path, nil))
+			assert.Equal(t, test.status, response.Code)
+			assert.Equal(t, test.allow, response.Header().Get("Allow"))
+		})
+	}
+
+	handler.SetReady(true)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	assert.Equal(t, http.StatusNoContent, response.Code)
+	handler.SetReady(false)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	assert.Equal(t, http.StatusServiceUnavailable, response.Code)
+}
+
+func TestAllIsReadyWhileEveryHandlerIs(t *testing.T) {
+	first := health.New(http.NotFoundHandler())
+	second := health.New(http.NotFoundHandler())
+	all := health.NewAll(first, second)
+	readiness := func() int {
+		response := httptest.NewRecorder()
+		all.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+		return response.Code
+	}
+	assert.Equal(t, http.StatusServiceUnavailable, readiness())
+	first.SetReady(true)
+	assert.Equal(t, http.StatusServiceUnavailable, readiness())
+	second.SetReady(true)
+	assert.Equal(t, http.StatusNoContent, readiness())
+	first.SetReady(false)
+	assert.Equal(t, http.StatusServiceUnavailable, readiness())
+
+	response := httptest.NewRecorder()
+	all.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/users", nil))
+	assert.Equal(t, http.StatusNotFound, response.Code)
+}
+
+func TestWrapServesTheReadinessOfTheHandlerItWraps(t *testing.T) {
+	shared := health.New(http.NotFoundHandler())
+	wrapped := shared.Wrap(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.WriteHeader(http.StatusCreated)
+	}))
+	status := func(path string) int {
+		response := httptest.NewRecorder()
+		wrapped.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+		return response.Code
+	}
+	assert.Equal(t, http.StatusNoContent, status("/livez"))
+	assert.Equal(t, http.StatusServiceUnavailable, status("/readyz"))
+	shared.SetReady(true)
+	assert.Equal(t, http.StatusNoContent, status("/readyz"))
+	assert.Equal(t, http.StatusCreated, status("/users"))
+}

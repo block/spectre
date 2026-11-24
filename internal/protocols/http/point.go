@@ -1,0 +1,181 @@
+package http
+
+import (
+	"context"
+	"log/slog"
+	nethttp "net/http"
+	"net/http/httputil"
+
+	"github.com/alecthomas/errors"
+	. "github.com/alecthomas/types/optional"
+
+	"github.com/block/spectre/internal/engine"
+	"github.com/block/spectre/internal/logger"
+	"github.com/block/spectre/internal/model"
+	"github.com/block/spectre/internal/proxy"
+	"github.com/block/spectre/internal/schema"
+)
+
+// errAborted explains a response that ReverseProxy could not finish copying.
+var errAborted = errors.New("response was aborted")
+
+// decodeFunc returns the comparable content of a recorded response.
+type decodeFunc func(ctx context.Context, recorded *recording) engine.Content
+
+// noDecode decodes responses that are only replayed or ignored, never compared.
+func noDecode(context.Context, *recording) engine.Content {
+	return engine.Content{Failure: Some(errors.New("response is not compared"))}
+}
+
+// unreadRequest is the payload of requests whose content the engine never needs.
+func unreadRequest(context.Context) (schema.Value, error) {
+	return nil, errors.New("request payloads are not decoded at this point")
+}
+
+// point serves one ingress or egress point, so both share forwarding, recording,
+// replay, and reporting. Only how requests reach it differs.
+type point struct {
+	acceptor engine.Acceptor
+	// budget returns the budget for one recording.
+	budget func() *proxy.Budget
+	// abortCancels reports an aborted response as cancelled, because the client
+	// may have caused it.
+	abortCancels bool
+	// replaysFailures reports a transport failure as a response, so a candidate
+	// replaying it sees the same failure. Otherwise it is reported as unable.
+	replaysFailures bool
+}
+
+func newPoint(acceptor engine.Acceptor, budget func() *proxy.Budget, abortCancels, replaysFailures bool) *point {
+	return &point{acceptor: acceptor, budget: budget, abortCancels: abortCancels, replaysFailures: replaysFailures}
+}
+
+// process asks the engine what to do with a request.
+func (p *point) process(ctx context.Context, requestID Option[engine.RequestID], route model.Route,
+	ignored Option[string], request func(ctx context.Context) (schema.Value, error),
+) (engine.Decision, error) {
+	return errors.WithStack2(p.acceptor.ProcessRequest(ctx, requestID, route, ignored, request))
+}
+
+// respond carries out the engine's decision. A forwarded response is recorded and
+// reported; with no upstream, the request ends without being sent.
+func (p *point) respond(writer nethttp.ResponseWriter, request *nethttp.Request, decision engine.Decision,
+	upstream Option[*httputil.ReverseProxy], decode decodeFunc,
+) (cancelled bool) {
+	switch decision := decision.(type) {
+	case engine.DecisionForward:
+		return p.forward(writer, request, decision, upstream, decode)
+	case engine.DecisionIntercept:
+		p.replay(writer, request, decision.Raw)
+	case engine.DecisionAnswer:
+		// Only egress candidates are answered, and they encode answers themselves.
+		logger.FromContext(request.Context()).ErrorContext(request.Context(), "Answer decision reached a point that cannot encode it")
+		writer.WriteHeader(nethttp.StatusBadGateway)
+	}
+	return false
+}
+
+// forward reports whether the request ended cancelled. An aborted response panics
+// instead of returning, after reporting it.
+func (p *point) forward(writer nethttp.ResponseWriter, request *nethttp.Request, decision engine.DecisionForward,
+	upstream Option[*httputil.ReverseProxy], decode decodeFunc,
+) (cancelled bool) {
+	ctx := request.Context()
+	exchange := decision.Exchange
+	destination, ok := upstream.Get()
+	if !ok {
+		cancelled = ctx.Err() != nil
+		p.acceptor.Unable(ctx, exchange, errors.New("request has no usable destination"))
+		writer.WriteHeader(nethttp.StatusBadGateway)
+		return cancelled
+	}
+	recorded := newRecording(p.budget())
+	reported := false
+	// ReverseProxy panics to abort a response, so report before the panic continues.
+	defer func() {
+		if reported {
+			return
+		}
+		recorded.finish(nil, errAborted)
+		reportContext := ctx
+		if p.abortCancels {
+			var cancel context.CancelCauseFunc
+			reportContext, cancel = context.WithCancelCause(ctx)
+			cancel(errAborted)
+		}
+		p.report(reportContext, exchange, recorded, decode)
+	}()
+	recordingProxy(destination, recorded, decision.RequestID).ServeHTTP(writer, request)
+	// The transport may never run, so the handler guarantees the recording completes.
+	recorded.finish(nil, errors.New("request ended without a response"))
+	reported = true
+	return p.report(ctx, exchange, recorded, decode)
+}
+
+// report ends the exchange with the response, or as unable, and reports whether
+// it ended cancelled. The response is decoded only if the engine compares it.
+func (p *point) report(ctx context.Context, exchange engine.Exchange, recorded *recording, decode decodeFunc) (cancelled bool) {
+	err := recorded.complete()
+	if err == nil && !p.replaysFailures {
+		err = recorded.failure()
+	}
+	if err != nil {
+		cancelled = ctx.Err() != nil
+		recorded.Release()
+		p.acceptor.Unable(ctx, exchange, err)
+		return cancelled
+	}
+	p.acceptor.ProcessResponse(ctx, exchange, engine.Response{
+		Raw:     recorded,
+		Latency: recorded.latency(),
+		Decode:  func(ctx context.Context) engine.Content { return decode(ctx, recorded) },
+	})
+	return false
+}
+
+// replay answers a request from another point's recording, then releases it.
+func (p *point) replay(writer nethttp.ResponseWriter, request *nethttp.Request, raw engine.Raw) {
+	defer raw.Release()
+	recorded, ok := raw.(*recording)
+	if !ok {
+		logger.FromContext(request.Context()).ErrorContext(request.Context(), "Intercepted response is not an HTTP recording")
+		writer.WriteHeader(nethttp.StatusBadGateway)
+		return
+	}
+	replayed := request.Clone(request.Context())
+	replayed.Body = nethttp.NoBody
+	replayed.ContentLength = 0
+	newReplayProxy(replayed.Context(), recorded).ServeHTTP(writer, replayed)
+}
+
+// recordingProxy copies a destination's reverse proxy so that one request's response is recorded,
+// and it carries requestID. The copy shares the destination's forwarding setup.
+func recordingProxy(destination *httputil.ReverseProxy, recorded *recording, requestID Option[engine.RequestID]) *httputil.ReverseProxy {
+	forward := *destination
+	forward.Transport = newRecordingTransport(destination.Transport, recorded)
+	if id, ok := requestID.Get(); ok {
+		// Rewrite runs after hop-by-hop headers are removed, so a Connection header cannot drop the ID.
+		rewrite := destination.Rewrite
+		forward.Rewrite = func(request *httputil.ProxyRequest) {
+			rewrite(request)
+			setRequestID(request.Out.Header, id)
+		}
+	}
+	return &forward
+}
+
+// newReplayProxy answers one request from its recording, reusing the reverse
+// proxy's header and trailer handling.
+func newReplayProxy(ctx context.Context, recorded *recording) *httputil.ReverseProxy {
+	log := logger.FromContext(ctx)
+	return &httputil.ReverseProxy{
+		// The recording answers without dialing, so the outbound URL is never used.
+		Rewrite:   func(*httputil.ProxyRequest) {},
+		Transport: recorded,
+		ErrorLog:  slog.NewLogLogger(log.Handler(), slog.LevelError),
+		ErrorHandler: func(writer nethttp.ResponseWriter, request *nethttp.Request, err error) {
+			log.WarnContext(request.Context(), "Candidate replay failed", "error", err)
+			writer.WriteHeader(nethttp.StatusBadGateway)
+		},
+	}
+}

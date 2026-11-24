@@ -1,0 +1,658 @@
+package engine_test
+
+import (
+	"context"
+	"fmt"
+	"testing"
+	"time"
+
+	"github.com/alecthomas/assert/v2"
+	"github.com/alecthomas/errors"
+	. "github.com/alecthomas/types/optional"
+
+	"github.com/block/spectre/internal/engine"
+	"github.com/block/spectre/internal/model"
+	"github.com/block/spectre/internal/schema"
+)
+
+var (
+	responseType = &schema.ObjectType{Name: "test.v1.Response", Fields: textFields}
+	notIgnored   = None[string]()
+	ignoredFor   = Some("ignored for test")
+)
+
+func TestIngressComparesResponses(t *testing.T) {
+	for name, test := range map[string]struct {
+		route       model.Route
+		ignored     Option[string]
+		reference   engine.Response
+		candidate   engine.Response
+		quarantined []string
+		logged      map[string]any
+	}{
+		"Equivalent": {
+			reference: engine.Response{Decode: decoded("OK", message(t, responseType, "london", "first"))},
+			candidate: engine.Response{Decode: decoded("OK", message(t, responseType, "london", "second"))},
+			logged:    map[string]any{"outcome": "equivalent"},
+		},
+		"NoMessages": {
+			reference: engine.Response{Decode: statusOnly("OK")},
+			candidate: engine.Response{Decode: statusOnly("OK")},
+			logged:    map[string]any{"outcome": "equivalent"},
+		},
+		"DivergentMessages": {
+			reference:   engine.Response{Decode: decoded("OK", message(t, responseType, "london", ""))},
+			candidate:   engine.Response{Decode: decoded("OK", message(t, responseType, "paris", ""))},
+			quarantined: []string{"response differences: ~ $.value"},
+			logged:      map[string]any{"outcome": "divergent", "differences": []any{"~ $.value"}},
+		},
+		"UntypedMessagesSkipNormalisers": {
+			reference: engine.Response{Decode: decoded("OK", message(t, unknown, "london", "first"))},
+			candidate: engine.Response{Decode: decoded("OK", message(t, unknown, "london", "second"))},
+			// Untyped keys are payload data, so no path quotes them.
+			quarantined: []string{"response differences: ~ $[*]"},
+			logged:      map[string]any{"outcome": "divergent", "differences": []any{"~ $[*]"}},
+		},
+		"Status": {
+			reference:   engine.Response{Decode: decoded("OK", message(t, responseType, "london", ""))},
+			candidate:   engine.Response{Decode: decoded("NOT_FOUND", message(t, responseType, "london", ""))},
+			quarantined: []string{"response differences: ~ $status OK → NOT_FOUND"},
+			logged:      map[string]any{"outcome": "divergent", "differences": []any{"~ $status OK → NOT_FOUND"}},
+		},
+		"MissingCandidateMessage": {
+			reference:   engine.Response{Decode: decoded("OK", message(t, responseType, "london", ""))},
+			candidate:   engine.Response{Decode: statusOnly("OK")},
+			quarantined: []string{"response differences: - $"},
+			logged:      map[string]any{"outcome": "divergent", "differences": []any{"- $"}},
+		},
+		"DifferentMessageTypes": {
+			reference:   engine.Response{Decode: decoded("OK", message(t, responseType, "london", ""))},
+			candidate:   engine.Response{Decode: decoded("OK", message(t, unknown, "london", ""))},
+			quarantined: []string{"response comparison failed: reference and candidate messages have different types"},
+			logged:      map[string]any{"outcome": "unable", "reason": "reference and candidate messages have different types"},
+		},
+		"StatusDespiteReferenceDecodeFailure": {
+			reference:   engine.Response{Decode: undecodable(Some("OK"), "bad body")},
+			candidate:   engine.Response{Decode: statusOnly("NOT_FOUND")},
+			quarantined: []string{"response differences: ~ $status OK → NOT_FOUND"},
+			logged:      map[string]any{"outcome": "divergent", "differences": []any{"~ $status OK → NOT_FOUND"}},
+		},
+		"StatusDespiteCandidateDecodeFailure": {
+			reference:   engine.Response{Decode: statusOnly("OK")},
+			candidate:   engine.Response{Decode: undecodable(Some("NOT_FOUND"), "bad body")},
+			quarantined: []string{"response differences: ~ $status OK → NOT_FOUND"},
+			logged:      map[string]any{"outcome": "divergent", "differences": []any{"~ $status OK → NOT_FOUND"}},
+		},
+		"ReferenceDecodeFailure": {
+			reference:   engine.Response{Decode: undecodable(Some("OK"), "bad body")},
+			candidate:   engine.Response{Decode: statusOnly("OK")},
+			quarantined: []string{"response comparison failed: reference: bad body"},
+			logged:      map[string]any{"outcome": "unable", "reason": "reference: bad body"},
+		},
+		"CandidateDecodeFailure": {
+			reference:   engine.Response{Decode: statusOnly("OK")},
+			candidate:   engine.Response{Decode: undecodable(Some("OK"), "bad body")},
+			quarantined: []string{"response comparison failed: candidate: bad body"},
+			logged:      map[string]any{"outcome": "unable", "reason": "candidate: bad body"},
+		},
+		"ReferenceStatusUnknown": {
+			reference:   engine.Response{Decode: undecodable(None[string](), "no status")},
+			candidate:   engine.Response{Decode: statusOnly("OK")},
+			quarantined: []string{"response comparison failed: reference: no status"},
+			logged:      map[string]any{"outcome": "unable", "reason": "reference: no status"},
+		},
+		"CandidateStatusUnknown": {
+			reference:   engine.Response{Decode: statusOnly("OK")},
+			candidate:   engine.Response{Decode: undecodable(None[string](), "no status")},
+			quarantined: []string{"response comparison failed: candidate: no status"},
+			logged:      map[string]any{"outcome": "unable", "reason": "candidate: no status"},
+		},
+		"StatusUnknownWithoutFailure": {
+			reference:   engine.Response{Decode: statusOnly("OK")},
+			candidate:   engine.Response{Decode: func(context.Context) engine.Content { return engine.Content{} }},
+			quarantined: []string{"response comparison failed: response status is unknown"},
+			logged:      map[string]any{"outcome": "unable", "reason": "response status is unknown"},
+		},
+		"Ignored": {
+			route:     "ignored",
+			ignored:   ignoredFor,
+			reference: engine.Response{Decode: decoded("OK", message(t, responseType, "london", ""))},
+			candidate: engine.Response{Decode: statusOnly("NOT_FOUND")},
+			logged:    map[string]any{"outcome": "skipped", "reason": "ignored for test"},
+		},
+		"LatencyDelta": {
+			reference: engine.Response{Decode: statusOnly("OK"), Latency: 10 * time.Millisecond},
+			candidate: engine.Response{Decode: statusOnly("OK"), Latency: 15 * time.Millisecond},
+			logged:    map[string]any{"outcome": "equivalent", "dt": float64(5 * time.Millisecond)},
+		},
+		"ReferenceLatencyUnmeasured": {
+			reference: engine.Response{Decode: statusOnly("OK")},
+			candidate: engine.Response{Decode: statusOnly("OK"), Latency: 15 * time.Millisecond},
+			logged:    map[string]any{"outcome": "equivalent"},
+		},
+		"CandidateLatencyUnmeasured": {
+			reference: engine.Response{Decode: statusOnly("OK"), Latency: 10 * time.Millisecond},
+			candidate: engine.Response{Decode: statusOnly("OK")},
+			logged:    map[string]any{"outcome": "equivalent"},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t, time.Second)
+			route, ignored := model.Route("compared"), notIgnored
+			if test.route != "" {
+				route, ignored = test.route, test.ignored
+			}
+			referenceRaw, candidateRaw := newRaw("reference"), newRaw("candidate")
+			test.reference.Raw, test.candidate.Raw = referenceRaw, candidateRaw
+			reference, candidate := h.mirror(t, route, ignored)
+
+			h.engine.IngressReference(fake).ProcessResponse(h.ctx, reference, test.reference)
+			h.engine.IngressCandidate(fake).ProcessResponse(h.ctx, candidate, test.candidate)
+
+			assert.Equal(t, test.quarantined, h.quarantine.Reasons())
+			assert.Equal(t, []map[string]any{comparisonRecord(route, test.logged)}, h.records(t, "Response comparison completed"))
+			assert.Equal(t, model.Calls{Routes: map[model.Route]uint64{route: 1}}, h.calls.Calls())
+			assert.Equal(t, 1, referenceRaw.Releases())
+			assert.Equal(t, 1, candidateRaw.Releases())
+		})
+	}
+}
+
+func TestIngressAppliesRules(t *testing.T) {
+	// statusMapping is a protocol's normalisation of a status, which leaves the message as it is.
+	type statusMapping func(status string) (Option[string], error)
+	type side struct {
+		content engine.Content
+		// normalise is how the protocol normalises the response, if its rule does.
+		normalise Option[statusMapping]
+	}
+	normalised := Some(statusMapping(func(status string) (Option[string], error) {
+		if status == "201" {
+			return Some("200"), nil
+		}
+		return Some(status), nil
+	}))
+	bodyOnly := Some(statusMapping(func(string) (Option[string], error) { return None[string](), nil }))
+	failing := Some(statusMapping(func(string) (Option[string], error) { return None[string](), errors.New("rule failed") }))
+	for name, test := range map[string]struct {
+		reference   side
+		candidate   side
+		quarantined []string
+		logged      map[string]any
+	}{
+		"BothIgnored": {
+			reference: side{content: engine.Content{Status: Some("503"), Ignored: Some("rule ignores the response")}},
+			candidate: side{content: engine.Content{Status: Some("503"), Ignored: Some("rule ignores the response")}},
+			logged:    map[string]any{"outcome": "skipped", "reason": "rule ignores the response"},
+		},
+		"OneIgnored": {
+			reference:   side{content: engine.Content{Status: Some("503"), Ignored: Some("rule ignores the response")}},
+			candidate:   side{content: engine.Content{Status: Some("200")}},
+			quarantined: []string{"response differences: ~ $status 503 → 200"},
+			logged:      map[string]any{"outcome": "divergent", "differences": []any{"~ $status 503 → 200"}},
+		},
+		"OneIgnoredWithSameStatus": {
+			reference:   side{content: engine.Content{Status: Some("503"), Ignored: Some("rule ignores the response")}},
+			candidate:   side{content: engine.Content{Status: Some("503")}},
+			quarantined: []string{"response comparison failed: only one response is ignored"},
+			logged:      map[string]any{"outcome": "unable", "reason": "only one response is ignored"},
+		},
+		"NormalisedStatus": {
+			reference: side{content: engine.Content{Status: Some("200"), Message: message(t, responseType, "london", "")}, normalise: normalised},
+			candidate: side{content: engine.Content{Status: Some("201"), Message: message(t, responseType, "london", "")}, normalise: normalised},
+			logged:    map[string]any{"outcome": "equivalent"},
+		},
+		"NormalisedBodyDiffers": {
+			reference:   side{content: engine.Content{Status: Some("200"), Message: message(t, responseType, "london", "")}, normalise: normalised},
+			candidate:   side{content: engine.Content{Status: Some("201"), Message: message(t, responseType, "paris", "")}, normalise: normalised},
+			quarantined: []string{"response differences: ~ $.value"},
+			logged:      map[string]any{"outcome": "divergent", "differences": []any{"~ $.value"}},
+		},
+		"NormalisedStatusDiffers": {
+			reference: side{content: engine.Content{Status: Some("201"), Message: message(t, responseType, "london", "")}, normalise: normalised},
+			candidate: side{content: engine.Content{Status: Some("500"), Message: message(t, responseType, "london", "")}, normalise: normalised},
+			// The services' statuses are reported, not the normalised ones.
+			quarantined: []string{"response differences: ~ $status 201 → 500"},
+			logged:      map[string]any{"outcome": "divergent", "differences": []any{"~ $status 201 → 500"}},
+		},
+		"StatusNotCompared": {
+			reference: side{content: engine.Content{Status: Some("200"), Message: message(t, responseType, "london", "")}, normalise: bodyOnly},
+			candidate: side{content: engine.Content{Status: Some("500"), Message: message(t, responseType, "london", "")}, normalise: bodyOnly},
+			logged:    map[string]any{"outcome": "equivalent"},
+		},
+		"UndecodableComparesRawStatus": {
+			reference:   side{content: engine.Content{Status: Some("500"), Failure: Some(errors.New("bad body"))}, normalise: bodyOnly},
+			candidate:   side{content: engine.Content{Status: Some("200"), Message: message(t, responseType, "london", "")}, normalise: bodyOnly},
+			quarantined: []string{"response differences: ~ $status 500 → 200"},
+			logged:      map[string]any{"outcome": "divergent", "differences": []any{"~ $status 500 → 200"}},
+		},
+		"NormaliserFails": {
+			reference:   side{content: engine.Content{Status: Some("200")}, normalise: failing},
+			candidate:   side{content: engine.Content{Status: Some("200")}, normalise: failing},
+			quarantined: []string{"response comparison failed: reference: rule failed"},
+			logged:      map[string]any{"outcome": "unable", "reason": "reference: rule failed"},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t, time.Second)
+			response := func(side side, raw *countingRaw) engine.Response {
+				content := side.content
+				if mapping, ok := side.normalise.Get(); ok {
+					content.Normalise = Some(engine.Normaliser(func(context.Context) (Option[string], Option[schema.Value], error) {
+						status, err := mapping(content.Status.Default(""))
+						return status, content.Message, err
+					}))
+				}
+				return engine.Response{Raw: raw, Decode: func(context.Context) engine.Content { return content }}
+			}
+			reference, candidate := h.mirror(t, "compared", notIgnored)
+
+			h.engine.IngressReference(fake).ProcessResponse(h.ctx, reference, response(test.reference, newRaw("reference")))
+			h.engine.IngressCandidate(fake).ProcessResponse(h.ctx, candidate, response(test.candidate, newRaw("candidate")))
+
+			assert.Equal(t, test.quarantined, h.quarantine.Reasons())
+			assert.Equal(t, []map[string]any{comparisonRecord("compared", test.logged)}, h.records(t, "Response comparison completed"))
+		})
+	}
+}
+
+func TestIngressReportsUnableExchanges(t *testing.T) {
+	for name, test := range map[string]struct {
+		route          model.Route
+		ignored        Option[string]
+		referenceFails bool
+		candidateFails bool
+		// cancelled cancels the failing side's context.
+		cancelled bool
+		// timedOut expires the failing side's deadline.
+		timedOut    bool
+		quarantined []string
+		compared    []map[string]any
+		unfinished  []map[string]any
+	}{
+		"Reference": {
+			referenceFails: true,
+			quarantined:    []string{"response comparison failed: reference: connection reset"},
+			compared:       []map[string]any{comparisonRecord("compared", map[string]any{"outcome": "unable", "reason": "reference: connection reset"})},
+		},
+		"ReferenceCancelled": {
+			referenceFails: true,
+			cancelled:      true,
+			unfinished:     []map[string]any{unfinishedRecord("connection reset")},
+		},
+		"Candidate": {
+			candidateFails: true,
+			quarantined:    []string{"response comparison failed: candidate: connection reset"},
+			compared:       []map[string]any{comparisonRecord("compared", map[string]any{"outcome": "unable", "reason": "candidate: connection reset"})},
+		},
+		"CandidateCancelled": {
+			candidateFails: true,
+			cancelled:      true,
+		},
+		"CandidateTimedOut": {
+			candidateFails: true,
+			timedOut:       true,
+			quarantined:    []string{"response comparison failed: candidate did not respond within the candidate timeout"},
+			compared: []map[string]any{comparisonRecord("compared", map[string]any{
+				"outcome": "unable", "reason": "candidate did not respond within the candidate timeout",
+			})},
+		},
+		"IgnoredCandidateTimedOut": {
+			route:          "ignored",
+			ignored:        ignoredFor,
+			candidateFails: true,
+			timedOut:       true,
+			compared:       []map[string]any{comparisonRecord("ignored", map[string]any{"outcome": "skipped", "reason": "ignored for test"})},
+		},
+		"IgnoredCandidate": {
+			route:          "ignored",
+			ignored:        ignoredFor,
+			candidateFails: true,
+			compared:       []map[string]any{comparisonRecord("ignored", map[string]any{"outcome": "skipped", "reason": "ignored for test"})},
+		},
+		"IgnoredReference": {
+			route:          "ignored",
+			ignored:        ignoredFor,
+			referenceFails: true,
+			compared:       []map[string]any{comparisonRecord("ignored", map[string]any{"outcome": "skipped", "reason": "ignored for test"})},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t, time.Second)
+			route, ignored := model.Route("compared"), notIgnored
+			if test.route != "" {
+				route, ignored = test.route, test.ignored
+			}
+			failing := h.ctx
+			switch {
+			case test.cancelled:
+				cancelled, cancel := context.WithCancel(h.ctx)
+				cancel()
+				failing = cancelled
+			case test.timedOut:
+				expired, cancel := context.WithDeadline(h.ctx, time.Now())
+				defer cancel()
+				failing = expired
+			}
+			referenceRaw, candidateRaw := newRaw("reference"), newRaw("candidate")
+			reference, candidate := h.mirror(t, route, ignored)
+			reason := errors.New("connection reset")
+
+			if test.referenceFails {
+				h.engine.IngressReference(fake).Unable(failing, reference, reason)
+			} else {
+				h.engine.IngressReference(fake).ProcessResponse(h.ctx, reference, engine.Response{Decode: statusOnly("OK"), Raw: referenceRaw})
+			}
+			if test.candidateFails {
+				h.engine.IngressCandidate(fake).Unable(failing, candidate, reason)
+			} else {
+				h.engine.IngressCandidate(fake).ProcessResponse(h.ctx, candidate, engine.Response{Decode: statusOnly("OK"), Raw: candidateRaw})
+			}
+
+			assert.Equal(t, test.quarantined, h.quarantine.Reasons())
+			assert.Equal(t, append([]map[string]any{}, test.compared...), h.records(t, "Response comparison completed"))
+			assert.Equal(t, append([]map[string]any{}, test.unfinished...), h.records(t, "Response comparison did not finish"))
+			assert.Equal(t, boolToInt(!test.referenceFails), referenceRaw.Releases())
+			assert.Equal(t, boolToInt(!test.candidateFails), candidateRaw.Releases())
+		})
+	}
+}
+
+func TestIngressCandidateMustJoinAReference(t *testing.T) {
+	for name, test := range map[string]struct {
+		candidate model.Protocol
+		// joins is how many candidates join successfully first.
+		joins            int
+		referenceEnded   bool
+		withoutRequestID bool
+		// expected is formatted with the reference's RequestID.
+		expected string
+	}{
+		"MissingRequestID": {
+			candidate:        fake,
+			withoutRequestID: true,
+			expected:         "candidate request has no request ID",
+		},
+		"ReferenceEnded": {
+			candidate:      fake,
+			referenceEnded: true,
+			expected:       "candidate request %s has no reference request",
+		},
+		"AlreadyJoined": {
+			candidate: fake,
+			joins:     1,
+			expected:  "reference request %s already has a candidate",
+		},
+		"ProtocolMismatch": {
+			candidate: other,
+			expected:  "candidate request %s uses other, not fake",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t, time.Second)
+			decision, err := h.engine.IngressReference(fake).ProcessRequest(h.ctx, None[engine.RequestID](), "compared", notIgnored, unreadPayload(t))
+			assert.NoError(t, err)
+			forward := decision.(engine.DecisionForward)
+			requestID, ok := forward.RequestID.Get()
+			assert.True(t, ok)
+			for range test.joins {
+				_, err := h.engine.IngressCandidate(fake).ProcessRequest(h.ctx, forward.RequestID, "compared", notIgnored, unreadPayload(t))
+				assert.NoError(t, err)
+			}
+			if test.referenceEnded {
+				h.engine.IngressReference(fake).ProcessResponse(h.ctx, forward.Exchange, engine.Response{Decode: statusOnly("OK"), Raw: newRaw("reference")})
+			}
+			joining := forward.RequestID
+			if test.withoutRequestID {
+				joining = None[engine.RequestID]()
+			}
+
+			decision, err = h.engine.IngressCandidate(test.candidate).ProcessRequest(h.ctx, joining, "compared", notIgnored, unreadPayload(t))
+
+			expected := test.expected
+			if !test.withoutRequestID {
+				expected = fmt.Sprintf(test.expected, requestID)
+			}
+			assert.EqualError(t, err, expected)
+			assert.Equal(t, nil, decision)
+			assert.Equal(t, []string{expected}, h.quarantine.Reasons())
+		})
+	}
+}
+
+func TestIngressDropsReferenceWithoutCandidate(t *testing.T) {
+	h := newHarness(t, time.Second)
+	decision, err := h.engine.IngressReference(fake).ProcessRequest(h.ctx, None[engine.RequestID](), "compared", notIgnored, unreadPayload(t))
+	assert.NoError(t, err)
+	raw := newRaw("reference")
+
+	h.engine.IngressReference(fake).ProcessResponse(h.ctx, decision.(engine.DecisionForward).Exchange, engine.Response{Decode: statusOnly("OK"), Raw: raw})
+
+	assert.Equal(t, 1, raw.Releases())
+	assert.Equal(t, nil, h.quarantine.Reasons())
+	assert.Equal(t, []map[string]any{}, h.records(t, "Response comparison completed"))
+	assert.Equal(t, model.Calls{Routes: map[model.Route]uint64{}}, h.calls.Calls())
+}
+
+func TestIngressCandidateWaitsForReference(t *testing.T) {
+	h := newHarness(t, time.Second)
+	reference, candidate := h.mirror(t, "compared", notIgnored)
+	responded := make(chan struct{})
+	go func() {
+		defer close(responded)
+		h.engine.IngressCandidate(fake).ProcessResponse(h.ctx, candidate, engine.Response{Decode: statusOnly("NOT_FOUND"), Raw: newRaw("candidate")})
+	}()
+	time.Sleep(10 * time.Millisecond)
+
+	h.engine.IngressReference(fake).ProcessResponse(h.ctx, reference, engine.Response{Decode: statusOnly("OK"), Raw: newRaw("reference")})
+	<-responded
+
+	assert.Equal(t, []model.QuarantineReason{{
+		Kind:    model.QuarantineDivergent,
+		Traffic: Some(model.Traffic{Direction: model.Ingress, Protocol: fake, Route: "compared"}),
+		Differences: []model.Difference{{
+			Path: "$status", Change: model.ChangeChanged, Count: 1,
+			Statuses: Some(model.Statuses{Reference: "OK", Candidate: "NOT_FOUND"}),
+		}},
+	}}, h.quarantine.Recorded())
+}
+
+func TestIngressIgnoredCandidateReportsWithoutReference(t *testing.T) {
+	h := newHarness(t, time.Second)
+	reference, candidate := h.mirror(t, "ignored", ignoredFor)
+	undecoded := func(context.Context) engine.Content {
+		t.Error("ignored response was decoded")
+		return engine.Content{}
+	}
+	referenceRaw, candidateRaw := newRaw("reference"), newRaw("candidate")
+	// A candidate that waited for the reference would hit this deadline.
+	ctx, cancel := context.WithTimeout(h.ctx, time.Second)
+	defer cancel()
+
+	h.engine.IngressCandidate(fake).ProcessResponse(ctx, candidate, engine.Response{Raw: candidateRaw, Decode: undecoded})
+
+	assert.Equal(t, []map[string]any{comparisonRecord("ignored", map[string]any{"outcome": "skipped", "reason": "ignored for test"})},
+		h.records(t, "Response comparison completed"))
+	assert.Equal(t, []map[string]any{}, h.records(t, "Response comparison did not finish"))
+	assert.Equal(t, 1, candidateRaw.Releases())
+	assert.Equal(t, 0, referenceRaw.Releases())
+
+	h.engine.IngressReference(fake).ProcessResponse(h.ctx, reference, engine.Response{Raw: referenceRaw, Decode: undecoded})
+
+	assert.Equal(t, 1, referenceRaw.Releases())
+	assert.Equal(t, nil, h.quarantine.Reasons())
+}
+
+func TestIngressCandidateStoppedDuringComparison(t *testing.T) {
+	for name, test := range map[string]struct {
+		cause       error
+		quarantined []string
+		compared    []map[string]any
+		unfinished  []map[string]any
+	}{
+		"Cancelled": {
+			unfinished: []map[string]any{unfinishedRecord("context canceled: candidate: read interrupted")},
+		},
+		"TimedOut": {
+			cause:       context.DeadlineExceeded,
+			quarantined: []string{"response comparison failed: comparison did not finish within the candidate timeout"},
+			compared: []map[string]any{comparisonRecord("compared", map[string]any{
+				"outcome": "unable", "reason": "comparison did not finish within the candidate timeout",
+			})},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t, time.Second)
+			reference, candidate := h.mirror(t, "compared", notIgnored)
+			referenceRaw, candidateRaw := newRaw("reference"), newRaw("candidate")
+			ctx, cancel := context.WithCancelCause(h.ctx)
+			defer cancel(nil)
+			interrupted := func(context.Context) engine.Content {
+				cancel(test.cause)
+				return engine.Content{Failure: Some(errors.New("read interrupted"))}
+			}
+			h.engine.IngressReference(fake).ProcessResponse(h.ctx, reference, engine.Response{Raw: referenceRaw, Decode: statusOnly("OK")})
+
+			h.engine.IngressCandidate(fake).ProcessResponse(ctx, candidate, engine.Response{Raw: candidateRaw, Decode: interrupted})
+
+			assert.Equal(t, test.quarantined, h.quarantine.Reasons())
+			assert.Equal(t, append([]map[string]any{}, test.compared...), h.records(t, "Response comparison completed"))
+			assert.Equal(t, append([]map[string]any{}, test.unfinished...), h.records(t, "Response comparison did not finish"))
+			assert.Equal(t, 1, referenceRaw.Releases())
+			assert.Equal(t, 1, candidateRaw.Releases())
+		})
+	}
+}
+
+func TestIngressCandidateWaitIsBoundedByContext(t *testing.T) {
+	for name, test := range map[string]struct {
+		stop        func(ctx context.Context) (context.Context, context.CancelFunc)
+		quarantined []string
+		compared    []map[string]any
+		unfinished  []map[string]any
+	}{
+		"Cancelled": {
+			stop: func(ctx context.Context) (context.Context, context.CancelFunc) {
+				ctx, cancel := context.WithCancel(ctx)
+				time.AfterFunc(20*time.Millisecond, cancel)
+				return ctx, cancel
+			},
+			unfinished: []map[string]any{unfinishedRecord("context canceled")},
+		},
+		"TimedOut": {
+			stop: func(ctx context.Context) (context.Context, context.CancelFunc) {
+				return context.WithTimeout(ctx, 20*time.Millisecond)
+			},
+			quarantined: []string{"response comparison failed: reference did not respond within the candidate timeout"},
+			compared: []map[string]any{comparisonRecord("compared", map[string]any{
+				"outcome": "unable", "reason": "reference did not respond within the candidate timeout",
+			})},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t, time.Second)
+			reference, candidate := h.mirror(t, "compared", notIgnored)
+			referenceRaw, candidateRaw := newRaw("reference"), newRaw("candidate")
+			ctx, cancel := test.stop(h.ctx)
+			defer cancel()
+
+			h.engine.IngressCandidate(fake).ProcessResponse(ctx, candidate, engine.Response{Decode: statusOnly("NOT_FOUND"), Raw: candidateRaw})
+
+			assert.Equal(t, 1, candidateRaw.Releases())
+			assert.Equal(t, append([]map[string]any{}, test.unfinished...), h.records(t, "Response comparison did not finish"))
+
+			h.engine.IngressReference(fake).ProcessResponse(h.ctx, reference, engine.Response{Decode: statusOnly("OK"), Raw: referenceRaw})
+
+			assert.Equal(t, 1, referenceRaw.Releases())
+			assert.Equal(t, test.quarantined, h.quarantine.Reasons())
+			assert.Equal(t, append([]map[string]any{}, test.compared...), h.records(t, "Response comparison completed"))
+		})
+	}
+}
+
+func TestIngressReleasesResponsesForUnknownExchanges(t *testing.T) {
+	for name, acceptor := range map[string]func(engine *engine.Engine) engine.Acceptor{
+		"Reference": func(engine *engine.Engine) engine.Acceptor { return engine.IngressReference(fake) },
+		"Candidate": func(engine *engine.Engine) engine.Acceptor { return engine.IngressCandidate(fake) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t, time.Second)
+			reference, candidate := h.mirror(t, "compared", notIgnored)
+			h.engine.IngressReference(fake).ProcessResponse(h.ctx, reference, engine.Response{Decode: statusOnly("OK"), Raw: newRaw("reference")})
+			h.engine.IngressCandidate(fake).ProcessResponse(h.ctx, candidate, engine.Response{Decode: statusOnly("OK"), Raw: newRaw("candidate")})
+			raw := newRaw("repeated")
+			exchange := map[string]engine.Exchange{"Reference": reference, "Candidate": candidate}[name]
+
+			acceptor(h.engine).ProcessResponse(h.ctx, exchange, engine.Response{Decode: statusOnly("OK"), Raw: raw})
+
+			assert.Equal(t, 1, raw.Releases())
+			assert.Equal(t, []map[string]any{{"level": "ERROR", "msg": "Unknown ingress exchange", "exchange": exchange.String()}},
+				h.records(t, "Unknown ingress exchange"))
+		})
+	}
+}
+
+// mirror starts a reference request and joins its mirrored candidate request.
+func (h *harness) mirror(t *testing.T, route model.Route, ignored Option[string]) (reference, candidate engine.Exchange) {
+	t.Helper()
+	decision, err := h.engine.IngressReference(fake).ProcessRequest(h.ctx, None[engine.RequestID](), route, ignored, unreadPayload(t))
+	assert.NoError(t, err)
+	referenceForward := decision.(engine.DecisionForward)
+	decision, err = h.engine.IngressCandidate(fake).ProcessRequest(h.ctx, referenceForward.RequestID, route, ignored, unreadPayload(t))
+	assert.NoError(t, err)
+	candidateForward := decision.(engine.DecisionForward)
+	assert.Equal(t, referenceForward.RequestID, candidateForward.RequestID)
+	assert.NotEqual(t, referenceForward.Exchange, candidateForward.Exchange)
+	return referenceForward.Exchange, candidateForward.Exchange
+}
+
+// unreadPayload fails the test if ingress reads a request payload.
+func unreadPayload(t *testing.T) func(ctx context.Context) (schema.Value, error) {
+	return func(context.Context) (schema.Value, error) {
+		t.Error("ingress read a request payload")
+		return nil, errors.New("unread")
+	}
+}
+
+// decoded returns a Decode func for a response with a known status and message.
+func decoded(status string, message Option[schema.Value]) func(context.Context) engine.Content {
+	return func(context.Context) engine.Content {
+		return engine.Content{Status: Some(status), Message: message}
+	}
+}
+
+func statusOnly(status string) func(context.Context) engine.Content {
+	return decoded(status, None[schema.Value]())
+}
+
+// undecodable returns a Decode func whose body failed to decode.
+func undecodable(status Option[string], reason string) func(context.Context) engine.Content {
+	return func(context.Context) engine.Content {
+		return engine.Content{Status: status, Failure: Some(errors.New(reason))}
+	}
+}
+
+func message(t *testing.T, declared schema.Type, value, trace string) Option[schema.Value] {
+	t.Helper()
+	return Some(instance(t, declared, map[string]any{"value": value, "trace": trace}))
+}
+
+// comparisonRecord is the comparison log record for route with attributes added.
+func comparisonRecord(route model.Route, attributes map[string]any) map[string]any {
+	record := map[string]any{"level": "INFO", "msg": "Response comparison completed", "event": "correlation", "protocol": "fake", "route": string(route)}
+	for key, value := range attributes {
+		record[key] = value
+	}
+	return record
+}
+
+func unfinishedRecord(reason string) map[string]any {
+	return map[string]any{"level": "WARN", "msg": "Response comparison did not finish", "protocol": "fake", "route": "compared", "error": reason}
+}
+
+func boolToInt(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
+}

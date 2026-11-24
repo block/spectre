@@ -4,9 +4,9 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,10 +14,12 @@ import (
 	"time"
 
 	"github.com/alecthomas/assert/v2"
+	"github.com/alecthomas/errors"
 	. "github.com/alecthomas/types/optional"
 
 	"github.com/block/spectre/internal/comparison"
 	"github.com/block/spectre/internal/comparison/javascript"
+	"github.com/block/spectre/internal/comparison/javascript/javascripttest"
 	"github.com/block/spectre/internal/logger"
 	"github.com/block/spectre/internal/model"
 	"github.com/block/spectre/internal/schema"
@@ -82,7 +84,7 @@ func TestRejectsInvalidConfiguration(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			config := newConfig(t, map[string]string{"test.ts": module("")})
 			update(&config)
-			scripts, err := comparison.New(t.Context(), config)
+			scripts, err := comparison.New(t.Context(), config, bindings())
 			assert.Error(t, err)
 			assert.Equal(t, (*comparison.Scripts)(nil), scripts)
 		})
@@ -105,17 +107,6 @@ func TestRejectsInvalidScripts(t *testing.T) {
 			scripts: map[string]string{"test.ts": `import "unsupported";`},
 			message: "compile comparison scripts",
 		},
-		"IngressHost": {
-			scripts: map[string]string{"weather.ts": module(`spectre.ingress.http("GET weather.example/v1/forecast").match<v1.Response>();`)},
-			message: `must have the form "[<METHOD> ]/<path>"`,
-		},
-		"DuplicateRuleAcrossScripts": {
-			scripts: map[string]string{
-				"a.ts": module(`spectre.ingress.http("GET /v1/forecast").match<v1.Response>();`),
-				"b.ts": module(`spectre.ingress.http("GET /v1/forecast").match<v1.Response>();`),
-			},
-			message: `duplicate rule http("GET /v1/forecast")`,
-		},
 		"DuplicateTargetAcrossScripts": {
 			scripts: map[string]string{
 				"a.ts": module(`spectre.message<v1.User>((user) => user);`),
@@ -130,7 +121,7 @@ func TestRejectsInvalidScripts(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			scripts, err := comparison.New(t.Context(), newConfig(t, test.scripts))
+			scripts, err := comparison.New(t.Context(), newConfig(t, test.scripts), bindings())
 			assert.Error(t, err)
 			assert.Contains(t, err.Error(), test.message)
 			assert.Equal(t, (*comparison.Scripts)(nil), scripts)
@@ -150,113 +141,12 @@ func TestRejectsEndpointsAbsentFromSchema(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			// The cast skips type checking, so the type reaches the schema check.
 			config := newConfig(t, map[string]string{
-				"weather.ts": module(`(spectre.egress.http("` + test.pattern + `").match as any)("` + test.typeName + `");`),
+				"weather.ts": module(`(spectre.egress.fake("` + test.pattern + `").match as any)("` + test.typeName + `");`),
 			})
-			_, err := comparison.New(t.Context(), config)
+			_, err := comparison.New(t.Context(), config, bindings())
 			assert.Error(t, err)
 			assert.Contains(t, err.Error(), `resolve endpoint "`+test.pattern+`"`)
 			assert.Contains(t, err.Error(), `type "`+test.typeName+`" is not declared`)
-		})
-	}
-}
-
-func TestRejectsRulesAbsentFromSchema(t *testing.T) {
-	// The cast skips type checking, so the type reaches the schema check.
-	config := newConfig(t, map[string]string{
-		"weather.ts": module(`(spectre.ingress.http("GET /v1/forecast").match as any)("test.v1.Missing");`),
-	})
-	_, err := comparison.New(t.Context(), config)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "spectre.IngressHTTPRule.match")
-	assert.Contains(t, err.Error(), `type "test.v1.Missing" is not declared`)
-}
-
-func TestSelectsTheFirstRuleThatSelectsAResponse(t *testing.T) {
-	scripts := newScripts(t, `
-		spectre.ingress.http("/").status(500).match<spectre.Text>();
-		spectre.ingress.http((request) => request.path.startsWith("/v2/")).status((status) => status >= 400).ignore();
-		spectre.ingress.http("/").status(503).responseHeader("Retry-After", (value) => value !== undefined).responseHeader("x-served-by", "rails").ignore();
-		spectre.ingress.http("/").responseHeader("Content-Type", (type) => type?.startsWith("text/html") ?? false).match<spectre.Text>();
-		spectre.ingress.http("/v3/").requestHeader("X-Synthetic", "true").requestHeader("Accept", (value) => value === undefined).ignore();
-		spectre.ingress.http("GET /v1/forecast").match<v1.Response>();
-	`)
-	rules := scripts.Rules()
-	v3 := func(header http.Header) javascript.Request {
-		return javascript.Request{Method: "GET", Path: "/v3/forecast", Header: header}
-	}
-	v2, v1 := javascript.Request{Method: "GET", Path: "/v2/forecast"}, javascript.Request{Method: "GET", Path: "/v1/forecast"}
-	html := http.Header{"Content-Type": {"text/html; charset=utf-8"}}
-	retry := http.Header{"Retry-After": {"5"}, "X-Served-By": {"rails"}}
-	for name, test := range map[string]struct {
-		rules    []javascript.Rule
-		request  javascript.Request
-		response javascript.Response
-		expected Option[javascript.Rule]
-	}{
-		"Status":          {rules: rules, request: v2, response: javascript.Response{Status: 500}, expected: Some(rules[0])},
-		"Functions":       {rules: rules, request: v2, response: javascript.Response{Status: 404}, expected: Some(rules[1])},
-		"Headers":         {rules: rules, request: v1, response: javascript.Response{Status: 503, Header: retry}, expected: Some(rules[2])},
-		"HeaderAbsent":    {rules: rules, request: v1, response: javascript.Response{Status: 503, Header: http.Header{"X-Served-By": {"rails"}}}, expected: Some(rules[5])},
-		"HeaderDiffers":   {rules: rules, request: v1, response: javascript.Response{Status: 503, Header: http.Header{"Retry-After": {"5"}, "X-Served-By": {"go"}}}, expected: Some(rules[5])},
-		"HeaderJoined":    {rules: rules, request: v1, response: javascript.Response{Status: 503, Header: http.Header{"Retry-After": {"5"}, "X-Served-By": {"rails", "go"}}}, expected: Some(rules[5])},
-		"HeaderFunction":  {rules: rules, request: v1, response: javascript.Response{Status: 200, Header: html}, expected: Some(rules[3])},
-		"RequestHeaders":  {rules: rules[4:], request: v3(http.Header{"X-Synthetic": {"true"}}), response: javascript.Response{Status: 200}, expected: Some(rules[4])},
-		"RequestValue":    {rules: rules[4:5], request: v3(http.Header{"X-Synthetic": {"false"}}), response: javascript.Response{Status: 200}, expected: None[javascript.Rule]()},
-		"RequestFunction": {rules: rules[4:5], request: v3(http.Header{"X-Synthetic": {"true"}, "Accept": {"*/*"}}), response: javascript.Response{Status: 200}, expected: None[javascript.Rule]()},
-		"RequestRejected": {rules: rules, request: v1, response: javascript.Response{Status: 404}, expected: Some(rules[5])},
-		"StatusRejected":  {rules: rules[:2], request: v2, response: javascript.Response{Status: 200}, expected: None[javascript.Rule]()},
-		"NoRules":         {request: javascript.Request{Method: "GET", Path: "/"}, response: javascript.Response{Status: 200}, expected: None[javascript.Rule]()},
-	} {
-		t.Run(name, func(t *testing.T) {
-			selected, err := scripts.SelectRule(t.Context(), test.rules, test.request, test.response)
-			assert.NoError(t, err)
-			assert.Equal(t, test.expected, selected)
-		})
-	}
-}
-
-func TestNormalisesResponsesWithRules(t *testing.T) {
-	scripts := newScripts(t, `
-		spectre.ingress.http("/typed").match<v1.Response>(({ status, body }) => ({ status: status === 201 ? 200 : status, body: body && { ...body, ignored: undefined } }));
-		spectre.ingress.http("/text").match<spectre.Text>(({ body }) => ({ body: body?.trim() }));
-		spectre.ingress.http("/plain").match<v1.Response>();
-		const unchecked = <T,>(normalise: unknown) => normalise as (response: spectre.Response<T>) => spectre.Response<T>;
-		spectre.ingress.http("/array").match<v1.Response>(unchecked(() => []));
-		spectre.ingress.http("/member").match<v1.Response>(unchecked(() => ({ headers: {} })));
-		spectre.ingress.http("/status").match<v1.Response>(unchecked(() => ({ status: 200.5 })));
-		spectre.ingress.http("/body").match<v1.Response>(unchecked(() => ({ body: { stable: 1 } })));
-		spectre.ingress.http("/textbody").match<spectre.Text>(unchecked<spectre.Text>(() => ({ body: 1 })));
-	`)
-	rules := scripts.Rules()
-	text := schema.StringType{}
-	body := instance(t, scripts, response, `{"stable":"same","ignored":"first","roles":[],"users":[],"count":"0","labels":{}}`)
-	for name, test := range map[string]struct {
-		rule    javascript.Rule
-		body    Option[schema.Value]
-		status  Option[int]
-		result  Option[schema.Value]
-		message string
-	}{
-		"Typed":      {rule: rules[0], body: Some(body), status: Some(200), result: Some(instance(t, scripts, response, `{"stable":"same","roles":[],"users":[],"count":"0","labels":{}}`))},
-		"Text":       {rule: rules[1], body: Some(typed(t, text, `" page "`)), status: None[int](), result: Some(typed(t, text, `"page"`))},
-		"NoBody":     {rule: rules[1], body: None[schema.Value](), status: None[int](), result: None[schema.Value]()},
-		"Unchanged":  {rule: rules[2], body: Some(body), status: Some(201), result: Some(body)},
-		"NotObject":  {rule: rules[3], body: Some(body), message: "response normaliser must return an object"},
-		"Member":     {rule: rules[4], body: Some(body), message: `normalised response has an unknown member "headers"`},
-		"Status":     {rule: rules[5], body: Some(body), message: "normalised status must be an integer from 100 to 599"},
-		"WrongBody":  {rule: rules[6], body: Some(body), message: "validate normalised body"},
-		"TextNumber": {rule: rules[7], body: Some(typed(t, text, `"page"`)), message: "validate normalised body: $: expected string, found a number"},
-	} {
-		t.Run(name, func(t *testing.T) {
-			status, result, err := scripts.NormaliseResponse(t.Context(), test.rule, 201, test.body)
-			if test.message != "" {
-				assert.Error(t, err)
-				assert.Contains(t, err.Error(), test.message)
-				return
-			}
-			assert.NoError(t, err)
-			assert.Equal(t, test.status, status)
-			assert.Equal(t, test.result, result)
 		})
 	}
 }
@@ -266,12 +156,10 @@ func TestLoadsEveryScriptAsOneSet(t *testing.T) {
 		"users/user.ts": module(`
 			import {lower} from "../helpers/strings";
 			spectre.message<v1.User>((user) => user === undefined ? undefined : {name: lower(user.name)});
-			spectre.egress.http("GET weather.example/v1/forecast").match<v1.Query>();
+			spectre.egress.fake("GET weather.example/v1/forecast").match<v1.Query>();
 		`),
 		"weather.ts": module(`
 			import {lower} from "./helpers/strings";
-			spectre.ingress.http("GET /v1/forecast").match<v1.Response>();
-			spectre.ingress.http("GET /_status").ignore();
 			spectre.field<v1.Response, "stable">((stable) => stable === undefined ? undefined : lower(stable));
 		`),
 		"helpers/strings.ts": `export const lower = (value: string) => value.toLowerCase();`,
@@ -281,19 +169,7 @@ func TestLoadsEveryScriptAsOneSet(t *testing.T) {
 	for _, endpoint := range scripts.Endpoints() {
 		endpoints = append(endpoints, fmt.Sprintf("%s %s %q %q", endpoint.Direction(), endpoint.Protocol(), endpoint.Pattern(), endpoint.Type()))
 	}
-	assert.Equal(t, []string{`egress http "GET weather.example/v1/forecast" "test.v1.Query"`}, endpoints)
-	type rule struct {
-		declared string
-		action   javascript.Action
-	}
-	rules := []rule{}
-	for _, declared := range scripts.Rules() {
-		rules = append(rules, rule{declared.String(), declared.Action()})
-	}
-	assert.Equal(t, []rule{
-		{`http("GET /v1/forecast")`, javascript.ActionMatch{Type: objectType(t, scripts, "test.v1.Response")}},
-		{`http("GET /_status")`, javascript.ActionIgnore{}},
-	}, rules)
+	assert.Equal(t, []string{`egress fake "GET weather.example/v1/forecast" "test.v1.Query"`}, endpoints)
 
 	differences, truncated, err := scripts.Compare(t.Context(),
 		instance(t, scripts, response, `{"stable":"SAME","owner":{"name":"ALICE"}}`),
@@ -617,7 +493,7 @@ func TestRejectsInvalidNormalisedTypes(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, err := comparison.New(t.Context(), newConfig(t, map[string]string{"test.ts": module(test.script)}))
+			_, err := comparison.New(t.Context(), newConfig(t, map[string]string{"test.ts": module(test.script)}), bindings())
 			assert.Error(t, err)
 			assert.Contains(t, err.Error(), test.error)
 		})
@@ -629,7 +505,7 @@ func TestInterruptsRunawayNormaliser(t *testing.T) {
 		"test.ts": module(`spectre.message<v1.Response>(() => { while (true) {} });`),
 	})
 	config.ComparisonTimeout = 10 * time.Millisecond
-	scripts, err := comparison.New(t.Context(), config)
+	scripts, err := comparison.New(t.Context(), config, bindings())
 	assert.NoError(t, err)
 
 	payload := instance(t, scripts, response, `{"stable":"same"}`)
@@ -640,6 +516,42 @@ func TestInterruptsRunawayNormaliser(t *testing.T) {
 	assert.IsError(t, err, context.DeadlineExceeded)
 }
 
+func TestEvaluatesInFreshEvaluator(t *testing.T) {
+	scripts := newScripts(t, `spectre.message<v1.Response>(() => ({ stable: "changed" }));`)
+	payload := instance(t, scripts, response, `{"stable":"same"}`)
+	normalise := func() (Option[schema.Value], error) {
+		var normalised Option[schema.Value]
+		err := scripts.Evaluate(t.Context(), func(evaluator *javascript.Evaluator) error {
+			var err error
+			normalised, err = evaluator.NormaliseMessage(response, Some(payload))
+			return err
+		})
+		return normalised, err
+	}
+
+	first, err := normalise()
+	assert.NoError(t, err)
+	assert.Equal(t, `{"stable":"changed"}`, jsonOf(t, first))
+	second, err := normalise()
+	assert.NoError(t, err)
+	assert.Equal(t, first, second)
+
+	failure := errors.New("failed")
+	assert.IsError(t, scripts.Evaluate(t.Context(), func(*javascript.Evaluator) error { return failure }), failure)
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	assert.Error(t, scripts.Evaluate(ctx, func(*javascript.Evaluator) error { return nil }))
+}
+
+func jsonOf(t *testing.T, value Option[schema.Value]) string {
+	t.Helper()
+	present, ok := value.Get()
+	assert.True(t, ok)
+	encoded, err := json.Marshal(present)
+	assert.NoError(t, err)
+	return string(encoded)
+}
+
 func TestLogsIndividualNormaliserResults(t *testing.T) {
 	var output bytes.Buffer
 	ctx := logger.WithLogger(t.Context(), slog.New(slog.NewJSONHandler(&output, &slog.HandlerOptions{Level: slog.LevelDebug})))
@@ -647,7 +559,7 @@ func TestLogsIndividualNormaliserResults(t *testing.T) {
 		spectre.field<v1.Response, "ignored">(() => undefined);
 		spectre.field<v1.Response, "stable">((value) => value);
 	`)})
-	scripts, err := comparison.New(ctx, config)
+	scripts, err := comparison.New(ctx, config, bindings())
 	assert.NoError(t, err)
 
 	differences, truncated, err := scripts.Compare(ctx,
@@ -666,7 +578,7 @@ func TestLogsIndividualNormaliserResults(t *testing.T) {
 func TestLogsHashNormalisationWithoutNormalisers(t *testing.T) {
 	var output bytes.Buffer
 	ctx := logger.WithLogger(t.Context(), slog.New(slog.NewJSONHandler(&output, &slog.HandlerOptions{Level: slog.LevelDebug})))
-	scripts, err := comparison.New(ctx, newConfig(t, map[string]string{"test.ts": module("")}))
+	scripts, err := comparison.New(ctx, newConfig(t, map[string]string{"test.ts": module("")}), bindings())
 	assert.NoError(t, err)
 
 	_, err = scripts.Hash(ctx, "identity", "candidate", instance(t, scripts, query, `{"location":"london"}`))
@@ -682,7 +594,7 @@ const queryScript = `
 
 func TestHashesIdentityAndCanonicalJSON(t *testing.T) {
 	scripts := newScripts(t, queryScript)
-	identity := "http POST weather.example/v1/search"
+	identity := "fake POST weather.example/v1/search"
 
 	hash, err := scripts.Hash(t.Context(), identity, "reference", instance(t, scripts, query, `{"trace":"ignored","location":"london","days":3}`))
 
@@ -698,7 +610,7 @@ func TestHashIsStable(t *testing.T) {
 		payload  string
 	}
 	queried := func(payload string) hashed {
-		return hashed{identity: "http POST weather.example/v1/search", typeName: query, payload: payload}
+		return hashed{identity: "fake POST weather.example/v1/search", typeName: query, payload: payload}
 	}
 	scripts := newScripts(t, queryScript)
 	for name, test := range map[string]struct {
@@ -731,11 +643,11 @@ func TestHashIsStable(t *testing.T) {
 		},
 		"Identity": {
 			left:  queried(`{}`),
-			right: hashed{identity: "http GET weather.example/v1/search", typeName: query, payload: `{}`},
+			right: hashed{identity: "fake GET weather.example/v1/search", typeName: query, payload: `{}`},
 		},
 		"UnknownSkipsNormalisers": {
-			left:  hashed{identity: "http POST weather.example/v1/search", typeName: unknownType, payload: `{"trace":"first"}`},
-			right: hashed{identity: "http POST weather.example/v1/search", typeName: unknownType, payload: `{"trace":"second"}`},
+			left:  hashed{identity: "fake POST weather.example/v1/search", typeName: unknownType, payload: `{"trace":"first"}`},
+			right: hashed{identity: "fake POST weather.example/v1/search", typeName: unknownType, payload: `{"trace":"second"}`},
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -748,6 +660,11 @@ func TestHashIsStable(t *testing.T) {
 	}
 }
 
+// bindings are the script bindings of the fake protocol, which declares endpoints and replacements.
+func bindings() []javascript.Binding {
+	return []javascript.Binding{javascripttest.Binding()}
+}
+
 func newConfig(t *testing.T, scripts map[string]string) comparison.Config {
 	t.Helper()
 	config := comparison.NewConfig()
@@ -758,7 +675,7 @@ func newConfig(t *testing.T, scripts map[string]string) comparison.Config {
 
 func newScriptsFromFiles(t *testing.T, files map[string]string) *comparison.Scripts {
 	t.Helper()
-	scripts, err := comparison.New(t.Context(), newConfig(t, files))
+	scripts, err := comparison.New(t.Context(), newConfig(t, files), bindings())
 	assert.NoError(t, err)
 	return scripts
 }

@@ -8,8 +8,8 @@ import (
 
 	"github.com/alecthomas/errors"
 
-	"github.com/block/spectre/internal/httpserver/middleware/health"
-	"github.com/block/spectre/internal/httpserver/middleware/logging"
+	"github.com/block/spectre/internal/httpservice/health"
+	"github.com/block/spectre/internal/httpservice/logging"
 )
 
 // Server serves sample Connect requests and HTTP health checks on one listener.

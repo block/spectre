@@ -81,26 +81,6 @@ func TestAgreementSkipsUnreferencedImport(t *testing.T) {
 	assert.NoError(t, descriptors.CheckAgreement(registry, loaded))
 }
 
-func TestAgreementRequiresEveryUnaryMethod(t *testing.T) {
-	set := sampleDescriptorSet()
-	generated, err := descriptors.Declarations(t.Context(), set)
-	assert.NoError(t, err)
-	loaded, err := schema.ParseSources(t.Context(), generated)
-	assert.NoError(t, err)
-	registry, err := descriptors.NewRegistry(set)
-	assert.NoError(t, err)
-	for _, name := range []string{"spectre.sample.v1.UserService.GetUser", "spectre.sample.v1.UserService.ListUsers"} {
-		t.Run(name, func(t *testing.T) {
-			operations := slices.DeleteFunc(loaded.Operations(), func(operation schema.Operation) bool { return operation.Name == name })
-			missing, err := schema.New(loaded.Types(), operations)
-			assert.NoError(t, err)
-			err = descriptors.CheckAgreement(registry, missing)
-			assert.Error(t, err)
-			assert.Contains(t, err.Error(), `protobuf method "`+name+`" needs a declaration`)
-		})
-	}
-}
-
 func TestAgreementRejectsMismatchedFields(t *testing.T) {
 	set := sampleDescriptorSet()
 	generated, err := descriptors.Declarations(t.Context(), set)
@@ -154,7 +134,7 @@ func TestAgreementRejectsMismatchedFields(t *testing.T) {
 					test.mutate(&declared.Fields[index], byName)
 				}
 			}
-			modified, err := schema.New(types, loaded.Operations())
+			modified, err := schema.New(types, loaded.Methods())
 			assert.NoError(t, err)
 			err = descriptors.CheckAgreement(registry, modified)
 			assert.Error(t, err)
@@ -209,36 +189,11 @@ func TestAgreementAcceptsEquivalentEnumUnion(t *testing.T) {
 			}
 		}
 	}
-	modified, err := schema.New(types, loaded.Operations())
+	modified, err := schema.New(types, loaded.Methods())
 	assert.NoError(t, err)
 	registry, err := descriptors.NewRegistry(set)
 	assert.NoError(t, err)
 	assert.NoError(t, descriptors.CheckAgreement(registry, modified))
-}
-
-func TestAgreementRejectsOperationTypes(t *testing.T) {
-	set := sampleDescriptorSet()
-	generated, err := descriptors.Declarations(t.Context(), set)
-	assert.NoError(t, err)
-	loaded, err := schema.ParseSources(t.Context(), generated)
-	assert.NoError(t, err)
-	registry, err := descriptors.NewRegistry(set)
-	assert.NoError(t, err)
-	for _, name := range []string{"Request", "Response"} {
-		t.Run(name, func(t *testing.T) {
-			operations := loaded.Operations()
-			if name == "Request" {
-				operations[0].Request = "spectre.sample.v1.User"
-			} else {
-				operations[0].Response = "spectre.sample.v1.User"
-			}
-			modified, err := schema.New(loaded.Types(), operations)
-			assert.NoError(t, err)
-			err = descriptors.CheckAgreement(registry, modified)
-			assert.Error(t, err)
-			assert.Contains(t, err.Error(), `operation "spectre.sample.v1.UserService.GetUser" has types`)
-		})
-	}
 }
 
 func TestAgreementAcceptsRawHTTPDeclarations(t *testing.T) {
@@ -256,42 +211,6 @@ func TestAgreementAcceptsRawHTTPDeclarations(t *testing.T) {
 	registry, err = descriptors.NewRegistry(&descriptorpb.FileDescriptorSet{})
 	assert.NoError(t, err)
 	assert.NoError(t, descriptors.CheckAgreement(registry, loaded))
-}
-
-func TestAgreementRejectsDeclaredStreamingMethods(t *testing.T) {
-	set := streamingDescriptorSet()
-	generated, err := descriptors.Declarations(t.Context(), set)
-	assert.NoError(t, err)
-	loaded, err := schema.ParseSources(t.Context(), generated)
-	assert.NoError(t, err)
-	registry, err := descriptors.NewRegistry(set)
-	assert.NoError(t, err)
-	for _, name := range []string{"ClientStream", "ServerStream", "BidirectionalStream"} {
-		t.Run(name, func(t *testing.T) {
-			operation := loaded.Operations()[0]
-			operation.Name = "example.users.v1.UserService." + name
-			modified, err := schema.New(loaded.Types(), append(loaded.Operations(), operation))
-			assert.NoError(t, err)
-			err = descriptors.CheckAgreement(registry, modified)
-			assert.Error(t, err)
-			assert.Contains(t, err.Error(), "is a streaming protobuf method")
-		})
-	}
-}
-
-func TestAgreementRejectsScalarMethodTypes(t *testing.T) {
-	for _, name := range []string{"Input", "Output"} {
-		t.Run(name, func(t *testing.T) {
-			set := scalarMethodDescriptorSet(name)
-			registry, err := descriptors.NewRegistry(set)
-			assert.NoError(t, err)
-			loaded, err := schema.New([]*schema.ObjectType{{Name: "example.Payload"}}, nil)
-			assert.NoError(t, err)
-			err = descriptors.CheckAgreement(registry, loaded)
-			assert.Error(t, err)
-			assert.Contains(t, err.Error(), `uses unsupported request or response type "google.protobuf.Timestamp"`)
-		})
-	}
 }
 
 func TestAgreementRejectsObjectDeclarationForWellKnownScalar(t *testing.T) {

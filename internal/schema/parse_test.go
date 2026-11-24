@@ -79,11 +79,12 @@ declare module "audit" {
 		}},
 		profile,
 	}, schemaTypes(loaded))
-	assert.Equal(t, []schema.Operation{{
-		Name:     "example.users.v1.UserService.GetUser",
-		Request:  "example.users.v1.GetUserRequest",
-		Response: "example.users.v1.User",
-	}}, loaded.Operations())
+	assert.Equal(t, []schema.Method{{
+		Interface: "example.users.v1.UserService",
+		Name:      "GetUser",
+		Parameter: "example.users.v1.GetUserRequest",
+		Result:    "example.users.v1.User",
+	}}, loaded.Methods())
 }
 
 func TestParsesNullableMembers(t *testing.T) {
@@ -127,12 +128,41 @@ declare module "m" {
 	}}, declared)
 }
 
-func TestDeclaresBuiltinTypes(t *testing.T) {
-	loaded, err := schema.ParseSources(t.Context(), map[string]string{})
-	assert.NoError(t, err)
-	for _, name := range []schema.TypeRef{schema.ConnectError, schema.MySQLPairing} {
-		_, err := loaded.Type(name)
-		assert.NoError(t, err, "%s", name)
+func TestPayloadModules(t *testing.T) {
+	const (
+		connect = `declare module "spectre.fake" { interface Error { code: string } }`
+		other   = `declare module "spectre.other" { interface Thing { name: string } }`
+	)
+	for name, test := range map[string]struct {
+		payloads []string
+		source   string
+		error    string
+	}{
+		"Valid":             {payloads: []string{connect, other}, source: `declare module "m" { interface A { a: string } }`},
+		"NoPayloads":        {source: `declare module "m" { interface A { a: string } }`},
+		"ReservedByPayload": {payloads: []string{connect}, source: `declare module "spectre.fake" { interface A {} }`, error: `module "spectre.fake" is reserved by SPECTRE`},
+		"UnreservedName":    {payloads: []string{connect}, source: `declare module "spectre.sample.v1" { interface A {} }`},
+		"Duplicate":         {payloads: []string{connect, connect}, error: `payload module "spectre.fake" is declared more than once`},
+		"OutsideNamespace":  {payloads: []string{`declare module "other" { interface A {} }`}, error: `payload module "other" must be named under "spectre."`},
+		"SpectreItself":     {payloads: []string{`declare module "spectre" { interface A {} }`}, error: `payload module "spectre" must be named under "spectre."`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			sources := map[string]string{}
+			if test.source != "" {
+				sources["a.d.ts"] = test.source
+			}
+			loaded, err := schema.ParseSources(t.Context(), sources, test.payloads...)
+			if test.error != "" {
+				assert.Error(t, err)
+				assert.Contains(t, err.Error(), test.error)
+				return
+			}
+			assert.NoError(t, err)
+			if len(test.payloads) > 0 {
+				_, err := loaded.Type("spectre.fake.Error")
+				assert.NoError(t, err)
+			}
+		})
 	}
 }
 
@@ -184,7 +214,6 @@ func TestRejectsDeclarations(t *testing.T) {
 		"Namespace":         {source: "declare namespace a { interface A {} }", error: "schema files may only contain declare module"},
 		"TopLevelExport":    {source: `export interface A {}`, error: "schema files may only contain declare module"},
 		"Reserved":          {source: `declare module "spectre" {}`, error: `module "spectre" is reserved by SPECTRE`},
-		"ReservedBuiltin":   {source: `declare module "spectre.connect" { interface A {} }`, error: `module "spectre.connect" is reserved by SPECTRE`},
 		"Class":             {source: `declare module "m" { class A {} }`, error: "schema/a.d.ts:1:22: schema modules may only declare interfaces, type aliases, and namespaces"},
 		"Enum":              {source: `declare module "m" { enum A { B } }`, error: "schema modules may only declare interfaces"},
 		"Function":          {source: `declare module "m" { function f(): void }`, error: "schema modules may only declare interfaces"},

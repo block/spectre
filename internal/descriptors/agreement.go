@@ -9,8 +9,8 @@ import (
 	"github.com/block/spectre/internal/schema"
 )
 
-// CheckAgreement requires matching declarations for every object message and
-// unary method. Raw HTTP declarations may have no protobuf counterpart.
+// CheckAgreement requires matching declarations for every object message. Raw
+// HTTP declarations may have no protobuf counterpart.
 func CheckAgreement(registry *Registry, loaded *schema.Schema) error {
 	var agreementErr error
 	reachable := schemaFiles(registry.Files())
@@ -19,22 +19,7 @@ func CheckAgreement(registry *Registry, loaded *schema.Schema) error {
 			return true
 		}
 		agreementErr = checkMessages(registry, file.Messages(), loaded)
-		if agreementErr != nil {
-			return false
-		}
-		for index := range file.Services().Len() {
-			service := file.Services().Get(index)
-			for index := range service.Methods().Len() {
-				method := service.Methods().Get(index)
-				if method.IsStreamingClient() || method.IsStreamingServer() {
-					continue
-				}
-				if agreementErr = checkMethod(method, loaded); agreementErr != nil {
-					return false
-				}
-			}
-		}
-		return true
+		return agreementErr == nil
 	})
 	if agreementErr != nil {
 		return agreementErr
@@ -43,12 +28,6 @@ func CheckAgreement(registry *Registry, loaded *schema.Schema) error {
 		message, err := registry.Message(protoreflect.FullName(declared.Name))
 		if err == nil && (message.IsMapEntry() || isUntypedMessage(message.FullName()) || isScalarMessage(message.FullName())) {
 			return errors.Errorf("type %q cannot declare a protobuf message without an object JSON shape", declared.Name)
-		}
-	}
-	for _, operation := range loaded.Operations() {
-		method, err := registry.Method(protoreflect.FullName(operation.Name))
-		if err == nil && (method.IsStreamingClient() || method.IsStreamingServer()) {
-			return errors.Errorf("operation %q is a streaming protobuf method", operation.Name)
 		}
 	}
 	return nil
@@ -75,23 +54,6 @@ func checkMessages(registry *Registry, messages protoreflect.MessageDescriptors,
 		if err := checkMessages(registry, message.Messages(), loaded); err != nil {
 			return err
 		}
-	}
-	return nil
-}
-
-func checkMethod(method protoreflect.MethodDescriptor, loaded *schema.Schema) error {
-	if err := checkMethodTypes(method); err != nil {
-		return err
-	}
-	operation, err := loaded.Operation(string(method.FullName()))
-	if err != nil {
-		return errors.Wrapf(err, "protobuf method %q needs a declaration", method.FullName())
-	}
-	if schema.TypeRef(method.Input().FullName()) != operation.Request || schema.TypeRef(method.Output().FullName()) != operation.Response {
-		return errors.Errorf(
-			"operation %q has types %s -> %s, but its protobuf method has %s -> %s",
-			operation.Name, operation.Request, operation.Response, method.Input().FullName(), method.Output().FullName(),
-		)
 	}
 	return nil
 }
