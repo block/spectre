@@ -252,9 +252,24 @@ equivalent reference call and receives its recorded response. A candidate call
 without a match gets a `502` and stops all later candidate calls until the process
 restarts. Ingress then quarantines the candidate when its responses diverge.
 
+A candidate call that waits the whole of `--match-window` without a match is
+compared with the reference's unmatched calls to the same endpoint for the same
+mirrored request:
+
+- With exactly one, the two requests are compared after normalising, and the
+  candidate is quarantined as `divergent`. The reason lists the paths where the
+  requests differ and how, as for [response differences](#quarantine), and never
+  their values. That reference call is then not reported as left out.
+- With none, the candidate is quarantined as `unmatched`.
+- With several, the candidate is also quarantined as `unmatched`, and the reason
+  says how many there were. SPECTRE does not guess which one the candidate meant.
+
+Calls to an endpoint that `replaces` another are never compared this way, and
+nor are MySQL statements.
+
 A candidate call that gives up before it is answered, for example because its
 own client timed out, also quarantines the candidate, whether or not it matched a
-reference call. Giving up before a match is `unmatched`, and giving up later, such
+reference call. Giving up before a match is `unmatched`, without comparing requests, and giving up later, such
 as while waiting for the reference's response, is `unable`. Calls SPECTRE cancels
 itself, while shutting down or after a quarantine, never quarantine.
 
@@ -375,7 +390,8 @@ Statements carry no request ID, so statements pair across all requests by text
 alone, within `--match-window`. Each reference statement answers one candidate
 statement. A candidate statement that no reference statement matches gets an
 error, and quarantines the candidate as `unmatched`, as does a reference
-statement that no candidate statement claims. Every text statement the
+statement that no candidate statement claims. Statements are never compared
+with a near match, because any other request could have sent it. Every text statement the
 reference sends through the proxy must therefore be one that the mirrored
 candidate also sends.
 
@@ -506,7 +522,7 @@ A mirror quarantines its candidate for one of these reasons:
 
 | Kind | Reason |
 | --- | --- |
-| `divergent` | The candidate's response differed from the reference's. |
+| `divergent` | The candidate's response differed from the reference's, or a dependency call's request differed from the only reference call it could pair with. |
 | `unmatched` | The candidate or reference made a dependency call the other did not. |
 | `unlisted` | A request's route is in no node of the [migration state](#migration-state). |
 | `pairing` | The mirror could not pair the candidate's traffic with the reference's. |

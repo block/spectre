@@ -385,6 +385,9 @@ func (s *Server) admit(ctx context.Context, stop context.CancelFunc) (finish fun
 // claim waits for the reply of an equivalent reference unit, and keeps it in claimed
 // until released. The engine quarantines the candidate when there is none.
 func (s *Server) claim(ctx context.Context, claimed *[]*savedReply, route model.Route, by pairing) (*savedReply, error) {
+	// Temporary: scope spans unrelated statements, so a near match would diff the wrong
+	// pair. Remove once statements carry their own request IDs.
+	ctx = engine.WithSharedRequestID(ctx)
 	decision, err := s.candidate.ProcessRequest(ctx, Some(s.scope), route, None[string](), s.request(by))
 	if err != nil {
 		return nil, errors.WithStack(err)

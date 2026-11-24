@@ -182,7 +182,7 @@ func renderReason(text *strings.Builder, colour func(text string) string, direct
 func describe(direction model.Direction, reason model.QuarantineReason) string {
 	summary := reason.String()
 	if reason.Kind == model.QuarantineDivergent {
-		summary = "response differences"
+		summary = reason.Compared()
 	}
 	text := fmt.Sprintf("%s: %s", direction, summary)
 	if traffic, ok := reason.Traffic.Get(); ok {

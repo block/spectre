@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -153,15 +154,16 @@ func (q *egressQueue) shutdown(ctx context.Context) error {
 	}
 }
 
-// hash identifies a request by its protocol, route, and normalised payload.
+// hash identifies a request by its protocol, route, and normalised payload, which it
+// also returns to diff against a near match.
 func (q *egressQueue) hash(ctx context.Context, protocol model.Protocol, route model.Route, side string,
 	request func(ctx context.Context) (schema.Value, error),
-) (comparison.Hash, error) {
+) (hash comparison.Hash, normalised comparison.Normalised, err error) {
 	message, err := request(ctx)
 	if err != nil {
-		return comparison.Hash{}, errors.WithStack(err)
+		return hash, normalised, errors.WithStack(err)
 	}
-	return errors.WithStack2(q.scripts.Hash(ctx, string(protocol)+" "+string(route), side, message))
+	return errors.WithStack3(q.scripts.Identify(ctx, string(protocol)+" "+string(route), side, message))
 }
 
 // forward registers a reference request and hashes it in the background. A request
@@ -185,13 +187,14 @@ func (q *egressQueue) forward(ctx context.Context, requestID Option[RequestID], 
 	background := context.WithoutCancel(ctx)
 	go func() {
 		defer q.finishHashing()
-		hash, err := q.hash(background, protocol, route, "reference", request)
+		hash, normalised, err := q.hash(background, protocol, route, "reference", request)
 		if err != nil {
 			pending.abandon()
 			pending.forget()
 			q.quarantine.Quarantine(background, egressReason(model.QuarantineUnable, protocol, route, errors.Wrap(err, "identify reference request")))
 			return
 		}
+		pending.identify(normalised)
 		q.add(background, egressKey{request: id, hash: hash}, pending)
 	}()
 	return DecisionForward{RequestID: None[RequestID](), Exchange: exchange}
@@ -240,19 +243,63 @@ func (q *egressQueue) match(ctx context.Context, requestID RequestID, protocol m
 	request func(ctx context.Context) (schema.Value, error),
 ) (Raw, model.QuarantineKind, error) {
 	arrival := q.arrive()
-	hash, err := q.hash(ctx, protocol, route, "candidate", request)
+	hash, normalised, err := q.hash(ctx, protocol, route, "candidate", request)
 	if err != nil {
 		return nil, model.QuarantineUnable, errors.Wrap(err, "identify candidate request")
 	}
-	pending, err := q.claim(ctx, arrival, egressKey{request: requestID, hash: hash})
+	near := Some(endpoint{protocol, string(route)})
+	if sharesRequestID(ctx) {
+		near = None[endpoint]()
+	}
+	delivery, err := q.claim(ctx, arrival, egressKey{request: requestID, hash: hash}, near)
 	if err != nil {
 		return nil, model.QuarantineUnmatched, err
+	}
+	pending := delivery.pending
+	if delivery.near {
+		// egressReason reports a difference as divergent, and a failed diff as unmatched.
+		return nil, model.QuarantineUnmatched, pending.differsFrom(normalised)
 	}
 	raw, err := pending.wait(ctx)
 	if err != nil {
 		return nil, model.QuarantineUnable, err
 	}
 	return raw, "", nil
+}
+
+// nearMatch claims the only unclaimed reference of the waiter's request and endpoint, if it
+// diffs against one. count is how many there were. Callers hold q.mu.
+func (q *egressQueue) nearMatch(waiter *egressWaiter) (found Option[*egressExchange], count int) {
+	var nearKey egressKey
+	var near *egressExchange
+	for key, unused := range q.unused {
+		for _, pending := range unused {
+			if waiter.diffs(key.request, pending.endpoint()) {
+				nearKey, near = key, pending
+				count++
+			}
+		}
+	}
+	if count != 1 {
+		return None[*egressExchange](), count
+	}
+	unused := q.unused[nearKey]
+	index := slices.Index(unused, near)
+	q.setUnused(nearKey, slices.Delete(unused, index, index+1))
+	near.stopExpiry()
+	return Some(near), count
+}
+
+// awaited reports whether a waiting candidate may still diff against the reference. Callers hold q.mu.
+func (q *egressQueue) awaited(request RequestID, declared endpoint) bool {
+	for _, waiters := range q.waiting {
+		for _, waiter := range waiters {
+			if waiter.diffs(request, declared) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // refuse quarantines the candidate for a request that cannot be answered, unless
@@ -348,11 +395,50 @@ func (q *egressQueue) identify(ctx context.Context, protocol model.Protocol, rou
 }
 
 func egressReason(kind model.QuarantineKind, protocol model.Protocol, route model.Route, err error) model.QuarantineReason {
-	return model.QuarantineReason{
+	reason := model.QuarantineReason{
 		Kind:    kind,
 		Traffic: Some(model.Traffic{Direction: model.Egress, Protocol: protocol, Route: route}),
-		Detail:  err.Error(),
 	}
+	if differs, ok := errors.AsType[*requestDifferenceError](err); ok {
+		return differs.divergence(reason)
+	}
+	reason.Detail = err.Error()
+	return reason
+}
+
+// requestDifferenceError refuses a candidate request that differs from the only
+// reference request left to pair it with. It names paths and never values.
+type requestDifferenceError struct {
+	differences []model.Difference
+	truncated   bool
+}
+
+func newRequestDifferenceError(differences []model.Difference, truncated bool) *requestDifferenceError {
+	return &requestDifferenceError{differences: differences, truncated: truncated}
+}
+
+// divergence turns the reason for an egress request into a divergence with the differences.
+func (e *requestDifferenceError) divergence(reason model.QuarantineReason) model.QuarantineReason {
+	reason.Kind, reason.Differences, reason.Truncated = model.QuarantineDivergent, e.differences, e.truncated
+	return reason
+}
+
+func (e *requestDifferenceError) Error() string {
+	return "request differs from the only unclaimed reference request on the route: " +
+		strings.Join(model.DifferenceLines(e.differences, e.truncated), ", ")
+}
+
+type sharedRequestIDKey struct{}
+
+// WithSharedRequestID marks candidate requests whose request ID spans unrelated work, so egress
+// never diffs them against a near match. Temporary: remove once MySQL statements carry SRIDs.
+func WithSharedRequestID(ctx context.Context) context.Context {
+	return context.WithValue(ctx, sharedRequestIDKey{}, true)
+}
+
+func sharesRequestID(ctx context.Context) bool {
+	shared, _ := ctx.Value(sharedRequestIDKey{}).(bool)
+	return shared
 }
 
 // misreported logs a candidate response, which is a server error because
@@ -439,51 +525,64 @@ func (q *egressQueue) pick(ctx context.Context, arrival uint64, key, sourceKey e
 		q.mu.Unlock()
 		return egressDelivery{pending: source}, nil
 	}
-	waiter := newEgressWaiter(arrival, key, Some(sourceKey))
+	// A replacing request never diffs against a near match, because it may pair with either endpoint.
+	waiter := newEgressWaiter(arrival, key, Some(sourceKey), None[endpoint]())
 	q.waiting[key] = insertByArrival(q.waiting[key], waiter)
 	q.replacing[sourceKey] = append(q.replacing[sourceKey], waiter)
 	q.mu.Unlock()
 	return q.await(ctx, waiter, "no matching reference or source reference request")
 }
 
-// claim takes the earliest unused reference for key, waiting up to the window
-// for one to arrive. Ordering covers only hashed references, so it never waits on one still hashing.
-func (q *egressQueue) claim(ctx context.Context, arrival uint64, key egressKey) (*egressExchange, error) {
+// claim takes the earliest unused reference for key, waiting up to the window for one to arrive.
+// If none does, it takes the only unclaimed reference to near of the same request, as a near match.
+func (q *egressQueue) claim(ctx context.Context, arrival uint64, key egressKey, near Option[endpoint]) (egressDelivery, error) {
 	q.mu.Lock()
 	if unused := q.unused[key]; len(unused) > 0 {
 		q.setUnused(key, unused[1:])
 		unused[0].stopExpiry()
 		q.mu.Unlock()
-		return unused[0], nil
+		return egressDelivery{pending: unused[0], direct: true}, nil
 	}
-	waiter := newEgressWaiter(arrival, key, None[egressKey]())
+	waiter := newEgressWaiter(arrival, key, None[egressKey](), near)
 	q.waiting[key] = insertByArrival(q.waiting[key], waiter)
 	q.mu.Unlock()
-	delivery, err := q.await(ctx, waiter, "no matching reference request")
-	return delivery.pending, err
+	return q.await(ctx, waiter, "no matching reference request")
 }
 
-// await waits up to the window for add to hand waiter a reference, or else unregisters it.
-// missing describes the reference that never arrived.
+// await waits up to the window for add to hand waiter a reference, or else unregisters it and
+// looks for a near match. missing describes the reference that never arrived.
 func (q *egressQueue) await(ctx context.Context, waiter *egressWaiter, missing string) (egressDelivery, error) {
 	started := time.Now()
 	timer := time.NewTimer(q.window)
 	defer timer.Stop()
 	var err error
+	// A candidate that gives up early proves nothing about references still to arrive.
+	elapsed := false
 	select {
 	case delivery := <-waiter.delivered():
 		return delivery, nil
 	case <-timer.C:
+		elapsed = true
 		err = errors.Errorf("%s within %s", missing, q.window)
 	case <-ctx.Done():
 		err = errors.Wrapf(ctx.Err(), "%s before the candidate gave up after %s", missing, time.Since(started).Round(time.Millisecond))
 	}
 	q.mu.Lock()
 	waiting := q.unregister(waiter)
+	near, count := None[*egressExchange](), 0
+	if waiting && elapsed {
+		near, count = q.nearMatch(waiter)
+	}
 	q.mu.Unlock()
 	if !waiting {
 		// add unregistered this waiter concurrently, so a reference is already on its way.
 		return <-waiter.delivered(), nil
+	}
+	if reference, ok := near.Get(); ok {
+		return egressDelivery{pending: reference, near: true}, nil
+	}
+	if count > 1 {
+		return egressDelivery{}, errors.Errorf("%w: %d unclaimed reference requests on the route, so none is compared", err, count)
 	}
 	return egressDelivery{}, err
 }
@@ -525,6 +624,13 @@ func (q *egressQueue) expire(ctx context.Context, key egressKey, pending *egress
 		q.setUnused(key, slices.Delete(unused, index, index+1))
 	}
 	leftOut := index >= 0 && !pending.isMatched() && !q.closed
+	if leftOut && q.awaited(key.request, pending.endpoint()) {
+		// A waiting candidate decides within its own window whether this is its near match.
+		q.unused[key] = insertByArrival(q.unused[key], pending)
+		pending.expireAfter(q.window, func() { q.expire(ctx, key, pending) })
+		q.mu.Unlock()
+		return
+	}
 	q.mu.Unlock()
 	if index < 0 {
 		return
@@ -552,11 +658,13 @@ func insertByArrival[T interface{ arrived() uint64 }](queue []T, item T) []T {
 	return slices.Insert(queue, index, item)
 }
 
-// egressDelivery is the one reference add hands a waiter. A direct reference is claimed,
+// egressDelivery is the one reference a waiter receives. A direct reference is claimed,
 // and a source reference is only matched.
 type egressDelivery struct {
 	pending *egressExchange
 	direct  bool
+	// near means the reference only shares the request and endpoint, and is claimed to be diffed.
+	near bool
 }
 
 // egressWaiter is a candidate waiting for a matching reference. One to a replacing endpoint
@@ -565,12 +673,20 @@ type egressWaiter struct {
 	arrival uint64
 	key     egressKey
 	source  Option[egressKey]
+	// near is the endpoint whose only unclaimed reference the candidate diffs against, if it does.
+	near Option[endpoint]
 	// ready has one slot and receives at most one reference, so delivery never blocks.
 	ready chan egressDelivery
 }
 
-func newEgressWaiter(arrival uint64, key egressKey, source Option[egressKey]) *egressWaiter {
-	return &egressWaiter{arrival: arrival, key: key, source: source, ready: make(chan egressDelivery, 1)}
+func newEgressWaiter(arrival uint64, key egressKey, source Option[egressKey], near Option[endpoint]) *egressWaiter {
+	return &egressWaiter{arrival: arrival, key: key, source: source, near: near, ready: make(chan egressDelivery, 1)}
+}
+
+// diffs reports whether the candidate would diff against an unclaimed reference of request to declared.
+func (w *egressWaiter) diffs(request RequestID, declared endpoint) bool {
+	near, ok := w.near.Get()
+	return ok && w.key.request == request && near == declared
 }
 
 func (w *egressWaiter) arrived() uint64 {
@@ -616,8 +732,10 @@ type egressExchange struct {
 	optional bool
 	outcome  *future.Future[egressOutcome]
 
-	mu        sync.Mutex
-	abandoned bool
+	mu sync.Mutex
+	// normalised is the request once it is hashed, kept to diff against a near match.
+	normalised Option[comparison.Normalised]
+	abandoned  bool
 	// matched reports that a replacing request used the source reference, which
 	// pairs it without claiming it.
 	matched bool
@@ -635,6 +753,37 @@ func newEgressExchange(arrival uint64, protocol model.Protocol, route model.Rout
 
 func (e *egressExchange) arrived() uint64 {
 	return e.arrival
+}
+
+func (e *egressExchange) endpoint() endpoint {
+	return endpoint{e.protocol, string(e.route)}
+}
+
+// identify keeps the normalised request. Call it before the exchange is offered to candidates.
+func (e *egressExchange) identify(normalised comparison.Normalised) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.normalised = Some(normalised)
+}
+
+// differsFrom gives up the reference, which only a near match claimed, and returns
+// how the candidate request differs from it.
+func (e *egressExchange) differsFrom(candidate comparison.Normalised) error {
+	e.abandon()
+	e.mu.Lock()
+	reference, identified := e.normalised.Get()
+	e.mu.Unlock()
+	if !identified {
+		return errors.New("the only unclaimed reference request on the route was not identified")
+	}
+	differences, truncated, err := reference.Diff(candidate)
+	if err != nil {
+		return errors.Wrap(err, "compare with the only unclaimed reference request on the route")
+	}
+	if len(differences) == 0 {
+		return errors.New("the only unclaimed reference request on the route differs in no reported path")
+	}
+	return newRequestDifferenceError(differences, truncated)
 }
 
 // isSource reports whether replacements read the response.

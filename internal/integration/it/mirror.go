@@ -477,6 +477,16 @@ func DivergentIngress(route model.Route, differences ...model.Difference) model.
 	}
 }
 
+// DivergentEgress is the reason for an egress call on route whose request differs,
+// as differences describe, from the only reference call it could pair with.
+func DivergentEgress(route model.Route, differences ...model.Difference) model.QuarantineReason {
+	return model.QuarantineReason{
+		Kind:        model.QuarantineDivergent,
+		Traffic:     Some(model.Traffic{Direction: model.Egress, Protocol: script.Protocol, Route: route}),
+		Differences: differences,
+	}
+}
+
 // Counter counts the requests a service or dependency receives, by path.
 type Counter struct {
 	t     *testing.T
