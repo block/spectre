@@ -106,6 +106,9 @@ func TestProxyCommandReadsFlagsFromEnvironment(t *testing.T) {
 		"SPECTRE_MYSQL_UPSTREAM_USER":          "spectre",
 		"SPECTRE_MYSQL_UPSTREAM_PASSWORD_FILE": "/secrets/password",
 		"SPECTRE_MYSQL_CANDIDATE_LISTEN":       "unix:/sockets/mysql-candidate.sock",
+		"SPECTRE_STATSD_REFERENCE_LISTEN":      "unix:@statsd-reference.sock",
+		"SPECTRE_STATSD_CANDIDATE_LISTEN":      "unix:@statsd-candidate.sock",
+		"SPECTRE_STATSD_FORWARD":               "unix:@veneur.sock",
 	} {
 		t.Setenv(name, value)
 	}
@@ -132,6 +135,9 @@ func TestProxyCommandReadsFlagsFromEnvironment(t *testing.T) {
 	expected.Server.Service = "invoices"
 	expected.Server.Environment = "production-us-west-2"
 	expected.Server.Revision = "3f9c2a1"
+	expected.Statsd.ReferenceListen = "unix:@statsd-reference.sock"
+	expected.Statsd.CandidateListen = "unix:@statsd-candidate.sock"
+	expected.Statsd.Forward = "unix:@veneur.sock"
 	assert.Equal(t, expected, command.Proxy.Proxy)
 	assert.Equal(t, expectedHTTPConfig, parsedProviderConfig[httpprotocol.Config](t, command))
 	assert.Equal(t, expectedMySQL, parsedProviderConfig[mysqlprotocol.Config](t, command))

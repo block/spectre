@@ -2,6 +2,7 @@ package proxies
 
 import (
 	"context"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -22,6 +23,7 @@ import (
 	"github.com/block/spectre/internal/server/client"
 	"github.com/block/spectre/internal/server/reporter"
 	"github.com/block/spectre/internal/state"
+	"github.com/block/spectre/internal/statsd"
 )
 
 // shutdownTimeout bounds how long stop waits for work that outlives the servers.
@@ -45,27 +47,38 @@ type Mirror struct {
 }
 
 // Listeners are the open listeners of a mirror: each provider's, by the names
-// its Listens gives them, and the two health endpoints'.
+// its Listens gives them, the two health endpoints', and the StatsD sockets when relayed.
 type Listeners struct {
-	Providers    map[model.Protocol]map[string]net.Listener
-	EgressHealth net.Listener
-	Health       net.Listener
+	Providers       map[model.Protocol]map[string]net.Listener
+	EgressHealth    net.Listener
+	Health          net.Listener
+	StatsdReference Option[net.PacketConn]
+	StatsdCandidate Option[net.PacketConn]
 }
 
 // close closes every listener that a stopped proxy has not, joining any errors.
 func (l Listeners) close() error {
-	listeners := []net.Listener{l.EgressHealth, l.Health}
+	closers := []io.Closer{}
+	for _, listener := range []net.Listener{l.EgressHealth, l.Health} {
+		if listener != nil {
+			closers = append(closers, listener)
+		}
+	}
 	for _, provided := range l.Providers {
 		for _, listener := range provided {
-			listeners = append(listeners, listener)
+			if listener != nil {
+				closers = append(closers, listener)
+			}
+		}
+	}
+	for _, conn := range []Option[net.PacketConn]{l.StatsdReference, l.StatsdCandidate} {
+		if conn, ok := conn.Get(); ok {
+			closers = append(closers, conn)
 		}
 	}
 	closeErrors := []error{}
-	for _, listener := range listeners {
-		if listener == nil {
-			continue
-		}
-		if err := listener.Close(); !errors.Is(err, net.ErrClosed) {
+	for _, closer := range closers {
+		if err := closer.Close(); !errors.Is(err, net.ErrClosed) {
 			closeErrors = append(closeErrors, err)
 		}
 	}
@@ -101,8 +114,8 @@ func New(ctx context.Context, config Config, registry *protocols.Registry) (*Mir
 		log:       logger.FromContext(ctx).With(logger.SubsystemKey, "mirror"),
 		migration: migration,
 		cancel:    func() {},
-		// Each provider's server exits once, and so do the two health servers.
-		exits: make(chan exit, len(registry.Protocols())+2),
+		// Each provider's server exits once, and so do the two health servers and two StatsD relays.
+		exits: make(chan exit, len(registry.Protocols())+4),
 	}, nil
 }
 
@@ -175,6 +188,12 @@ func (m *Mirror) listen(ctx context.Context) (Listeners, error) {
 	if listeners.Health, err = listenOn(ctx, m.config.HealthListen); err != nil {
 		return Listeners{}, errors.Join(err, listeners.close())
 	}
+	if listeners.StatsdReference, err = listenPacketOn(ctx, m.config.Statsd.ReferenceListen); err != nil {
+		return Listeners{}, errors.Join(err, listeners.close())
+	}
+	if listeners.StatsdCandidate, err = listenPacketOn(ctx, m.config.Statsd.CandidateListen); err != nil {
+		return Listeners{}, errors.Join(err, listeners.close())
+	}
 	return listeners, nil
 }
 
@@ -213,11 +232,13 @@ func (m *Mirror) startAll(ctx context.Context, listeners Listeners) error {
 	}
 	m.serveHealth(ctx, "health", listeners.Health, m.ready)
 	m.serveHealth(ctx, "egress-health", listeners.EgressHealth, egress)
+	m.serveStatsd(ctx, listeners.StatsdReference, listeners.StatsdCandidate)
 	m.startReporter(ctx, built)
 	return nil
 }
 
-// checkListeners checks that every listener a provider names is open.
+// checkListeners checks that every listener a provider names is open, and that
+// exactly the configured StatsD sockets are.
 func (m *Mirror) checkListeners(listeners Listeners) error {
 	for _, protocol := range m.registry.Protocols() {
 		for _, listen := range m.registry.Listens(protocol) {
@@ -226,7 +247,25 @@ func (m *Mirror) checkListeners(listeners Listeners) error {
 			}
 		}
 	}
+	if listeners.StatsdReference.Ok() != (m.config.Statsd.ReferenceListen != "") {
+		return errors.New("StatsD reference socket must be open exactly when it is configured")
+	}
+	if listeners.StatsdCandidate.Ok() != (m.config.Statsd.CandidateListen != "") {
+		return errors.New("StatsD candidate socket must be open exactly when it is configured")
+	}
 	return nil
+}
+
+// serveStatsd forwards the reference's StatsD metrics to the agent and discards the candidate's.
+func (m *Mirror) serveStatsd(ctx context.Context, reference Option[net.PacketConn], candidate Option[net.PacketConn]) {
+	statsdContext := logger.WithSubsystem(ctx, "statsd")
+	if conn, ok := reference.Get(); ok {
+		forward := netaddr.ParsePacket(m.config.Statsd.Forward)
+		m.serve(ctx, "statsd-reference", func() error { return statsd.Forward(statsdContext, conn, forward) })
+	}
+	if conn, ok := candidate.Get(); ok {
+		m.serve(ctx, "statsd-candidate", func() error { return statsd.Discard(statsdContext, conn) })
+	}
 }
 
 // runtime gives a protocol's provider the sides that its kinds name, and nothing of any other protocol.
@@ -343,6 +382,18 @@ func (m *Mirror) engineConfig() engine.Config {
 	config.Comparison.Variables = m.config.ScriptVariables
 	config.MatchWindow = m.config.MatchWindow
 	return config
+}
+
+// listenPacketOn opens the datagram socket at address, or none when address is empty.
+func listenPacketOn(ctx context.Context, address string) (Option[net.PacketConn], error) {
+	if address == "" {
+		return None[net.PacketConn](), nil
+	}
+	conn, err := netaddr.ParsePacket(address).Listen(ctx)
+	if err != nil {
+		return None[net.PacketConn](), errors.Wrapf(err, "listen on %s", address)
+	}
+	return Some(conn), nil
 }
 
 // listenOn opens the listener at address.

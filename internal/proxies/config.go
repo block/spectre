@@ -12,6 +12,7 @@ import (
 	"github.com/block/spectre/internal/proxy"
 	"github.com/block/spectre/internal/server/client"
 	"github.com/block/spectre/internal/server/reporter"
+	"github.com/block/spectre/internal/statsd"
 )
 
 // Config contains the command-line configuration that the proxies share: scripts,
@@ -35,6 +36,8 @@ type Config struct {
 	HealthListen string `default:"127.0.0.1:50063" help:"Address of /livez, and of /readyz once all proxies are ready, for probes such as Kubernetes': host:port, or unix:<path|@abstract>. Use 0.0.0.0:<port> to probe it from outside the host."`
 	// Server reports the mirror's state to the SPECTRE server.
 	Server reporter.Config `embed:""`
+	// Statsd relays the services' StatsD metrics.
+	Statsd statsd.Config `embed:""`
 }
 
 // NewConfig returns the default mirror configuration.
@@ -58,12 +61,15 @@ func NewConfig() Config {
 	return config
 }
 
-// Validate checks that the timeouts, candidate admission and the reporting intervals are usable.
+// Validate checks that the timeouts, candidate admission, the reporting intervals and the StatsD relay are usable.
 func (c Config) Validate() error {
 	if c.MatchWindow <= 0 {
 		return errors.New("match window must be positive")
 	}
 	if err := c.Candidates.Validate(); err != nil {
+		return errors.WithStack(err)
+	}
+	if err := c.Statsd.Validate(); err != nil {
 		return errors.WithStack(err)
 	}
 	return errors.WithStack(c.Server.Validate())

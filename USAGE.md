@@ -74,7 +74,8 @@ descriptors-dir = "spectre/descriptors"
 ### Addresses
 
 Flags that listen take `host:port`, or `unix:<path>` for a unix socket. On Linux,
-`unix:@<name>` is an abstract socket.
+`unix:@<name>` is an abstract socket. The StatsD flags take the same forms for
+UDP and unix datagram sockets.
 
 Flags that name a service take a URL with one of these schemes:
 
@@ -499,6 +500,28 @@ MySQL quarantines are egress quarantines with the protocol `mysql`. Their route
 is the statement's first keyword, such as `SELECT` or `COMMIT`, or `statement`
 when it starts with none, or `command` for a command that is not a statement.
 They never include a statement or its values.
+
+### StatsD metrics
+
+Both services usually push StatsD metrics to the same metrics agent, so the
+candidate's metrics would be reported as the service's. Point each service at
+its own StatsD socket instead, and the proxy forwards the reference's metrics
+to the agent unchanged and discards the candidate's:
+
+```sh
+spectre proxy ... \
+  --statsd-reference-listen=unix:@spectre-statsd-reference.sock \
+  --statsd-candidate-listen=unix:@spectre-statsd-candidate.sock \
+  --statsd-forward=unix:@veneur.sock
+```
+
+These addresses are datagram sockets: `host:port` is UDP, and `unix:` is a unix
+datagram socket. `--statsd-reference-listen` needs `--statsd-forward`, and the
+candidate's socket can be set alone. Without them, the proxy relays no metrics.
+
+A datagram the agent does not take, such as while it is starting, is dropped,
+as StatsD clients drop it. The proxy logs when forwarding starts, stops and
+recovers, and the first time it discards a candidate datagram.
 
 ### Quarantine
 
