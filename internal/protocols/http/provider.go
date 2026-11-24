@@ -58,8 +58,8 @@ func (p *Provider) Kinds() []state.Kind {
 }
 
 // Scripts is the HTTP binding of the script module.
-func (p *Provider) Scripts() Option[javascript.Binding] {
-	return Some(p.binding)
+func (p *Provider) Scripts() javascript.Binding {
+	return p.binding
 }
 
 // Listens names the ingress listener and the two egress listeners.

@@ -8,8 +8,6 @@ import (
 	"context"
 	"net"
 
-	. "github.com/alecthomas/types/optional"
-
 	"github.com/block/spectre/internal/comparison/javascript"
 	"github.com/block/spectre/internal/model"
 	"github.com/block/spectre/internal/state"
@@ -29,8 +27,8 @@ type Provider[C Config] interface {
 	// Kinds describes each direction the protocol proxies through the engine and its migration-state
 	// settings. A protocol the engine never pairs has none, and its runtime has no sides.
 	Kinds() []state.Kind
-	// Scripts is the protocol's part of the spectre script module, if scripts can declare its traffic.
-	Scripts() Option[javascript.Binding]
+	// Scripts is the protocol's part of the spectre script module.
+	Scripts() javascript.Binding
 	// Listens names the listeners the server serves, with their addresses from config.
 	Listens(config C) []Listen
 	// New builds the protocol's proxies. An error fails startup before anything serves.

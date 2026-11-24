@@ -4,7 +4,6 @@ import (
 	"context"
 
 	"github.com/alecthomas/errors"
-	. "github.com/alecthomas/types/optional"
 
 	"github.com/block/spectre/internal/comparison/javascript"
 	"github.com/block/spectre/internal/model"
@@ -16,7 +15,7 @@ import (
 type registered interface {
 	protocol() model.Protocol
 	kinds() []state.Kind
-	scripts() Option[javascript.Binding]
+	scripts() javascript.Binding
 	validate() error
 	listens() []Listen
 	newServer(ctx context.Context, runtime Runtime) (Server, error)
@@ -34,10 +33,10 @@ func newRegistration[C Config](provider Provider[C]) *registration[C] {
 	return &registration[C]{provider: provider}
 }
 
-func (r *registration[C]) protocol() model.Protocol            { return r.provider.Protocol() }
-func (r *registration[C]) kinds() []state.Kind                 { return r.provider.Kinds() }
-func (r *registration[C]) scripts() Option[javascript.Binding] { return r.provider.Scripts() }
-func (r *registration[C]) listens() []Listen                   { return r.provider.Listens(r.Config) }
+func (r *registration[C]) protocol() model.Protocol    { return r.provider.Protocol() }
+func (r *registration[C]) kinds() []state.Kind         { return r.provider.Kinds() }
+func (r *registration[C]) scripts() javascript.Binding { return r.provider.Scripts() }
+func (r *registration[C]) listens() []Listen           { return r.provider.Listens(r.Config) }
 
 func (r *registration[C]) validate() error {
 	return errors.WithStack(r.Config.Validate())

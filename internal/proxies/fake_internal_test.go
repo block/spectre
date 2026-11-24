@@ -5,7 +5,6 @@ import (
 	"testing"
 
 	"github.com/alecthomas/assert/v2"
-	. "github.com/alecthomas/types/optional"
 
 	"github.com/block/spectre/internal/comparison/javascript"
 	"github.com/block/spectre/internal/comparison/javascript/javascripttest"
@@ -54,7 +53,7 @@ func (p *fakeProvider) Kinds() []state.Kind {
 	}
 }
 
-func (p *fakeProvider) Scripts() Option[javascript.Binding] { return Some(p.binding) }
+func (p *fakeProvider) Scripts() javascript.Binding { return p.binding }
 
 func (p *fakeProvider) Listens(fakeConfig) []protocols.Listen {
 	listens := make([]protocols.Listen, 0, len(p.addresses))

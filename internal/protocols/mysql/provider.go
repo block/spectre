@@ -4,7 +4,6 @@ import (
 	"context"
 
 	"github.com/alecthomas/errors"
-	. "github.com/alecthomas/types/optional"
 
 	"github.com/block/spectre/internal/comparison/javascript"
 	"github.com/block/spectre/internal/model"
@@ -49,8 +48,8 @@ func (p *Provider) Kinds() []state.Kind {
 }
 
 // Scripts is the MySQL binding of the script module.
-func (p *Provider) Scripts() Option[javascript.Binding] {
-	return Some(p.binding)
+func (p *Provider) Scripts() javascript.Binding {
+	return p.binding
 }
 
 // Listens names the reference and candidate listeners, when MySQL is proxied.

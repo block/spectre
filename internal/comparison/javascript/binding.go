@@ -37,6 +37,15 @@ func NewBinding[D, I any](
 	}, newHandle[D, I](id)
 }
 
+// NewEmptyBinding binds a protocol that scripts cannot declare traffic for. It adds
+// nothing to the script module, but still claims the protocol's name.
+func NewEmptyBinding(protocol model.Protocol) Binding {
+	binding, _ := NewBinding(protocol, "", "", nil, func(*Scope) (Members[struct{}, struct{}], error) {
+		return Members[struct{}, struct{}]{Declared: func() struct{} { return struct{}{} }}, nil
+	})
+	return binding
+}
+
 // Protocol returns the protocol the binding adds to ingress and egress.
 func (b Binding) Protocol() model.Protocol {
 	return b.protocol

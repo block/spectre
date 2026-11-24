@@ -3,8 +3,6 @@ package statsd
 import (
 	"context"
 
-	. "github.com/alecthomas/types/optional"
-
 	"github.com/block/spectre/internal/comparison/javascript"
 	"github.com/block/spectre/internal/model"
 	"github.com/block/spectre/internal/protocols"
@@ -23,7 +21,7 @@ const (
 )
 
 // Provider is the StatsD protocol. Its metrics bypass the engine, so it has no
-// kinds and no script binding.
+// kinds, and scripts cannot declare them.
 type Provider struct{}
 
 // NewProvider returns the StatsD provider.
@@ -41,9 +39,9 @@ func (p *Provider) Kinds() []state.Kind {
 	return nil
 }
 
-// Scripts is absent, because scripts cannot declare metrics yet.
-func (p *Provider) Scripts() Option[javascript.Binding] {
-	return None[javascript.Binding]()
+// Scripts adds nothing to the script module, because scripts cannot declare metrics yet.
+func (p *Provider) Scripts() javascript.Binding {
+	return javascript.NewEmptyBinding(Protocol)
 }
 
 // Listens names the datagram listeners that config sets.

@@ -7,7 +7,6 @@ import (
 	"github.com/alecthomas/assert/v2"
 	"github.com/alecthomas/errors"
 	"github.com/alecthomas/kong"
-	. "github.com/alecthomas/types/optional"
 
 	"github.com/block/spectre/internal/comparison/javascript"
 	"github.com/block/spectre/internal/comparison/javascript/javascripttest"
@@ -57,7 +56,7 @@ func (p *fakeProvider) Kinds() []state.Kind {
 	return kinds
 }
 
-func (p *fakeProvider) Scripts() Option[javascript.Binding] { return Some(javascripttest.Binding()) }
+func (p *fakeProvider) Scripts() javascript.Binding { return javascripttest.Binding() }
 
 func (p *fakeProvider) Listens(config fakeConfig) []protocols.Listen {
 	return []protocols.Listen{{Name: "main", Address: config.Address, Transport: protocols.Stream}}
