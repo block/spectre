@@ -1,9 +1,11 @@
 package statsd
 
 import (
+	"bytes"
 	"context"
 	"log/slog"
 	"net"
+	"time"
 
 	"github.com/alecthomas/errors"
 	. "github.com/alecthomas/types/optional"
@@ -12,15 +14,40 @@ import (
 	"github.com/block/spectre/internal/netaddr"
 )
 
-// maxDatagramBytes is the largest datagram read whole. StatsD clients send far smaller ones.
-const maxDatagramBytes = 65535
+const (
+	// maxDatagramBytes is the largest datagram read whole. StatsD clients send far smaller ones.
+	maxDatagramBytes = 65535
+	// queuedDatagrams bounds the datagrams waiting for the agent. Beyond it they are dropped.
+	queuedDatagrams = 1024
+	// writeTimeout bounds one write to an agent that has stopped reading.
+	writeTimeout = 100 * time.Millisecond
+)
 
 // Forward sends every datagram on conn to destination unchanged until ctx ends,
 // then closes conn. A datagram the agent does not take is dropped, as StatsD clients do.
 func Forward(ctx context.Context, conn net.PacketConn, destination *netaddr.PacketEndpoint) error {
 	forwarder := newForwarder(ctx, destination)
-	defer forwarder.close()
-	return receive(ctx, conn, func(datagram []byte) { forwarder.send(ctx, datagram) })
+	queue := make(chan []byte, queuedDatagrams)
+	written := make(chan struct{})
+	go func() {
+		defer close(written)
+		forwarder.run(ctx, queue)
+	}()
+	overflowing := false
+	err := receive(ctx, conn, func(datagram []byte) {
+		select {
+		case queue <- bytes.Clone(datagram):
+			overflowing = false
+		default:
+			if !overflowing {
+				overflowing = true
+				forwarder.warnOverflow(ctx)
+			}
+		}
+	})
+	close(queue)
+	<-written
+	return err
 }
 
 // Discard reads and drops every datagram on conn until ctx ends, then closes conn.
@@ -69,28 +96,49 @@ func newForwarder(ctx context.Context, destination *netaddr.PacketEndpoint) *for
 	return &forwarder{destination: destination, log: log, conn: None[net.Conn]()}
 }
 
+// run sends each datagram from queue until it closes or ctx ends, then hangs up.
+func (f *forwarder) run(ctx context.Context, queue <-chan []byte) {
+	defer f.close()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case datagram, ok := <-queue:
+			if !ok {
+				return
+			}
+			f.send(ctx, datagram)
+		}
+	}
+}
+
+// warnOverflow logs that datagrams are dropped because the queue is full. It only reads the logger,
+// so the receiving goroutine may call it.
+func (f *forwarder) warnOverflow(ctx context.Context) {
+	f.log.WarnContext(ctx, "Dropping reference StatsD metrics while the agent catches up")
+}
+
 // send forwards datagram, logging only when forwarding starts, fails, or recovers.
 func (f *forwarder) send(ctx context.Context, datagram []byte) {
-	log := f.log
 	if err := f.write(ctx, datagram); err != nil {
 		f.close()
 		if !f.failing {
 			f.failing = true
-			log.WarnContext(ctx, "Dropping reference StatsD metrics until the agent takes them", "error", err)
+			f.log.WarnContext(ctx, "Dropping reference StatsD metrics until the agent takes them", "error", err)
 		}
 		return
 	}
 	switch {
 	case f.failing:
 		f.failing = false
-		log.InfoContext(ctx, "Forwarding reference StatsD metrics again")
+		f.log.InfoContext(ctx, "Forwarding reference StatsD metrics again")
 	case !f.forwarded:
-		log.InfoContext(ctx, "Forwarding reference StatsD metrics")
+		f.log.InfoContext(ctx, "Forwarding reference StatsD metrics")
 	}
 	f.forwarded = true
 }
 
-// write dials the agent unless connected, then sends datagram.
+// write dials the agent unless connected, then sends datagram within writeTimeout.
 func (f *forwarder) write(ctx context.Context, datagram []byte) error {
 	conn, ok := f.conn.Get()
 	if !ok {
@@ -100,6 +148,9 @@ func (f *forwarder) write(ctx context.Context, datagram []byte) error {
 		}
 		conn = dialled
 		f.conn = Some(conn)
+	}
+	if err := conn.SetWriteDeadline(time.Now().Add(writeTimeout)); err != nil {
+		return errors.Wrap(err, "bound StatsD write")
 	}
 	_, err := conn.Write(datagram)
 	return errors.Wrap(err, "forward StatsD datagram")

@@ -519,7 +519,8 @@ These addresses are datagram sockets: `host:port` is UDP, and `unix:` is a unix
 datagram socket. `--statsd-reference-listen` needs `--statsd-forward`, and the
 candidate's socket can be set alone. Without them, the proxy relays no metrics.
 
-A datagram the agent does not take, such as while it is starting, is dropped,
+Forwarding never holds up the reference. A datagram the agent does not take
+within 100ms, such as while it is starting or has stopped reading, is dropped,
 as StatsD clients drop it. The proxy logs when forwarding starts, stops and
 recovers, and the first time it discards a candidate datagram.
 
