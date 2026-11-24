@@ -314,8 +314,9 @@ func TestQuarantine(t *testing.T) {
 				assert.Error(t, err)
 			},
 			expected: model.QuarantineReason{
-				Kind:    model.QuarantineUnmatched,
-				Traffic: Some(model.Traffic{Direction: model.Egress, Protocol: script.Protocol, Route: "jsc/enqueue/VerifySiretJob"}),
+				Kind:        model.QuarantineDivergent,
+				Traffic:     Some(model.Traffic{Direction: model.Egress, Protocol: script.Protocol, Route: "jsc/enqueue/VerifySiretJob"}),
+				Differences: []model.Difference{{Change: model.ChangeChanged, Count: 1}},
 			},
 		},
 		{
