@@ -414,12 +414,15 @@ func TestEgressDoesNotGuessBetweenSeveralNearMatches(t *testing.T) {
 	// Neither reference was claimed, so the candidate left both out.
 	awaitRelease(t, london)
 	awaitRelease(t, berlin)
+	// A held reference may expire as the candidate gives up, so reasons arrive in either order.
+	recorded := h.quarantine.Recorded()
+	slices.SortFunc(recorded, func(a, b model.QuarantineReason) int { return strings.Compare(a.Detail, b.Detail) })
 	traffic := Some(model.Traffic{Direction: model.Egress, Protocol: fake, Route: "query"})
 	assert.Equal(t, []model.QuarantineReason{
+		{Kind: model.QuarantineUnmatched, Traffic: traffic, Detail: "no matching candidate request within 50ms"},
+		{Kind: model.QuarantineUnmatched, Traffic: traffic, Detail: "no matching candidate request within 50ms"},
 		{Kind: model.QuarantineUnmatched, Traffic: traffic, Detail: err.Error()},
-		{Kind: model.QuarantineUnmatched, Traffic: traffic, Detail: "no matching candidate request within 50ms"},
-		{Kind: model.QuarantineUnmatched, Traffic: traffic, Detail: "no matching candidate request within 50ms"},
-	}, h.quarantine.Recorded())
+	}, recorded)
 }
 
 func TestEgressNeverNearMatchesAcrossMirroredRequests(t *testing.T) {
