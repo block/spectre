@@ -3,11 +3,11 @@ package schema
 import (
 	"cmp"
 	"context"
-	_ "embed"
 	"io/fs"
 	"maps"
 	"path"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/alecthomas/errors"
@@ -23,23 +23,16 @@ const programRoot = "/schema/"
 // at the top level of a script is named by its own name.
 const ScriptRoot = "/scripts/"
 
-// reservedModule is the script API, which a schema cannot redeclare.
-const reservedModule = "spectre"
-
-// builtinFile holds the built-in declarations in a program. It is outside
-// programRoot, so no schema file can take its name.
-const builtinFile = "/spectre/builtin.d.ts"
-
-//go:embed builtin.d.ts
-var builtinDeclarations string
-
-// Built-in types, which every schema declares.
+// reservedModule is the script API, which a schema cannot redeclare. Payload modules are
+// under reservedPrefix, but schemas may declare others there, like "spectre.sample.v1".
 const (
-	// ConnectError is the body of a failed Connect unary response.
-	ConnectError = "spectre.connect.Error"
-	// MySQLPairing is what egress pairs a MySQL statement by.
-	MySQLPairing = "spectre.mysql.Pairing"
+	reservedModule = "spectre"
+	reservedPrefix = reservedModule + "."
 )
+
+// payloadRoot is where binding payload declarations live in a program. It is outside
+// programRoot, so no schema file can take their names.
+const payloadRoot = "/spectre/payloads/"
 
 // ReadSources reads every .ts file in declarations, keyed by slash-separated name.
 // Symlinks are rejected because fs.FS has no portable root-confined open operation.
@@ -65,48 +58,67 @@ func ReadSources(declarations fs.FS) (map[string]string, error) {
 	return sources, errors.WithStack(err)
 }
 
-// ProgramFiles places sources and the built-in declarations where FromProgram
+func payloadFile(index int) string {
+	return payloadRoot + strconv.Itoa(index) + ".d.ts"
+}
+
+// ProgramFiles places sources and the payload declarations where FromProgram
 // and TypeName expect them.
-func ProgramFiles(sources map[string]string) map[string]string {
-	files := make(map[string]string, len(sources)+1)
+func ProgramFiles(sources map[string]string, payloads []string) map[string]string {
+	files := make(map[string]string, len(sources)+len(payloads))
 	for name, source := range sources {
 		files[programRoot+name] = source
 	}
-	files[builtinFile] = builtinDeclarations
+	for index, payload := range payloads {
+		files[payloadFile(index)] = payload
+	}
 	return files
 }
 
 // Parse type-checks every .ts file in declarations and reads the schema they declare.
-func Parse(ctx context.Context, declarations fs.FS) (*Schema, error) {
+// The schema also includes the types the payload declarations declare.
+func Parse(ctx context.Context, declarations fs.FS, payloads ...string) (*Schema, error) {
 	sources, err := ReadSources(declarations)
 	if err != nil {
 		return nil, err
 	}
-	return ParseSources(ctx, sources)
+	return ParseSources(ctx, sources, payloads...)
 }
 
-// ParseSources type-checks named sources on their own and reads the schema they declare.
-func ParseSources(ctx context.Context, sources map[string]string) (*Schema, error) {
-	program, err := ts.NewProgram(ctx, ProgramFiles(sources))
+// ParseSources type-checks named sources and payload declarations on their own and
+// reads the schema they declare.
+func ParseSources(ctx context.Context, sources map[string]string, payloads ...string) (*Schema, error) {
+	program, err := ts.NewProgram(ctx, ProgramFiles(sources, payloads))
 	if err != nil {
 		return nil, errors.Wrap(err, "check schema declarations")
 	}
-	return FromProgram(program, sources, nil)
+	return FromProgram(program, sources, payloads, nil)
 }
 
-// FromProgram reads the types that the schema sources, the built-in declarations, and
-// references declare in a checked program built from ProgramFiles(sources).
-func FromProgram(program *ts.Program, sources map[string]string, references []*ts.Node) (*Schema, error) {
-	builtin := program.SourceFile(builtinFile)
-	if builtin == nil {
-		return nil, errors.New("built-in declarations are not in the program")
+// FromProgram reads the types that sources, payloads and references declare in a program
+// built from ProgramFiles. Payload modules are under "spectre." and sources cannot declare them.
+func FromProgram(program *ts.Program, sources map[string]string, payloads []string, references []*ts.Node) (*Schema, error) {
+	payloadModules := map[string]bool{}
+	for index := range payloads {
+		file := program.SourceFile(payloadFile(index))
+		if file == nil {
+			return nil, errors.Errorf("payload declarations %d are not in the program", index)
+		}
+		declared, err := declaredModules(file)
+		if err != nil {
+			return nil, err
+		}
+		for _, module := range slices.Sorted(maps.Keys(declared)) {
+			if !strings.HasPrefix(module, reservedPrefix) {
+				return nil, errors.Errorf("payload module %q must be named under %q", module, reservedPrefix)
+			}
+			if payloadModules[module] {
+				return nil, errors.Errorf("payload module %q is declared more than once", module)
+			}
+			payloadModules[module] = true
+		}
 	}
-	modules, err := declaredModules(builtin)
-	if err != nil {
-		return nil, err
-	}
-	reserved := maps.Clone(modules)
-	reserved[reservedModule] = true
+	modules := maps.Clone(payloadModules)
 	for _, name := range slices.Sorted(maps.Keys(sources)) {
 		file := program.SourceFile(programRoot + name)
 		if file == nil {
@@ -117,7 +129,7 @@ func FromProgram(program *ts.Program, sources map[string]string, references []*t
 			return nil, err
 		}
 		for _, statement := range file.Statements.Nodes {
-			if module := statement.Name().Text(); reserved[module] {
+			if module := statement.Name().Text(); module == reservedModule || payloadModules[module] {
 				return nil, errors.Errorf("%s: module %q is reserved by SPECTRE", ts.Location(statement), module)
 			}
 		}
@@ -197,7 +209,7 @@ func scriptName(symbol *ts.Symbol) (name TypeRef, ok bool) {
 
 func inSchemaFile(node *ts.Node) bool {
 	name := ts.SourceFileOf(node).FileName().AsString()
-	return strings.HasPrefix(name, programRoot) || name == builtinFile
+	return strings.HasPrefix(name, programRoot) || strings.HasPrefix(name, payloadRoot)
 }
 
 // checkDeclaredInSchema rejects script augmentations of schema modules, which
@@ -219,11 +231,11 @@ type pendingType struct {
 // reader converts checked declarations to the schema model. It creates each named
 // object type once and fills in its fields later, so recursive references terminate.
 type reader struct {
-	checker    *ts.Checker
-	pending    []pendingType
-	objects    map[TypeRef]*ObjectType
-	symbols    map[TypeRef]*ts.Symbol
-	operations []Operation
+	checker *ts.Checker
+	pending []pendingType
+	objects map[TypeRef]*ObjectType
+	symbols map[TypeRef]*ts.Symbol
+	methods []Method
 }
 
 func newReader(checker *ts.Checker) *reader {
@@ -250,7 +262,7 @@ func (r *reader) read(modules map[string]bool, references []*ts.Node) (*Schema, 
 		}
 		types = append(types, next.declared)
 	}
-	return New(types, r.operations)
+	return New(types, r.methods)
 }
 
 // members reads every export of a module or namespace, so unreferenced types are
@@ -289,8 +301,8 @@ func (r *reader) members(container *ts.Symbol) error {
 	return nil
 }
 
-// interfaceDeclaration treats an interface of methods as a service, whose methods
-// are the RPC paths that name their request and response types.
+// interfaceDeclaration reads an interface of methods, each with one object
+// parameter and an object result.
 func (r *reader) interfaceDeclaration(symbol *ts.Symbol) error {
 	declared := r.checker.GetDeclaredTypeOfSymbol(symbol)
 	properties := r.checker.GetPropertiesOfType(declared)
@@ -298,7 +310,7 @@ func (r *reader) interfaceDeclaration(symbol *ts.Symbol) error {
 		_, err := r.typeOf(declared, symbol.Declarations()[0])
 		return err
 	}
-	service, err := qualifiedName(symbol)
+	declaring, err := qualifiedName(symbol)
 	if err != nil {
 		return errors.Errorf("%s: %v", ts.Location(symbol.Declarations()[0]), err)
 	}
@@ -306,11 +318,11 @@ func (r *reader) interfaceDeclaration(symbol *ts.Symbol) error {
 		if err := checkDeclaredInSchema(method); err != nil {
 			return err
 		}
-		operation, err := r.operation(string(service), method)
+		read, err := r.method(declaring, method)
 		if err != nil {
 			return err
 		}
-		r.operations = append(r.operations, operation)
+		r.methods = append(r.methods, read)
 	}
 	return nil
 }
@@ -319,30 +331,30 @@ func isMethod(symbol *ts.Symbol) bool {
 	return symbol.Flags()&ts.SymbolFlagsMethod != 0
 }
 
-func (r *reader) operation(service string, method *ts.Symbol) (Operation, error) {
+func (r *reader) method(declaring TypeRef, method *ts.Symbol) (Method, error) {
 	declaration := method.Declarations()[0]
 	form := errors.Errorf("%s: service methods must have the form %s(request: Request): Response", ts.Location(declaration), method.Name())
 	if !isMethod(method) {
-		return Operation{}, errors.Errorf("%s: service interfaces may only declare methods", ts.Location(declaration))
+		return Method{}, errors.Errorf("%s: service interfaces may only declare methods", ts.Location(declaration))
 	}
 	signatures := r.checker.GetSignaturesOfType(r.checker.GetTypeOfSymbol(method), ts.SignatureKindCall)
 	if method.Flags()&ts.SymbolFlagsOptional != 0 || len(signatures) != 1 {
-		return Operation{}, form
+		return Method{}, form
 	}
 	signature := signatures[0]
 	if len(signature.TypeParameters()) > 0 || signature.ThisParameter() != nil || signature.HasRestParameter() ||
 		len(signature.Parameters()) != 1 || signature.MinArgumentCount() != 1 {
-		return Operation{}, form
+		return Method{}, form
 	}
-	request, err := r.objectReference(r.checker.GetTypeOfSymbol(signature.Parameters()[0]), declaration)
+	parameter, err := r.objectReference(r.checker.GetTypeOfSymbol(signature.Parameters()[0]), declaration)
 	if err != nil {
-		return Operation{}, err
+		return Method{}, err
 	}
-	response, err := r.objectReference(r.checker.GetReturnTypeOfSignature(signature), declaration)
+	result, err := r.objectReference(r.checker.GetReturnTypeOfSignature(signature), declaration)
 	if err != nil {
-		return Operation{}, err
+		return Method{}, err
 	}
-	return Operation{Name: service + "." + method.Name(), Request: request, Response: response}, nil
+	return Method{Interface: declaring, Name: method.Name(), Parameter: parameter, Result: result}, nil
 }
 
 func (r *reader) objectReference(t *ts.Type, at *ts.Node) (TypeRef, error) {

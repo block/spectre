@@ -12,7 +12,10 @@
   },
   "include": [
     "internal/comparison/javascript/spectre.d.ts",
-    "internal/schema/builtin.d.ts",
+    "internal/comparison/javascript/builtin_members.d.ts",
+    "internal/comparison/javascript/builtin_payloads.d.ts",
+    "internal/protocols/http/script/members.d.ts",
+    "internal/protocols/http/script/payloads.d.ts",
     "internal/sample/schema/**/*.ts",
     "internal/sample/scripts/**/*.ts"
   ]

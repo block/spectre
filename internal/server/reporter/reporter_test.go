@@ -91,7 +91,7 @@ func TestReporterReconnectsWithQuarantine(t *testing.T) {
 	m := run(t, time.Hour, 1, 10*time.Millisecond, time.Hour)
 	quarantine := model.Quarantine{Since: time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC), Reason: model.QuarantineReason{
 		Kind:    model.QuarantineUnmatched,
-		Traffic: Some(model.Traffic{Direction: model.Egress, Protocol: model.ProtocolHTTP, Route: "POST api.example/v1/charges"}),
+		Traffic: Some(model.Traffic{Direction: model.Egress, Protocol: "fake", Route: "POST api.example/v1/charges"}),
 		Detail:  "no matching reference call",
 	}}
 	m.egress <- quarantine

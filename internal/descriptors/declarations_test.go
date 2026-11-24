@@ -82,10 +82,10 @@ func TestDeclarationsSampleRoundTrip(t *testing.T) {
 		{Name: "marketingConsent", Optional: true, Type: schema.BooleanType{}},
 		{Name: "preferences", Type: schema.MapType{Element: preference}},
 	}}, profile)
-	assert.Equal(t, []schema.Operation{
-		{Name: "spectre.sample.v1.UserService.GetUser", Request: "spectre.sample.v1.GetUserRequest", Response: "spectre.sample.v1.GetUserResponse"},
-		{Name: "spectre.sample.v1.UserService.ListUsers", Request: "spectre.sample.v1.ListUsersRequest", Response: "spectre.sample.v1.ListUsersResponse"},
-	}, loaded.Operations())
+	assert.Equal(t, []schema.Method{
+		{Interface: "spectre.sample.v1.UserService", Name: "GetUser", Parameter: "spectre.sample.v1.GetUserRequest", Result: "spectre.sample.v1.GetUserResponse"},
+		{Interface: "spectre.sample.v1.UserService", Name: "ListUsers", Parameter: "spectre.sample.v1.ListUsersRequest", Result: "spectre.sample.v1.ListUsersResponse"},
+	}, loaded.Methods())
 }
 
 func TestSampleDeclarationWireJSONRoundTrip(t *testing.T) {
@@ -517,7 +517,7 @@ func TestDeclarationsOmitsStreamingMethods(t *testing.T) {
 	assert.NoError(t, err)
 	loaded, err := schema.ParseSources(t.Context(), generated)
 	assert.NoError(t, err)
-	assert.Equal(t, []schema.Operation{{Name: "example.users.v1.UserService.ListUsers", Request: "example.users.v1.ListUsersRequest", Response: "example.users.v1.ListUsersResponse"}}, loaded.Operations())
+	assert.Equal(t, []schema.Method{{Interface: "example.users.v1.UserService", Name: "ListUsers", Parameter: "example.users.v1.ListUsersRequest", Result: "example.users.v1.ListUsersResponse"}}, loaded.Methods())
 	registry, err := descriptors.NewRegistry(set)
 	assert.NoError(t, err)
 	assert.NoError(t, descriptors.CheckAgreement(registry, loaded))

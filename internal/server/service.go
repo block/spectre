@@ -12,9 +12,9 @@ import (
 	"github.com/alecthomas/errors"
 	. "github.com/alecthomas/types/optional"
 
-	"github.com/block/spectre/internal/httpserver/middleware/endearly"
-	"github.com/block/spectre/internal/httpserver/middleware/health"
-	"github.com/block/spectre/internal/httpserver/middleware/logging"
+	"github.com/block/spectre/internal/httpservice/endearly"
+	"github.com/block/spectre/internal/httpservice/health"
+	"github.com/block/spectre/internal/httpservice/logging"
 	"github.com/block/spectre/internal/logger"
 	"github.com/block/spectre/internal/model"
 	"github.com/block/spectre/internal/netaddr"

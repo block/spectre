@@ -4,61 +4,67 @@ import (
 	"context"
 	"log/slog"
 	"net"
+	"net/http"
+	"time"
 
 	"github.com/alecthomas/errors"
 	. "github.com/alecthomas/types/optional"
 
-	"github.com/block/spectre/internal/descriptors"
-	"github.com/block/spectre/internal/httpserver"
-	"github.com/block/spectre/internal/httpserver/middleware/health"
+	"github.com/block/spectre/internal/engine"
+	"github.com/block/spectre/internal/httpservice"
+	"github.com/block/spectre/internal/httpservice/health"
 	"github.com/block/spectre/internal/logger"
 	"github.com/block/spectre/internal/model"
-	"github.com/block/spectre/internal/mysqlserver"
-	"github.com/block/spectre/internal/mysqlserver/exact"
-	"github.com/block/spectre/internal/mysqlserver/scripted"
 	"github.com/block/spectre/internal/netaddr"
-	"github.com/block/spectre/internal/protocol"
+	"github.com/block/spectre/internal/protocols"
+	"github.com/block/spectre/internal/proxy"
+	"github.com/block/spectre/internal/schema"
 	"github.com/block/spectre/internal/server/client"
 	"github.com/block/spectre/internal/server/reporter"
 	"github.com/block/spectre/internal/state"
 )
 
-// Mirror runs the ingress and egress proxies and reports their state.
+// shutdownTimeout bounds how long stop waits for work that outlives the servers.
+const shutdownTimeout = 10 * time.Second
+
+// Mirror runs every registered protocol's proxies and reports their state.
 type Mirror struct {
-	config    ProxyConfig
+	config    Config
+	registry  *protocols.Registry
 	log       *slog.Logger
 	migration Option[state.State]
 
-	ingress *httpserver.Ingress
-	egress  *httpserver.Egress
+	// shared is set once the mirror starts, and is closed and shut down by stop.
+	shared Option[*shared]
+	// ready holds the readiness of every side, so stop can mark them unready first.
+	ready []*health.Handler
 
 	cancel  context.CancelFunc
 	running int
 	exits   chan exit
 }
 
-// Listeners are the open listeners of a mirror's proxies. The MySQL listeners are
-// present only when MySQL is proxied.
+// Listeners are the open listeners of a mirror: each provider's, by the names
+// its Listens gives them, and the two health endpoints'.
 type Listeners struct {
-	Ingress         net.Listener
-	ReferenceEgress net.Listener
-	CandidateEgress net.Listener
-	EgressHealth    net.Listener
-	Health          net.Listener
-	MySQLReference  Option[net.Listener]
-	MySQLCandidate  Option[net.Listener]
+	Providers    map[model.Protocol]map[string]net.Listener
+	EgressHealth net.Listener
+	Health       net.Listener
 }
 
 // close closes every listener that a stopped proxy has not, joining any errors.
 func (l Listeners) close() error {
-	closeErrors := []error{}
-	listeners := []net.Listener{l.Ingress, l.ReferenceEgress, l.CandidateEgress, l.EgressHealth, l.Health}
-	for _, optional := range []Option[net.Listener]{l.MySQLReference, l.MySQLCandidate} {
-		if listener, ok := optional.Get(); ok {
+	listeners := []net.Listener{l.EgressHealth, l.Health}
+	for _, provided := range l.Providers {
+		for _, listener := range provided {
 			listeners = append(listeners, listener)
 		}
 	}
+	closeErrors := []error{}
 	for _, listener := range listeners {
+		if listener == nil {
+			continue
+		}
 		if err := listener.Close(); !errors.Is(err, net.ErrClosed) {
 			closeErrors = append(closeErrors, err)
 		}
@@ -72,14 +78,18 @@ type exit struct {
 	err  error
 }
 
-// New validates config and returns a mirror of services that run elsewhere.
-func New(ctx context.Context, config ProxyConfig) (*Mirror, error) {
+// New validates config and the registry's providers, and returns a mirror of services
+// that run elsewhere, proxying each registered protocol.
+func New(ctx context.Context, config Config, registry *protocols.Registry) (*Mirror, error) {
 	if err := config.Validate(); err != nil {
 		return nil, errors.WithStack(err)
 	}
+	if err := registry.Validate(); err != nil {
+		return nil, errors.WithStack(err)
+	}
 	migration := None[state.State]()
-	if stateFile := config.Mirror.StateFile; stateFile != "" {
-		loaded, err := state.Load(stateFile)
+	if stateFile := config.StateFile; stateFile != "" {
+		loaded, err := registry.Kinds().Load(stateFile)
 		if err != nil {
 			return nil, errors.Wrapf(err, "load migration state %s", stateFile)
 		}
@@ -87,10 +97,12 @@ func New(ctx context.Context, config ProxyConfig) (*Mirror, error) {
 	}
 	return &Mirror{
 		config:    config,
+		registry:  registry,
 		log:       logger.FromContext(ctx).With(logger.SubsystemKey, "mirror"),
 		migration: migration,
 		cancel:    func() {},
-		exits:     make(chan exit, 4),
+		// Each provider's server exits once, and so do the two health servers.
+		exits: make(chan exit, len(registry.Protocols())+2),
 	}, nil
 }
 
@@ -102,8 +114,8 @@ func (m *Mirror) Run(ctx context.Context) error {
 	return m.Wait(ctx)
 }
 
-// Start opens every listener and serves the proxies in the background. Ingress is
-// ready once the reference accepts, and mirrors once the candidate does.
+// Start opens every listener and serves the proxies in the background. Each
+// ingress is ready once its reference accepts, and mirrors once its candidate does.
 func (m *Mirror) Start(ctx context.Context) error {
 	listeners, err := m.listen(ctx)
 	if err != nil {
@@ -117,19 +129,17 @@ func (m *Mirror) Start(ctx context.Context) error {
 func (m *Mirror) StartListeners(ctx context.Context, listeners Listeners) error {
 	ctx, m.cancel = context.WithCancel(ctx)
 	if err := m.startAll(ctx, listeners); err != nil {
-		m.cancel()
-		m.drain()
+		m.stop(ctx)
 		return errors.Join(err, listeners.close())
 	}
-	m.log.InfoContext(ctx, "Mirror started", "ingress", m.config.Listen, "health", m.config.HealthListen)
+	m.log.InfoContext(ctx, "Mirror started", "health", m.config.HealthListen)
 	return nil
 }
 
 // Wait blocks until the context is cancelled or a proxy exits, then stops and
 // waits for the rest.
 func (m *Mirror) Wait(ctx context.Context) error {
-	defer m.drain()
-	defer m.cancel()
+	defer m.stop(ctx)
 	select {
 	case <-ctx.Done():
 		return nil
@@ -140,194 +150,206 @@ func (m *Mirror) Wait(ctx context.Context) error {
 	}
 }
 
-// listen opens the configured listener of every proxy.
+// listen opens the listeners of every provider and the health endpoints, before
+// anything starts, so a bad address fails startup. It closes those already open on failure.
 func (m *Mirror) listen(ctx context.Context) (Listeners, error) {
-	opened, err := listenAll(ctx, m.config.Listen, m.config.ReferenceEgressListen, m.config.CandidateEgressListen, m.config.EgressHealthListen, m.config.HealthListen)
-	if err != nil {
-		return Listeners{}, err
-	}
-	listeners := Listeners{Ingress: opened[0], ReferenceEgress: opened[1], CandidateEgress: opened[2], EgressHealth: opened[3], Health: opened[4]}
-	if mysql := m.config.Mirror.MySQL; mysql.Enabled() {
-		databases, err := listenAll(ctx, mysql.ReferenceListen, mysql.CandidateListen)
-		if err != nil {
-			return Listeners{}, errors.Join(err, listeners.close())
+	listeners := Listeners{Providers: map[model.Protocol]map[string]net.Listener{}}
+	for _, protocol := range m.registry.Protocols() {
+		opened := map[string]net.Listener{}
+		listeners.Providers[protocol] = opened
+		for _, listen := range m.registry.Listens(protocol) {
+			if _, duplicate := opened[listen.Name]; duplicate {
+				return Listeners{}, errors.Join(errors.Errorf("%s declares listener %s more than once", protocol, listen.Name), listeners.close())
+			}
+			listener, err := listenOn(ctx, listen.Address)
+			if err != nil {
+				return Listeners{}, errors.Join(err, listeners.close())
+			}
+			opened[listen.Name] = listener
 		}
-		listeners.MySQLReference, listeners.MySQLCandidate = Some(databases[0]), Some(databases[1])
+	}
+	var err error
+	if listeners.EgressHealth, err = listenOn(ctx, m.config.EgressHealthListen); err != nil {
+		return Listeners{}, errors.Join(err, listeners.close())
+	}
+	if listeners.Health, err = listenOn(ctx, m.config.HealthListen); err != nil {
+		return Listeners{}, errors.Join(err, listeners.close())
 	}
 	return listeners, nil
 }
 
-// startAll serves egress first, so services can reach dependencies as they start.
+// startAll builds every provider's proxies on the shared machinery, then serves
+// them all and the health endpoints.
 func (m *Mirror) startAll(ctx context.Context, listeners Listeners) error {
-	if err := m.startEgress(ctx, listeners); err != nil {
+	if err := m.checkListeners(listeners); err != nil {
 		return err
 	}
-	if err := m.startMySQL(ctx, listeners.MySQLReference, listeners.MySQLCandidate); err != nil {
+	built, err := newShared(logger.WithSubsystem(ctx, "engine"), m.engineConfig(), m.config.Candidates, m.registry.Bindings(), m.migration)
+	if err != nil {
 		return err
 	}
-	if err := m.startIngress(ctx, listeners.Ingress); err != nil {
-		return err
+	m.shared = Some(built)
+	protocolsToServe := m.registry.Protocols()
+	servers := make([]protocols.Server, 0, len(protocolsToServe))
+	var egress []*health.Handler
+	for _, protocol := range protocolsToServe {
+		runtime := m.runtime(built, protocol)
+		for _, side := range []Option[protocols.Side]{runtime.Ingress, runtime.Egress} {
+			if side, ok := side.Get(); ok {
+				m.ready = append(m.ready, side.Health)
+			}
+		}
+		if side, ok := runtime.Egress.Get(); ok {
+			egress = append(egress, side.Health)
+		}
+		server, err := m.registry.New(ctx, protocol, runtime)
+		if err != nil {
+			return errors.WithStack(err)
+		}
+		servers = append(servers, server)
 	}
-	m.startHealth(ctx, listeners.Health)
-	m.startReporter(ctx)
+	for i, protocol := range protocolsToServe {
+		m.serve(ctx, string(protocol), func() error { return servers[i].Serve(ctx, listeners.Providers[protocol]) })
+	}
+	m.serveHealth(ctx, "health", listeners.Health, m.ready)
+	m.serveHealth(ctx, "egress-health", listeners.EgressHealth, egress)
+	m.startReporter(ctx, built)
 	return nil
 }
 
-// startEgress builds the egress proxy and serves it.
-func (m *Mirror) startEgress(ctx context.Context, listeners Listeners) error {
-	config := m.egressConfig()
-	transport := httpserver.NewTransport(config.TransportConfig)
-	proxyContext := logger.WithSubsystem(ctx, "egress")
-	handler, err := httpserver.NewEgress(proxyContext, config, m.engineConfig(), transport)
-	if err != nil {
-		transport.CloseIdleConnections()
-		return errors.Wrap(err, "configure egress")
+// checkListeners checks that every listener a provider names is open.
+func (m *Mirror) checkListeners(listeners Listeners) error {
+	for _, protocol := range m.registry.Protocols() {
+		for _, listen := range m.registry.Listens(protocol) {
+			if listeners.Providers[protocol][listen.Name] == nil {
+				return errors.Errorf("%s listener %s is not open", protocol, listen.Name)
+			}
+		}
 	}
-	m.egress = handler
-	m.serve(ctx, "egress", transport.CloseIdleConnections, func() error {
-		return handler.Serve(proxyContext, listeners.ReferenceEgress, listeners.CandidateEgress, listeners.EgressHealth)
-	})
 	return nil
 }
 
-// startMySQL serves the MySQL proxy, if MySQL is proxied. Its quarantines are the egress
-// proxy's.
-func (m *Mirror) startMySQL(ctx context.Context, referenceListener, candidateListener Option[net.Listener]) error {
-	config := m.config.Mirror.MySQL
-	if !config.Enabled() {
-		return nil
+// runtime gives a protocol's provider the sides that its kinds name, and nothing of any other protocol.
+func (m *Mirror) runtime(built *shared, protocol model.Protocol) protocols.Runtime {
+	runtime := protocols.Runtime{Schema: built.Engine.Schema(), Scripts: built.Engine.Scripts()}
+	kinds := m.registry.Kinds()
+	if _, ok := kinds.Kind(model.Ingress, protocol); ok {
+		runtime.Ingress = Some(m.ingressSide(built, protocol))
 	}
-	reference, hasReference := referenceListener.Get()
-	candidate, hasCandidate := candidateListener.Get()
-	if !hasReference || !hasCandidate {
-		return errors.New("MySQL is proxied, but its listeners are not open")
+	if _, ok := kinds.Kind(model.Egress, protocol); ok {
+		runtime.Egress = Some(m.egressSide(built.Engine, built.EgressCandidates, protocol))
 	}
-	statements, err := scripted.New(m.egress.Engine().Scripts(), exact.New())
-	if err != nil {
-		return errors.Wrap(err, "configure MySQL statement replacements")
-	}
-	// It pairs statements in the egress proxy's engine, and its quarantines are the egress proxy's.
-	server, err := mysqlserver.New(config, statements, m.egress.Engine(), m.egress.Candidates())
-	if err != nil {
-		return errors.Wrap(err, "configure MySQL")
-	}
-	proxyContext := logger.WithSubsystem(ctx, "mysql")
-	m.serve(ctx, "mysql", func() {}, func() error {
-		return errors.Wrap(server.Serve(proxyContext, reference, candidate), "serve MySQL")
-	})
-	return nil
+	return runtime
 }
 
-// startIngress builds the ingress proxy and serves it on listener.
-func (m *Mirror) startIngress(ctx context.Context, listener net.Listener) error {
-	config := m.ingressConfig()
-	transport := httpserver.NewTransport(config.TransportConfig)
-	loader := Some[httpserver.DescriptorLoader](descriptors.NewReflectionLoader())
-	proxyContext := logger.WithSubsystem(ctx, "ingress")
-	handler, err := httpserver.NewIngress(proxyContext, config, m.engineConfig(), transport, loader, m.migration)
-	if err != nil {
-		transport.CloseIdleConnections()
-		return errors.Wrap(err, "configure ingress")
+// ingressSide is the ingress machinery of protocol. Its candidates are quarantined through
+// the node quarantiner, which names the migration state node that owns each route.
+func (m *Mirror) ingressSide(built *shared, protocol model.Protocol) protocols.Side {
+	return protocols.Side{
+		Reference:      built.Engine.IngressReference(protocol),
+		Candidate:      built.Engine.IngressCandidate(protocol),
+		Candidates:     built.IngressCandidates,
+		Quarantiner:    built.IngressQuarantiner,
+		Health:         health.New(http.NotFoundHandler()),
+		Nodes:          m.nodes(model.Ingress, protocol),
+		SourceResponse: func(model.Route) Option[schema.TypeRef] { return None[schema.TypeRef]() },
 	}
-	m.ingress = handler
-	m.serve(ctx, "ingress", transport.CloseIdleConnections, func() error {
-		return handler.Serve(proxyContext, listener)
-	})
-	return nil
 }
 
-// startHealth serves the health of both proxies on listener, for probes.
-func (m *Mirror) startHealth(ctx context.Context, listener net.Listener) {
-	handler := health.NewAll(m.ingress.Health(), m.egress.Health())
-	config := httpserver.NewConfig()
-	healthContext := logger.WithSubsystem(ctx, "health")
-	lifecycle := httpserver.NewLifecycle(func(context.Context) {}, func() {}, func(context.Context) error { return nil })
-	m.serve(ctx, "health", func() {}, func() error {
-		return errors.Wrap(httpserver.Serve(healthContext, config, []httpserver.Binding{httpserver.NewBinding(listener, handler)}, lifecycle), "serve health")
+// egressSide is the egress machinery of protocol.
+func (m *Mirror) egressSide(comparison *engine.Engine, candidates *proxy.Candidates, protocol model.Protocol) protocols.Side {
+	return protocols.Side{
+		Reference:   comparison.EgressReference(protocol),
+		Candidate:   comparison.EgressCandidate(protocol),
+		Candidates:  candidates,
+		Quarantiner: candidates,
+		Health:      health.New(http.NotFoundHandler()),
+		Nodes:       m.nodes(model.Egress, protocol),
+		SourceResponse: func(route model.Route) Option[schema.TypeRef] {
+			return comparison.EgressSourceResponse(protocol, route)
+		},
+	}
+}
+
+// nodes are the migration state's nodes with protocol's kind in direction, when the mirror has a state.
+func (m *Mirror) nodes(direction model.Direction, protocol model.Protocol) Option[[]state.KindNode] {
+	migration, ok := m.migration.Get()
+	if !ok {
+		return None[[]state.KindNode]()
+	}
+	return Some(migration.Nodes(state.Kind{Direction: direction, Protocol: protocol}))
+}
+
+// serveHealth serves the combined health of handlers on listener, for probes.
+func (m *Mirror) serveHealth(ctx context.Context, name string, listener net.Listener, handlers []*health.Handler) {
+	handler := health.NewAll(handlers...)
+	healthContext := logger.WithSubsystem(ctx, name)
+	lifecycle := httpservice.NewLifecycle(func(context.Context) {}, func() {}, func(context.Context) error { return nil })
+	m.serve(ctx, name, func() error {
+		return errors.Wrapf(httpservice.Serve(healthContext, httpservice.NewServeConfig(), []httpservice.Binding{httpservice.NewBinding(listener, handler)}, lifecycle), "serve %s", name)
 	})
 }
 
 // startReporter streams the mirror's state, with ingress call counts and both
-// proxies' quarantines, to the SPECTRE server. Reporting never stops the mirror.
-func (m *Mirror) startReporter(ctx context.Context) {
-	reporter := reporter.New(m.config.Mirror.Server, client.New(m.config.Mirror.Server.Client), m.ingress.Calls,
-		reporter.Source{Direction: model.Ingress, Quarantined: m.ingress.Candidates().Quarantined()},
-		reporter.Source{Direction: model.Egress, Quarantined: m.egress.Candidates().Quarantined()},
+// directions' quarantines, to the SPECTRE server. Reporting never stops the mirror.
+func (m *Mirror) startReporter(ctx context.Context, shared *shared) {
+	reporter := reporter.New(m.config.Server, client.New(m.config.Server.Client), shared.Calls.Calls,
+		reporter.Source{Direction: model.Ingress, Quarantined: shared.IngressCandidates.Quarantined()},
+		reporter.Source{Direction: model.Egress, Quarantined: shared.EgressCandidates.Quarantined()},
 	)
 	go reporter.Run(logger.WithLogger(ctx, m.log))
-	m.log.InfoContext(ctx, "Reporting to the SPECTRE server", "url", m.config.Mirror.Server.Client.URL)
+	m.log.InfoContext(ctx, "Reporting to the SPECTRE server", "url", m.config.Server.Client.URL)
 }
 
-// serve runs a server in the background, reporting its exit and calling release
-// once it stops.
-func (m *Mirror) serve(ctx context.Context, name string, release func(), serve func() error) {
+// serve runs a server in the background and reports its exit.
+func (m *Mirror) serve(ctx context.Context, name string, serve func() error) {
 	m.running++
 	go func() {
-		defer release()
 		m.exits <- exit{name: name, err: serve()}
 	}()
 	m.log.InfoContext(ctx, "Started proxy", "name", name)
 }
 
-// drain waits for the remaining proxies to exit after the context is cancelled.
-func (m *Mirror) drain() {
+// stop marks proxies unready, closes the engine and candidates, then cancels the
+// proxies and waits for them, then waits for what outlives them. The order avoids quarantines.
+func (m *Mirror) stop(ctx context.Context) {
+	for _, handler := range m.ready {
+		handler.SetReady(false)
+	}
+	built, started := m.shared.Get()
+	if started {
+		built.close()
+	}
+	m.cancel()
 	for m.running > 0 {
 		<-m.exits
 		m.running--
 	}
-}
-
-// engineConfig builds the comparison engine configuration shared by both proxies.
-func (m *Mirror) engineConfig() protocol.Config {
-	config := protocol.NewConfig()
-	config.Comparison.ScriptsDir = m.config.Mirror.ScriptsDir
-	config.Comparison.Schema.SchemaDir = m.config.Mirror.SchemaDir
-	config.Comparison.Variables = m.config.Mirror.ScriptVariables
-	config.MatchWindow = m.config.Mirror.MatchWindow
-	return config
-}
-
-// egressConfig builds the egress proxy configuration.
-func (m *Mirror) egressConfig() httpserver.EgressConfig {
-	config := httpserver.NewEgressConfig()
-	config.ReferenceListen = m.config.ReferenceEgressListen
-	config.CandidateListen = m.config.CandidateEgressListen
-	config.HealthListen = m.config.EgressHealthListen
-	config.Destinations = m.config.Mirror.Destinations
-	config.Descriptors = m.config.Mirror.Descriptors
-	return config
-}
-
-// ingressConfig builds the ingress proxy configuration.
-func (m *Mirror) ingressConfig() httpserver.IngressConfig {
-	config := httpserver.NewIngressConfig()
-	config.Listen = m.config.Listen
-	config.Reference = m.config.ReferenceURL
-	config.Candidate = m.config.CandidateURL
-	config.Reflection = m.config.Mirror.Reflection
-	config.CandidateStartupTimeout = m.config.Mirror.CandidateStartupTimeout
-	config.Descriptors = m.config.Mirror.Descriptors
-	return config
-}
-
-// listenAll opens every address in order, closing any already opened on failure.
-func listenAll(ctx context.Context, addresses ...string) ([]net.Listener, error) {
-	listeners := make([]net.Listener, 0, len(addresses))
-	for _, address := range addresses {
-		listener, err := netaddr.ParseListen(address).Listen(ctx)
-		if err != nil {
-			return nil, errors.Join(errors.Wrapf(err, "listen on %s", address), closeListeners(listeners))
-		}
-		listeners = append(listeners, listener)
+	if !started {
+		return
 	}
-	return listeners, nil
+	shutdownContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), shutdownTimeout)
+	defer cancel()
+	if err := built.shutdown(shutdownContext); err != nil {
+		m.log.WarnContext(ctx, "Candidate work did not shut down", "error", err)
+	}
 }
 
-// closeListeners closes every listener, joining any errors.
-func closeListeners(listeners []net.Listener) error {
-	closeErrors := make([]error, 0, len(listeners))
-	for _, listener := range listeners {
-		closeErrors = append(closeErrors, listener.Close())
+// engineConfig builds the comparison engine configuration shared by every protocol.
+func (m *Mirror) engineConfig() engine.Config {
+	config := engine.NewConfig()
+	config.Comparison.ScriptsDir = m.config.ScriptsDir
+	config.Comparison.Schema.SchemaDir = m.config.SchemaDir
+	config.Comparison.Variables = m.config.ScriptVariables
+	config.MatchWindow = m.config.MatchWindow
+	return config
+}
+
+// listenOn opens the listener at address.
+func listenOn(ctx context.Context, address string) (net.Listener, error) {
+	listener, err := netaddr.ParseListen(address).Listen(ctx)
+	if err != nil {
+		return nil, errors.Wrapf(err, "listen on %s", address)
 	}
-	return errors.Join(closeErrors...)
+	return listener, nil
 }

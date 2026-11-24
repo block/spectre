@@ -353,7 +353,7 @@ func (w *declarationWriter) renderService(service protoreflect.ServiceDescriptor
 		if method.IsStreamingClient() || method.IsStreamingServer() {
 			continue
 		}
-		if err := checkMethodTypes(method); err != nil {
+		if err := CheckMethodTypes(method); err != nil {
 			return err
 		}
 		signatures = append(signatures, fmt.Sprintf("%s(request: %s): %s;", schema.PropertyName(string(method.Name())), typeReference(method.Input()), typeReference(method.Output())))
@@ -373,7 +373,8 @@ func (w *declarationWriter) renderService(service protoreflect.ServiceDescriptor
 	return nil
 }
 
-func checkMethodTypes(method protoreflect.MethodDescriptor) error {
+// CheckMethodTypes rejects a method whose request or response is not an object message.
+func CheckMethodTypes(method protoreflect.MethodDescriptor) error {
 	for _, message := range []protoreflect.MessageDescriptor{method.Input(), method.Output()} {
 		if isUntypedMessage(message.FullName()) || isScalarMessage(message.FullName()) {
 			return errors.Errorf("method %q uses unsupported request or response type %q", method.FullName(), message.FullName())

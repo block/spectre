@@ -99,6 +99,25 @@ func (r *Registry) Message(name protoreflect.FullName) (protoreflect.MessageDesc
 	return message, nil
 }
 
+// Methods returns every method of the files a payload can reach, streaming or not.
+func (r *Registry) Methods() []protoreflect.MethodDescriptor {
+	reachable := schemaFiles(r.files)
+	var methods []protoreflect.MethodDescriptor
+	r.files.RangeFiles(func(file protoreflect.FileDescriptor) bool {
+		if !reachable[file.Path()] {
+			return true
+		}
+		for index := range file.Services().Len() {
+			service := file.Services().Get(index)
+			for index := range service.Methods().Len() {
+				methods = append(methods, service.Methods().Get(index))
+			}
+		}
+		return true
+	})
+	return methods
+}
+
 // Method resolves a fully qualified RPC name such as example.users.v1.UserService.ListUsers.
 func (r *Registry) Method(name protoreflect.FullName) (protoreflect.MethodDescriptor, error) {
 	descriptor, err := r.files.FindDescriptorByName(name)

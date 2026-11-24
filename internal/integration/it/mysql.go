@@ -20,7 +20,7 @@ import (
 	"github.com/go-sql-driver/mysql"
 
 	"github.com/block/spectre/internal/model"
-	"github.com/block/spectre/internal/mysqlserver"
+	"github.com/block/spectre/internal/protocols/mysql/scripted"
 )
 
 const (
@@ -135,16 +135,19 @@ func authorities(t *testing.T) string {
 }
 
 // connect opens the handles that reach the database through the proxy's listeners.
-func (d *Database) connect(reference, candidate net.Listener) mysqlserver.Config {
+func (d *Database) connect(reference, candidate net.Listener) []string {
 	d.referenceListen = reference.Addr().String()
 	d.Reference = openMySQL(d.t, d.referenceListen, d.Name)
 	d.Candidate = openMySQL(d.t, candidate.Addr().String(), d.Name)
 	d.SetProxyPassword(mysqlPassword)
-	config := mysqlserver.NewConfig()
-	config.Upstream, config.UpstreamCA = d.address, d.authorities
-	config.UpstreamUser, config.UpstreamPasswordFile = d.user, d.passwordFile
-	config.ReferenceListen, config.CandidateListen = reference.Addr().String(), candidate.Addr().String()
-	return config
+	return []string{
+		"--mysql-upstream=" + d.address,
+		"--mysql-upstream-ca=" + d.authorities,
+		"--mysql-upstream-user=" + d.user,
+		"--mysql-upstream-password-file=" + d.passwordFile,
+		"--mysql-reference-listen=" + reference.Addr().String(),
+		"--mysql-candidate-listen=" + candidate.Addr().String(),
+	}
 }
 
 // ExpectStatements checks the statements the database server itself ran in the
@@ -183,7 +186,7 @@ func digests(t *testing.T, server *sql.DB, database string) map[string]uint64 {
 func MySQLQuarantine(kind model.QuarantineKind, route string, detail string) model.QuarantineReason {
 	return model.QuarantineReason{
 		Kind:    kind,
-		Traffic: Some(model.Traffic{Direction: model.Egress, Protocol: mysqlserver.Protocol, Route: model.Route(route)}),
+		Traffic: Some(model.Traffic{Direction: model.Egress, Protocol: scripted.Protocol, Route: model.Route(route)}),
 		Detail:  detail,
 	}
 }

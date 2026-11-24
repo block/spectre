@@ -2,6 +2,12 @@
 // moves, the IO each performs, and how far each has got.
 package state
 
+import (
+	"fmt"
+
+	"github.com/block/spectre/internal/model"
+)
+
 // Library is the node type of shared code that performs no IO.
 const Library = "library"
 
@@ -31,31 +37,31 @@ type Setting struct {
 	Entry []Setting `json:"entry,omitzero"`
 }
 
-// NodeTypes describes library, then each kind of IO a node can have, matching the
-// fields of Ingress and Egress.
-func NodeTypes() []NodeType {
-	return []NodeType{
-		{
-			Name: Library,
-			Description: "Module shared by more than one other node that performs no IO, " +
-				"such as shared domain types, validation, calculations, and helpers.",
-		},
-		{
-			Name:        "ingress[http]",
-			Description: "Module that receives HTTP requests to the service, including gRPC and Connect.",
-			Table:       "nodes.<id>.ingress.http",
-			Settings: []Setting{{
-				Name:        "routes",
-				Required:    true,
-				Description: "Each route the node handles.",
-				Key:         "<METHOD> /<path>",
-				Unique:      true,
-			}},
-		},
-		{
-			Name:        "egress[http]",
-			Description: "Module that sends HTTP requests to another service, including gRPC and Connect.",
-			Table:       "nodes.<id>.egress.http",
-		},
-	}
+// Kind is one direction a protocol proxies, as the migration state describes it.
+type Kind struct {
+	Direction   model.Direction
+	Protocol    model.Protocol
+	Description string
+	// Settings are what a node's table for the kind holds. A Unique setting's keys
+	// are the routes the protocol names traffic by.
+	Settings []Setting
+}
+
+// String returns the kind as written in the migration state, e.g. "ingress[http]".
+func (k Kind) String() string {
+	return k.key().String()
+}
+
+func (k Kind) key() kindKey {
+	return kindKey{Direction: k.Direction, Protocol: k.Protocol}
+}
+
+// kindKey identifies a kind by direction and protocol, so it can key a map.
+type kindKey struct {
+	Direction model.Direction
+	Protocol  model.Protocol
+}
+
+func (k kindKey) String() string {
+	return fmt.Sprintf("%s[%s]", k.Direction, k.Protocol)
 }

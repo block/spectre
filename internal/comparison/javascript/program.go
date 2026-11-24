@@ -8,7 +8,6 @@ import (
 	"io/fs"
 	"maps"
 	"path"
-	"reflect"
 	"slices"
 	"strings"
 	"time"
@@ -31,20 +30,27 @@ const (
 // Program is one immutable set of scripts, shared by all payload normalisations.
 // It retains no runtime-local callback state.
 type Program struct {
-	schema       *schema.Schema
-	entry        *sobek.SourceTextModuleRecord
-	spectre      *spectreModule
-	endpoints    []Endpoint
-	rules        []Rule
-	replacements []Replacement
-	statements   []StatementReplacement
-	fields       []FieldTarget
-	messages     []MessageTarget
+	schema     *schema.Schema
+	entry      *sobek.SourceTextModuleRecord
+	spectre    *spectreModule
+	registered registrations
+	// timeout limits each evaluator's script callbacks.
+	timeout time.Duration
 }
 
-// NewProgram type-checks scripts against the schema declarations with their variables, links
-// them, then evaluates them once within evaluationTimeout to collect their registrations.
-func NewProgram(ctx context.Context, evaluationTimeout time.Duration, declarations fs.FS, scripts fs.FS, variables map[string]string) (*Program, error) {
+// NewProgram type-checks scripts against the schema declarations and the bindings' members, links
+// them, then evaluates them once within timeout. Each evaluator limits its callbacks to timeout.
+func NewProgram(
+	ctx context.Context,
+	timeout time.Duration,
+	declarations fs.FS,
+	scripts fs.FS,
+	variables map[string]string,
+	bindings []Binding,
+) (*Program, error) {
+	if err := checkBindings(bindings); err != nil {
+		return nil, err
+	}
 	declarationSources, err := schema.ReadSources(declarations)
 	if err != nil {
 		return nil, errors.Wrap(err, "read schema declarations")
@@ -53,11 +59,11 @@ func NewProgram(ctx context.Context, evaluationTimeout time.Duration, declaratio
 	if err != nil {
 		return nil, err
 	}
-	checked, err := compile(ctx, declarationSources, scriptSources)
+	checked, err := compile(ctx, declarationSources, scriptSources, bindings)
 	if err != nil {
 		return nil, err
 	}
-	loader := newModuleLoader(checked.modules, checked.schema, maps.Clone(variables))
+	loader := newModuleLoader(checked.modules, checked.schema, maps.Clone(variables), bindings)
 	module, err := loader.loadAll()
 	if err != nil {
 		return nil, err
@@ -65,23 +71,19 @@ func NewProgram(ctx context.Context, evaluationTimeout time.Duration, declaratio
 	if err := module.Link(); err != nil {
 		return nil, errors.Wrap(err, "link comparison modules")
 	}
-	evaluationContext, cancel := context.WithTimeout(ctx, evaluationTimeout)
+	evaluationContext, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	evaluator, registered, err := newEvaluator(evaluationContext, module, loader.spectreModule())
+	evaluator, registered, err := newEvaluator(evaluationContext, module, loader.spectreModule(), timeout)
 	if err != nil {
 		return nil, errors.Wrap(err, "evaluate comparison modules")
 	}
 	defer evaluator.Close()
 	return &Program{
-		schema:       checked.schema,
-		entry:        module,
-		spectre:      loader.spectreModule(),
-		endpoints:    registered.endpoints,
-		rules:        registered.rules,
-		replacements: registered.replacements,
-		statements:   registered.statements,
-		fields:       registered.fields,
-		messages:     registered.messages,
+		schema:     checked.schema,
+		entry:      module,
+		spectre:    loader.spectreModule(),
+		registered: registered,
+		timeout:    timeout,
 	}, nil
 }
 
@@ -112,6 +114,11 @@ func readScripts(scripts fs.FS) (map[string]string, error) {
 	return sources, errors.WithStack(err)
 }
 
+// declarations returns what each binding's scripts declared, in the order of the bindings.
+func (p *Program) declarations() []declaredSnapshot {
+	return p.registered.declared
+}
+
 // Schema returns the payload types the scripts were checked against.
 func (p *Program) Schema() *schema.Schema {
 	return p.schema
@@ -120,7 +127,7 @@ func (p *Program) Schema() *schema.Schema {
 // Endpoints returns the endpoints declared for a direction, in declaration order.
 func (p *Program) Endpoints(direction model.Direction) []Endpoint {
 	endpoints := []Endpoint{}
-	for _, endpoint := range p.endpoints {
+	for _, endpoint := range p.registered.endpoints {
 		if endpoint.Direction() == direction {
 			endpoints = append(endpoints, endpoint)
 		}
@@ -128,44 +135,29 @@ func (p *Program) Endpoints(direction model.Direction) []Endpoint {
 	return endpoints
 }
 
-// Rules returns the ingress rules in declaration order.
-func (p *Program) Rules() []Rule {
-	return slices.Clone(p.rules)
-}
-
 // Replacements returns the egress replacements in declaration order.
 func (p *Program) Replacements() []Replacement {
-	return slices.Clone(p.replacements)
-}
-
-// StatementReplacements returns the MySQL statement replacements in declaration order.
-func (p *Program) StatementReplacements() []StatementReplacement {
-	return slices.Clone(p.statements)
+	return slices.Clone(p.registered.replacements)
 }
 
 // Fields returns the declared type names and JSON field paths, sorted by type then path.
 func (p *Program) Fields() []FieldTarget {
-	return slices.Clone(p.fields)
+	return slices.Clone(p.registered.fields)
 }
 
 // Messages returns the spectre.message declarations, sorted by type.
 func (p *Program) Messages() []MessageTarget {
-	return slices.Clone(p.messages)
+	return slices.Clone(p.registered.messages)
 }
 
-// NewEvaluator creates an isolated evaluator for one payload normalisation.
-// Re-evaluation must reproduce the registrations used to build the schema plan.
+// NewEvaluator creates an isolated evaluator for one payload normalisation. Re-evaluation
+// must reproduce the registrations used to build the schema plan and each binding's declarations.
 func (p *Program) NewEvaluator(ctx context.Context) (*Evaluator, error) {
-	evaluator, registered, err := newEvaluator(ctx, p.entry, p.spectre)
+	evaluator, registered, err := newEvaluator(ctx, p.entry, p.spectre, p.timeout)
 	if err != nil {
 		return nil, err
 	}
-	if !slices.Equal(registered.endpoints, p.endpoints) ||
-		!reflect.DeepEqual(registered.rules, p.rules) ||
-		!slices.Equal(registered.replacements, p.replacements) ||
-		!reflect.DeepEqual(registered.statements, p.statements) ||
-		!slices.Equal(registered.fields, p.fields) ||
-		!slices.Equal(registered.messages, p.messages) {
+	if !sameRegistrations(registered, p.registered) {
 		evaluator.Close()
 		return nil, errors.New("comparison script registrations changed after startup")
 	}
@@ -181,10 +173,10 @@ type moduleLoader struct {
 	names    map[sobek.ModuleRecord]string
 }
 
-func newModuleLoader(compiled map[string]string, loaded *schema.Schema, variables map[string]string) *moduleLoader {
+func newModuleLoader(compiled map[string]string, loaded *schema.Schema, variables map[string]string, bindings []Binding) *moduleLoader {
 	return &moduleLoader{
 		compiled: compiled,
-		spectre:  &spectreModule{loaded: loaded, variables: variables},
+		spectre:  &spectreModule{loaded: loaded, variables: variables, bindings: bindings},
 		modules:  map[string]*sobek.SourceTextModuleRecord{},
 		names:    map[sobek.ModuleRecord]string{},
 	}

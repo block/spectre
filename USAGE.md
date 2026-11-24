@@ -149,8 +149,12 @@ Ingress listens on `--listen`, `127.0.0.1:50050` by default, and accepts HTTP/1
 and unencrypted HTTP/2.
 
 `--health-listen` serves `/livez`, and `/readyz` once both proxies are ready,
-over TCP so a kubelet's HTTP probes can reach them. The egress proxy also serves
-its own `/livez` and `/readyz` on `--egress-health-listen`.
+over TCP so a kubelet's HTTP probes can reach them. `--egress-health-listen` serves
+`/livez`, and `/readyz` once the egress proxies of every protocol, including
+MySQL, are ready.
+
+`--candidate-max-in-flight` (64 by default) limits the candidate requests that
+run at once, for ingress and for egress each. Beyond it the candidate is quarantined.
 
 Containers running as different users connect to the shared sockets through
 the pod's shared `fsGroup`. A candidate that creates its own listening socket
@@ -587,8 +591,8 @@ members. Arbitrary JSON well-known types, including `google.protobuf.Any`, are u
 
 Payload validation rejects any property that a declaration does not list.
 
-For editor support, write the `spectre` module declaration with
-`spectre gen module --output=spectre.d.ts`.
+For editor support, write the `spectre` module declaration, and the built-in modules above,
+with `spectre gen module --output=spectre.d.ts`.
 
 ### Scripts
 
@@ -749,6 +753,10 @@ status = "pending"
 | `depends_on` | IDs of nodes whose code this node calls or imports. |
 | `status` | `pending`, only in the reference, or `migrated`, in the candidate as well. Defaults to `pending`. |
 | `<direction>.<protocol>` | A kind of IO the node's own code performs, holding that kind's settings. |
+
+The kinds of IO are `ingress[http]`, which lists the routes it handles under
+`routes`, and `egress[http]` and `egress[mysql]`, which take no settings. Write
+a node that sends MySQL statements as `[nodes.<id>.egress.mysql]`.
 
 A node with no IO is a library, shared by more than one other node. Each route
 belongs to one node, so a divergence on a route also names the node to fix.

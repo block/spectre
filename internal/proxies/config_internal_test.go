@@ -13,7 +13,7 @@ func TestConfigValidate(t *testing.T) {
 	}{
 		"Default":           {change: func(*Config) {}},
 		"NoMatchWindow":     {change: func(config *Config) { config.MatchWindow = 0 }, err: "match window must be positive"},
-		"NoStartupTimeout":  {change: func(config *Config) { config.CandidateStartupTimeout = 0 }, err: "candidate startup timeout must be positive"},
+		"NoCandidateLimit":  {change: func(config *Config) { config.Candidates.CandidateMaxInFlight = 0 }, err: "candidate maximum in-flight requests must be positive"},
 		"NoServerKeepalive": {change: func(config *Config) { config.Server.KeepaliveInterval = 0 }, err: "server keepalive interval and stream max age must be positive"},
 	} {
 		t.Run(name, func(t *testing.T) {

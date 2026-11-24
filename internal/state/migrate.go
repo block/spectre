@@ -7,15 +7,14 @@ import (
 	"github.com/alecthomas/errors"
 )
 
-// MarkMigrated sets the status of each node in ids to migrated and rewrites
-// the state, dropping comments. The result must still be a valid state.
-func MarkMigrated(data []byte, ids []string) (updated []byte, marked []string, err error) {
-	current, err := Parse(data)
+// markMigrated implements Kinds.MarkMigrated.
+func markMigrated(data []byte, kinds Kinds, ids []string) (updated []byte, marked []string, err error) {
+	current, err := parse(data, kinds)
 	if err != nil {
 		return nil, nil, errors.WithStack(err)
 	}
-	statuses := make(map[string]Status, len(current.Nodes))
-	for _, node := range current.Nodes {
+	statuses := make(map[string]Status, len(current.All))
+	for _, node := range current.All {
 		statuses[node.ID] = node.Status
 	}
 	var unknown []string
@@ -34,16 +33,16 @@ func MarkMigrated(data []byte, ids []string) (updated []byte, marked []string, e
 	if len(marked) == 0 {
 		return data, nil, nil
 	}
-	for i, node := range current.Nodes {
+	for i, node := range current.All {
 		if slices.Contains(marked, node.ID) {
-			current.Nodes[i].Status = Migrated
+			current.All[i].Status = Migrated
 		}
 	}
-	updated, err = encode(current.Nodes)
+	updated, err = encode(current.All)
 	if err != nil {
 		return nil, nil, errors.Wrap(err, "encode migration state")
 	}
-	if _, err := Parse(updated); err != nil {
+	if _, err := parse(updated, kinds); err != nil {
 		return nil, nil, withoutLines(err)
 	}
 	return updated, marked, nil

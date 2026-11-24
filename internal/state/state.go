@@ -11,7 +11,6 @@ import (
 	"strings"
 
 	"github.com/alecthomas/errors"
-	. "github.com/alecthomas/types/optional"
 	"github.com/pelletier/go-toml/v2"
 	"github.com/pelletier/go-toml/v2/unstable"
 
@@ -30,8 +29,11 @@ const (
 
 // State is a service's migration state.
 type State struct {
-	// Nodes are the service's modules, sorted by ID.
-	Nodes []Node
+	// All are the service's nodes, sorted by ID.
+	All []Node
+	// kinds are what the state was checked against, which Owner needs to find
+	// each kind's unique settings.
+	kinds Kinds
 }
 
 // Node is one module of the service.
@@ -39,45 +41,24 @@ type Node struct {
 	ID        string   `toml:"-" json:"id"`
 	DependsOn []string `toml:"depends_on,omitempty" json:"depends_on,omitzero"`
 	Status    Status   `toml:"status,omitempty" json:"status"`
-	Ingress   Ingress  `toml:"ingress,omitempty" json:"ingress,omitzero"`
-	Egress    Egress   `toml:"egress,omitempty" json:"egress,omitzero"`
+	// Ingress holds the node's settings for each protocol of IO that reaches it.
+	Ingress map[model.Protocol]Settings `toml:"ingress,omitempty" json:"ingress,omitzero"`
+	// Egress holds the node's settings for each protocol of IO it performs.
+	Egress map[model.Protocol]Settings `toml:"egress,omitempty" json:"egress,omitzero"`
 	// Line is where the node's table starts in the file, or 0 when unknown.
 	Line int `toml:"-" json:"-"`
 }
 
-// Ingress is the IO that reaches a node, with a field per protocol. Fields are
-// pointers only because go-toml cannot decode an Option; read them as Options.
-type Ingress struct {
-	HTTP *HTTPIngress `toml:"http,omitempty" json:"http,omitzero"`
+// Settings are one node's settings for one kind: each keyed setting's entries.
+// Each entry is an empty table, because no kind defines entry settings yet.
+type Settings map[string]map[string]struct{}
+
+// KindNode is one node with a kind, as the protocol of that kind reads it.
+type KindNode struct {
+	ID       string
+	Migrated bool
+	Settings Settings
 }
-
-// HTTPSettings returns the node's ingress[http] settings, if it has that kind of IO.
-func (i Ingress) HTTPSettings() Option[HTTPIngress] {
-	return Ptr(i.HTTP)
-}
-
-// Egress is the IO a node performs, with a field per protocol. Fields are
-// pointers only because go-toml cannot decode an Option; read them as Options.
-type Egress struct {
-	HTTP *HTTPEgress `toml:"http,omitempty" json:"http,omitzero"`
-}
-
-// HTTPSettings returns the node's egress[http] settings, if it has that kind of IO.
-func (e Egress) HTTPSettings() Option[HTTPEgress] {
-	return Ptr(e.HTTP)
-}
-
-// HTTPIngress is a node's ingress[http] settings.
-type HTTPIngress struct {
-	// Routes are unique across nodes, and there must be at least one.
-	Routes map[model.Route]HTTPRoute `toml:"routes" json:"routes"`
-}
-
-// HTTPRoute is the settings of one route a node handles, which has none yet.
-type HTTPRoute struct{}
-
-// HTTPEgress is a node's egress[http] settings, which has none yet.
-type HTTPEgress struct{}
 
 // file is the layout of a state file, which go-toml decodes and encodes directly.
 type file struct {
@@ -127,18 +108,17 @@ type Config struct {
 	StateFile string `default:"spectre/state.toml" type:"path" help:"Path to the migration state TOML file."`
 }
 
-// Load reads and parses the migration state file at path.
-func Load(path string) (State, error) {
+// load reads and parses the migration state file at path.
+func load(path string, kinds Kinds) (State, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return State{}, errors.Wrap(err, "read migration state")
 	}
-	return errors.WithStack2(Parse(data))
+	return errors.WithStack2(parse(data, kinds))
 }
 
-// Parse reads and checks a migration state. An invalid state returns an
-// *InvalidError.
-func Parse(data []byte) (State, error) {
+// parse reads and checks a migration state against kinds.
+func parse(data []byte, kinds Kinds) (State, error) {
 	var decoded file
 	err := toml.NewDecoder(bytes.NewReader(data)).DisallowUnknownFields().Decode(&decoded)
 	if strict, ok := errors.AsType[*toml.StrictMissingError](err); ok {
@@ -152,20 +132,36 @@ func Parse(data []byte) (State, error) {
 		return State{}, &InvalidError{Problems: []Problem{decodeProblem(err)}}
 	}
 	lines := keyLines(data)
-	state := State{}
+	state := State{kinds: kinds}
 	for _, id := range slices.Sorted(maps.Keys(decoded.Nodes)) {
 		node := decoded.Nodes[id]
 		node.ID = id
 		node.Line = lines[keyPath(nodesKey, id)]
+		node.Ingress = withSettings(node.Ingress)
+		node.Egress = withSettings(node.Egress)
 		if node.Status == "" {
 			node.Status = Pending
 		}
-		state.Nodes = append(state.Nodes, node)
+		state.All = append(state.All, node)
 	}
-	if err := newChecker(lines).check(state); err != nil {
+	if err := newChecker(kinds, lines).check(state); err != nil {
 		return State{}, err
 	}
 	return state, nil
+}
+
+// withSettings returns protocols with an empty Settings for each protocol that
+// decoded none, or nil when there are no protocols.
+func withSettings(protocols map[model.Protocol]Settings) map[model.Protocol]Settings {
+	if len(protocols) == 0 {
+		return nil
+	}
+	for protocol, settings := range protocols {
+		if settings == nil {
+			protocols[protocol] = Settings{}
+		}
+	}
+	return protocols
 }
 
 // decodeProblem moves the position of a go-toml error into the problem's line,
@@ -242,9 +238,9 @@ func recordKey(parser *unstable.Parser, lines map[string]int, prefix []string, k
 // Unreached returns a warning for each node that no ingress node is or depends
 // on, since ingress traffic never reaches its code.
 func (s State) Unreached() []Problem {
-	nodes := make(map[string]Node, len(s.Nodes))
+	nodes := make(map[string]Node, len(s.All))
 	var queue []string
-	for _, node := range s.Nodes {
+	for _, node := range s.All {
 		nodes[node.ID] = node
 		if node.hasIngress() {
 			queue = append(queue, node.ID)
@@ -261,7 +257,7 @@ func (s State) Unreached() []Problem {
 		queue = append(queue, nodes[id].DependsOn...)
 	}
 	var warnings []Problem
-	for _, node := range s.Nodes {
+	for _, node := range s.All {
 		if !reached[node.ID] {
 			warnings = append(warnings, Problem{Line: node.Line, Message: keyPath(nodesKey, node.ID) +
 				": no ingress node reaches it, so SPECTRE cannot verify it"})
@@ -273,13 +269,13 @@ func (s State) Unreached() []Problem {
 // Next returns the smallest set of pending nodes whose migration ingress traffic
 // can verify: one ingress node and the pending nodes it depends on.
 func (s State) Next() []Node {
-	nodes := make(map[string]Node, len(s.Nodes))
-	for _, node := range s.Nodes {
+	nodes := make(map[string]Node, len(s.All))
+	for _, node := range s.All {
 		nodes[node.ID] = node
 	}
 	var next []Node
 	nextIO := 0
-	for _, node := range s.Nodes {
+	for _, node := range s.All {
 		if node.Status != Pending || !node.hasIngress() {
 			continue
 		}
@@ -301,7 +297,7 @@ func (s State) Next() []Node {
 // Pending returns the nodes that are not migrated yet.
 func (s State) Pending() []Node {
 	var pending []Node
-	for _, node := range s.Nodes {
+	for _, node := range s.All {
 		if node.Status == Pending {
 			pending = append(pending, node)
 		}
@@ -354,38 +350,79 @@ func (n Node) Types() []string {
 	return types
 }
 
-// kinds returns the node's IO kinds, by protocol with ingress first.
-func (n Node) kinds() []model.IOKind {
-	var kinds []model.IOKind
-	if n.Ingress.HTTPSettings().Ok() {
-		kinds = append(kinds, model.IOKind{Direction: model.Ingress, Protocol: model.ProtocolHTTP})
-	}
-	if n.Egress.HTTPSettings().Ok() {
-		kinds = append(kinds, model.IOKind{Direction: model.Egress, Protocol: model.ProtocolHTTP})
+// kinds returns the node's IO kinds, ingress first and otherwise by protocol.
+func (n Node) kinds() []kindKey {
+	var kinds []kindKey
+	for _, direction := range []struct {
+		name      model.Direction
+		protocols map[model.Protocol]Settings
+	}{{model.Ingress, n.Ingress}, {model.Egress, n.Egress}} {
+		for _, protocol := range slices.Sorted(maps.Keys(direction.protocols)) {
+			kinds = append(kinds, kindKey{Direction: direction.name, Protocol: protocol})
+		}
 	}
 	return kinds
 }
 
+// settings returns the node's settings for kind, if it has that kind of IO.
+func (n Node) settings(kind kindKey) (Settings, bool) {
+	protocols := n.Ingress
+	if kind.Direction == model.Egress {
+		protocols = n.Egress
+	}
+	settings, ok := protocols[kind.Protocol]
+	return settings, ok
+}
+
 func (n Node) hasIngress() bool {
-	return n.Ingress != Ingress{}
+	return len(n.Ingress) > 0
+}
+
+// Nodes returns the nodes that have kind, sorted by ID.
+func (s State) Nodes(kind Kind) []KindNode {
+	var nodes []KindNode
+	for _, node := range s.All {
+		if settings, ok := node.settings(kind.key()); ok {
+			nodes = append(nodes, KindNode{ID: node.ID, Migrated: node.Status == Migrated, Settings: settings})
+		}
+	}
+	return nodes
+}
+
+// Owner is the node that lists traffic's route under a Unique setting of its kind.
+func (s State) Owner(traffic model.Traffic) (node string, ok bool) {
+	kind, _ := s.kinds.Kind(traffic.Direction, traffic.Protocol)
+	for _, setting := range kind.Settings {
+		if !setting.Unique {
+			continue
+		}
+		for _, candidate := range s.All {
+			settings, _ := candidate.settings(kind.key())
+			if _, listed := settings[setting.Name][string(traffic.Route)]; listed {
+				return candidate.ID, true
+			}
+		}
+	}
+	return "", false
 }
 
 // checker collects every problem with a decoded state instead of stopping at the first.
 type checker struct {
+	kinds    Kinds
 	lines    map[string]int
 	problems []Problem
 }
 
-func newChecker(lines map[string]int) *checker {
-	return &checker{lines: lines}
+func newChecker(kinds Kinds, lines map[string]int) *checker {
+	return &checker{kinds: kinds, lines: lines}
 }
 
 func (c *checker) check(state State) error {
-	for _, node := range state.Nodes {
+	for _, node := range state.All {
 		c.checkNode(node)
 	}
 	c.checkDependencies(state)
-	c.checkRoutes(state)
+	c.checkUnique(state)
 	if len(c.problems) == 0 {
 		return nil
 	}
@@ -404,19 +441,43 @@ func (c *checker) checkNode(node Node) {
 	if node.Status != Pending && node.Status != Migrated {
 		c.reportf([]string{nodesKey, node.ID, statusKey}, "must be %q or %q", Pending, Migrated)
 	}
-	if http, ok := node.Ingress.HTTPSettings().Get(); ok && len(http.Routes) == 0 {
-		c.reportf([]string{nodesKey, node.ID, string(model.Ingress), string(model.ProtocolHTTP)}, "routes must list at least one route")
+	for _, kind := range node.kinds() {
+		c.checkKind(node, kind)
+	}
+}
+
+// checkKind reports a kind that is unsupported, a setting it does not define,
+// and a required setting that has no entries.
+func (c *checker) checkKind(node Node, key kindKey) {
+	path := []string{nodesKey, node.ID, string(key.Direction), string(key.Protocol)}
+	definition, supported := c.kinds.Kind(key.Direction, key.Protocol)
+	if !supported {
+		c.reportf(path, "unknown key")
+		return
+	}
+	settings, _ := node.settings(key)
+	defined := map[string]bool{}
+	for _, setting := range definition.Settings {
+		defined[setting.Name] = true
+		if setting.Required && len(settings[setting.Name]) == 0 {
+			c.reportf(path, "%s must list at least one entry", setting.Name)
+		}
+	}
+	for _, name := range slices.Sorted(maps.Keys(settings)) {
+		if !defined[name] {
+			c.reportf(append(slices.Clone(path), name), "unknown key")
+		}
 	}
 }
 
 // checkDependencies reports dependencies on unknown nodes, cycles, and migrated
 // nodes that depend on pending ones.
 func (c *checker) checkDependencies(state State) {
-	nodes := make(map[string]Node, len(state.Nodes))
-	for _, node := range state.Nodes {
+	nodes := make(map[string]Node, len(state.All))
+	for _, node := range state.All {
 		nodes[node.ID] = node
 	}
-	for _, node := range state.Nodes {
+	for _, node := range state.All {
 		path := []string{nodesKey, node.ID, dependsOnKey}
 		seen := map[string]bool{}
 		for _, id := range node.DependsOn {
@@ -465,28 +526,31 @@ func (c *checker) checkCycles(state State, nodes map[string]Node) {
 		done[id] = true
 		return false
 	}
-	for _, node := range state.Nodes {
+	for _, node := range state.All {
 		if visit([]string{node.ID}) {
 			return
 		}
 	}
 }
 
-// checkRoutes reports an ingress[http] route that more than one node lists.
-func (c *checker) checkRoutes(state State) {
-	owners := map[model.Route]string{}
-	for _, node := range state.Nodes {
-		http, ok := node.Ingress.HTTPSettings().Get()
-		if !ok {
-			continue
-		}
-		for _, route := range slices.Sorted(maps.Keys(http.Routes)) {
-			if owner, listed := owners[route]; listed {
-				path := []string{nodesKey, node.ID, string(model.Ingress), string(model.ProtocolHTTP), "routes", string(route)}
-				c.reportf(path, "also listed by node %q", owner)
+// checkUnique reports an entry of a Unique setting that more than one node lists.
+func (c *checker) checkUnique(state State) {
+	for _, kind := range c.kinds.sorted() {
+		for _, setting := range kind.Settings {
+			if !setting.Unique {
 				continue
 			}
-			owners[route] = node.ID
+			owners := map[string]string{}
+			for _, node := range state.Nodes(kind) {
+				for _, entry := range slices.Sorted(maps.Keys(node.Settings[setting.Name])) {
+					if owner, listed := owners[entry]; listed {
+						path := []string{nodesKey, node.ID, string(kind.Direction), string(kind.Protocol), setting.Name, entry}
+						c.reportf(path, "also listed by node %q", owner)
+						continue
+					}
+					owners[entry] = node.ID
+				}
+			}
 		}
 	}
 }

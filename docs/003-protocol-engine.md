@@ -1,6 +1,6 @@
 # Protocol engine
 
-**Status:** Implemented
+**Status:** Implemented. Matchers, rule declarations and HTTP rules in the engine are superseded by [009-protocol-providers](009-protocol-providers.md).
 
 ## Problem
 

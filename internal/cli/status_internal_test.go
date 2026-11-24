@@ -48,7 +48,7 @@ func TestStatusCommands(t *testing.T) {
 		Quarantines: map[model.Direction]model.Quarantine{
 			model.Ingress: {Since: first.Add(time.Minute), Reason: model.QuarantineReason{
 				Kind:    model.QuarantineDivergent,
-				Traffic: Some(model.Traffic{Direction: model.Ingress, Protocol: model.ProtocolHTTP, Route: "GET /v1/users"}),
+				Traffic: Some(model.Traffic{Direction: model.Ingress, Protocol: "fake", Route: "GET /v1/users"}),
 				Node:    Some("users"),
 				Differences: []model.Difference{
 					{Path: "$.name", Change: model.ChangeChanged, Count: 1},
@@ -80,7 +80,7 @@ func TestStatusCommands(t *testing.T) {
   egress: no matching reference call
   quarantined 2026-10-01T12:00:00Z on abc123
 users def456 production spectre v1.2.3, up 1h30m0s
-  ingress http GET /v1/users: response differences (node users)
+  ingress fake GET /v1/users: response differences (node users)
     ~ $.name
     - $.emails[*] ×2
     ! $.owner object → null
@@ -108,7 +108,7 @@ users def456 staging spectre v1.2.3, up 12m0s
 		"direction": "DIRECTION_INGRESS",
 		"since": "2026-10-01T12:01:00Z",
 		"kind": "KIND_DIVERGENT",
-		"traffic": {"direction": "DIRECTION_INGRESS", "protocol": "http", "route": "GET /v1/users"},
+		"traffic": {"direction": "DIRECTION_INGRESS", "protocol": "fake", "route": "GET /v1/users"},
 		"node": "users",
 		"differences": [
 			{"path": "$.name", "change": "CHANGE_CHANGED", "count": 1},
@@ -149,7 +149,7 @@ users def456 staging spectre v1.2.3, up 12m0s
 	assert.NoError(t, list.Run(t.Context(), spectre, Output{Writer: &text}))
 	// The mirror still holds its quarantine, so it lists until the mirror restarts.
 	assert.Equal(t, `users def456 production spectre v1.2.3, up 1h30m0s
-  ingress http GET /v1/users: response differences (node users)
+  ingress fake GET /v1/users: response differences (node users)
     ~ $.name
     - $.emails[*] ×2
     ! $.owner object → null

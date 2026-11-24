@@ -1,0 +1,518 @@
+package engine
+
+import (
+	"context"
+	"log/slog"
+	"sync"
+	"time"
+
+	"github.com/alecthomas/errors"
+	. "github.com/alecthomas/types/optional"
+
+	"github.com/block/spectre/internal/comparison"
+	"github.com/block/spectre/internal/future"
+	"github.com/block/spectre/internal/logger"
+	"github.com/block/spectre/internal/model"
+	"github.com/block/spectre/internal/schema"
+)
+
+// outcome classifies one response comparison.
+type outcome string
+
+const (
+	outcomeEquivalent outcome = "equivalent"
+	outcomeDivergent  outcome = "divergent"
+	// outcomeSkipped means the responses are never compared, so never quarantine.
+	outcomeSkipped outcome = "skipped"
+	outcomeUnable  outcome = "unable"
+)
+
+// comparisonResult describes a comparison without exposing response values.
+type comparisonResult struct {
+	outcome     outcome
+	differences []model.Difference
+	truncated   bool
+	reason      string
+}
+
+func newComparisonResult(outcome outcome, reason string) comparisonResult {
+	return comparisonResult{outcome: outcome, reason: reason}
+}
+
+func newDifferenceResult(truncated bool, differences ...model.Difference) comparisonResult {
+	return comparisonResult{outcome: outcomeDivergent, differences: differences, truncated: truncated}
+}
+
+// rootDifference is a difference in a response's presence, which is not a payload path.
+func rootDifference(path string, change model.Change) comparisonResult {
+	return newDifferenceResult(false, model.Difference{Path: path, Change: change, Count: 1})
+}
+
+// statusDifference reports the statuses the services returned, which hold no payload.
+func statusDifference(reference, candidate string) comparisonResult {
+	return newDifferenceResult(false, model.Difference{
+		Path: "$status", Change: model.ChangeChanged, Count: 1,
+		Statuses: Some(model.Statuses{Reference: reference, Candidate: candidate}),
+	})
+}
+
+// ingressPairs pairs each reference request with its mirrored candidate request
+// by RequestID, then compares their responses.
+type ingressPairs struct {
+	scripts    *comparison.Scripts
+	quarantine Quarantiner
+	calls      Option[CallCounter]
+
+	// mu guards both maps and every pair's lifecycle flags.
+	mu        sync.Mutex
+	requests  map[RequestID]*ingressPair
+	exchanges map[Exchange]*ingressPair
+}
+
+func newIngressPairs(scripts *comparison.Scripts, quarantine Quarantiner, calls Option[CallCounter]) *ingressPairs {
+	return &ingressPairs{
+		scripts:    scripts,
+		quarantine: quarantine,
+		calls:      calls,
+		requests:   map[RequestID]*ingressPair{},
+		exchanges:  map[Exchange]*ingressPair{},
+	}
+}
+
+// ingressOutcome is how a reference request finished.
+type ingressOutcome struct {
+	reference Option[Response]
+	failure   Option[error]
+	// cancelled means the reference failed because it was cancelled, so its
+	// response is unknown rather than wrong.
+	cancelled bool
+}
+
+// ingressPair is one mirrored request. ingressPairs.mu guards its lifecycle flags.
+type ingressPair struct {
+	protocol  model.Protocol
+	route     model.Route
+	requestID RequestID
+	// ignoredReason explains why the responses are never compared.
+	ignoredReason Option[string]
+	outcome       *future.Future[ingressOutcome]
+
+	joined        bool
+	candidateDone bool
+}
+
+func newIngressPair(protocol model.Protocol, requestID RequestID, route model.Route, ignored Option[string]) *ingressPair {
+	return &ingressPair{
+		protocol: protocol, route: route, requestID: requestID, ignoredReason: ignored,
+		outcome: future.New[ingressOutcome](),
+	}
+}
+
+func (p *ingressPair) id() RequestID {
+	return p.requestID
+}
+
+// describe returns the log attributes that identify the pair.
+func (p *ingressPair) describe() []slog.Attr {
+	return []slog.Attr{slog.Any("protocol", p.protocol), slog.Any("route", p.route)}
+}
+
+func (p *ingressPair) traffic() model.Traffic {
+	return ingressTraffic(p.protocol, p.route)
+}
+
+func ingressTraffic(protocol model.Protocol, route model.Route) model.Traffic {
+	return model.Traffic{Direction: model.Ingress, Protocol: protocol, Route: route}
+}
+
+// ignored returns why the pair is never compared, if it is not.
+func (p *ingressPair) ignored() Option[string] {
+	return p.ignoredReason
+}
+
+// join admits the pair's only candidate.
+func (p *ingressPair) join(protocol model.Protocol) error {
+	if p.joined {
+		return errors.Errorf("reference request %s already has a candidate", p.requestID)
+	}
+	if p.protocol != protocol {
+		return errors.Errorf("candidate request %s uses %s, not %s", p.requestID, protocol, p.protocol)
+	}
+	p.joined = true
+	return nil
+}
+
+// finishReference publishes the reference outcome and reports whether the pair
+// is finished, because no candidate joined or the candidate already finished.
+func (p *ingressPair) finishReference(outcome ingressOutcome) (finished bool) {
+	if !p.outcome.Set(outcome) {
+		// The pair already has an outcome, so this response is nobody's.
+		releaseResponse(outcome.reference)
+		return false
+	}
+	finished = p.candidateDone || !p.joined
+	if finished {
+		p.releaseReference()
+	}
+	return finished
+}
+
+func (p *ingressPair) finishCandidate() {
+	p.candidateDone = true
+	p.releaseReference()
+}
+
+// releaseReference frees the reference response, if there is one yet, once
+// neither side needs it.
+func (p *ingressPair) releaseReference() {
+	if outcome, finished := p.outcome.Get(); finished {
+		releaseResponse(outcome.reference)
+	}
+}
+
+func releaseResponse(response Option[Response]) {
+	if response, ok := response.Get(); ok {
+		response.Raw.Release()
+	}
+}
+
+// awaitReference waits for the reference outcome. An error means the outcome
+// is unknown, so the responses cannot be compared.
+func (p *ingressPair) awaitReference(ctx context.Context) (ingressOutcome, error) {
+	outcome, err := p.outcome.Wait(ctx)
+	if err != nil {
+		return ingressOutcome{}, errors.WithStack(err)
+	}
+	if failure, failed := outcome.failure.Get(); failed && outcome.cancelled {
+		return ingressOutcome{}, errors.WithStack(failure)
+	}
+	return outcome, nil
+}
+
+// compareResponses classifies a finished pair without exposing payload values. A
+// response that fails to decode has no normaliser, so its raw status is compared first.
+func compareResponses(ctx context.Context, scripts *comparison.Scripts, outcome ingressOutcome, candidate Response) comparisonResult {
+	if failure, failed := outcome.failure.Get(); failed {
+		return newComparisonResult(outcomeUnable, "reference: "+failure.Error())
+	}
+	reference, ok := outcome.reference.Get()
+	if !ok {
+		return newComparisonResult(outcomeUnable, "reference response is missing")
+	}
+	referenceContent, candidateContent := reference.Decode(ctx), candidate.Decode(ctx)
+	if reason, ignored := referenceContent.Ignored.Get(); ignored && candidateContent.Ignored.Ok() {
+		return newComparisonResult(outcomeSkipped, reason)
+	}
+	referenceStatus, referenceKnown := referenceContent.Status.Get()
+	candidateStatus, candidateKnown := candidateContent.Status.Get()
+	decoded := !referenceContent.Failure.Ok() && !candidateContent.Failure.Ok()
+	if referenceKnown && candidateKnown && referenceStatus != candidateStatus && (!decoded || referenceContent.Ignored.Ok() || candidateContent.Ignored.Ok()) {
+		return statusDifference(referenceStatus, candidateStatus)
+	}
+	if failure, failed := referenceContent.Failure.Get(); failed {
+		return newComparisonResult(outcomeUnable, "reference: "+failure.Error())
+	}
+	if failure, failed := candidateContent.Failure.Get(); failed {
+		return newComparisonResult(outcomeUnable, "candidate: "+failure.Error())
+	}
+	if referenceContent.Ignored.Ok() || candidateContent.Ignored.Ok() {
+		return newComparisonResult(outcomeUnable, "only one response is ignored")
+	}
+	if !referenceKnown || !candidateKnown {
+		return newComparisonResult(outcomeUnable, "response status is unknown")
+	}
+	referenceContent, err := normaliseResponse(ctx, referenceContent)
+	if err != nil {
+		return newComparisonResult(outcomeUnable, "reference: "+err.Error())
+	}
+	candidateContent, err = normaliseResponse(ctx, candidateContent)
+	if err != nil {
+		return newComparisonResult(outcomeUnable, "candidate: "+err.Error())
+	}
+	// Normalisers may derive a status from the body, so report what the services returned.
+	if referenceContent.Status != candidateContent.Status {
+		return statusDifference(referenceStatus, candidateStatus)
+	}
+	return compareMessages(ctx, scripts, referenceContent.Message, candidateContent.Message)
+}
+
+// normaliseResponse applies the protocol's normalisation of a response, if it has one.
+// A None Status is then not compared.
+func normaliseResponse(ctx context.Context, content Content) (Content, error) {
+	normalise, ok := content.Normalise.Get()
+	if !ok {
+		return content, nil
+	}
+	status, message, err := normalise(ctx)
+	if err != nil {
+		return Content{}, err
+	}
+	content.Status = status
+	content.Message = message
+	return content, nil
+}
+
+func compareMessages(ctx context.Context, scripts *comparison.Scripts, reference, candidate Option[schema.Value]) comparisonResult {
+	referenceMessage, referenceOK := reference.Get()
+	candidateMessage, candidateOK := candidate.Get()
+	switch {
+	case !referenceOK && !candidateOK:
+		return newComparisonResult(outcomeEquivalent, "")
+	case !candidateOK:
+		return rootDifference("$", model.ChangeMissing)
+	case !referenceOK:
+		return rootDifference("$", model.ChangeAdded)
+	case !referenceMessage.Type().Equal(candidateMessage.Type()):
+		return newComparisonResult(outcomeUnable, "reference and candidate messages have different types")
+	}
+	differences, truncated, err := scripts.Compare(ctx, referenceMessage, candidateMessage)
+	if err != nil {
+		return newComparisonResult(outcomeUnable, err.Error())
+	}
+	if len(differences) > 0 {
+		return newDifferenceResult(truncated, differences...)
+	}
+	return newComparisonResult(outcomeEquivalent, "")
+}
+
+// latencyDelta returns the candidate's latency minus the reference's, if both are known.
+func (p *ingressPair) latencyDelta(candidate time.Duration) Option[time.Duration] {
+	if candidate <= 0 {
+		return None[time.Duration]()
+	}
+	outcome, finished := p.outcome.Get()
+	if !finished {
+		return None[time.Duration]()
+	}
+	if reference, ok := outcome.reference.Get(); ok && reference.Latency > 0 {
+		return Some(candidate - reference.Latency)
+	}
+	return None[time.Duration]()
+}
+
+// start registers a reference request under a new RequestID.
+func (p *ingressPairs) start(protocol model.Protocol, route model.Route, ignored Option[string]) Decision {
+	requestID, exchange := newRequestID(), newExchange()
+	pair := newIngressPair(protocol, requestID, route, ignored)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.requests[requestID] = pair
+	p.exchanges[exchange] = pair
+	return DecisionForward{RequestID: Some(requestID), Exchange: exchange}
+}
+
+// join pairs a candidate request with its reference, quarantining it if it cannot.
+func (p *ingressPairs) join(ctx context.Context, protocol model.Protocol, route model.Route, requestID Option[RequestID]) (Decision, error) {
+	exchange, err := p.admit(protocol, requestID)
+	if err != nil {
+		p.quarantine.Quarantine(ctx, model.QuarantineReason{
+			Kind: model.QuarantinePairing, Traffic: Some(ingressTraffic(protocol, route)), Detail: err.Error(),
+		})
+		return nil, err
+	}
+	return DecisionForward{RequestID: requestID, Exchange: exchange}, nil
+}
+
+func (p *ingressPairs) admit(protocol model.Protocol, requestID Option[RequestID]) (Exchange, error) {
+	id, ok := requestID.Get()
+	if !ok {
+		return Exchange{}, errors.New("candidate request has no request ID")
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	pair, found := p.requests[id]
+	if !found {
+		return Exchange{}, errors.Errorf("candidate request %s has no reference request", id)
+	}
+	if err := pair.join(protocol); err != nil {
+		return Exchange{}, err
+	}
+	exchange := newExchange()
+	p.exchanges[exchange] = pair
+	return exchange, nil
+}
+
+// take removes an exchange, logging one the engine never issued.
+func (p *ingressPairs) take(ctx context.Context, exchange Exchange) (*ingressPair, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	pair, ok := p.exchanges[exchange]
+	if !ok {
+		logger.FromContext(ctx).ErrorContext(ctx, "Unknown ingress exchange", "exchange", exchange.String())
+		return nil, false
+	}
+	delete(p.exchanges, exchange)
+	return pair, true
+}
+
+// finishReference publishes the reference outcome. Servers send the candidate
+// request before the reference, so a pair no candidate has joined is dropped.
+func (p *ingressPairs) finishReference(ctx context.Context, exchange Exchange, response Option[Response], failure Option[error]) {
+	pair, ok := p.take(ctx, exchange)
+	if !ok {
+		if unknown, present := response.Get(); present {
+			unknown.Raw.Release()
+		}
+		return
+	}
+	outcome := ingressOutcome{reference: response, failure: failure, cancelled: failure.Ok() && ctx.Err() != nil}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if pair.finishReference(outcome) {
+		delete(p.requests, pair.id())
+	}
+}
+
+// finishCandidate drops the pair once the candidate has finished with it.
+func (p *ingressPairs) finishCandidate(pair *ingressPair) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	pair.finishCandidate()
+	delete(p.requests, pair.id())
+}
+
+// timedOut reports whether ctx ended because the server's candidate timeout
+// fired. The proxy and the client end it by cancelling it instead.
+func timedOut(ctx context.Context) bool {
+	return errors.Is(context.Cause(ctx), context.DeadlineExceeded)
+}
+
+// candidateResponse waits for the reference response, bounded by ctx, so
+// waiting and decoding run on the candidate's time.
+func (p *ingressPairs) candidateResponse(ctx context.Context, exchange Exchange, response Response) {
+	defer response.Raw.Release()
+	pair, ok := p.take(ctx, exchange)
+	if !ok {
+		return
+	}
+	defer p.finishCandidate(pair)
+	if reason, ignored := pair.ignored().Get(); ignored {
+		p.report(ctx, pair, newComparisonResult(outcomeSkipped, reason), 0)
+		return
+	}
+	reference, err := pair.awaitReference(ctx)
+	switch {
+	case err != nil && timedOut(ctx):
+		p.report(ctx, pair, newComparisonResult(outcomeUnable, "reference did not respond within the candidate timeout"), response.Latency)
+		return
+	case err != nil:
+		p.unfinished(ctx, pair.describe(), err)
+		return
+	}
+	result := compareResponses(ctx, p.scripts, reference, response)
+	// A comparison the proxy or client cut short says nothing about the candidate.
+	if result.outcome == outcomeUnable && ctx.Err() != nil {
+		if !timedOut(ctx) {
+			p.unfinished(ctx, pair.describe(), errors.Errorf("%s: %s", ctx.Err(), result.reason))
+			return
+		}
+		result = newComparisonResult(outcomeUnable, "comparison did not finish within the candidate timeout")
+	}
+	p.report(ctx, pair, result, response.Latency)
+}
+
+func (p *ingressPairs) unfinished(ctx context.Context, attributes []slog.Attr, err error) {
+	logger.FromContext(ctx).LogAttrs(context.WithoutCancel(ctx), slog.LevelWarn, "Response comparison did not finish", append(attributes, slog.Any("error", err))...)
+}
+
+// candidateUnable reports a candidate that did not respond. Cancelled work never
+// quarantines, but work the candidate timeout ended did not respond in time.
+func (p *ingressPairs) candidateUnable(ctx context.Context, exchange Exchange, reason error) {
+	pair, ok := p.take(ctx, exchange)
+	if !ok {
+		return
+	}
+	defer p.finishCandidate(pair)
+	timeout := timedOut(ctx)
+	if ctx.Err() != nil && !timeout {
+		return
+	}
+	result := newComparisonResult(outcomeUnable, "candidate: "+reason.Error())
+	if timeout {
+		result = newComparisonResult(outcomeUnable, "candidate did not respond within the candidate timeout")
+	}
+	if ignoredReason, ignored := pair.ignored().Get(); ignored {
+		result = newComparisonResult(outcomeSkipped, ignoredReason)
+	}
+	p.report(ctx, pair, result, 0)
+}
+
+// report logs and counts a comparison, and applies the fail-closed policy to it.
+func (p *ingressPairs) report(ctx context.Context, pair *ingressPair, result comparisonResult, latency time.Duration) {
+	attributes := append([]slog.Attr{slog.String("event", logger.EventCorrelation)}, pair.describe()...)
+	attributes = append(attributes, slog.Any("outcome", result.outcome))
+	if len(result.differences) > 0 {
+		attributes = append(attributes, slog.Any("differences", model.DifferenceLines(result.differences, result.truncated)))
+	}
+	if result.reason != "" {
+		attributes = append(attributes, slog.String("reason", result.reason))
+	}
+	if dt, ok := pair.latencyDelta(latency).Get(); ok {
+		attributes = append(attributes, slog.Duration("dt", dt))
+	}
+	logger.FromContext(ctx).LogAttrs(ctx, slog.LevelInfo, "Response comparison completed", attributes...)
+	switch result.outcome {
+	case outcomeEquivalent, outcomeSkipped:
+	case outcomeDivergent:
+		p.quarantine.Quarantine(ctx, model.QuarantineReason{
+			Kind: model.QuarantineDivergent, Traffic: Some(pair.traffic()), Differences: result.differences, Truncated: result.truncated,
+		})
+	case outcomeUnable:
+		p.quarantine.Quarantine(ctx, model.QuarantineReason{
+			Kind: model.QuarantineUnable, Traffic: Some(pair.traffic()), Detail: "response comparison failed: " + result.reason,
+		})
+	}
+	// Counting after quarantine means a reported count never runs ahead of its quarantine.
+	if calls, ok := p.calls.Get(); ok {
+		calls.Count(pair.traffic().Route)
+	}
+}
+
+// ingressReference assigns each inbound request the RequestID its mirror carries.
+type ingressReference struct {
+	pairs    *ingressPairs
+	protocol model.Protocol
+}
+
+func newIngressReference(pairs *ingressPairs, protocol model.Protocol) *ingressReference {
+	return &ingressReference{pairs: pairs, protocol: protocol}
+}
+
+func (r *ingressReference) ProcessRequest(_ context.Context, _ Option[RequestID], route model.Route, ignored Option[string],
+	_ func(ctx context.Context) (schema.Value, error),
+) (Decision, error) {
+	return r.pairs.start(r.protocol, route, ignored), nil
+}
+
+// ProcessResponse stores the reference response without waiting for the candidate.
+func (r *ingressReference) ProcessResponse(ctx context.Context, exchange Exchange, response Response) {
+	r.pairs.finishReference(ctx, exchange, Some(response), None[error]())
+}
+
+func (r *ingressReference) Unable(ctx context.Context, exchange Exchange, reason error) {
+	r.pairs.finishReference(ctx, exchange, None[Response](), Some(reason))
+}
+
+// ingressCandidate compares each mirrored response with its reference response.
+type ingressCandidate struct {
+	pairs    *ingressPairs
+	protocol model.Protocol
+}
+
+func newIngressCandidate(pairs *ingressPairs, protocol model.Protocol) *ingressCandidate {
+	return &ingressCandidate{pairs: pairs, protocol: protocol}
+}
+
+func (c *ingressCandidate) ProcessRequest(ctx context.Context, requestID Option[RequestID], route model.Route, _ Option[string],
+	_ func(ctx context.Context) (schema.Value, error),
+) (Decision, error) {
+	return c.pairs.join(ctx, c.protocol, route, requestID)
+}
+
+func (c *ingressCandidate) ProcessResponse(ctx context.Context, exchange Exchange, response Response) {
+	c.pairs.candidateResponse(ctx, exchange, response)
+}
+
+func (c *ingressCandidate) Unable(ctx context.Context, exchange Exchange, reason error) {
+	c.pairs.candidateUnable(ctx, exchange, reason)
+}

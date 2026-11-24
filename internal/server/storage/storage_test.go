@@ -186,7 +186,7 @@ func testReplacesState(t *testing.T, store *storage.Repository) {
 		Since: received,
 		Reason: model.QuarantineReason{
 			Kind:    model.QuarantineDivergent,
-			Traffic: Some(model.Traffic{Direction: model.Ingress, Protocol: model.ProtocolHTTP, Route: "GET /v1/users"}),
+			Traffic: Some(model.Traffic{Direction: model.Ingress, Protocol: "fake", Route: "GET /v1/users"}),
 			Node:    Some("users"),
 			Differences: []model.Difference{
 				{Path: "$.name", Change: model.ChangeChanged, Count: 1},
@@ -263,7 +263,7 @@ func testKeepsLatestQuarantine(t *testing.T, store *storage.Repository) {
 	latest := divergence("production", model.Ingress, first.Add(time.Minute))
 	latest.Quarantine.Reason = model.QuarantineReason{
 		Kind:    model.QuarantineDivergent,
-		Traffic: Some(model.Traffic{Direction: model.Ingress, Protocol: model.ProtocolHTTP, Route: "GET /v1/users"}),
+		Traffic: Some(model.Traffic{Direction: model.Ingress, Protocol: "fake", Route: "GET /v1/users"}),
 		Node:    Some("users"),
 		Differences: []model.Difference{
 			{Path: "$.name", Change: model.ChangeChanged, Count: 1},

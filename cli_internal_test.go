@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -14,6 +15,8 @@ import (
 
 	"github.com/block/spectre/internal/cli"
 	"github.com/block/spectre/internal/contain"
+	httpprotocol "github.com/block/spectre/internal/protocols/http"
+	mysqlprotocol "github.com/block/spectre/internal/protocols/mysql"
 	"github.com/block/spectre/internal/proxies"
 	"github.com/block/spectre/internal/server"
 	"github.com/block/spectre/internal/server/client"
@@ -43,19 +46,42 @@ func serviceFlags() []string {
 	return []string{"--reference-url=h2c+unix:/sockets/reference.sock", "--candidate-url=h2c+unix:/sockets/candidate.sock"}
 }
 
-// expectedProxy is the proxy config that serviceFlags and reportingFlags parse to.
-func expectedProxy() proxies.ProxyConfig {
-	expected := proxies.ProxyConfig{
-		Listen:                "127.0.0.1:50050",
-		ReferenceURL:          "h2c+unix:/sockets/reference.sock",
-		CandidateURL:          "h2c+unix:/sockets/candidate.sock",
-		ReferenceEgressListen: "127.0.0.1:50060",
-		CandidateEgressListen: "127.0.0.1:50061",
-		EgressHealthListen:    "127.0.0.1:50062",
-		HealthListen:          "127.0.0.1:50063",
-		Mirror:                proxies.NewConfig(),
+// newCommandLine returns the built-in command line, as Main builds it.
+func newCommandLine(t *testing.T) *cli.CommandLine {
+	t.Helper()
+	registry, err := builtinRegistry()
+	assert.NoError(t, err)
+	return cli.NewCommandLine(registry.Plugins())
+}
+
+// parsedProviderConfig returns the registered config of type C, as Kong parsed it. The plugins
+// hide their type, so it reads the "Config" field that each embeds for Kong.
+func parsedProviderConfig[C any](t *testing.T, command *cli.CommandLine) C {
+	t.Helper()
+	for _, plugin := range command.Proxy.Providers {
+		if config, ok := reflect.ValueOf(plugin).Elem().FieldByName("Config").Interface().(C); ok {
+			return config
+		}
 	}
-	expected.Mirror.Server = expectedReporting()
+	var missing C
+	t.Fatalf("no registered config of type %T", missing)
+	return missing
+}
+
+// expectedMirror is the shared proxy config that reportingFlags parse to.
+func expectedMirror() proxies.Config {
+	expected := proxies.NewConfig()
+	expected.EgressHealthListen = "127.0.0.1:50062"
+	expected.HealthListen = "127.0.0.1:50063"
+	expected.Server = expectedReporting()
+	return expected
+}
+
+// expectedHTTP is the HTTP config that serviceFlags parse to.
+func expectedHTTP() httpprotocol.Config {
+	expected := httpprotocol.NewConfig()
+	expected.ReferenceURL = "h2c+unix:/sockets/reference.sock"
+	expected.CandidateURL = "h2c+unix:/sockets/candidate.sock"
 	return expected
 }
 
@@ -63,50 +89,57 @@ func TestProxyCommandReadsFlagsFromEnvironment(t *testing.T) {
 	scripts := t.TempDir()
 	schema := writeSchemaDir(t)
 	for name, value := range map[string]string{
-		"SPECTRE_LISTEN":                    "0.0.0.0:8080",
-		"SPECTRE_REFERENCE_URL":             "h2c+unix:/sockets/reference.sock",
-		"SPECTRE_CANDIDATE_URL":             "h2c+unix:/sockets/candidate.sock",
-		"SPECTRE_REFERENCE_EGRESS_LISTEN":   "unix:/sockets/egress-reference.sock",
-		"SPECTRE_CANDIDATE_EGRESS_LISTEN":   "unix:/sockets/egress-candidate.sock",
-		"SPECTRE_HEALTH_LISTEN":             "0.0.0.0:8081",
-		"SPECTRE_CANDIDATE_STARTUP_TIMEOUT": "10m",
-		"SPECTRE_SCRIPTS_DIR":               scripts,
-		"SPECTRE_SCHEMA_DIR":                schema,
-		"SPECTRE_SERVER_URL":                "http://server.example",
-		"SPECTRE_SERVICE":                   "invoices",
-		"SPECTRE_ENVIRONMENT":               "production-us-west-2",
-		"SPECTRE_REVISION":                  "3f9c2a1",
+		"SPECTRE_LISTEN":                       "0.0.0.0:8080",
+		"SPECTRE_REFERENCE_URL":                "h2c+unix:/sockets/reference.sock",
+		"SPECTRE_CANDIDATE_URL":                "h2c+unix:/sockets/candidate.sock",
+		"SPECTRE_REFERENCE_EGRESS_LISTEN":      "unix:/sockets/egress-reference.sock",
+		"SPECTRE_CANDIDATE_EGRESS_LISTEN":      "unix:/sockets/egress-candidate.sock",
+		"SPECTRE_HEALTH_LISTEN":                "0.0.0.0:8081",
+		"SPECTRE_CANDIDATE_STARTUP_TIMEOUT":    "10m",
+		"SPECTRE_SCRIPTS_DIR":                  scripts,
+		"SPECTRE_SCHEMA_DIR":                   schema,
+		"SPECTRE_SERVER_URL":                   "http://server.example",
+		"SPECTRE_SERVICE":                      "invoices",
+		"SPECTRE_ENVIRONMENT":                  "production-us-west-2",
+		"SPECTRE_REVISION":                     "3f9c2a1",
+		"SPECTRE_MYSQL_UPSTREAM":               "db.example:3306",
+		"SPECTRE_MYSQL_UPSTREAM_USER":          "spectre",
+		"SPECTRE_MYSQL_UPSTREAM_PASSWORD_FILE": "/secrets/password",
+		"SPECTRE_MYSQL_CANDIDATE_LISTEN":       "unix:/sockets/mysql-candidate.sock",
 	} {
 		t.Setenv(name, value)
 	}
-	command := &cli.CommandLine{}
+	command := newCommandLine(t)
 	parser, err := newParser(command)
 	assert.NoError(t, err)
 	_, err = parser.Parse([]string{"proxy"})
 	assert.NoError(t, err)
-	expected := proxies.ProxyConfig{
-		Listen:                "0.0.0.0:8080",
-		ReferenceURL:          "h2c+unix:/sockets/reference.sock",
-		CandidateURL:          "h2c+unix:/sockets/candidate.sock",
-		ReferenceEgressListen: "unix:/sockets/egress-reference.sock",
-		CandidateEgressListen: "unix:/sockets/egress-candidate.sock",
-		EgressHealthListen:    "127.0.0.1:50062",
-		HealthListen:          "0.0.0.0:8081",
-		Mirror:                proxies.NewConfig(),
-	}
-	expected.Mirror.CandidateStartupTimeout = 10 * time.Minute
-	expected.Mirror.ScriptsDir = scripts
-	expected.Mirror.SchemaDir = schema
-	expected.Mirror.Server.Client.URL = "http://server.example"
-	expected.Mirror.Server.Service = "invoices"
-	expected.Mirror.Server.Environment = "production-us-west-2"
-	expected.Mirror.Server.Revision = "3f9c2a1"
+	expectedHTTPConfig := expectedHTTP()
+	expectedHTTPConfig.Listen = "0.0.0.0:8080"
+	expectedHTTPConfig.ReferenceEgressListen = "unix:/sockets/egress-reference.sock"
+	expectedHTTPConfig.CandidateEgressListen = "unix:/sockets/egress-candidate.sock"
+	expectedHTTPConfig.CandidateStartupTimeout = 10 * time.Minute
+	expectedMySQL := mysqlprotocol.NewConfig()
+	expectedMySQL.Upstream = "db.example:3306"
+	expectedMySQL.UpstreamUser = "spectre"
+	expectedMySQL.UpstreamPasswordFile = "/secrets/password"
+	expectedMySQL.CandidateListen = "unix:/sockets/mysql-candidate.sock"
+	expected := expectedMirror()
+	expected.HealthListen = "0.0.0.0:8081"
+	expected.ScriptsDir = scripts
+	expected.SchemaDir = schema
+	expected.Server.Client.URL = "http://server.example"
+	expected.Server.Service = "invoices"
+	expected.Server.Environment = "production-us-west-2"
+	expected.Server.Revision = "3f9c2a1"
 	assert.Equal(t, expected, command.Proxy.Proxy)
+	assert.Equal(t, expectedHTTPConfig, parsedProviderConfig[httpprotocol.Config](t, command))
+	assert.Equal(t, expectedMySQL, parsedProviderConfig[mysqlprotocol.Config](t, command))
 }
 
 func TestContainCommandReadsCandidateUIDFromEnvironment(t *testing.T) {
 	t.Setenv("SPECTRE_CANDIDATE_UID", "1002")
-	command := &cli.CommandLine{}
+	command := newCommandLine(t)
 	parser, err := newParser(command)
 	assert.NoError(t, err)
 	_, err = parser.Parse([]string{"contain"})
@@ -115,7 +148,7 @@ func TestContainCommandReadsCandidateUIDFromEnvironment(t *testing.T) {
 }
 
 func TestVersionFlagIgnoresEnvironment(t *testing.T) {
-	parser, err := newParser(&cli.CommandLine{})
+	parser, err := newParser(newCommandLine(t))
 	assert.NoError(t, err)
 	for _, flag := range parser.Model.Flags {
 		if flag.Name == "version" {
@@ -127,7 +160,7 @@ func TestVersionFlagIgnoresEnvironment(t *testing.T) {
 }
 
 func TestStatusCommands(t *testing.T) {
-	command := &cli.CommandLine{}
+	command := newCommandLine(t)
 	parser, err := newParser(command)
 	assert.NoError(t, err)
 	_, err = parser.Parse([]string{"status", "--server-url=http://server.example", "--service=users", "--revision=abc123"})
@@ -142,7 +175,7 @@ func TestStatusCommands(t *testing.T) {
 		{"status", "clear", "--server-url=http://server.example", "--service=users", "--environment=production"},
 		{"status", "--server-url=http://server.example", "clear", "--service=users", "--environment=production"},
 	} {
-		command = &cli.CommandLine{}
+		command = newCommandLine(t)
 		parser, err = newParser(command)
 		assert.NoError(t, err)
 		_, err = parser.Parse(args)
@@ -153,7 +186,7 @@ func TestStatusCommands(t *testing.T) {
 }
 
 func TestServeCommandEmbedsConfig(t *testing.T) {
-	command := &cli.CommandLine{}
+	command := newCommandLine(t)
 	parser, err := newParser(command)
 	assert.NoError(t, err)
 	_, err = parser.Parse([]string{"serve", "--listen=127.0.0.1:50071", "--storage=redis://localhost:6379/0"})
@@ -182,7 +215,7 @@ func TestProxyCommandRequiresFlags(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			parser, err := newParser(&cli.CommandLine{})
+			parser, err := newParser(newCommandLine(t))
 			assert.NoError(t, err)
 			args := slices.DeleteFunc(slices.Clone(complete), func(arg string) bool { return strings.HasPrefix(arg, test.missing) })
 			args = append([]string{"proxy", "--scripts-dir=" + t.TempDir(), "--schema-dir=" + writeSchemaDir(t)}, args...)
@@ -206,29 +239,39 @@ match-window = "2s"
 scripts-dir = %q
 schema-dir = %q
 descriptors-dir = %q
+mysql-upstream = "db.example:3306"
+mysql-upstream-user = "spectre"
+mysql-upstream-password-file = "/secrets/password"
 
 [destination]
 "forecasts.example" = "http://127.0.0.1:50053"
 `, scripts, schema, descriptors)), 0o600)
 	assert.NoError(t, err)
-	command := &cli.CommandLine{}
+	command := newCommandLine(t)
 	parser, err := newParser(command)
 	assert.NoError(t, err)
 	_, err = parser.Parse(append([]string{"proxy", "--config=" + path, "--match-window=3s"}, reportingFlags()...))
 	assert.NoError(t, err)
-	expected := expectedProxy()
-	expected.Mirror.Destinations = map[string]string{"forecasts.example": "http://127.0.0.1:50053"}
-	expected.Mirror.MatchWindow = 3 * time.Second
-	expected.Mirror.ScriptsDir = scripts
-	expected.Mirror.SchemaDir = schema
-	expected.Mirror.Descriptors.DescriptorsDir = descriptors
+	expectedHTTPConfig := expectedHTTP()
+	expectedHTTPConfig.Destinations = map[string]string{"forecasts.example": "http://127.0.0.1:50053"}
+	expectedHTTPConfig.Descriptors.DescriptorsDir = descriptors
+	expectedMySQL := mysqlprotocol.NewConfig()
+	expectedMySQL.Upstream = "db.example:3306"
+	expectedMySQL.UpstreamUser = "spectre"
+	expectedMySQL.UpstreamPasswordFile = "/secrets/password"
+	expected := expectedMirror()
+	expected.MatchWindow = 3 * time.Second
+	expected.ScriptsDir = scripts
+	expected.SchemaDir = schema
 	assert.Equal(t, expected, command.Proxy.Proxy)
+	assert.Equal(t, expectedHTTPConfig, parsedProviderConfig[httpprotocol.Config](t, command))
+	assert.Equal(t, expectedMySQL, parsedProviderConfig[mysqlprotocol.Config](t, command))
 }
 
 func TestProxyCommandRejectsUnknownConfigKeys(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "spectre.toml")
 	assert.NoError(t, os.WriteFile(path, []byte(`refrence-url = "h2c+unix:/sockets/reference.sock"`), 0o600))
-	parser, err := newParser(&cli.CommandLine{})
+	parser, err := newParser(newCommandLine(t))
 	assert.NoError(t, err)
 
 	_, err = parser.Parse(append(append([]string{
@@ -243,7 +286,7 @@ func TestProxyCommandRejectsUnknownConfigKeys(t *testing.T) {
 
 func TestProxySubcommandsRemoved(t *testing.T) {
 	for _, name := range []string{"__ingress", "__egress"} {
-		parser, err := newParser(&cli.CommandLine{})
+		parser, err := newParser(newCommandLine(t))
 		assert.NoError(t, err)
 		_, err = parser.Parse([]string{name})
 		assert.Error(t, err)

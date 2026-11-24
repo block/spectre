@@ -12,6 +12,7 @@ import (
 	"github.com/block/spectre/internal/contain"
 	"github.com/block/spectre/internal/descriptors"
 	"github.com/block/spectre/internal/logger"
+	"github.com/block/spectre/internal/protocols"
 	"github.com/block/spectre/internal/proxies"
 	"github.com/block/spectre/internal/scaffold"
 	"github.com/block/spectre/internal/server"
@@ -37,6 +38,16 @@ type CommandLine struct {
 	Init initCommand `cmd:"" help:"Set a service checkout up for a SPECTRE migration from a template."`
 }
 
+// NewCommandLine returns the built-in command line, with every registered protocol's
+// flags on the proxy command. Kong binds what each command reads from the registry.
+//
+//nolint:configdefaults // Kong applies the command line's defaults when it parses.
+func NewCommandLine(plugins kong.Plugins) *CommandLine {
+	command := &CommandLine{}
+	command.Proxy.Providers = plugins
+	return command
+}
+
 // initCommand renders a template into a service checkout.
 type initCommand struct {
 	Init scaffold.Config `embed:""`
@@ -57,11 +68,13 @@ func (c *serveCommand) Run(ctx context.Context) error {
 
 // proxyCommand runs the embedded proxies in front of services that run elsewhere.
 type proxyCommand struct {
-	Proxy proxies.ProxyConfig `embed:""`
+	Proxy proxies.Config `embed:""`
+	// Providers are the registered protocols, which Kong parses their flags into.
+	Providers kong.Plugins `embed:""`
 }
 
-func (c *proxyCommand) Run(ctx context.Context) error {
-	proxy, err := proxies.New(ctx, c.Proxy)
+func (c *proxyCommand) Run(ctx context.Context, registry *protocols.Registry) error {
+	proxy, err := proxies.New(ctx, c.Proxy, registry)
 	if err != nil {
 		return errors.WithStack(err)
 	}
@@ -103,6 +116,6 @@ type moduleCommand struct {
 	Output string `required:"" type:"path" placeholder:"FILE" help:"Path to write the spectre.d.ts module declaration to."`
 }
 
-func (c *moduleCommand) Run() error {
-	return errors.Wrap(javascript.WriteModuleDeclaration(c.Output), "write spectre module")
+func (c *moduleCommand) Run(bindings []javascript.Binding) error {
+	return errors.Wrap(javascript.WriteModuleDeclaration(c.Output, bindings), "write spectre module")
 }

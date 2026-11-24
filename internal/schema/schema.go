@@ -3,6 +3,7 @@
 package schema
 
 import (
+	"cmp"
 	"encoding/json"
 	"maps"
 	"slices"
@@ -288,37 +289,42 @@ func isIdentifier(name string) (valid bool) {
 	return true
 }
 
-// Operation is one unary RPC method declared on a service interface.
-type Operation struct {
-	// Name is the service's type name followed by the method name.
+// Method is one method declared on a schema interface, with the object types of
+// its single parameter and its result. Protocols decide what methods mean.
+type Method struct {
+	// Interface is the qualified name of the declaring interface.
+	Interface TypeRef
+	// Name is the method's name within its interface.
 	Name string
-	// Request names the request object type.
-	Request TypeRef
-	// Response names the response object type.
-	Response TypeRef
+	// Parameter names the object type of the single parameter.
+	Parameter TypeRef
+	// Result names the object type of the result.
+	Result TypeRef
 }
 
-// Schema indexes object types and operations whose references all resolve.
+// Schema indexes object types and methods whose references all resolve.
 type Schema struct {
-	types      map[TypeRef]*ObjectType
-	operations map[string]Operation
+	types   map[TypeRef]*ObjectType
+	methods []Method
 }
 
 // New takes ownership of types and validates them. It rejects duplicate names, and
 // fields of object types it was not given.
-func New(types []*ObjectType, operations []Operation) (*Schema, error) {
-	loaded := &Schema{types: map[TypeRef]*ObjectType{}, operations: map[string]Operation{}}
+func New(types []*ObjectType, methods []Method) (*Schema, error) {
+	loaded := &Schema{types: map[TypeRef]*ObjectType{}}
 	for _, declared := range types {
 		if _, duplicate := loaded.types[declared.Name]; duplicate {
 			return nil, errors.Errorf("type %q is declared more than once", declared.Name)
 		}
 		loaded.types[declared.Name] = declared
 	}
-	for _, operation := range operations {
-		if _, duplicate := loaded.operations[operation.Name]; duplicate {
-			return nil, errors.Errorf("operation %q is declared more than once", operation.Name)
+	declaredMethods := map[Method]bool{}
+	for _, method := range methods {
+		key := Method{Interface: method.Interface, Name: method.Name}
+		if declaredMethods[key] {
+			return nil, errors.Errorf("method %q is declared more than once", method.qualifiedName())
 		}
-		loaded.operations[operation.Name] = operation
+		declaredMethods[key] = true
 	}
 	for _, declared := range types {
 		names := map[string]bool{}
@@ -332,13 +338,16 @@ func New(types []*ObjectType, operations []Operation) (*Schema, error) {
 			}
 		}
 	}
-	for _, operation := range operations {
-		for _, name := range []TypeRef{operation.Request, operation.Response} {
+	for _, method := range methods {
+		for _, name := range []TypeRef{method.Parameter, method.Result} {
 			if _, ok := loaded.types[name]; !ok {
-				return nil, errors.Errorf("operation %q refers to undeclared type %q", operation.Name, name)
+				return nil, errors.Errorf("method %q refers to undeclared type %q", method.qualifiedName(), name)
 			}
 		}
 	}
+	loaded.methods = slices.SortedFunc(slices.Values(methods), func(left, right Method) int {
+		return cmp.Or(cmp.Compare(left.Interface, right.Interface), cmp.Compare(left.Name, right.Name))
+	})
 	return loaded, nil
 }
 
@@ -378,15 +387,6 @@ func (s *Schema) Type(name TypeRef) (*ObjectType, error) {
 	return declared, nil
 }
 
-// Operation returns the named RPC method.
-func (s *Schema) Operation(name string) (Operation, error) {
-	operation, ok := s.operations[name]
-	if !ok {
-		return Operation{}, errors.Errorf("operation %q is not declared", name)
-	}
-	return operation, nil
-}
-
 // Types returns every object type, sorted by name.
 func (s *Schema) Types() []*ObjectType {
 	names := slices.Sorted(maps.Keys(s.types))
@@ -397,12 +397,11 @@ func (s *Schema) Types() []*ObjectType {
 	return types
 }
 
-// Operations returns every operation, sorted by name.
-func (s *Schema) Operations() []Operation {
-	names := slices.Sorted(maps.Keys(s.operations))
-	operations := make([]Operation, 0, len(names))
-	for _, name := range names {
-		operations = append(operations, s.operations[name])
-	}
-	return operations
+// Methods returns every declared method, sorted by interface and name.
+func (s *Schema) Methods() []Method {
+	return slices.Clone(s.methods)
+}
+
+func (m Method) qualifiedName() string {
+	return string(m.Interface) + "." + m.Name
 }

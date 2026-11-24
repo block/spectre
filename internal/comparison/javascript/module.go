@@ -3,14 +3,11 @@ package javascript
 import (
 	"cmp"
 	"maps"
-	"net/http"
 	"slices"
-	"strings"
 
 	"github.com/alecthomas/errors"
 	. "github.com/alecthomas/types/optional"
 	"github.com/grafana/sobek"
-	"golang.org/x/net/http/httpguts"
 
 	"github.com/block/spectre/internal/model"
 	"github.com/block/spectre/internal/schema"
@@ -32,7 +29,8 @@ type Endpoint struct {
 	optional  bool
 }
 
-func newEndpoint(direction model.Direction, protocol model.Protocol, pattern string, typeName schema.TypeRef, optional bool) Endpoint {
+// NewEndpoint creates an endpoint for a binding to declare through Scope.DeclareEndpoint.
+func NewEndpoint(direction model.Direction, protocol model.Protocol, pattern string, typeName schema.TypeRef, optional bool) Endpoint {
 	return Endpoint{direction: direction, protocol: protocol, pattern: pattern, typeName: typeName, optional: optional}
 }
 
@@ -119,11 +117,20 @@ func (t MessageTarget) Normalises() bool {
 // registrations are the declarations one evaluation of a program produced.
 type registrations struct {
 	endpoints    []Endpoint
-	rules        []Rule
 	replacements []Replacement
-	statements   []StatementReplacement
 	fields       []FieldTarget
 	messages     []MessageTarget
+	// declared holds each binding's declarations, in the order of the bindings.
+	declared []declaredSnapshot
+}
+
+// sameRegistrations reports whether two evaluations produced the same declarations.
+func sameRegistrations(left, right registrations) bool {
+	return slices.Equal(left.endpoints, right.endpoints) &&
+		slices.Equal(left.replacements, right.replacements) &&
+		slices.Equal(left.fields, right.fields) &&
+		slices.Equal(left.messages, right.messages) &&
+		slices.EqualFunc(left.declared, right.declared, func(a, b declaredSnapshot) bool { return a.sameAs(b) })
 }
 
 // spectreModule is an immutable module record shared safely across isolated runtimes.
@@ -131,6 +138,7 @@ type registrations struct {
 type spectreModule struct {
 	loaded    *schema.Schema
 	variables map[string]string
+	bindings  []Binding
 }
 
 var _ sobek.ModuleRecord = (*spectreModule)(nil)
@@ -154,12 +162,19 @@ func (m *spectreModule) ResolveExport(name string, _ ...sobek.ResolveSetElement)
 }
 
 func (m *spectreModule) Evaluate(runtime *sobek.Runtime) *sobek.Promise {
-	promise, resolve, _ := runtime.NewPromise()
+	promise, resolve, reject := runtime.NewPromise()
 	// Sobek re-evaluates non-cyclic modules at every import and keeps the last
 	// instance, so reuse it or earlier importers' registrations would be lost.
 	instance, ok := runtime.GetModuleInstance(m).(*callbackRegistry)
 	if !ok {
-		instance = newCallbackRegistry(runtime, m.loaded, m.variables)
+		var err error
+		instance, err = newCallbackRegistry(runtime, m.loaded, m.variables, m.bindings)
+		if err != nil {
+			if rejectErr := reject(err); rejectErr != nil {
+				panic(errors.Wrap(rejectErr, "reject spectre module evaluation"))
+			}
+			return promise
+		}
 	}
 	if err := resolve(instance); err != nil {
 		panic(errors.Wrap(err, "resolve spectre module evaluation"))
@@ -170,20 +185,19 @@ func (m *spectreModule) Evaluate(runtime *sobek.Runtime) *sobek.Promise {
 // callbackRegistry is one runtime's module instance and owns the module's exported
 // values. Evaluator access stays on the runtime's single caller, so it needs no locking.
 type callbackRegistry struct {
-	runtime   *sobek.Runtime
-	loaded    *schema.Schema
+	runtime *sobek.Runtime
+	loaded  *schema.Schema
+	// evaluator is set once the runtime has one, which is after the scripts are evaluated.
+	evaluator Option[*Evaluator]
 	functions map[string]sobek.Value
+	// members holds each binding's members in the runtime, in the order of the bindings.
+	members   []boundMembers
 	endpoints []Endpoint
-	rules     []Rule
-	callbacks []ruleCallbacks
 	// replacements and replacers are indexed alike.
 	replacements []Replacement
 	replacers    []replacementCallbacks
-	// statements and statementUsers are indexed alike.
-	statements     []StatementReplacement
-	statementUsers []sobek.Callable
-	fields         map[FieldTarget]sobek.Callable
-	messages       map[schema.TypeRef]messageRegistration
+	fields       map[FieldTarget]sobek.Callable
+	messages     map[schema.TypeRef]messageRegistration
 }
 
 // messageRegistration is one spectre.message call's normalised type and normaliser.
@@ -192,23 +206,17 @@ type messageRegistration struct {
 	callback   Option[sobek.Callable]
 }
 
-// ruleCallbacks are the script functions of one rule, indexed like the rules.
-type ruleCallbacks struct {
-	request Option[sobek.Callable]
-	status  Option[sobek.Callable]
-	// requestHeaders and responseHeaders hold header functions by canonical name.
-	requestHeaders  map[string]sobek.Callable
-	responseHeaders map[string]sobek.Callable
-	normalise       Option[sobek.Callable]
-}
-
 // replacementCallbacks are the script functions of one replacement.
 type replacementCallbacks struct {
 	request  sobek.Callable
 	response sobek.Callable
 }
 
-func newCallbackRegistry(runtime *sobek.Runtime, loaded *schema.Schema, variables map[string]string) *callbackRegistry {
+// variableFunction reads a script variable and takes no type arguments.
+const variableFunction = "variable"
+
+// newCallbackRegistry defines the shared members, then each binding's.
+func newCallbackRegistry(runtime *sobek.Runtime, loaded *schema.Schema, variables map[string]string, bindings []Binding) (*callbackRegistry, error) {
 	registry := &callbackRegistry{
 		runtime:  runtime,
 		loaded:   loaded,
@@ -216,14 +224,13 @@ func newCallbackRegistry(runtime *sobek.Runtime, loaded *schema.Schema, variable
 		messages: map[schema.TypeRef]messageRegistration{},
 	}
 	ingress := runtime.NewObject()
-	registry.defineMethod(ingress, "ingress."+string(model.ProtocolHTTP), string(model.ProtocolHTTP), registry.httpRule)
 	egress := runtime.NewObject()
-	registry.defineMethod(egress, "egress."+string(model.ProtocolHTTP), string(model.ProtocolHTTP), registry.egressRule)
-	mysql := runtime.NewObject()
-	registry.defineMethod(mysql, "egress."+mysqlProperty+"."+statementMethod, statementMethod, registry.mysqlStatement(true))
-	registry.defineMethod(mysql, "egress."+mysqlProperty+"."+statementsMethod, statementsMethod, registry.mysqlStatement(false))
-	if err := egress.Set(mysqlProperty, mysql); err != nil {
-		panic(runtime.NewTypeError("define spectre.egress.%s: %v", mysqlProperty, err))
+	for _, binding := range bindings {
+		members, err := binding.defineIn(newScope(runtime, loaded, registry), ingress, egress)
+		if err != nil {
+			return nil, err
+		}
+		registry.members = append(registry.members, members)
 	}
 	registry.functions = map[string]sobek.Value{
 		string(model.Ingress): ingress,
@@ -232,7 +239,60 @@ func newCallbackRegistry(runtime *sobek.Runtime, loaded *schema.Schema, variable
 		string(targetMessage): runtime.ToValue(registry.registerMessage),
 		variableFunction:      runtime.ToValue(registry.variable(variables)),
 	}
-	return registry
+	return registry, nil
+}
+
+// attach gives the registry the evaluator that scripts' callbacks run under.
+func (r *callbackRegistry) attach(evaluator *Evaluator) {
+	r.evaluator = Some(evaluator)
+}
+
+// boundMembers returns each binding's members in the runtime, in the order of the bindings.
+func (r *callbackRegistry) boundMembers() []boundMembers {
+	return r.members
+}
+
+// declareEndpoint records an endpoint, throwing a TypeError if the scripts already declared it.
+func (r *callbackRegistry) declareEndpoint(endpoint Endpoint) {
+	if slices.ContainsFunc(r.endpoints, func(declared Endpoint) bool {
+		return declared.Direction() == endpoint.Direction() && declared.Protocol() == endpoint.Protocol() && declared.Pattern() == endpoint.Pattern()
+	}) {
+		panic(r.runtime.NewTypeError("duplicate endpoint %q", endpoint.Pattern()))
+	}
+	r.endpoints = append(r.endpoints, endpoint)
+}
+
+func (r *callbackRegistry) declareReplacement(replacement Replacement, callbacks replacementCallbacks) {
+	r.replacements = append(r.replacements, replacement.atIndex(len(r.replacements)))
+	r.replacers = append(r.replacers, callbacks)
+}
+
+// call runs a script callback in the registry's evaluator, which exists once the scripts are evaluated.
+func (r *callbackRegistry) call(callback sobek.Callable, arguments []schema.Value) (Option[schema.Value], error) {
+	evaluator, ok := r.evaluator.Get()
+	if !ok {
+		return None[schema.Value](), errors.New("scripts are still being evaluated")
+	}
+	return evaluator.call(callback, arguments)
+}
+
+// count counts the time of a callback against the evaluator's timeout until the returned function
+// is called. Callbacks cannot run while scripts are being evaluated, which has its own limit.
+func (r *callbackRegistry) count() (stop func()) {
+	evaluator, ok := r.evaluator.Get()
+	if !ok {
+		return func() {}
+	}
+	return evaluator.count()
+}
+
+// exclude stops counting the time of a callback against the evaluator's timeout, until the returned function is called.
+func (r *callbackRegistry) exclude() (resume func()) {
+	evaluator, ok := r.evaluator.Get()
+	if !ok {
+		return func() {}
+	}
+	return evaluator.exclude()
 }
 
 // variable returns the script function that reads a variable. An unset variable
@@ -249,352 +309,6 @@ func (r *callbackRegistry) variable(variables map[string]string) func(sobek.Func
 		}
 		return r.runtime.ToValue(value)
 	}
-}
-
-// matchMethod, ignoreMethod, statusMethod, optionalMethod, and the header methods name the script
-// API's methods whose type arguments, or lack of them, compile treats specially.
-const (
-	matchMethod  = "match"
-	ignoreMethod = "ignore"
-	statusMethod = "status"
-	// optionalMethod lets the candidate leave out an egress endpoint's reference requests.
-	optionalMethod = "optional"
-	// requestHeaderMethod and responseHeaderMethod select by a header's value.
-	requestHeaderMethod  = "requestHeader"
-	responseHeaderMethod = "responseHeader"
-	// replacesMethod and usingMethod declare a replacement; each takes two type arguments.
-	replacesMethod = "replaces"
-	usingMethod    = "using"
-	// mysqlProperty, statementMethod and statementsMethod start a MySQL statement replacement.
-	mysqlProperty    = "mysql"
-	statementMethod  = "statement"
-	statementsMethod = "statements"
-	// mysqlOwner prefixes the declarations of the MySQL script API, whose type arguments only check scripts.
-	mysqlOwner = "EgressMySQL"
-	// textTypeName and unknownTypeName are the type names compile inserts for the spectre
-	// Text type and for unknown. Schema type names never collide, as they contain a module name.
-	textTypeName    = "spectre.Text"
-	unknownTypeName = "unknown"
-	// variableFunction reads a script variable and takes no type arguments.
-	variableFunction = "variable"
-)
-
-// defineMethod binds one object method, panicking if sobek rejects it.
-func (r *callbackRegistry) defineMethod(object *sobek.Object, qualified, method string, fn func(sobek.FunctionCall) sobek.Value) {
-	if err := object.Set(method, fn); err != nil {
-		panic(r.runtime.NewTypeError("define spectre.%s: %v", qualified, err))
-	}
-}
-
-// egressRule starts an egress rule from a dependency's request pattern.
-func (r *callbackRegistry) egressRule(call sobek.FunctionCall) sobek.Value {
-	const qualified = "egress.http"
-	if len(call.Arguments) != 1 {
-		panic(r.runtime.NewTypeError("spectre.%s requires a pattern", qualified))
-	}
-	pattern := r.stringArgument(call, 0, qualified, "pattern")
-	if !hasForm(pattern, true) {
-		panic(r.runtime.NewTypeError("spectre.%s pattern %q must have the form \"<METHOD> <host>/<path>\"", qualified, pattern))
-	}
-	return r.egressRuleObject(pattern, false)
-}
-
-// egressRuleObject is an egress rule for pattern whose endpoint is not yet declared.
-func (r *callbackRegistry) egressRuleObject(pattern string, optional bool) sobek.Value {
-	object := r.runtime.NewObject()
-	r.defineMethod(object, "EgressHTTPRule."+optionalMethod, optionalMethod, func(call sobek.FunctionCall) sobek.Value {
-		if len(call.Arguments) != 0 {
-			panic(r.runtime.NewTypeError("spectre.EgressHTTPRule.%s takes no arguments", optionalMethod))
-		}
-		return r.egressRuleObject(pattern, true)
-	})
-	r.defineMethod(object, "EgressHTTPRule."+matchMethod, matchMethod, func(call sobek.FunctionCall) sobek.Value {
-		r.matchEndpoint(pattern, optional, call)
-		return sobek.Undefined()
-	})
-	r.defineMethod(object, "EgressHTTPRule."+replacesMethod, replacesMethod, func(call sobek.FunctionCall) sobek.Value {
-		return r.replacementObject(pattern, optional, call)
-	})
-	return object
-}
-
-// replacementObject receives the source type names compile inserts before the source pattern.
-func (r *callbackRegistry) replacementObject(pattern string, optional bool, call sobek.FunctionCall) sobek.Value {
-	const qualified = "EgressHTTPRule." + replacesMethod
-	if len(call.Arguments) != 3 {
-		panic(r.runtime.NewTypeError("spectre.%s requires a source pattern", qualified))
-	}
-	sourceRequest := schema.TypeRef(r.stringArgument(call, 0, qualified, "source request type name"))
-	sourceResponse := schema.TypeRef(r.stringArgument(call, 1, qualified, "source response type name"))
-	source := r.stringArgument(call, 2, qualified, "source pattern")
-	object := r.runtime.NewObject()
-	r.defineMethod(object, "EgressReplacement."+usingMethod, usingMethod, func(call sobek.FunctionCall) sobek.Value {
-		r.replaceUsing(pattern, optional, source, sourceRequest, sourceResponse, call)
-		return sobek.Undefined()
-	})
-	return object
-}
-
-// replaceUsing receives the request and response type names compile inserts
-// before the two functions.
-func (r *callbackRegistry) replaceUsing(pattern string, optional bool, source string, sourceRequest, sourceResponse schema.TypeRef, call sobek.FunctionCall) {
-	const qualified = "EgressReplacement." + usingMethod
-	if len(call.Arguments) != 4 {
-		panic(r.runtime.NewTypeError("spectre.%s requires a request function and a response function", qualified))
-	}
-	request := schema.TypeRef(r.stringArgument(call, 0, qualified, "request type name"))
-	response := schema.TypeRef(r.stringArgument(call, 1, qualified, "response type name"))
-	requestFunction, ok := sobek.AssertFunction(call.Argument(2))
-	if !ok {
-		panic(r.runtime.NewTypeError("spectre.%s request must be a function", qualified))
-	}
-	responseFunction, ok := sobek.AssertFunction(call.Argument(3))
-	if !ok {
-		panic(r.runtime.NewTypeError("spectre.%s response must be a function", qualified))
-	}
-	if slices.ContainsFunc(r.endpoints, func(endpoint Endpoint) bool { return endpoint.Pattern() == pattern }) {
-		panic(r.runtime.NewTypeError("duplicate endpoint %q", pattern))
-	}
-	r.endpoints = append(r.endpoints, newEndpoint(model.Egress, model.ProtocolHTTP, pattern, request, optional))
-	r.replacements = append(r.replacements, newReplacement(len(r.replacements), pattern, response, source, sourceRequest, sourceResponse))
-	r.replacers = append(r.replacers, replacementCallbacks{request: requestFunction, response: responseFunction})
-}
-
-// mysqlStatement starts a MySQL statement replacement. One candidate statement combines
-// the reference statements it replaces; otherwise one reference statement is split.
-func (r *callbackRegistry) mysqlStatement(combines bool) func(sobek.FunctionCall) sobek.Value {
-	method, owner := statementsMethod, "EgressMySQLStatements"
-	if combines {
-		method, owner = statementMethod, "EgressMySQLStatement"
-	}
-	return func(call sobek.FunctionCall) sobek.Value {
-		statements := r.patterns(call, "egress."+mysqlProperty+"."+method, combines)
-		object := r.runtime.NewObject()
-		r.defineMethod(object, owner+"."+replacesMethod, replacesMethod, func(call sobek.FunctionCall) sobek.Value {
-			sources := r.patterns(call, owner+"."+replacesMethod, !combines)
-			replacement := r.runtime.NewObject()
-			r.defineMethod(replacement, "EgressMySQLReplacement."+usingMethod, usingMethod, func(call sobek.FunctionCall) sobek.Value {
-				using, ok := sobek.AssertFunction(call.Argument(0))
-				if len(call.Arguments) != 1 || !ok {
-					panic(r.runtime.NewTypeError("spectre.EgressMySQLReplacement.%s requires a function", usingMethod))
-				}
-				r.statements = append(r.statements, newStatementReplacement(len(r.statements), statements, sources, combines))
-				r.statementUsers = append(r.statementUsers, using)
-				return sobek.Undefined()
-			})
-			return replacement
-		})
-		return object
-	}
-}
-
-// patterns reads a call's statement patterns: exactly one if single, otherwise at least one.
-func (r *callbackRegistry) patterns(call sobek.FunctionCall, qualified string, single bool) []string {
-	if single && len(call.Arguments) != 1 {
-		panic(r.runtime.NewTypeError("spectre.%s requires one statement", qualified))
-	}
-	if len(call.Arguments) == 0 {
-		panic(r.runtime.NewTypeError("spectre.%s requires statements", qualified))
-	}
-	patterns := make([]string, 0, len(call.Arguments))
-	for index := range call.Arguments {
-		patterns = append(patterns, r.stringArgument(call, index, qualified, "statement"))
-	}
-	return patterns
-}
-
-// matchEndpoint receives the type name compile inserts.
-func (r *callbackRegistry) matchEndpoint(pattern string, optional bool, call sobek.FunctionCall) {
-	const qualified = "EgressHTTPRule.match"
-	if len(call.Arguments) != 1 {
-		panic(r.runtime.NewTypeError("spectre.%s requires a type name", qualified))
-	}
-	typeName := schema.TypeRef(r.stringArgument(call, 0, qualified, "type name"))
-	if slices.ContainsFunc(r.endpoints, func(endpoint Endpoint) bool { return endpoint.Pattern() == pattern }) {
-		panic(r.runtime.NewTypeError("duplicate endpoint %q", pattern))
-	}
-	r.endpoints = append(r.endpoints, newEndpoint(model.Egress, model.ProtocolHTTP, pattern, typeName, optional))
-}
-
-// ruleBuilder is a rule whose selectors are chosen but whose action is not yet.
-type ruleBuilder struct {
-	protocol        model.Protocol
-	request         RequestSelector
-	status          StatusSelector
-	requestHeaders  []HeaderSelector
-	responseHeaders []HeaderSelector
-	callbacks       ruleCallbacks
-}
-
-// httpRule starts an ingress rule from a pattern or a request function.
-func (r *callbackRegistry) httpRule(call sobek.FunctionCall) sobek.Value {
-	const qualified = "ingress.http"
-	if len(call.Arguments) != 1 {
-		panic(r.runtime.NewTypeError("spectre.%s requires a pattern or a function", qualified))
-	}
-	builder := ruleBuilder{protocol: model.ProtocolHTTP, status: StatusAny{}}
-	if callback, ok := sobek.AssertFunction(call.Argument(0)); ok {
-		builder.request = RequestScript{}
-		builder.callbacks.request = Some(callback)
-		return r.builderObject(builder)
-	}
-	pattern := r.stringArgument(call, 0, qualified, "pattern")
-	if !hasForm(pattern, false) {
-		panic(r.runtime.NewTypeError("spectre.%s pattern %q must have the form \"[<METHOD> ]/<path>\"", qualified, pattern))
-	}
-	builder.request = RequestPattern{Pattern: pattern}
-	return r.builderObject(builder)
-}
-
-// builderObject exposes a builder to the script. Each method returns a new
-// builder or registers a rule, so a builder can be shared between rules.
-func (r *callbackRegistry) builderObject(builder ruleBuilder) sobek.Value {
-	object := r.runtime.NewObject()
-	r.defineMethod(object, "IngressHTTPRule."+statusMethod, statusMethod, func(call sobek.FunctionCall) sobek.Value {
-		return r.builderObject(r.withStatus(builder, call))
-	})
-	for _, method := range []string{requestHeaderMethod, responseHeaderMethod} {
-		r.defineMethod(object, "IngressHTTPRule."+method, method, func(call sobek.FunctionCall) sobek.Value {
-			return r.builderObject(r.withHeader(builder, call, method))
-		})
-	}
-	r.defineMethod(object, "IngressHTTPRule."+matchMethod, matchMethod, func(call sobek.FunctionCall) sobek.Value {
-		r.matchRule(builder, call)
-		return sobek.Undefined()
-	})
-	r.defineMethod(object, "IngressHTTPRule."+ignoreMethod, ignoreMethod, func(call sobek.FunctionCall) sobek.Value {
-		if len(call.Arguments) != 0 {
-			panic(r.runtime.NewTypeError("spectre.IngressHTTPRule.ignore takes no arguments"))
-		}
-		r.addRule(builder, ActionIgnore{})
-		return sobek.Undefined()
-	})
-	return object
-}
-
-// withStatus narrows a builder to status codes, or to a status function.
-func (r *callbackRegistry) withStatus(builder ruleBuilder, call sobek.FunctionCall) ruleBuilder {
-	const qualified = "IngressHTTPRule.status"
-	if _, unset := builder.status.(StatusAny); !unset {
-		panic(r.runtime.NewTypeError("spectre.%s is already set for this rule", qualified))
-	}
-	if len(call.Arguments) == 0 {
-		panic(r.runtime.NewTypeError("spectre.%s requires status codes or a function", qualified))
-	}
-	if callback, ok := sobek.AssertFunction(call.Argument(0)); ok {
-		if len(call.Arguments) != 1 {
-			panic(r.runtime.NewTypeError("spectre.%s takes either status codes or one function", qualified))
-		}
-		builder.status = StatusScript{}
-		builder.callbacks.status = Some(callback)
-		return builder
-	}
-	codes := make([]int, 0, len(call.Arguments))
-	for _, argument := range call.Arguments {
-		code, ok := argument.Export().(int64)
-		if !ok || code < 100 || code > 599 {
-			panic(r.runtime.NewTypeError("spectre.%s code %v must be an integer from 100 to 599", qualified, argument))
-		}
-		if slices.Contains(codes, int(code)) {
-			panic(r.runtime.NewTypeError("spectre.%s code %d is repeated", qualified, code))
-		}
-		codes = append(codes, int(code))
-	}
-	builder.status = StatusCodes{Codes: codes}
-	return builder
-}
-
-// withHeader narrows a builder by a request or response header's value, or by a
-// function of it. method names the builder method that was called.
-func (r *callbackRegistry) withHeader(builder ruleBuilder, call sobek.FunctionCall, method string) ruleBuilder {
-	qualified := "IngressHTTPRule." + method
-	selectors, callbacks := &builder.responseHeaders, &builder.callbacks.responseHeaders
-	if method == requestHeaderMethod {
-		selectors, callbacks = &builder.requestHeaders, &builder.callbacks.requestHeaders
-	}
-	if len(call.Arguments) != 2 {
-		panic(r.runtime.NewTypeError("spectre.%s requires a header name and a value or a function", qualified))
-	}
-	name := r.stringArgument(call, 0, qualified, "header name")
-	if !httpguts.ValidHeaderFieldName(name) {
-		panic(r.runtime.NewTypeError("spectre.%s header name %q is not valid", qualified, name))
-	}
-	name = http.CanonicalHeaderKey(name)
-	if slices.ContainsFunc(*selectors, func(header HeaderSelector) bool { return header.headerName() == name }) {
-		panic(r.runtime.NewTypeError("spectre.%s header %q is already set for this rule", qualified, name))
-	}
-	headers := slices.Clone(*selectors)
-	if callback, ok := sobek.AssertFunction(call.Argument(1)); ok {
-		headers = append(headers, HeaderScript{Name: name})
-		functions := map[string]sobek.Callable{name: callback}
-		maps.Copy(functions, *callbacks)
-		*callbacks = functions
-	} else {
-		value, isString := call.Argument(1).Export().(string)
-		if !isString {
-			panic(r.runtime.NewTypeError("spectre.%s value must be a string or a function", qualified))
-		}
-		headers = append(headers, HeaderValue{Name: name, Value: value})
-	}
-	slices.SortFunc(headers, func(left, right HeaderSelector) int {
-		return cmp.Compare(left.headerName(), right.headerName())
-	})
-	*selectors = headers
-	return builder
-}
-
-// matchRule receives the type name compile inserts before an optional normaliser.
-func (r *callbackRegistry) matchRule(builder ruleBuilder, call sobek.FunctionCall) {
-	const qualified = "IngressHTTPRule.match"
-	if len(call.Arguments) < 1 || len(call.Arguments) > 2 {
-		panic(r.runtime.NewTypeError("spectre.%s requires a type name and an optional normaliser", qualified))
-	}
-	action := ActionMatch{Type: r.bodyType(schema.TypeRef(r.stringArgument(call, 0, qualified, "type name")))}
-	if len(call.Arguments) == 2 && !sobek.IsUndefined(call.Argument(1)) {
-		callback, ok := sobek.AssertFunction(call.Argument(1))
-		if !ok {
-			panic(r.runtime.NewTypeError("spectre.%s normaliser must be a function", qualified))
-		}
-		action.Normalises = true
-		builder.callbacks.normalise = Some(callback)
-	}
-	r.addRule(builder, action)
-}
-
-// bodyType returns the type of the bodies a rule decodes as the type name compile inserted.
-func (r *callbackRegistry) bodyType(name schema.TypeRef) schema.Type {
-	switch name {
-	case textTypeName:
-		return schema.StringType{}
-	case unknownTypeName:
-		return schema.UnknownType{}
-	}
-	declared, err := r.loaded.Type(name)
-	if err != nil {
-		panic(r.runtime.NewTypeError("spectre.IngressHTTPRule.match: %v", err))
-	}
-	return declared
-}
-
-// addRule appends a rule. A rule whose selectors repeat an earlier rule's
-// pattern, codes, and header values could never apply, so it is rejected.
-func (r *callbackRegistry) addRule(builder ruleBuilder, action Action) {
-	rule := newRule(len(r.rules), builder.protocol, builder.request, builder.status, builder.requestHeaders, builder.responseHeaders, action)
-	if slices.ContainsFunc(r.rules, rule.sameSelectors) {
-		panic(r.runtime.NewTypeError("duplicate rule %s", rule))
-	}
-	r.rules = append(r.rules, rule)
-	r.callbacks = append(r.callbacks, builder.callbacks)
-}
-
-// hasForm reports whether a pattern names a host exactly when host is set. Egress
-// patterns name a method; ingress receives requests for its own service, so it never routes by host.
-func hasForm(pattern string, host bool) bool {
-	fields := strings.Fields(pattern)
-	if !host && len(fields) == 1 {
-		return strings.HasPrefix(fields[0], "/")
-	}
-	return len(fields) == 2 && strings.HasPrefix(fields[1], "/") != host
 }
 
 func (r *callbackRegistry) GetBindingValue(name string) sobek.Value {
@@ -645,9 +359,14 @@ func (r *callbackRegistry) registerMessage(call sobek.FunctionCall) sobek.Value 
 }
 
 func (r *callbackRegistry) stringArgument(call sobek.FunctionCall, index int, name, argument string) string {
+	return stringArgument(r.runtime, call, index, name, argument)
+}
+
+// stringArgument reads a non-empty string argument, throwing a TypeError otherwise.
+func stringArgument(runtime *sobek.Runtime, call sobek.FunctionCall, index int, name, argument string) string {
 	value, ok := call.Argument(index).Export().(string)
 	if !ok || value == "" {
-		panic(r.runtime.NewTypeError("spectre.%s %s must be a non-empty string", name, argument))
+		panic(runtime.NewTypeError("spectre.%s %s must be a non-empty string", name, argument))
 	}
 	return value
 }
@@ -669,22 +388,6 @@ func (r *callbackRegistry) replacer(index int) (replacementCallbacks, bool) {
 	return r.replacers[index], true
 }
 
-// statementUser returns the using function of the statement replacement at index.
-func (r *callbackRegistry) statementUser(index int) (sobek.Callable, bool) {
-	if index < 0 || index >= len(r.statementUsers) {
-		return nil, false
-	}
-	return r.statementUsers[index], true
-}
-
-// rule returns the callbacks of the rule at index, or none for an unknown rule.
-func (r *callbackRegistry) rule(index int) ruleCallbacks {
-	if index < 0 || index >= len(r.callbacks) {
-		return ruleCallbacks{}
-	}
-	return r.callbacks[index]
-}
-
 func (r *callbackRegistry) registrations() registrations {
 	fields := make([]FieldTarget, 0, len(r.fields))
 	for target := range r.fields {
@@ -701,9 +404,13 @@ func (r *callbackRegistry) registrations() registrations {
 		registration := r.messages[typeName]
 		messages = append(messages, NewMessageTarget(typeName, registration.normalised, registration.callback.Ok()))
 	}
+	declared := make([]declaredSnapshot, 0, len(r.members))
+	for _, member := range r.members {
+		declared = append(declared, member.snapshot())
+	}
 	return registrations{
-		endpoints: slices.Clone(r.endpoints), rules: slices.Clone(r.rules), replacements: slices.Clone(r.replacements),
-		statements: slices.Clone(r.statements), fields: fields, messages: messages,
+		endpoints: slices.Clone(r.endpoints), replacements: slices.Clone(r.replacements),
+		fields: fields, messages: messages, declared: declared,
 	}
 }
 

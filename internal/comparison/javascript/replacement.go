@@ -7,6 +7,12 @@ import (
 	"github.com/block/spectre/internal/schema"
 )
 
+// The method names that a replacement is declared with.
+const (
+	replacesMethod = "replaces"
+	usingMethod    = "using"
+)
+
 // Replacement declares that the candidate's requests to an endpoint replace the
 // reference's requests to a source endpoint, and answers them from its responses.
 type Replacement struct {
@@ -19,12 +25,19 @@ type Replacement struct {
 	sourceResponse schema.TypeRef
 }
 
-// newReplacement creates the replacement at index of source's requests by pattern's.
-func newReplacement(index int, pattern string, response schema.TypeRef, source string, sourceRequest, sourceResponse schema.TypeRef) Replacement {
+// NewReplacement creates the replacement of source's requests by pattern's, for a binding
+// to declare through Scope.DeclareReplacement, which gives it its index.
+func NewReplacement(protocol model.Protocol, pattern string, response schema.TypeRef, source string, sourceRequest, sourceResponse schema.TypeRef) Replacement {
 	return Replacement{
-		index: index, protocol: model.ProtocolHTTP, pattern: pattern, response: response,
+		protocol: protocol, pattern: pattern, response: response,
 		source: source, sourceRequest: sourceRequest, sourceResponse: sourceResponse,
 	}
+}
+
+// atIndex returns the replacement at index among the scripts' replacements.
+func (r Replacement) atIndex(index int) Replacement {
+	r.index = index
+	return r
 }
 
 // Index returns the replacement's position among the scripts' replacements.

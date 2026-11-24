@@ -16,12 +16,45 @@ import (
 	"github.com/block/spectre/internal/schema"
 )
 
-// Scripts and the module declaration sit beside the schema in one program, so
+// Scripts and the module declarations sit beside the schema in one program, so
 // error locations name the directory each file came from.
 const (
 	scriptsRoot           = schema.ScriptRoot
 	moduleDeclarationFile = "/spectre.d.ts"
+	// membersRoot holds each binding's members, in the order of the bindings.
+	membersRoot = "/spectre/members/"
 )
+
+func membersFile(index int) string {
+	return membersRoot + strconv.Itoa(index) + ".d.ts"
+}
+
+// spectreFiles maps each file declaring the spectre module to the binding whose members it holds,
+// which says how its generic methods' type arguments are read. The shared file has none.
+type spectreFiles map[string]Option[Binding]
+
+func newSpectreFiles(bindings []Binding) spectreFiles {
+	files := spectreFiles{moduleDeclarationFile: None[Binding]()}
+	for index, binding := range bindings {
+		files[membersFile(index)] = Some(binding)
+	}
+	return files
+}
+
+// declares reports whether a declaration is in a file that declares the spectre module.
+func (f spectreFiles) declares(declaration *ts.Node) bool {
+	_, ok := f[ts.SourceFileOf(declaration).FileName().AsString()]
+	return ok
+}
+
+// argumentsOf says how compile reads the type arguments of a method of a declaration.
+func (f spectreFiles) argumentsOf(declaration *ts.Node, method string) TypeArguments {
+	binding, ok := f[ts.SourceFileOf(declaration).FileName().AsString()].Get()
+	if !ok {
+		return TypeArgumentsSchema
+	}
+	return binding.typeArgumentsOf(method)
+}
 
 // compiled is the checked schema and the executable form of every script.
 type compiled struct {
@@ -31,12 +64,20 @@ type compiled struct {
 
 // compile type-checks scripts against the schema, then transpiles them after
 // inserting each spectre call's resolved type names, which transpilation erases.
-func compile(ctx context.Context, declarations, scripts map[string]string) (*compiled, error) {
-	files := schema.ProgramFiles(declarations)
+func compile(ctx context.Context, declarations, scripts map[string]string, bindings []Binding) (*compiled, error) {
+	payloads := make([]string, 0, len(bindings))
+	for _, binding := range bindings {
+		payloads = append(payloads, binding.Payloads())
+	}
+	files := schema.ProgramFiles(declarations, payloads)
 	for name, source := range scripts {
 		files[scriptsRoot+name] = source
 	}
 	files[moduleDeclarationFile] = moduleDeclaration
+	for index, binding := range bindings {
+		files[membersFile(index)] = binding.Members()
+	}
+	spectre := newSpectreFiles(bindings)
 	program, err := ts.NewProgram(ctx, files)
 	if err != nil {
 		return nil, errors.Wrap(err, "check comparison scripts")
@@ -47,12 +88,12 @@ func compile(ctx context.Context, declarations, scripts map[string]string) (*com
 		if !isScript(name) {
 			continue
 		}
-		calls, err := spectreCalls(program.Checker(), program.SourceFile(scriptsRoot+name))
+		calls, err := spectreCalls(program.Checker(), program.SourceFile(scriptsRoot+name), spectre)
 		if err != nil {
 			return nil, err
 		}
 		for _, call := range calls {
-			inserted, referenced, err := typeArguments(program.Checker(), call)
+			inserted, referenced, err := typeArguments(program.Checker(), call, spectre)
 			if err != nil {
 				return nil, err
 			}
@@ -61,7 +102,7 @@ func compile(ctx context.Context, declarations, scripts map[string]string) (*com
 		}
 	}
 	// Scripts may name types they declare themselves, so the schema includes every type they name.
-	loaded, err := schema.FromProgram(program, declarations, references)
+	loaded, err := schema.FromProgram(program, declarations, payloads, references)
 	if err != nil {
 		return nil, errors.Wrap(err, "read schema")
 	}
@@ -88,20 +129,22 @@ func compile(ctx context.Context, declarations, scripts map[string]string) (*com
 type spectreCall struct {
 	node     *ts.Node
 	function string
-	// display names the call the way a script writes it, e.g. "IngressHTTPRule.match".
+	// arguments says how the call's type arguments are read.
+	arguments TypeArguments
+	// display names the call the way a script writes it, e.g. "IngressRule.match".
 	display string
 	types   []*ts.Node
 }
 
 // spectreCalls returns every call in file to a generic spectre function, including
 // calls through aliases.
-func spectreCalls(checker *ts.Checker, file *ts.SourceFile) ([]spectreCall, error) {
+func spectreCalls(checker *ts.Checker, file *ts.SourceFile, spectre spectreFiles) ([]spectreCall, error) {
 	calls := []spectreCall{}
 	var findErr error
 	var visit func(node *ts.Node) bool
 	visit = func(node *ts.Node) bool {
 		if node.Kind == ts.KindCallExpression {
-			found, err := resolveSpectreCall(checker, node)
+			found, err := resolveSpectreCall(checker, node, spectre)
 			if err != nil {
 				findErr = err
 				return true
@@ -117,13 +160,13 @@ func spectreCalls(checker *ts.Checker, file *ts.SourceFile) ([]spectreCall, erro
 }
 
 // resolveSpectreCall returns the spectre call that call makes, or None for any other call.
-func resolveSpectreCall(checker *ts.Checker, call *ts.Node) (Option[spectreCall], error) {
+func resolveSpectreCall(checker *ts.Checker, call *ts.Node, spectre spectreFiles) (Option[spectreCall], error) {
 	signature := checker.GetResolvedSignature(call)
 	if signature == nil || signature.Declaration() == nil {
 		return None[spectreCall](), nil // Most calls are not registrations.
 	}
 	declaration := signature.Declaration()
-	if ts.SourceFileOf(declaration).FileName() != moduleDeclarationFile || declaration.Name() == nil {
+	if !spectre.declares(declaration) || declaration.Name() == nil {
 		return None[spectreCall](), nil // Only spectre functions take type arguments at runtime.
 	}
 	parameters := declaration.TypeParameters()
@@ -132,12 +175,13 @@ func resolveSpectreCall(checker *ts.Checker, call *ts.Node) (Option[spectreCall]
 	}
 	function := declaration.Name().Text()
 	owner := ts.MemberOwnerName(declaration)
-	if strings.HasPrefix(owner, mysqlOwner) {
-		return None[spectreCall](), nil // MySQL row types only check scripts.
-	}
 	display := function
 	if owner != "" {
 		display = owner + "." + function
+	}
+	arguments := spectre.argumentsOf(declaration, display)
+	if arguments == TypeArgumentsCheckOnly {
+		return None[spectreCall](), nil // These type arguments only check scripts.
 	}
 	required := 0
 	for _, parameter := range parameters {
@@ -153,7 +197,7 @@ func resolveSpectreCall(checker *ts.Checker, call *ts.Node) (Option[spectreCall]
 		}
 		return None[spectreCall](), errors.Errorf("%s: spectre.%s needs %s explicit type argument(s)", ts.Location(call), display, count)
 	}
-	return Some(spectreCall{node: call, function: function, display: display, types: types}), nil
+	return Some(spectreCall{node: call, function: function, arguments: arguments, display: display, types: types}), nil
 }
 
 type insertion struct {
@@ -175,7 +219,7 @@ func insertTypeArguments(source string, insertions []insertion) string {
 
 // typeArguments returns the arguments to insert after a spectre call's opening
 // parenthesis, and the type arguments that name schema types.
-func typeArguments(checker *ts.Checker, call spectreCall) (insertion, []*ts.Node, error) {
+func typeArguments(checker *ts.Checker, call spectreCall, spectre spectreFiles) (insertion, []*ts.Node, error) {
 	values := make([]string, 0, len(call.types))
 	references := []*ts.Node{}
 	for index, node := range call.types {
@@ -188,11 +232,11 @@ func typeArguments(checker *ts.Checker, call spectreCall) (insertion, []*ts.Node
 			values = append(values, path)
 			continue
 		}
-		name, err := bodyTypeName(resolved, index == 0 && call.display == "IngressHTTPRule."+matchMethod)
+		name, err := bodyTypeName(resolved, index == 0 && call.arguments == TypeArgumentsBody, spectre)
 		if err != nil {
 			return insertion{}, nil, errors.Errorf("%s: spectre.%s type argument %s: %v", ts.Location(node), call.display, checker.TypeToString(resolved), err)
 		}
-		if name != textTypeName && name != unknownTypeName {
+		if name != TextTypeName && name != UnknownTypeName {
 			references = append(references, node)
 		}
 		values = append(values, string(name))
@@ -209,21 +253,20 @@ func typeArguments(checker *ts.Checker, call spectreCall) (insertion, []*ts.Node
 	return insertion{offset: call.node.AsCallExpression().Arguments.Loc.Pos(), text: strings.Join(encoded, ", ")}, references, nil
 }
 
-// bodyTypeName names a schema type, or the spectre Text type or unknown where an ingress
-// rule's body may have them.
-func bodyTypeName(resolved *ts.Type, body bool) (schema.TypeRef, error) {
+// bodyTypeName names a schema type, or the spectre Text type or unknown where a rule's body may have them.
+func bodyTypeName(resolved *ts.Type, body bool, spectre spectreFiles) (schema.TypeRef, error) {
 	if resolved.Flags()&ts.TypeFlagsUnknown != 0 {
 		if !body {
 			return "", errors.New("only ingress rules may compare bodies as unknown")
 		}
-		return unknownTypeName, nil
+		return UnknownTypeName, nil
 	}
 	symbol := resolved.Symbol()
-	if symbol == nil || len(symbol.Declarations()) == 0 || ts.SourceFileOf(symbol.Declarations()[0]).FileName() != moduleDeclarationFile {
+	if symbol == nil || len(symbol.Declarations()) == 0 || !spectre.declares(symbol.Declarations()[0]) {
 		return errors.WithStack2(schema.TypeName(resolved))
 	}
 	if !body || symbol.Name() != "Text" {
 		return "", errors.New("only ingress rules may compare bodies as Text")
 	}
-	return textTypeName, nil
+	return TextTypeName, nil
 }

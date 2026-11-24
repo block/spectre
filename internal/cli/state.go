@@ -24,8 +24,7 @@ type stateTypesCommand struct {
 	JSON bool `help:"Print JSON instead of text."`
 }
 
-func (c *stateTypesCommand) Run(out Output) error {
-	types := state.NodeTypes()
+func (c *stateTypesCommand) Run(out Output, types []state.NodeType) error {
 	if c.JSON {
 		encoder := json.NewEncoder(out.Writer)
 		encoder.SetIndent("", "  ")
@@ -46,9 +45,9 @@ type stateValidateCommand struct {
 	State state.Config `embed:""`
 }
 
-func (c *stateValidateCommand) Run(out Output) error {
+func (c *stateValidateCommand) Run(out Output, kinds state.Kinds) error {
 	path := c.State.StateFile
-	loaded, err := loadValid(out, path)
+	loaded, err := loadValid(out, path, kinds)
 	if err != nil {
 		return err
 	}
@@ -56,12 +55,12 @@ func (c *stateValidateCommand) Run(out Output) error {
 		writeProblem(out, path, out.Palette.Yellow("warning"), warning)
 	}
 	migrated := 0
-	for _, node := range loaded.Nodes {
+	for _, node := range loaded.All {
 		if node.Status == state.Migrated {
 			migrated++
 		}
 	}
-	_, err = fmt.Fprintf(out.Writer, "%s is valid: %d nodes, %d migrated\n", path, len(loaded.Nodes), migrated)
+	_, err = fmt.Fprintf(out.Writer, "%s is valid: %d nodes, %d migrated\n", path, len(loaded.All), migrated)
 	return errors.Wrap(err, "write validation result")
 }
 
@@ -71,9 +70,9 @@ type nextCommand struct {
 	JSON  bool         `help:"Print JSON instead of text."`
 }
 
-func (c *nextCommand) Run(out Output) error {
+func (c *nextCommand) Run(out Output, kinds state.Kinds) error {
 	path := c.State.StateFile
-	loaded, err := loadValid(out, path)
+	loaded, err := loadValid(out, path, kinds)
 	if err != nil {
 		return err
 	}
@@ -104,8 +103,8 @@ func (c *nextCommand) Run(out Output) error {
 }
 
 // loadValid loads the state at path, writing each problem when it is invalid.
-func loadValid(out Output, path string) (state.State, error) {
-	loaded, err := state.Load(path)
+func loadValid(out Output, path string, kinds state.Kinds) (state.State, error) {
+	loaded, err := kinds.Load(path)
 	if invalid, ok := errors.AsType[*state.InvalidError](err); ok {
 		for _, problem := range invalid.Problems {
 			writeProblem(out, path, out.Palette.Red("error"), problem)
@@ -122,7 +121,7 @@ type doneCommand struct {
 	Nodes []string     `arg:"" name:"node" help:"IDs of the nodes now in the candidate."`
 }
 
-func (c *doneCommand) Run(out Output) error {
+func (c *doneCommand) Run(out Output, kinds state.Kinds) error {
 	path := c.State.StateFile
 	info, err := os.Stat(path)
 	if err != nil {
@@ -132,7 +131,7 @@ func (c *doneCommand) Run(out Output) error {
 	if err != nil {
 		return errors.Wrap(err, "read migration state")
 	}
-	updated, marked, err := state.MarkMigrated(data, c.Nodes)
+	updated, marked, err := kinds.MarkMigrated(data, c.Nodes)
 	if invalid, ok := errors.AsType[*state.InvalidError](err); ok {
 		for _, problem := range invalid.Problems {
 			writeProblem(out, path, out.Palette.Red("error"), problem)

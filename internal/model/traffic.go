@@ -5,7 +5,6 @@ package model
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
 
 	"github.com/alecthomas/errors"
 )
@@ -24,28 +23,9 @@ const (
 // Protocol names the protocol that a proxy intercepts, e.g. "http".
 type Protocol string
 
-// ProtocolHTTP is the protocol of HTTP servers, including gRPC and Connect.
-const ProtocolHTTP Protocol = "http"
-
 // Route is a protocol's canonical request route, e.g. "GET forecasts.example/v1/forecasts/{location}".
 // Equal routes must have identical text, because egress pairing hashes it.
 type Route string
-
-// IOKind is one kind of IO that a proxy intercepts, written "ingress[http]".
-type IOKind struct {
-	Direction Direction
-	Protocol  Protocol
-}
-
-// String returns the kind as written in the migration state, e.g. "ingress[http]".
-func (k IOKind) String() string {
-	return fmt.Sprintf("%s[%s]", k.Direction, k.Protocol)
-}
-
-// MarshalText writes the kind as String does, so it can key a JSON object.
-func (k IOKind) MarshalText() ([]byte, error) {
-	return []byte(k.String()), nil
-}
 
 // Traffic identifies one request route of a kind of IO.
 type Traffic struct {

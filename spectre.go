@@ -17,6 +17,9 @@ import (
 	"github.com/block/spectre/internal"
 	"github.com/block/spectre/internal/cli"
 	"github.com/block/spectre/internal/logger"
+	"github.com/block/spectre/internal/protocols"
+	httpprotocol "github.com/block/spectre/internal/protocols/http"
+	mysqlprotocol "github.com/block/spectre/internal/protocols/mysql"
 )
 
 // Command is a top-level command. Kong parses its tagged fields before Run.
@@ -75,9 +78,24 @@ func WithKongOptions(options ...kong.Option) Option {
 	}
 }
 
+// builtinRegistry registers the protocols that SPECTRE proxies.
+func builtinRegistry() (*protocols.Registry, error) {
+	registry := protocols.NewRegistry()
+	err := errors.Join(
+		registry.Register(httpprotocol.NewProvider()),
+		registry.Register(mysqlprotocol.NewProvider()),
+	)
+	return registry, errors.Wrap(err, "register protocols")
+}
+
 // Main runs the command line with the given extensions, then exits.
 func Main(options ...Option) {
-	command := &cli.CommandLine{}
+	registry, err := builtinRegistry()
+	if err != nil {
+		logger.New(logger.NewConfig(), os.Stderr).Error("Invalid protocols", "error", err)
+		os.Exit(1)
+	}
+	command := cli.NewCommandLine(registry.Plugins())
 	parser, err := newParser(command, options...)
 	if err != nil {
 		logger.New(logger.NewConfig(), os.Stderr).Error("Invalid command line", "error", err)
@@ -90,7 +108,7 @@ func Main(options ...Option) {
 	defer stop()
 	ctx = logger.WithLogger(ctx, log)
 	kctx.BindTo(ctx, (*context.Context)(nil))
-	kctx.Bind(log, cli.NewOutput(os.Stdout))
+	kctx.Bind(log, cli.NewOutput(os.Stdout), registry, registry.Kinds(), registry.Kinds().NodeTypes(), registry.Bindings())
 	kctx.FatalIfErrorf(kctx.Run())
 }
 

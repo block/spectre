@@ -5,13 +5,14 @@ import (
 
 	"github.com/alecthomas/assert/v2"
 
+	"github.com/block/spectre/internal/comparison/javascript/javascripttest"
 	"github.com/block/spectre/internal/model"
 	"github.com/block/spectre/internal/schema"
 )
 
 const replacementScript = `
-	spectre.egress.http("POST users.example/v1/users").match<v1.User>();
-	spectre.egress.http("POST users.example/v1/user").replaces<v1.User, v1.Response>("POST users.example/v1/users").using<v1.User, v1.Response>(
+	spectre.egress.fake("POST users.example/v1/users").match<v1.User>();
+	spectre.egress.fake("POST users.example/v1/user").replaces<v1.User, v1.Response>("POST users.example/v1/users").using<v1.User, v1.Response>(
 		(request) => ({ name: request.name.toLowerCase() }),
 		(request, reference) => ({ value: request.name, values: reference.values }),
 	);
@@ -22,15 +23,15 @@ func TestRegistersReplacements(t *testing.T) {
 	assert.NoError(t, err)
 
 	assert.Equal(t, []endpoint{
-		{"http", "POST users.example/v1/users", "test.v1.User"},
-		{"http", "POST users.example/v1/user", "test.v1.User"},
+		{"fake", "POST users.example/v1/users", "test.v1.User"},
+		{"fake", "POST users.example/v1/user", "test.v1.User"},
 	}, endpoints(program, model.Egress))
 	assert.Equal(t, []endpoint{}, endpoints(program, model.Ingress))
 	replacements := program.Replacements()
 	assert.Equal(t, 1, len(replacements))
 	replacement := replacements[0]
-	assert.Equal(t, `http("POST users.example/v1/user").replaces("POST users.example/v1/users").using()`, replacement.String())
-	assert.Equal(t, model.ProtocolHTTP, replacement.Protocol())
+	assert.Equal(t, `fake("POST users.example/v1/user").replaces("POST users.example/v1/users").using()`, replacement.String())
+	assert.Equal(t, javascripttest.Protocol, replacement.Protocol())
 	assert.Equal(t, "POST users.example/v1/user", replacement.Pattern())
 	assert.Equal(t, "POST users.example/v1/users", replacement.Source())
 	assert.Equal(t, []schema.TypeRef{"test.v1.Response", "test.v1.User", "test.v1.Response"},
@@ -63,17 +64,17 @@ func TestReplacementFunctionFailures(t *testing.T) {
 	}{
 		"Throws": {
 			request: `() => { throw new Error("boom"); }`, response: `() => ({ value: "", values: [] })`,
-			message: `JavaScript request function of http("POST users.example/v1/user").replaces("POST users.example/v1/users").using() threw an exception`,
+			message: `JavaScript request function of fake("POST users.example/v1/user").replaces("POST users.example/v1/users").using() threw an exception`,
 		},
 		"Undefined": {
 			request: `() => ({ name: "" })`, response: `() => undefined as unknown as v1.Response`,
-			message: "JavaScript response function of http(\"POST users.example/v1/user\").replaces(\"POST users.example/v1/users\").using() returned undefined",
+			message: "JavaScript response function of fake(\"POST users.example/v1/user\").replaces(\"POST users.example/v1/users\").using() returned undefined",
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			program, err := newProgram(t, `
-				spectre.egress.http("POST users.example/v1/users").match<v1.User>();
-				spectre.egress.http("POST users.example/v1/user").replaces<v1.User, v1.Response>("POST users.example/v1/users").using<v1.User, v1.Response>(
+				spectre.egress.fake("POST users.example/v1/users").match<v1.User>();
+				spectre.egress.fake("POST users.example/v1/user").replaces<v1.User, v1.Response>("POST users.example/v1/users").using<v1.User, v1.Response>(
 					`+test.request+`, `+test.response+`);
 			`)
 			assert.NoError(t, err)
@@ -97,10 +98,10 @@ func TestReplacementFunctionFailures(t *testing.T) {
 
 func TestRejectsInvalidReplacements(t *testing.T) {
 	const (
-		rule        = `spectre.egress.http("POST users.example/v1/user")`
+		rule        = `spectre.egress.fake("POST users.example/v1/user")`
 		replaces    = rule + `.replaces<v1.User, v1.Response>("POST users.example/v1/users")`
 		functions   = `(request) => request, () => ({ value: "", values: [] })`
-		untypedRule = `egress.http("POST users.example/v1/user").replaces("test.v1.User", "test.v1.Response", "POST users.example/v1/users")`
+		untypedRule = `egress.fake("POST users.example/v1/user").replaces("test.v1.User", "test.v1.Response", "POST users.example/v1/users")`
 	)
 	for name, test := range map[string]struct {
 		body    string
@@ -115,7 +116,7 @@ func TestRejectsInvalidReplacements(t *testing.T) {
 		"UsingNoTypeArguments": {
 			body:    replaces + `.using(() => ({ name: "" }), () => ({ value: "", values: [] }));`,
 			typed:   true,
-			message: "spectre.EgressReplacement.using needs 2 explicit type argument(s)",
+			message: "spectre.FakeReplacement.using needs 2 explicit type argument(s)",
 		},
 		"TextSourceResponse": {
 			body:    rule + `.replaces<v1.User, spectre.Text>("POST users.example/v1/users");`,
@@ -127,24 +128,8 @@ func TestRejectsInvalidReplacements(t *testing.T) {
 			typed:   true,
 			message: "is missing the following properties from type 'Response'",
 		},
-		"ReplacesArguments": {
-			body:    `egress.http("POST users.example/v1/user").replaces("test.v1.User", "test.v1.Response");`,
-			message: "spectre.EgressHTTPRule.replaces requires a source pattern",
-		},
-		"UsingArguments": {
-			body:    untypedRule + `.using("test.v1.User", "test.v1.Response");`,
-			message: "spectre.EgressReplacement.using requires a request function and a response function",
-		},
-		"RequestNotFunction": {
-			body:    untypedRule + `.using("test.v1.User", "test.v1.Response", 1, () => ({}));`,
-			message: "spectre.EgressReplacement.using request must be a function",
-		},
-		"ResponseNotFunction": {
-			body:    untypedRule + `.using("test.v1.User", "test.v1.Response", () => ({}), 1);`,
-			message: "spectre.EgressReplacement.using response must be a function",
-		},
 		"DuplicateEndpoint": {
-			body:    `egress.http("POST users.example/v1/user").match("test.v1.User"); ` + untypedRule + `.using("test.v1.User", "test.v1.Response", () => ({}), () => ({}));`,
+			body:    `egress.fake("POST users.example/v1/user").match("test.v1.User"); ` + untypedRule + `.using("test.v1.User", "test.v1.Response", () => ({}), () => ({}));`,
 			message: `duplicate endpoint "POST users.example/v1/user"`,
 		},
 	} {
