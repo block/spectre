@@ -5,7 +5,7 @@ import (
 
 	"github.com/alecthomas/assert/v2"
 
-	"github.com/block/spectre/internal/statsd"
+	"github.com/block/spectre/internal/protocols/statsd"
 )
 
 func TestConfigValidate(t *testing.T) {

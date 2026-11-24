@@ -109,8 +109,8 @@ func New(config Config, handle scripted.Handle, runtime protocols.Runtime, side 
 
 // Serve accepts reference and candidate connections until the context is cancelled,
 // then closes them and waits for their handlers. Egress is ready once it serves.
-func (s *Server) Serve(ctx context.Context, listeners map[string]net.Listener) error {
-	reference, candidate := listeners[ReferenceListener], listeners[CandidateListener]
+func (s *Server) Serve(ctx context.Context, listeners protocols.Listeners) error {
+	reference, candidate := listeners.Streams[ReferenceListener], listeners.Streams[CandidateListener]
 	if reference == nil || candidate == nil {
 		return errors.New("MySQL listeners are not open")
 	}

@@ -17,6 +17,7 @@ import (
 	"github.com/block/spectre/internal/contain"
 	httpprotocol "github.com/block/spectre/internal/protocols/http"
 	mysqlprotocol "github.com/block/spectre/internal/protocols/mysql"
+	statsdprotocol "github.com/block/spectre/internal/protocols/statsd"
 	"github.com/block/spectre/internal/proxies"
 	"github.com/block/spectre/internal/server"
 	"github.com/block/spectre/internal/server/client"
@@ -135,12 +136,15 @@ func TestProxyCommandReadsFlagsFromEnvironment(t *testing.T) {
 	expected.Server.Service = "invoices"
 	expected.Server.Environment = "production-us-west-2"
 	expected.Server.Revision = "3f9c2a1"
-	expected.Statsd.ReferenceListen = "unix:@statsd-reference.sock"
-	expected.Statsd.CandidateListen = "unix:@statsd-candidate.sock"
-	expected.Statsd.Forward = "unix:@veneur.sock"
 	assert.Equal(t, expected, command.Proxy.Proxy)
 	assert.Equal(t, expectedHTTPConfig, parsedProviderConfig[httpprotocol.Config](t, command))
 	assert.Equal(t, expectedMySQL, parsedProviderConfig[mysqlprotocol.Config](t, command))
+	expectedStatsd := statsdprotocol.Config{
+		ReferenceListen: "unix:@statsd-reference.sock",
+		CandidateListen: "unix:@statsd-candidate.sock",
+		Forward:         "unix:@veneur.sock",
+	}
+	assert.Equal(t, expectedStatsd, parsedProviderConfig[statsdprotocol.Config](t, command))
 }
 
 func TestContainCommandReadsCandidateUIDFromEnvironment(t *testing.T) {

@@ -18,6 +18,7 @@ import (
 	httpprotocol "github.com/block/spectre/internal/protocols/http"
 	mysqlprotocol "github.com/block/spectre/internal/protocols/mysql"
 	"github.com/block/spectre/internal/protocols/protocolstest"
+	statsdprotocol "github.com/block/spectre/internal/protocols/statsd"
 	"github.com/block/spectre/internal/proxies"
 )
 
@@ -40,14 +41,12 @@ func TestProxyMirrorsServicesThatRunElsewhere(t *testing.T) {
 	config.HealthListen = "unix:" + socket("health.sock")
 	config.ScriptsDir = t.TempDir()
 	config.SchemaDir = t.TempDir()
-	config.Statsd.ReferenceListen = "unix:" + socket("statsd-reference.sock")
-	config.Statsd.CandidateListen = "unix:" + socket("statsd-candidate.sock")
-	config.Statsd.Forward = "unix:" + socket("agent.sock")
-	agent, err := netaddr.ParsePacket(config.Statsd.Forward).Listen(t.Context())
+	agent, err := netaddr.ParsePacket("unix:" + socket("agent.sock")).Listen(t.Context())
 	assert.NoError(t, err)
 	t.Cleanup(func() { _ = agent.Close() })
 	registry := protocols.NewRegistry()
 	assert.NoError(t, registry.Register(httpprotocol.NewProvider()))
+	assert.NoError(t, registry.Register(statsdprotocol.NewProvider()))
 	protocolstest.Configure(t, registry.Plugins(),
 		"--listen=unix:"+socket("ingress.sock"),
 		"--reference-url="+reference.URL,
@@ -55,6 +54,9 @@ func TestProxyMirrorsServicesThatRunElsewhere(t *testing.T) {
 		"--reference-egress-listen=unix:"+socket("egress-reference.sock"),
 		"--candidate-egress-listen=unix:"+socket("egress-candidate.sock"),
 		"--no-reflection",
+		"--statsd-reference-listen=unix:"+socket("statsd-reference.sock"),
+		"--statsd-candidate-listen=unix:"+socket("statsd-candidate.sock"),
+		"--statsd-forward=unix:"+socket("agent.sock"),
 	)
 	proxy, err := proxies.New(t.Context(), config, registry)
 	assert.NoError(t, err)

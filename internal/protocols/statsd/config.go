@@ -1,6 +1,7 @@
-// Package statsd relays the StatsD metrics of a mirror's services. Reference
-// metrics reach the metrics agent unchanged, and candidate metrics are discarded,
-// so the candidate never reports metrics as the service.
+// Package statsd is the StatsD protocol, which relays the StatsD metrics of a
+// mirror's services over datagram sockets. Reference metrics reach the metrics
+// agent unchanged, and candidate metrics are discarded, so the candidate never
+// reports metrics as the service.
 package statsd
 
 import (
@@ -8,7 +9,7 @@ import (
 	"github.com/alecthomas/kong"
 )
 
-// Config contains the command-line configuration for the StatsD relay. Its flags
+// Config contains the command-line configuration for the StatsD protocol. Its flags
 // are named with the prefix statsd-.
 type Config struct {
 	// ReferenceListen receives the reference's metrics, which are forwarded unchanged.

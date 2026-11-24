@@ -2,9 +2,9 @@ package mysql
 
 import (
 	"context"
-	"net"
 
 	"github.com/block/spectre/internal/httpservice/health"
+	"github.com/block/spectre/internal/protocols"
 )
 
 // idle is the server of a mirror that does not proxy MySQL. It is ready at once,
@@ -18,7 +18,7 @@ func newIdle(health *health.Handler) *idle {
 	return &idle{health: health}
 }
 
-func (i *idle) Serve(ctx context.Context, _ map[string]net.Listener) error {
+func (i *idle) Serve(ctx context.Context, _ protocols.Listeners) error {
 	i.health.SetReady(true)
 	<-ctx.Done()
 	return nil

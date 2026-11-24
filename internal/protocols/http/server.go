@@ -2,12 +2,12 @@ package http
 
 import (
 	"context"
-	"net"
 
 	"github.com/alecthomas/errors"
 
 	"github.com/block/spectre/internal/httpservice"
 	"github.com/block/spectre/internal/logger"
+	"github.com/block/spectre/internal/protocols"
 )
 
 // The listener names, which Provider.Listens and server.Serve agree on.
@@ -40,13 +40,14 @@ func newServer(ingress *Ingress, egress *Egress, transports ...*httpservice.Tran
 }
 
 // Serve runs both proxies until ctx is done or one fails, then stops the other.
-func (s *server) Serve(ctx context.Context, listeners map[string]net.Listener) error {
+func (s *server) Serve(ctx context.Context, listeners protocols.Listeners) error {
 	defer func() {
 		for _, transport := range s.transports {
 			transport.CloseIdleConnections()
 		}
 	}()
-	ingress, reference, candidate := listeners[IngressListener], listeners[ReferenceEgressListener], listeners[CandidateEgressListener]
+	streams := listeners.Streams
+	ingress, reference, candidate := streams[IngressListener], streams[ReferenceEgressListener], streams[CandidateEgressListener]
 	if ingress == nil || reference == nil || candidate == nil {
 		return errors.New("HTTP listeners are not open")
 	}

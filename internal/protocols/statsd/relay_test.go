@@ -14,7 +14,7 @@ import (
 
 	"github.com/block/spectre/internal/logger"
 	"github.com/block/spectre/internal/netaddr"
-	"github.com/block/spectre/internal/statsd"
+	"github.com/block/spectre/internal/protocols/statsd"
 )
 
 // receiveTimeout bounds how long a test waits for a datagram.

@@ -75,11 +75,13 @@ func (r *Registry) Kinds() state.Kinds {
 	return r.kinds
 }
 
-// Bindings returns each provider's part of the script module, in registration order.
+// Bindings returns the part of the script module of each provider that has one, in registration order.
 func (r *Registry) Bindings() []javascript.Binding {
 	bindings := make([]javascript.Binding, 0, len(r.registered))
 	for _, entry := range r.registered {
-		bindings = append(bindings, entry.scripts())
+		if binding, ok := entry.scripts().Get(); ok {
+			bindings = append(bindings, binding)
+		}
 	}
 	return bindings
 }

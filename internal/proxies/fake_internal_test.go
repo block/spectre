@@ -2,10 +2,10 @@ package proxies
 
 import (
 	"context"
-	"net"
 	"testing"
 
 	"github.com/alecthomas/assert/v2"
+	. "github.com/alecthomas/types/optional"
 
 	"github.com/block/spectre/internal/comparison/javascript"
 	"github.com/block/spectre/internal/comparison/javascript/javascripttest"
@@ -28,7 +28,7 @@ type fakeProvider struct {
 	// built receives the runtime of each server the mirror builds.
 	built chan protocols.Runtime
 	// served receives the listeners of each server the mirror runs.
-	served chan map[string]net.Listener
+	served chan protocols.Listeners
 }
 
 func newFakeProvider(addresses ...string) *fakeProvider {
@@ -36,7 +36,7 @@ func newFakeProvider(addresses ...string) *fakeProvider {
 		binding:   javascripttest.Binding(),
 		addresses: addresses,
 		built:     make(chan protocols.Runtime, 1),
-		served:    make(chan map[string]net.Listener, 1),
+		served:    make(chan protocols.Listeners, 1),
 	}
 }
 
@@ -54,12 +54,12 @@ func (p *fakeProvider) Kinds() []state.Kind {
 	}
 }
 
-func (p *fakeProvider) Scripts() javascript.Binding { return p.binding }
+func (p *fakeProvider) Scripts() Option[javascript.Binding] { return Some(p.binding) }
 
 func (p *fakeProvider) Listens(fakeConfig) []protocols.Listen {
 	listens := make([]protocols.Listen, 0, len(p.addresses))
 	for i, address := range p.addresses {
-		listens = append(listens, protocols.Listen{Name: []string{"main", "other"}[i], Address: address})
+		listens = append(listens, protocols.Listen{Name: []string{"main", "other"}[i], Address: address, Transport: protocols.Stream})
 	}
 	return listens
 }
@@ -72,10 +72,10 @@ func (p *fakeProvider) New(_ context.Context, _ fakeConfig, runtime protocols.Ru
 // fakeServer marks egress ready once it serves, as a real protocol does.
 type fakeServer struct {
 	runtime protocols.Runtime
-	served  chan map[string]net.Listener
+	served  chan protocols.Listeners
 }
 
-func (s *fakeServer) Serve(ctx context.Context, listeners map[string]net.Listener) error {
+func (s *fakeServer) Serve(ctx context.Context, listeners protocols.Listeners) error {
 	s.served <- listeners
 	if side, ok := s.runtime.Egress.Get(); ok {
 		side.Health.SetReady(true)

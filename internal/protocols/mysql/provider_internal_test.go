@@ -2,7 +2,6 @@ package mysql
 
 import (
 	"context"
-	"net"
 	"testing"
 	"time"
 
@@ -35,8 +34,8 @@ func TestProviderListens(t *testing.T) {
 	}{
 		"Disabled": {config: NewConfig()},
 		"Enabled": {config: enabled, expected: []protocols.Listen{
-			{Name: "reference", Address: "unix:/sockets/reference.sock"},
-			{Name: "candidate", Address: "unix:/sockets/candidate.sock"},
+			{Name: "reference", Address: "unix:/sockets/reference.sock", Transport: protocols.Stream},
+			{Name: "candidate", Address: "unix:/sockets/candidate.sock", Transport: protocols.Stream},
 		}},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -59,7 +58,7 @@ func TestIdleServerMarksEgressReadyAndWaitsForTheContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	stopped := make(chan error, 1)
 
-	go func() { stopped <- server.Serve(ctx, map[string]net.Listener{}) }()
+	go func() { stopped <- server.Serve(ctx, protocols.Listeners{}) }()
 
 	deadline := time.Now().Add(5 * time.Second)
 	for !egress.Ready() {
