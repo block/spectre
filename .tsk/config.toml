@@ -307,12 +307,14 @@ allow-generated-construction = true
 
 [layout]
 # The module root is the public API for custom binaries, and spectrepb is the
-# public API of the SPECTRE server. The TypeScript shim is a
+# public API of the SPECTRE server and of the event protocol. The TypeScript shim is a
 # separate module whose path mimics TypeScript's own.
 allow = [
   "github.com/block/spectre",
   "github.com/block/spectre/spectrepb",
   "github.com/block/spectre/spectrepb/spectrepbconnect",
+  "github.com/block/spectre/spectrepb/eventpb",
+  "github.com/block/spectre/spectrepb/eventpb/eventpbconnect",
   "github.com/microsoft/TypeScript/tsc/shim/typescript",
 ]
 

@@ -18,6 +18,7 @@ import (
 	"github.com/block/spectre/internal/cli"
 	"github.com/block/spectre/internal/logger"
 	"github.com/block/spectre/internal/protocols"
+	eventprotocol "github.com/block/spectre/internal/protocols/event"
 	httpprotocol "github.com/block/spectre/internal/protocols/http"
 	mysqlprotocol "github.com/block/spectre/internal/protocols/mysql"
 )
@@ -84,6 +85,7 @@ func builtinRegistry() (*protocols.Registry, error) {
 	err := errors.Join(
 		registry.Register(httpprotocol.NewProvider()),
 		registry.Register(mysqlprotocol.NewProvider()),
+		registry.Register(eventprotocol.NewProvider()),
 	)
 	return registry, errors.Wrap(err, "register protocols")
 }
