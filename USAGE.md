@@ -516,6 +516,80 @@ is the statement's first keyword, such as `SELECT` or `COMMIT`, or `statement`
 when it starts with none, or `command` for a command that is not a statement.
 They never include a statement or its values.
 
+### Events
+
+Events cover work that no request starts, such as a scheduled job, a timer, a
+queued job or a consumed message. Set `--event-reference-listen=ADDRESS` to serve
+them. The reference reports its events there, and the candidate receives runs from
+and reports its events to `--event-candidate-listen`. Both listeners must be on a
+loopback address or a unix socket. Each serves the Connect service
+`spectre.event.v1.EventService` in `proto/spectre/event/v1/event.proto`.
+
+An event has a type, a JSON payload, and attributes that are logged but never
+compared. Each side uses its own type names, such as `sidekiq/SendInvoiceWorker`
+for the reference and `jobs/send-invoice` for the candidate, and scripts map
+one onto the other.
+
+The reference calls `Report` when work starts, and again for each event that
+work produces, such as a job it enqueues:
+
+- For an event that starts work, `Report` returns a run ID when the run is
+  shadowed. The candidate then receives the run from its `Receive` stream, with
+  the event in the candidate's terms. Without a run ID, the reference runs the
+  work as usual and nothing is compared.
+- For an event that work produces, the reference passes the run ID and what its
+  send returned, either a message or a failure. Events outside a run are not
+  compared.
+
+The candidate keeps a `Receive` stream open, runs each run it receives, and calls
+`Report` with the run ID for each event the work produces. `Report` returns the
+reference's result for the paired event, in place of a real send. A run is
+shadowed only while a `Receive` stream is open and fewer than
+`--event-trigger-queue` runs are waiting. Runs still queued when the last stream
+closes are dropped.
+
+Scripts declare the event types. `ingress.event(type)` declares a reference type
+that starts work, and `.triggers(candidateType?)` names the candidate's type,
+which defaults to the same name. `.payload<From, To>(map)` maps the reference's
+payload into the candidate's.
+
+`egress.event(type)` declares a reference type that work produces.
+`.optional()` lets the candidate leave it out. `.match<T>()` compares the
+candidate's events of the same type as `T`. `.pairs(candidateType)` pairs it with
+a candidate type of another name, and then `.match<T>()` compares both as `T`, or
+`.payload<From, To>(map)` maps the reference's payload into the candidate's type
+`To` and compares as that. `.result<From, To>(map)` maps the reference's
+result into what the candidate expects. Failures and unmapped results pass
+unchanged. Events pair within a run as egress calls do, so a candidate event that
+differs quarantines the candidate as `divergent`, and a missing one as
+`unmatched`.
+
+```ts
+import { egress, ingress } from "spectre";
+// Schema types: the reference names a job's arguments after its method's parameters.
+import type { InvoiceArgs, InvoiceJob, Pushed, Enqueued } from "jobs";
+
+// The reference's queued job starts work, which the candidate runs as its own job type.
+ingress
+  .event("sidekiq/SendInvoiceWorker")
+  .triggers("jobs/send-invoice")
+  .payload<InvoiceArgs, InvoiceJob>((args) => ({ invoiceId: args.invoice_id }));
+// A scheduled task that both sides name alike.
+ingress.event("cron/refresh-rates").triggers();
+
+// The reference enqueues a job that the candidate enqueues on its own queue.
+egress
+  .event("sidekiq/push/SendInvoiceWorker")
+  .pairs("jobs/enqueue/send-invoice")
+  .payload<InvoiceArgs, InvoiceJob>((args) => ({ invoiceId: args.invoice_id }))
+  .result<Pushed, Enqueued>((pushed) => ({ jobId: pushed.jid }));
+egress.event("audit/record").optional().match<InvoiceJob>();
+```
+
+Event quarantines have the protocol `event`, and their route is the event type.
+The candidate reporting an event that starts work quarantines it as `unmatched`,
+because only the reference starts work.
+
 ### Quarantine
 
 A mirror quarantines its candidate for one of these reasons:
@@ -771,8 +845,11 @@ status = "pending"
 | `<direction>.<protocol>` | A kind of IO the node's own code performs, holding that kind's settings. |
 
 The kinds of IO are `ingress[http]`, which lists the routes it handles under
-`routes`, and `egress[http]` and `egress[mysql]`, which take no settings. Write
-a node that sends MySQL statements as `[nodes.<id>.egress.mysql]`.
+`routes`, `ingress[event]`, which lists the reference event types that start its
+work under `types`, and `egress[http]`, `egress[mysql]` and `egress[event]`,
+which take no settings. Write a node that sends MySQL statements as
+`[nodes.<id>.egress.mysql]`. A start event whose type no node lists quarantines
+the candidate as `unlisted`, and one in a pending node is not shadowed.
 
 A node with no IO is a library, shared by more than one other node. Each route
 belongs to one node, so a divergence on a route also names the node to fix.

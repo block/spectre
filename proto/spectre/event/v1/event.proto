@@ -1,0 +1,63 @@
+syntax = "proto3";
+
+package spectre.event.v1;
+
+option go_package = "github.com/block/spectre/spectrepb/eventpb;eventpb";
+
+// EventService receives the events of work that no request starts, such as a
+// cron tick, a queued job or a consumed message. SPECTRE serves it on one
+// listener for the reference and another for the candidate, and tells the
+// two apart by the listener a call arrives on.
+service EventService {
+  // Report tells SPECTRE that an event happened in the service. The scripts
+  // decide whether its type starts work or is something work produced.
+  rpc Report(ReportRequest) returns (ReportResponse);
+  // Receive streams each event the candidate must start work for, as the
+  // reference starts it. Only the candidate's listener serves it.
+  rpc Receive(ReceiveRequest) returns (stream ReceiveResponse);
+}
+
+// Event is something that happened in one service, in that service's terms.
+message Event {
+  // Type is the service's own name for the event, such as
+  // "sidekiq/perform/VerifySiretWorker".
+  string type = 1;
+  // Payload is the event's JSON payload.
+  bytes payload = 2;
+  // Attributes are logged but never compared, such as a job ID or a try count.
+  map<string, string> attributes = 3;
+}
+
+// Result is what sending an event returned.
+message Result {
+  oneof result {
+    // Message is the JSON value the send returned, such as a job ID.
+    bytes message = 1;
+    // Failure explains why the send failed.
+    string failure = 2;
+  }
+}
+
+message ReportRequest {
+  Event event = 1;
+  // RunID is the run the event happened in, if any.
+  optional string run_id = 2;
+  // Result is what the reference's real send returned. Only the reference sets it.
+  optional Result result = 3;
+}
+
+message ReportResponse {
+  // RunID is the run a shadowed start event begins.
+  optional string run_id = 1;
+  // Result is what the candidate's send returns, built from the reference's.
+  optional Result result = 2;
+}
+
+message ReceiveRequest {}
+
+message ReceiveResponse {
+  // RunID is the run the candidate starts, which it reports its events in.
+  string run_id = 1;
+  // Event is the event to start work for, in the candidate's terms.
+  Event event = 2;
+}
