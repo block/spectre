@@ -2,7 +2,6 @@ package protocols_test
 
 import (
 	"context"
-	"net"
 	"testing"
 
 	"github.com/alecthomas/assert/v2"
@@ -60,7 +59,7 @@ func (p *fakeProvider) Kinds() []state.Kind {
 func (p *fakeProvider) Scripts() javascript.Binding { return javascripttest.Binding() }
 
 func (p *fakeProvider) Listens(config fakeConfig) []protocols.Listen {
-	return []protocols.Listen{{Name: "main", Address: config.Address}}
+	return []protocols.Listen{{Name: "main", Address: config.Address, Transport: protocols.Stream}}
 }
 
 func (p *fakeProvider) New(_ context.Context, config fakeConfig, _ protocols.Runtime) (protocols.Server, error) {
@@ -70,7 +69,7 @@ func (p *fakeProvider) New(_ context.Context, config fakeConfig, _ protocols.Run
 
 type fakeServer struct{}
 
-func (fakeServer) Serve(context.Context, map[string]net.Listener) error { return nil }
+func (fakeServer) Serve(context.Context, protocols.Listeners) error { return nil }
 
 // registerAll registers each provider.
 func registerAll(registry *protocols.Registry, providers ...*fakeProvider) error {
@@ -195,7 +194,7 @@ func TestPluginsParseEachProvidersConfig(t *testing.T) {
 			_, err = parser.Parse(test.args)
 
 			assert.NoError(t, err)
-			assert.Equal(t, []protocols.Listen{{Name: "main", Address: test.expected}}, registry.Listens("alpha"))
+			assert.Equal(t, []protocols.Listen{{Name: "main", Address: test.expected, Transport: protocols.Stream}}, registry.Listens("alpha"))
 		})
 	}
 }

@@ -58,8 +58,8 @@ func (p *Provider) Listens(config Config) []protocols.Listen {
 		return nil
 	}
 	return []protocols.Listen{
-		{Name: ReferenceListener, Address: config.ReferenceListen},
-		{Name: CandidateListener, Address: config.CandidateListen},
+		{Name: ReferenceListener, Address: config.ReferenceListen, Transport: protocols.Stream},
+		{Name: CandidateListener, Address: config.CandidateListen, Transport: protocols.Stream},
 	}
 }
 

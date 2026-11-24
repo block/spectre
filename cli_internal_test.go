@@ -17,6 +17,7 @@ import (
 	"github.com/block/spectre/internal/contain"
 	httpprotocol "github.com/block/spectre/internal/protocols/http"
 	mysqlprotocol "github.com/block/spectre/internal/protocols/mysql"
+	statsdprotocol "github.com/block/spectre/internal/protocols/statsd"
 	"github.com/block/spectre/internal/proxies"
 	"github.com/block/spectre/internal/server"
 	"github.com/block/spectre/internal/server/client"
@@ -106,6 +107,9 @@ func TestProxyCommandReadsFlagsFromEnvironment(t *testing.T) {
 		"SPECTRE_MYSQL_UPSTREAM_USER":          "spectre",
 		"SPECTRE_MYSQL_UPSTREAM_PASSWORD_FILE": "/secrets/password",
 		"SPECTRE_MYSQL_CANDIDATE_LISTEN":       "unix:/sockets/mysql-candidate.sock",
+		"SPECTRE_STATSD_REFERENCE_LISTEN":      "unix:@statsd-reference.sock",
+		"SPECTRE_STATSD_CANDIDATE_LISTEN":      "unix:@statsd-candidate.sock",
+		"SPECTRE_STATSD_FORWARD":               "unix:@veneur.sock",
 	} {
 		t.Setenv(name, value)
 	}
@@ -135,6 +139,12 @@ func TestProxyCommandReadsFlagsFromEnvironment(t *testing.T) {
 	assert.Equal(t, expected, command.Proxy.Proxy)
 	assert.Equal(t, expectedHTTPConfig, parsedProviderConfig[httpprotocol.Config](t, command))
 	assert.Equal(t, expectedMySQL, parsedProviderConfig[mysqlprotocol.Config](t, command))
+	expectedStatsd := statsdprotocol.Config{
+		ReferenceListen: "unix:@statsd-reference.sock",
+		CandidateListen: "unix:@statsd-candidate.sock",
+		Forward:         "unix:@veneur.sock",
+	}
+	assert.Equal(t, expectedStatsd, parsedProviderConfig[statsdprotocol.Config](t, command))
 }
 
 func TestContainCommandReadsCandidateUIDFromEnvironment(t *testing.T) {

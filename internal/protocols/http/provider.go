@@ -65,9 +65,9 @@ func (p *Provider) Scripts() javascript.Binding {
 // Listens names the ingress listener and the two egress listeners.
 func (p *Provider) Listens(config Config) []protocols.Listen {
 	return []protocols.Listen{
-		{Name: IngressListener, Address: config.Listen},
-		{Name: ReferenceEgressListener, Address: config.ReferenceEgressListen},
-		{Name: CandidateEgressListener, Address: config.CandidateEgressListen},
+		{Name: IngressListener, Address: config.Listen, Transport: protocols.Stream},
+		{Name: ReferenceEgressListener, Address: config.ReferenceEgressListen, Transport: protocols.Stream},
+		{Name: CandidateEgressListener, Address: config.CandidateEgressListen, Transport: protocols.Stream},
 	}
 }
 

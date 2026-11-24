@@ -16,6 +16,7 @@ import (
 	"github.com/block/spectre/internal/comparison/javascript/javascripttest"
 	"github.com/block/spectre/internal/httpservice/health"
 	"github.com/block/spectre/internal/model"
+	"github.com/block/spectre/internal/protocols"
 	"github.com/block/spectre/internal/state"
 )
 
@@ -129,14 +130,14 @@ func TestStartListenersServesEachProviderOnItsListenersAndCombinesHealth(t *test
 	defer cancel()
 
 	assert.NoError(t, m.StartListeners(ctx, Listeners{
-		Providers:    map[model.Protocol]map[string]net.Listener{javascripttest.Protocol: {"main": main}},
+		Providers:    map[model.Protocol]protocols.Listeners{javascripttest.Protocol: {Streams: map[string]net.Listener{"main": main}}},
 		EgressHealth: egressHealth,
 		Health:       healthListener,
 	}))
 	stopped := make(chan error, 1)
 	go func() { stopped <- m.Wait(ctx) }()
 
-	assert.Equal(t, map[string]net.Listener{"main": main}, <-provider.served)
+	assert.Equal(t, protocols.Listeners{Streams: map[string]net.Listener{"main": main}}, <-provider.served)
 	runtime := <-provider.built
 	_, hasIngress := runtime.Ingress.Get()
 	_, hasEgress := runtime.Egress.Get()
@@ -160,8 +161,8 @@ func TestStartListenersServesEachProviderOnItsListenersAndCombinesHealth(t *test
 func TestStartListenersFailsWhenAProviderListenerIsNotOpen(t *testing.T) {
 	m, err := New(t.Context(), loopbackConfig(t), fakeRegistry(t, newFakeProvider("unused")))
 	assert.NoError(t, err)
-	err = m.StartListeners(t.Context(), Listeners{Providers: map[model.Protocol]map[string]net.Listener{}, EgressHealth: loopback(t), Health: loopback(t)})
-	assert.EqualError(t, err, "fake listener main is not open")
+	err = m.StartListeners(t.Context(), Listeners{Providers: map[model.Protocol]protocols.Listeners{}, EgressHealth: loopback(t), Health: loopback(t)})
+	assert.EqualError(t, err, "fake stream listener main is not open")
 }
 
 // Candidate work and readiness stop before the servers are cancelled, so waiting

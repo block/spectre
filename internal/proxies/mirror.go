@@ -2,6 +2,7 @@ package proxies
 
 import (
 	"context"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -47,25 +48,34 @@ type Mirror struct {
 // Listeners are the open listeners of a mirror: each provider's, by the names
 // its Listens gives them, and the two health endpoints'.
 type Listeners struct {
-	Providers    map[model.Protocol]map[string]net.Listener
+	Providers    map[model.Protocol]protocols.Listeners
 	EgressHealth net.Listener
 	Health       net.Listener
 }
 
 // close closes every listener that a stopped proxy has not, joining any errors.
 func (l Listeners) close() error {
-	listeners := []net.Listener{l.EgressHealth, l.Health}
+	closers := []io.Closer{}
+	for _, listener := range []net.Listener{l.EgressHealth, l.Health} {
+		if listener != nil {
+			closers = append(closers, listener)
+		}
+	}
 	for _, provided := range l.Providers {
-		for _, listener := range provided {
-			listeners = append(listeners, listener)
+		for _, listener := range provided.Streams {
+			if listener != nil {
+				closers = append(closers, listener)
+			}
+		}
+		for _, conn := range provided.Datagrams {
+			if conn != nil {
+				closers = append(closers, conn)
+			}
 		}
 	}
 	closeErrors := []error{}
-	for _, listener := range listeners {
-		if listener == nil {
-			continue
-		}
-		if err := listener.Close(); !errors.Is(err, net.ErrClosed) {
+	for _, closer := range closers {
+		if err := closer.Close(); !errors.Is(err, net.ErrClosed) {
 			closeErrors = append(closeErrors, err)
 		}
 	}
@@ -153,19 +163,14 @@ func (m *Mirror) Wait(ctx context.Context) error {
 // listen opens the listeners of every provider and the health endpoints, before
 // anything starts, so a bad address fails startup. It closes those already open on failure.
 func (m *Mirror) listen(ctx context.Context) (Listeners, error) {
-	listeners := Listeners{Providers: map[model.Protocol]map[string]net.Listener{}}
+	listeners := Listeners{Providers: map[model.Protocol]protocols.Listeners{}}
 	for _, protocol := range m.registry.Protocols() {
-		opened := map[string]net.Listener{}
+		opened := protocols.Listeners{Streams: map[string]net.Listener{}, Datagrams: map[string]net.PacketConn{}}
 		listeners.Providers[protocol] = opened
 		for _, listen := range m.registry.Listens(protocol) {
-			if _, duplicate := opened[listen.Name]; duplicate {
-				return Listeners{}, errors.Join(errors.Errorf("%s declares listener %s more than once", protocol, listen.Name), listeners.close())
-			}
-			listener, err := listenOn(ctx, listen.Address)
-			if err != nil {
+			if err := openListener(ctx, protocol, listen, opened); err != nil {
 				return Listeners{}, errors.Join(err, listeners.close())
 			}
-			opened[listen.Name] = listener
 		}
 	}
 	var err error
@@ -217,12 +222,20 @@ func (m *Mirror) startAll(ctx context.Context, listeners Listeners) error {
 	return nil
 }
 
-// checkListeners checks that every listener a provider names is open.
+// checkListeners checks that every listener a provider names is open with its transport.
 func (m *Mirror) checkListeners(listeners Listeners) error {
 	for _, protocol := range m.registry.Protocols() {
+		provided := listeners.Providers[protocol]
 		for _, listen := range m.registry.Listens(protocol) {
-			if listeners.Providers[protocol][listen.Name] == nil {
-				return errors.Errorf("%s listener %s is not open", protocol, listen.Name)
+			open := false
+			switch listen.Transport {
+			case protocols.Stream:
+				open = provided.Streams[listen.Name] != nil
+			case protocols.Datagram:
+				open = provided.Datagrams[listen.Name] != nil
+			}
+			if !open {
+				return errors.Errorf("%s %s listener %s is not open", protocol, listen.Transport, listen.Name)
 			}
 		}
 	}
@@ -343,6 +356,32 @@ func (m *Mirror) engineConfig() engine.Config {
 	config.Comparison.Variables = m.config.ScriptVariables
 	config.MatchWindow = m.config.MatchWindow
 	return config
+}
+
+// openListener opens listen with its transport and adds it to opened under its name.
+func openListener(ctx context.Context, protocol model.Protocol, listen protocols.Listen, opened protocols.Listeners) error {
+	_, stream := opened.Streams[listen.Name]
+	_, datagram := opened.Datagrams[listen.Name]
+	if stream || datagram {
+		return errors.Errorf("%s declares listener %s more than once", protocol, listen.Name)
+	}
+	switch listen.Transport {
+	case protocols.Stream:
+		listener, err := listenOn(ctx, listen.Address)
+		if err != nil {
+			return err
+		}
+		opened.Streams[listen.Name] = listener
+	case protocols.Datagram:
+		conn, err := netaddr.ParsePacket(listen.Address).Listen(ctx)
+		if err != nil {
+			return errors.Wrapf(err, "listen on %s", listen.Address)
+		}
+		opened.Datagrams[listen.Name] = conn
+	default:
+		return errors.Errorf("%s listener %s has unknown transport %q", protocol, listen.Name, listen.Transport)
+	}
+	return nil
 }
 
 // listenOn opens the listener at address.

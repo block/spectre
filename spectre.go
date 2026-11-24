@@ -20,6 +20,7 @@ import (
 	"github.com/block/spectre/internal/protocols"
 	httpprotocol "github.com/block/spectre/internal/protocols/http"
 	mysqlprotocol "github.com/block/spectre/internal/protocols/mysql"
+	statsdprotocol "github.com/block/spectre/internal/protocols/statsd"
 )
 
 // Command is a top-level command. Kong parses its tagged fields before Run.
@@ -84,6 +85,7 @@ func builtinRegistry() (*protocols.Registry, error) {
 	err := errors.Join(
 		registry.Register(httpprotocol.NewProvider()),
 		registry.Register(mysqlprotocol.NewProvider()),
+		registry.Register(statsdprotocol.NewProvider()),
 	)
 	return registry, errors.Wrap(err, "register protocols")
 }

@@ -17,9 +17,9 @@ func TestProviderListensOnIngressAndBothEgressListeners(t *testing.T) {
 	config.ReferenceEgressListen = "127.0.0.1:2"
 	config.CandidateEgressListen = "127.0.0.1:3"
 	assert.Equal(t, []protocols.Listen{
-		{Name: "ingress", Address: "127.0.0.1:1"},
-		{Name: "reference-egress", Address: "127.0.0.1:2"},
-		{Name: "candidate-egress", Address: "127.0.0.1:3"},
+		{Name: "ingress", Address: "127.0.0.1:1", Transport: protocols.Stream},
+		{Name: "reference-egress", Address: "127.0.0.1:2", Transport: protocols.Stream},
+		{Name: "candidate-egress", Address: "127.0.0.1:3", Transport: protocols.Stream},
 	}, httpprotocol.NewProvider().Listens(config))
 }
 

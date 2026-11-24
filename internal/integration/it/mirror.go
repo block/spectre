@@ -190,7 +190,7 @@ func (s *setup) createDatabase(t *testing.T, w *watch, listeners proxies.Listene
 	}
 	created := newDatabase(t, w, statements)
 	reference, candidate := listen(t), listen(t)
-	listeners.Providers[mysqlProtocol] = map[string]net.Listener{mysqlprotocol.ReferenceListener: reference, mysqlprotocol.CandidateListener: candidate}
+	listeners.Providers[mysqlProtocol] = protocols.Listeners{Streams: map[string]net.Listener{mysqlprotocol.ReferenceListener: reference, mysqlprotocol.CandidateListener: candidate}}
 	args = created.connect(reference, candidate)
 	if size, found := s.mysqlSavedRepliesSize.Get(); found {
 		args = append(args, "--mysql-saved-replies-bytes="+strconv.Itoa(size))
@@ -237,7 +237,7 @@ func (s *setup) writeSchema(t *testing.T) string {
 func (s *setup) proxyConfig(listeners proxies.Listeners, reference, candidate net.Listener,
 	destinations map[string]string, scriptsDir, schemaDir, serverURL string,
 ) (config proxies.Config, httpArgs []string) {
-	bound := listeners.Providers[httpProtocol]
+	bound := listeners.Providers[httpProtocol].Streams
 	httpArgs = []string{
 		"--listen=" + bound[httpprotocol.IngressListener].Addr().String(),
 		"--reference-url=h2c://" + reference.Addr().String(),
@@ -312,7 +312,7 @@ func Start(t *testing.T, settings ...Setting) *Mirror {
 		httpprotocol.CandidateEgressListener: listen(t),
 	}
 	listeners := proxies.Listeners{
-		Providers:    map[model.Protocol]map[string]net.Listener{httpProtocol: bound},
+		Providers:    map[model.Protocol]protocols.Listeners{httpProtocol: {Streams: bound}},
 		EgressHealth: listen(t),
 		Health:       listen(t),
 	}

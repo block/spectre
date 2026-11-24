@@ -226,6 +226,10 @@ func TestRejectsConflictingBindings(t *testing.T) {
 			bindings: []javascript.Binding{broker.binding, newKafka("kafka", "").binding},
 			message:  `protocol "kafka" has more than one script binding`,
 		},
+		"SameProtocolAsAnEmptyBinding": {
+			bindings: []javascript.Binding{broker.binding, javascript.NewEmptyBinding("kafka")},
+			message:  `protocol "kafka" has more than one script binding`,
+		},
 		"UnnamedPayloadModule": {
 			bindings: []javascript.Binding{newKafka("kafka", `declare module "kafka" { interface Record {} }`).binding},
 			message:  `payload module "kafka" must be named under "spectre."`,
@@ -237,6 +241,21 @@ func TestRejectsConflictingBindings(t *testing.T) {
 			assert.Contains(t, err.Error(), test.message)
 		})
 	}
+}
+
+// An empty binding adds no members, so scripts that use it fail to type-check, and others run.
+func TestEmptyBindingAddsNothingToScripts(t *testing.T) {
+	broker := newKafka("kafka", kafkaPayloads)
+	bindings := []javascript.Binding{broker.binding, javascript.NewEmptyBinding("statsd")}
+	program, err := kafkaProgram(t, bindings, `spectre.ingress.kafka("orders").describe<v1.User>();`)
+	assert.NoError(t, err)
+	evaluator, err := program.NewEvaluator(t.Context())
+	assert.NoError(t, err)
+	evaluator.Close()
+
+	_, err = kafkaProgram(t, bindings, `spectre.ingress.statsd("requests");`)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "statsd")
 }
 
 func TestReEvaluationMustReproduceBindingDeclarations(t *testing.T) {

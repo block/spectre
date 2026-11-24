@@ -13,10 +13,12 @@ import (
 
 	"github.com/alecthomas/assert/v2"
 
+	"github.com/block/spectre/internal/netaddr"
 	"github.com/block/spectre/internal/protocols"
 	httpprotocol "github.com/block/spectre/internal/protocols/http"
 	mysqlprotocol "github.com/block/spectre/internal/protocols/mysql"
 	"github.com/block/spectre/internal/protocols/protocolstest"
+	statsdprotocol "github.com/block/spectre/internal/protocols/statsd"
 	"github.com/block/spectre/internal/proxies"
 )
 
@@ -39,8 +41,12 @@ func TestProxyMirrorsServicesThatRunElsewhere(t *testing.T) {
 	config.HealthListen = "unix:" + socket("health.sock")
 	config.ScriptsDir = t.TempDir()
 	config.SchemaDir = t.TempDir()
+	agent, err := netaddr.ParsePacket("unix:" + socket("agent.sock")).Listen(t.Context())
+	assert.NoError(t, err)
+	t.Cleanup(func() { _ = agent.Close() })
 	registry := protocols.NewRegistry()
 	assert.NoError(t, registry.Register(httpprotocol.NewProvider()))
+	assert.NoError(t, registry.Register(statsdprotocol.NewProvider()))
 	protocolstest.Configure(t, registry.Plugins(),
 		"--listen=unix:"+socket("ingress.sock"),
 		"--reference-url="+reference.URL,
@@ -48,6 +54,9 @@ func TestProxyMirrorsServicesThatRunElsewhere(t *testing.T) {
 		"--reference-egress-listen=unix:"+socket("egress-reference.sock"),
 		"--candidate-egress-listen=unix:"+socket("egress-candidate.sock"),
 		"--no-reflection",
+		"--statsd-reference-listen=unix:"+socket("statsd-reference.sock"),
+		"--statsd-candidate-listen=unix:"+socket("statsd-candidate.sock"),
+		"--statsd-forward=unix:"+socket("agent.sock"),
 	)
 	proxy, err := proxies.New(t.Context(), config, registry)
 	assert.NoError(t, err)
@@ -76,6 +85,14 @@ func TestProxyMirrorsServicesThatRunElsewhere(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("candidate received no mirrored request")
 	}
+
+	sendDatagram(t, socket("statsd-candidate.sock"), "candidate:1|c")
+	sendDatagram(t, socket("statsd-reference.sock"), "reference:1|c")
+	assert.NoError(t, agent.SetReadDeadline(time.Now().Add(5*time.Second)))
+	buffer := make([]byte, 1024)
+	size, _, err := agent.ReadFrom(buffer)
+	assert.NoError(t, err)
+	assert.Equal(t, "reference:1|c", string(buffer[:size]))
 
 	cancel()
 	assert.NoError(t, <-stopped)
@@ -130,6 +147,16 @@ func TestNewProxyValidates(t *testing.T) {
 	config.MatchWindow = 0
 	_, err := proxies.New(t.Context(), config, nil)
 	assert.EqualError(t, err, "match window must be positive")
+}
+
+// sendDatagram writes datagram to the unix datagram socket at path.
+func sendDatagram(t *testing.T, path string, datagram string) {
+	t.Helper()
+	conn, err := netaddr.ParsePacket("unix:" + path).Dial(t.Context())
+	assert.NoError(t, err)
+	_, err = conn.Write([]byte(datagram))
+	assert.NoError(t, err)
+	assert.NoError(t, conn.Close())
 }
 
 // status returns the status code of a GET for path.

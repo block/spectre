@@ -137,8 +137,10 @@ func (e *Endpoint) Listen(ctx context.Context) (net.Listener, error) {
 	if err != nil {
 		return nil, errors.Wrap(err, "open listener")
 	}
-	if err := shareSocket(e.network, e.address); err != nil {
-		return nil, errors.Join(err, listener.Close())
+	if e.network == networkUnix {
+		if err := shareSocket(e.address); err != nil {
+			return nil, errors.Join(err, listener.Close())
+		}
 	}
 	return listener, nil
 }
@@ -297,8 +299,8 @@ func (e *Endpoint) TargetsListener(listener *Endpoint) bool {
 
 // shareSocket lets the socket file's group connect, so a container running as
 // another user in the same pod reaches it through the pod's shared fsGroup.
-func shareSocket(network string, address string) error {
-	if network != networkUnix || strings.HasPrefix(address, "@") {
+func shareSocket(address string) error {
+	if strings.HasPrefix(address, "@") {
 		return nil
 	}
 	return errors.Wrap(os.Chmod(address, socketMode), "share unix socket")
