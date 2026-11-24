@@ -4,8 +4,8 @@ package spectre.event.v1;
 
 option go_package = "github.com/block/spectre/spectrepb/eventpb;eventpb";
 
-// EventService receives the events of work that no request starts, such as a
-// cron tick, a queued job or a consumed message. SPECTRE serves it on one
+// EventService receives the events of background work, such as a cron tick,
+// a queued job or a consumed message. SPECTRE serves it on one
 // listener for the reference and another for the candidate, and tells the
 // two apart by the listener a call arrives on.
 service EventService {

@@ -243,7 +243,7 @@ and ingress replaces any that a client sends.
 A candidate call without a request ID gets a `502` and quarantines the candidate
 as `pairing`, as does one whose ID is malformed. A reference call without one
 belongs to no mirrored request, such as a call for a request ingress did not
-mirror or for work no request started. It is forwarded but never paired, so it
+mirror or for background work. It is forwarded but never paired, so it
 never quarantines.
 
 Scripts declare dependency endpoints with `egress.http(pattern).match<Type>()`.
@@ -518,8 +518,8 @@ They never include a statement or its values.
 
 ### Events
 
-Events cover work that no request starts, such as a scheduled job, a timer, a
-queued job or a consumed message. Set `--event-reference-listen=ADDRESS` to serve
+Events cover background work: work that no request starts, such as a scheduled
+job, a timer, a queued job or a consumed message. Set `--event-reference-listen=ADDRESS` to serve
 them. The reference reports its events there, and the candidate receives runs from
 and reports its events to `--event-candidate-listen`. Both listeners must be on a
 loopback address or a unix socket. Each serves the Connect service

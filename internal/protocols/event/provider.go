@@ -1,4 +1,4 @@
-// Package event mirrors work that no request starts, such as cron ticks and queued jobs.
+// Package event mirrors background work, such as cron ticks and queued jobs.
 //
 // The reference reports each start, SPECTRE streams the candidate the same work under a run ID,
 // and egress pairs the events both runs produce like any other dependency call.
@@ -48,7 +48,7 @@ func (p *Provider) Kinds() []state.Kind {
 		{
 			Direction:   model.Ingress,
 			Protocol:    script.Protocol,
-			Description: "Module that runs work no request starts, such as a scheduled job, a timer, a queued job or a consumed message.",
+			Description: "Module that runs background work, such as a scheduled job, a timer, a queued job or a consumed message.",
 			Settings: []state.Setting{{
 				Name:        "types",
 				Required:    true,
