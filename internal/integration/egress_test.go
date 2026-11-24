@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/block/spectre/internal/integration/it"
+	"github.com/block/spectre/internal/model"
 )
 
 func TestUnmatchedCandidateEgressQuarantinesCandidate(t *testing.T) {
@@ -26,6 +27,27 @@ func TestUnmatchedCandidateEgressQuarantinesCandidate(t *testing.T) {
 	m.CandidateEgress.Get(forecastsHost, "/v1/forecasts/paris").ExpectStatus(http.StatusBadGateway)
 	m.ExpectQuarantine(it.UnmatchedEgress("GET forecasts.example/v1/forecasts/{location}", "no matching reference request within 500ms"))
 	m.CandidateEgress.Get(forecastsHost, "/v1/forecasts/london").ExpectStatus(http.StatusServiceUnavailable)
+	m.Dependency(forecastsHost).ExpectReceived("/v1/forecasts/paris", 0)
+}
+
+func TestCandidateEgressDifferingFromReferenceReportsDifferences(t *testing.T) {
+	m := it.Start(t,
+		it.Scripts(`
+			import { egress } from "spectre";
+			import type { FetchForecastRequest } from "forecasts";
+
+			egress.http("GET forecasts.example/v1/forecasts/{location}").match<FetchForecastRequest>();
+		`),
+		it.Reference(sampleService()),
+		it.Candidate(sampleService()),
+		it.Dependency(forecastsHost, forecastProvider),
+	)
+
+	m.ReferenceEgress.Get(forecastsHost, "/v1/forecasts/london").ExpectStatus(http.StatusOK)
+	// The only reference call of the request on the route differs, so the report names the path.
+	m.CandidateEgress.Get(forecastsHost, "/v1/forecasts/paris").ExpectStatus(http.StatusBadGateway)
+	m.ExpectQuarantine(it.DivergentEgress("GET forecasts.example/v1/forecasts/{location}",
+		model.Difference{Path: "$.location", Change: model.ChangeChanged, Count: 1}))
 	m.Dependency(forecastsHost).ExpectReceived("/v1/forecasts/paris", 0)
 }
 

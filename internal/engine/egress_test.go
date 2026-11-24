@@ -27,7 +27,11 @@ func TestEgressCandidatePairsWithEquivalentReference(t *testing.T) {
 		referenceRequest func(ctx context.Context) (schema.Value, error)
 		candidateRoute   model.Route
 		candidateRequest func(ctx context.Context) (schema.Value, error)
-		matched          bool
+		// shared sends the candidate request as one whose request ID spans unrelated work.
+		shared  bool
+		matched bool
+		// differences are how the candidate differs from the reference it nearly matches, if any.
+		differences []model.Difference
 	}{
 		"Normalised": {
 			referenceRoute: "query", referenceRequest: query(t, queryType, "london", "first"),
@@ -42,10 +46,17 @@ func TestEgressCandidatePairsWithEquivalentReference(t *testing.T) {
 		"UntypedSkipsNormalisers": {
 			referenceRoute: "query", referenceRequest: query(t, unknown, "london", "first"),
 			candidateRoute: "query", candidateRequest: query(t, unknown, "london", "second"),
+			differences: []model.Difference{{Path: "$[*]", Change: model.ChangeChanged, Count: 1}},
 		},
 		"DifferentValue": {
+			referenceRoute: "query", referenceRequest: query(t, queryType, "london", "first"),
+			candidateRoute: "query", candidateRequest: query(t, queryType, "paris", "second"),
+			differences: []model.Difference{{Path: "$.value", Change: model.ChangeChanged, Count: 1}},
+		},
+		"DifferentValueSharingRequestID": {
 			referenceRoute: "query", referenceRequest: query(t, queryType, "london", ""),
 			candidateRoute: "query", candidateRequest: query(t, queryType, "paris", ""),
+			shared: true,
 		},
 		"DifferentRoute": {
 			referenceRoute: "query", referenceRequest: query(t, queryType, "london", ""),
@@ -58,7 +69,11 @@ func TestEgressCandidatePairsWithEquivalentReference(t *testing.T) {
 			raw := newRaw("reference")
 			h.reference(t, test.referenceRoute, test.referenceRequest, raw)
 
-			decision, err := h.engine.EgressCandidate(fake).ProcessRequest(h.ctx, Some(h.requestID), test.candidateRoute, notIgnored, test.candidateRequest)
+			ctx := h.ctx
+			if test.shared {
+				ctx = engine.WithSharedRequestID(ctx)
+			}
+			decision, err := h.engine.EgressCandidate(fake).ProcessRequest(ctx, Some(h.requestID), test.candidateRoute, notIgnored, test.candidateRequest)
 
 			if test.matched {
 				assert.NoError(t, err)
@@ -69,6 +84,20 @@ func TestEgressCandidatePairsWithEquivalentReference(t *testing.T) {
 					"event": "correlation", "protocol": "fake", "route": string(test.candidateRoute),
 				}}, h.records(t, "Candidate request matched a reference request"))
 				assert.Equal(t, 0, raw.Releases())
+				return
+			}
+			if len(test.differences) > 0 {
+				assert.EqualError(t, err, "request differs from the only unclaimed reference request on the route: "+
+					strings.Join(model.DifferenceLines(test.differences, false), ", "))
+				assert.Equal(t, nil, decision)
+				awaitRelease(t, raw)
+				// The reference was claimed to be diffed, so it never expires as left out.
+				time.Sleep(2 * window)
+				assert.Equal(t, []model.QuarantineReason{{
+					Kind:        model.QuarantineDivergent,
+					Traffic:     Some(model.Traffic{Direction: model.Egress, Protocol: fake, Route: test.candidateRoute}),
+					Differences: test.differences,
+				}}, h.quarantine.Recorded())
 				return
 			}
 			assert.EqualError(t, err, "no matching reference request within 200ms")
@@ -355,6 +384,52 @@ func TestEgressQuarantinesUnclaimedReferenceAfterWindow(t *testing.T) {
 			assert.EqualError(t, err, "no matching reference request within 20ms")
 		})
 	}
+}
+
+func TestEgressNearMatchesReferenceThatArrivesWhileCandidateWaits(t *testing.T) {
+	h := newHarness(t, 100*time.Millisecond)
+	decided := h.candidate(t, query(t, queryType, "paris", ""))
+	time.Sleep(20 * time.Millisecond)
+	raw := newRaw("reference")
+	h.reference(t, "query", query(t, queryType, "london", ""), raw)
+
+	outcome := <-decided
+
+	assert.EqualError(t, outcome.err, "request differs from the only unclaimed reference request on the route: ~ $.value")
+	awaitRelease(t, raw)
+	time.Sleep(200 * time.Millisecond)
+	assert.Equal(t, []string{"request differences: ~ $.value"}, h.quarantine.Reasons())
+}
+
+func TestEgressDoesNotGuessBetweenSeveralNearMatches(t *testing.T) {
+	const window = 50 * time.Millisecond
+	h := newHarness(t, window)
+	london, berlin := newRaw("london"), newRaw("berlin")
+	h.reference(t, "query", query(t, queryType, "london", ""), london)
+	h.reference(t, "query", query(t, queryType, "berlin", ""), berlin)
+
+	_, err := h.engine.EgressCandidate(fake).ProcessRequest(h.ctx, Some(h.requestID), "query", notIgnored, query(t, queryType, "paris", ""))
+
+	assert.EqualError(t, err, "no matching reference request within 50ms: 2 unclaimed reference requests on the route, so none is compared")
+	// Neither reference was claimed, so the candidate left both out.
+	awaitRelease(t, london)
+	awaitRelease(t, berlin)
+	traffic := Some(model.Traffic{Direction: model.Egress, Protocol: fake, Route: "query"})
+	assert.Equal(t, []model.QuarantineReason{
+		{Kind: model.QuarantineUnmatched, Traffic: traffic, Detail: err.Error()},
+		{Kind: model.QuarantineUnmatched, Traffic: traffic, Detail: "no matching candidate request within 50ms"},
+		{Kind: model.QuarantineUnmatched, Traffic: traffic, Detail: "no matching candidate request within 50ms"},
+	}, h.quarantine.Recorded())
+}
+
+func TestEgressNeverNearMatchesAcrossMirroredRequests(t *testing.T) {
+	h := newHarness(t, 50*time.Millisecond)
+	raw := newRaw("reference")
+	h.reference(t, "query", query(t, queryType, "london", ""), raw)
+
+	outcome := <-h.candidateIn(t, Some(newRequestID()), query(t, queryType, "paris", ""))
+
+	assert.EqualError(t, outcome.err, "no matching reference request within 50ms")
 }
 
 const optionalScript = `

@@ -191,22 +191,29 @@ func (s *Scripts) Compare(ctx context.Context, reference, candidate schema.Value
 // Hash returns SHA-256 over identity and the canonical JSON of the normalised
 // payload. side only labels log records.
 func (s *Scripts) Hash(ctx context.Context, identity string, side string, payload schema.Value) (Hash, error) {
+	hash, _, err := s.Identify(ctx, identity, side, payload)
+	return hash, err
+}
+
+// Identify returns the payload's hash, as Hash does, and its normalised form to diff later.
+func (s *Scripts) Identify(ctx context.Context, identity string, side string, payload schema.Value) (hash Hash, identified Normalised, err error) {
 	ctx, cancel := context.WithTimeout(ctx, s.timeout)
 	defer cancel()
+	declared := payload.Type()
 	normalised, err := s.normalise(ctx, side, payload)
 	if err != nil {
-		return Hash{}, errors.Wrap(err, "normalise payload")
+		return hash, identified, errors.Wrap(err, "normalise payload")
 	}
 	canonical, err := normalised.CanonicalJSON()
 	if err != nil {
-		return Hash{}, errors.WithStack(err)
+		return hash, identified, errors.WithStack(err)
 	}
 	// Identities contain no zero bytes, separating identity from JSON.
 	hashed := make([]byte, 0, len(identity)+1+len(canonical))
 	hashed = append(hashed, identity...)
 	hashed = append(hashed, 0)
 	hashed = append(hashed, canonical...)
-	return sha256.Sum256(hashed), nil
+	return sha256.Sum256(hashed), newNormalised(declared, normalised), nil
 }
 
 // normalise gives each object payload a fresh evaluator, so script state cannot carry

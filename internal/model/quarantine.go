@@ -11,7 +11,7 @@ import (
 type QuarantineKind string
 
 const (
-	// QuarantineDivergent means the candidate's responses differ from the reference's.
+	// QuarantineDivergent means the candidate's responses, or an egress request, differ from the reference's.
 	QuarantineDivergent QuarantineKind = "divergent"
 	// QuarantineUnable means the mirror could not compare or replay traffic.
 	QuarantineUnable QuarantineKind = "unable"
@@ -33,9 +33,9 @@ type QuarantineReason struct {
 	Traffic Option[Traffic] `json:"traffic,omitzero"`
 	// Node is the migration state node that owns an ingress route.
 	Node Option[string] `json:"node,omitzero"`
-	// Differences are where and how the responses of a divergence differ, without values.
+	// Differences are where and how the payloads of a divergence differ, without values.
 	Differences []Difference `json:"differences,omitempty"`
-	// Truncated means the responses had more differences than are listed.
+	// Truncated means the payloads had more differences than are listed.
 	Truncated bool   `json:"truncated,omitzero"`
 	Detail    string `json:"detail,omitempty"`
 }
@@ -43,9 +43,18 @@ type QuarantineReason struct {
 // String describes the reason for logs.
 func (r QuarantineReason) String() string {
 	if r.Kind == QuarantineDivergent {
-		return "response differences: " + strings.Join(DifferenceLines(r.Differences, r.Truncated), ", ")
+		return r.Compared() + ": " + strings.Join(DifferenceLines(r.Differences, r.Truncated), ", ")
 	}
 	return r.Detail
+}
+
+// Compared names what the differences of a divergence are between: the requests
+// of an egress call, or else the responses to an ingress request.
+func (r QuarantineReason) Compared() string {
+	if traffic, ok := r.Traffic.Get(); ok && traffic.Direction == Egress {
+		return "request differences"
+	}
+	return "response differences"
 }
 
 // Quarantine is a quarantine in effect: why it began and when.
