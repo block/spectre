@@ -102,8 +102,8 @@ func TestClaimFailuresEndTheCombinationEvenWhenCaught(t *testing.T) {
 	assert.IsError(t, err, unmatched)
 }
 
-// A script that is broken, returns rows MySQL cannot send, or loops forever, cannot
-// answer the candidate.
+// A script that is broken, returns rows MySQL cannot send, or loops forever, even in
+// the getters of the rows it returns, cannot answer the candidate.
 func TestStatementReplacementFailures(t *testing.T) {
 	for name, test := range map[string]struct {
 		using string
@@ -120,6 +120,14 @@ func TestStatementReplacementFailures(t *testing.T) {
 		"RunsTooLong": {
 			using: `() => { for (;;) {} }`,
 			err:   `JavaScript function of egress.mysql.statement("SELECT 1").replaces("SELECT 2").using() threw an exception: context deadline exceeded at mysql.ts:2:63(1)`,
+		},
+		"ReadsRowsTooLong": {
+			using: `() => [{ get id(): string { for (;;) {} } }]`,
+			err:   `JavaScript function of egress.mysql.statement("SELECT 1").replaces("SELECT 2").using() threw an exception: context deadline exceeded at id (mysql.ts:2:72(1))`,
+		},
+		"RowGetterThrows": {
+			using: `() => [{ get id(): string { throw new Error("boom"); } }]`,
+			err:   `JavaScript function of egress.mysql.statement("SELECT 1").replaces("SELECT 2").using() threw an exception`,
 		},
 	} {
 		t.Run(name, func(t *testing.T) {

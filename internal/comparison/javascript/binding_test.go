@@ -328,8 +328,12 @@ func TestCallbacksRunUnderTheTimeoutWithoutWaiting(t *testing.T) {
 	defer evaluator.Close()
 	instance := handle.Instance(evaluator)
 
-	_, err = instance.scope.Invoke(instance.callbacks[0], "callback threw an exception")
+	_, err = instance.scope.Invoke(instance.callbacks[0], "callback threw an exception", readNothing)
 	assert.NoError(t, err)
-	_, err = instance.scope.Invoke(instance.callbacks[1], "callback threw an exception")
+	_, err = instance.scope.Invoke(instance.callbacks[1], "callback threw an exception", readNothing)
 	assert.IsError(t, err, context.DeadlineExceeded)
+}
+
+func readNothing(sobek.Value) (struct{}, error) {
+	return struct{}{}, nil
 }

@@ -73,15 +73,15 @@ func (c Callbacks) Combine(replacement Replacement, values []Option[string], cla
 			return rowsValue(runtime, rows)
 		}))
 	}
-	result, err := scope.Invoke(using, threw(replacement), valuesValue(runtime, values), arrayValue(runtime, functions))
+	read := func(result sobek.Value) ([]Row, error) {
+		rows, err := readRows(result)
+		return rows, errors.Wrapf(err, "result of %s", replacement)
+	}
+	rows, err := scope.Invoke(using, threw(replacement), read, valuesValue(runtime, values), arrayValue(runtime, functions))
 	if failed, claimFailed := failure.Get(); claimFailed {
 		return nil, errors.WithStack(failed)
 	}
-	if err != nil {
-		return nil, errors.WithStack(err)
-	}
-	rows, err := readRows(result)
-	return rows, errors.Wrapf(err, "result of %s", replacement)
+	return rows, errors.WithStack(err)
 }
 
 // Split passes the replies a splitting replacement's using function offers for
@@ -115,11 +115,16 @@ func (c Callbacks) Split(replacement Replacement, values []Option[string], rows 
 			return sobek.Undefined()
 		}))
 	}
-	_, err := scope.Invoke(using, threw(replacement), valuesValue(runtime, values), rowsValue(runtime, rows), arrayValue(runtime, functions))
+	_, err := scope.Invoke(using, threw(replacement), ignoreResult, valuesValue(runtime, values), rowsValue(runtime, rows), arrayValue(runtime, functions))
 	if failed, offerFailed := failure.Get(); offerFailed {
 		return errors.WithStack(failed)
 	}
 	return errors.WithStack(err)
+}
+
+// ignoreResult reads nothing from the result of a splitting replacement, which offers its replies instead.
+func ignoreResult(sobek.Value) (struct{}, error) {
+	return struct{}{}, nil
 }
 
 // threw is the message of an exception in a replacement's using function.

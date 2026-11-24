@@ -124,13 +124,13 @@ func selectsHeader(scope *javascript.Scope, rule Rule, callbacks map[string]sobe
 }
 
 func callSelector(scope *javascript.Scope, rule Rule, callback sobek.Callable, argument sobek.Value) (bool, error) {
-	result, err := scope.Invoke(callback, "JavaScript selector of rule "+rule.String()+" threw an exception", argument)
-	if err != nil {
-		return false, errors.WithStack(err)
+	read := func(result sobek.Value) (bool, error) {
+		selected, ok := result.Export().(bool)
+		if !ok {
+			return false, errors.Errorf("JavaScript selector of rule %s returned a value that is not a boolean", rule)
+		}
+		return selected, nil
 	}
-	selected, ok := result.Export().(bool)
-	if !ok {
-		return false, errors.Errorf("JavaScript selector of rule %s returned a value that is not a boolean", rule)
-	}
-	return selected, nil
+	selected, err := scope.Invoke(callback, "JavaScript selector of rule "+rule.String()+" threw an exception", read, argument)
+	return selected, errors.WithStack(err)
 }

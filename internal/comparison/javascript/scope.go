@@ -48,15 +48,26 @@ func (s *Scope) Call(callback sobek.Callable, arguments ...schema.Value) (Option
 	return s.registry.call(callback, arguments)
 }
 
-// Invoke calls a script callback directly with runtime values, under the evaluator's timeout. An
-// exception becomes an error with message, without its text, but an interruption is kept.
-func (s *Scope) Invoke(callback sobek.Callable, message string, arguments ...sobek.Value) (sobek.Value, error) {
+// Invoke calls a script callback with runtime values and reads its result, which can run getters, under
+// the evaluator's timeout. An exception becomes an error with message, but an interruption is kept.
+func (s *Scope) Invoke[T any](callback sobek.Callable, message string, read func(result sobek.Value) (T, error), arguments ...sobek.Value) (T, error) {
 	defer s.registry.count()()
-	result, err := callback(sobek.Undefined(), arguments...)
-	if err != nil {
-		return nil, scriptError(err, message)
+	var value T
+	var readErr error
+	// Reading from Go outside a call panics on a getter's exception or interruption, so read inside one.
+	invoke, _ := sobek.AssertFunction(s.runtime.ToValue(func(sobek.FunctionCall) sobek.Value {
+		result, err := callback(sobek.Undefined(), arguments...)
+		if err != nil {
+			panic(err)
+		}
+		value, readErr = read(result)
+		return sobek.Undefined()
+	}))
+	if _, err := invoke(sobek.Undefined()); err != nil {
+		var none T
+		return none, scriptError(err, message)
 	}
-	return result, nil
+	return value, readErr
 }
 
 // Wait runs a function that a script callback waits on, such as for a reply from a database,
