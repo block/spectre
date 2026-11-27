@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/DataDog/sketches-go/ddsketch/mapping"
 	. "github.com/alecthomas/types/optional"
 
 	"github.com/block/spectre/internal/model"
@@ -18,12 +19,13 @@ import (
 type window struct {
 	start time.Time
 	// lossy windows dropped datagrams, so they are not judged.
-	lossy  bool
-	series map[string]*windowSeries
+	lossy   bool
+	series  map[string]*windowSeries
+	indexes mapping.IndexMapping
 }
 
-func newWindow(start time.Time) *window {
-	return &window{start: start, series: map[string]*windowSeries{}}
+func newWindow(start time.Time, indexes mapping.IndexMapping) *window {
+	return &window{start: start, series: map[string]*windowSeries{}, indexes: indexes}
 }
 
 // add counts a sample under its resolution, and reports whether the series is new to the window.
@@ -31,7 +33,7 @@ func (w *window) add(side model.Side, sample metric.Sample, resolved resolution)
 	key := resolved.series.Key()
 	entry, found := w.series[key]
 	if !found {
-		entry = newWindowSeries(resolved)
+		entry = newWindowSeries(resolved, w.indexes)
 		w.series[key] = entry
 	}
 	entry.add(side, sample, resolved.scale)
@@ -73,16 +75,17 @@ func (w *window) verdict(length time.Duration) Option[model.QuarantineReason] {
 type windowSeries struct {
 	resolution resolution
 	sides      map[model.Side]*aggregate
+	indexes    mapping.IndexMapping
 }
 
-func newWindowSeries(resolved resolution) *windowSeries {
-	return &windowSeries{resolution: resolved, sides: map[model.Side]*aggregate{}}
+func newWindowSeries(resolved resolution, indexes mapping.IndexMapping) *windowSeries {
+	return &windowSeries{resolution: resolved, sides: map[model.Side]*aggregate{}, indexes: indexes}
 }
 
 func (s *windowSeries) add(side model.Side, sample metric.Sample, scale float64) {
 	values, found := s.sides[side]
 	if !found {
-		values = newAggregate(s.resolution.series.Type.Class())
+		values = newAggregate(s.resolution.series.Type.Class(), s.indexes)
 		s.sides[side] = values
 	}
 	values.add(sample, scale)
@@ -103,6 +106,11 @@ func (s *windowSeries) verdict() Option[model.QuarantineReason] {
 	checks := s.resolution.comparison.For(class)
 	if len(checks) == 0 {
 		return s.fail(model.QuarantineUnable, nil, "the StatsD rule compares %s, which %s %s does not have", joinStatistics(s.resolution.comparison.Statistics()), class, series.Route())
+	}
+	for _, values := range s.sides {
+		if values.overflowed() && slices.ContainsFunc(checks, isPercentile) {
+			return s.fail(model.QuarantineUnable, nil, "%s %s has a scaled value too large to take percentiles of", class, series.Route())
+		}
 	}
 	reference, hasReference := s.sides[model.Reference]
 	candidate, hasCandidate := s.sides[model.Candidate]
@@ -154,6 +162,11 @@ func (s *windowSeries) presence(checks []scripted.Check) Option[model.Quarantine
 func (s *windowSeries) fail(kind model.QuarantineKind, differences []model.Difference, format string, arguments ...any) Option[model.QuarantineReason] {
 	traffic := Some(model.Traffic{Direction: model.Egress, Protocol: scripted.Protocol, Route: s.resolution.series.Route()})
 	return Some(model.QuarantineReason{Kind: kind, Traffic: traffic, Differences: differences, Detail: fmt.Sprintf(format, arguments...)})
+}
+
+func isPercentile(check scripted.Check) bool {
+	_, percentile := check.Statistic.Rank()
+	return percentile
 }
 
 // joinStatistics lists statistics, as in "count and p95".

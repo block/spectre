@@ -68,6 +68,12 @@ func TestResolverRejectsATagFunctionThatReturnsANonBoolean(t *testing.T) {
 	assert.EqualError(t, err, "StatsD rules for http.responses{code:200}: StatsD tag function returned a value that is not a boolean")
 }
 
+func TestResolverRejectsAMapWithANonFiniteScale(t *testing.T) {
+	resolve := newScriptResolver(t, `egress.statsd("http.**").map((m) => ({ name: m.name, scale: Infinity }));`)
+	_, _, err := resolve.resolve(t.Context(), model.Reference, []metric.Series{series("http.latency", metric.Timer, map[string]string{})})
+	assert.EqualError(t, err, "StatsD rules for http.latency: StatsD map function must return a finite scale")
+}
+
 func TestWindowVerdicts(t *testing.T) {
 	responses := resolution{outcome: compared, series: series("http.responses", metric.Counter, map[string]string{"code": "200", "endpoint": "fees#show"}), scale: 1,
 		comparison: scripted.Comparison{Checks: []scripted.Check{{Statistic: metric.Total, Tolerance: scripted.Tolerance{Upper: 0.1, Lower: 0.1}}}}}
@@ -76,6 +82,9 @@ func TestWindowVerdicts(t *testing.T) {
 		{Statistic: metric.P95, Tolerance: scripted.Tolerance{Upper: 0.2, Lower: 1}},
 	}}
 	latency := resolution{outcome: compared, series: series("http.latency", metric.Timer, map[string]string{}), scale: 1, comparison: latencyComparison}
+	wholeMilliseconds := resolution{outcome: compared, series: series("http.latency", metric.Timer, map[string]string{}), scale: 1,
+		comparison: scripted.Comparison{Checks: []scripted.Check{{Statistic: metric.P95, Tolerance: scripted.Tolerance{Upper: 0.2, Lower: 0.2, Slack: 1}}}}}
+	enlarged := resolution{outcome: compared, series: series("http.latency", metric.Timer, map[string]string{}), scale: 1e10, comparison: latencyComparison}
 	latencyAsCounter := resolution{outcome: compared, series: series("http.latency", metric.Counter, map[string]string{}), scale: 1, comparison: latencyComparison}
 	depth := resolution{outcome: compared, series: series("queue.depth", metric.Gauge, map[string]string{}), scale: 1,
 		comparison: scripted.Comparison{Checks: []scripted.Check{{Statistic: metric.Mean, Tolerance: scripted.Tolerance{}}}}}
@@ -106,6 +115,9 @@ func TestWindowVerdicts(t *testing.T) {
 		"SlowerCandidate":    {resolved: latency, reference: []string{"r:100:100|ms"}, candidate: []string{"r:200:200|ms"}, kind: model.QuarantineDivergent, differences: changed(metric.P95), detail: "distribution http.latency: p95 above the 20% upper bound"},
 		"FewerSamples":       {resolved: latency, reference: []string{"r:1:1:1:1|ms"}, candidate: []string{"r:1|ms"}, kind: model.QuarantineDivergent, differences: changed(metric.Count), detail: "distribution http.latency: count below the 50% lower bound"},
 		"FewerAndSlower":     {resolved: latency, reference: []string{"r:1:1:1:1|ms"}, candidate: []string{"r:5|ms"}, kind: model.QuarantineDivergent, differences: changed(metric.Count, metric.P95), detail: "distribution http.latency: count below the 50% lower bound, p95 above the 20% upper bound"},
+		"WithinSlack":        {resolved: wholeMilliseconds, reference: []string{"r:0:1:1|ms"}, candidate: []string{"r:0:0:0|ms"}},
+		"BeyondSlack":        {resolved: wholeMilliseconds, reference: []string{"r:1:1:1|ms"}, candidate: []string{"r:3:3:3|ms"}, kind: model.QuarantineDivergent, differences: changed(metric.P95), detail: "distribution http.latency: p95 above the 20% upper bound with 1 of slack"},
+		"TooLargeForSketch":  {resolved: enlarged, reference: []string{"r:1e300|ms"}, candidate: []string{"r:1|ms"}, kind: model.QuarantineUnable, detail: "distribution http.latency has a scaled value too large to take percentiles of"},
 		"StatisticNotOfType": {resolved: latencyAsCounter, reference: []string{"r:1|c"}, candidate: []string{"r:1|c"}, kind: model.QuarantineUnable, detail: "the StatsD rule compares count and p95, which counter http.latency does not have"},
 		"GaugeMissing":       {resolved: depth, reference: []string{"r:3|g"}, kind: model.QuarantineUnmatched, detail: "candidate left out gauge queue.depth that the reference sent"},
 		"GaugeDiffers":       {resolved: depth, reference: []string{"r:3|g"}, candidate: []string{"r:4|g"}, kind: model.QuarantineDivergent, differences: changed(metric.Mean), detail: "gauge queue.depth: mean above the 0% upper bound"},
@@ -113,7 +125,9 @@ func TestWindowVerdicts(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			start := time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC)
-			counted := newWindow(start)
+			indexes, err := newSketchMapping()
+			assert.NoError(t, err)
+			counted := newWindow(start, indexes)
 			for side, datagrams := range map[model.Side][]string{model.Reference: test.reference, model.Candidate: test.candidate} {
 				for _, datagram := range datagrams {
 					samples, _ := metric.Parse([]byte(datagram))
@@ -142,7 +156,8 @@ func TestComparatorJudgesSettledWindowsAfterTheCandidateStarts(t *testing.T) {
 	quarantines := &recordingQuarantiner{}
 	config := NewConfig()
 	config.Window, config.Settle = time.Minute, 10*time.Second
-	compare := newComparator(t.Context(), config, newTestResolver(t), quarantines, proxy.NewCandidates(proxy.NewCandidatesConfig()))
+	compare, err := newComparator(t.Context(), config, newTestResolver(t), quarantines, proxy.NewCandidates(proxy.NewCandidatesConfig()))
+	assert.NoError(t, err)
 	origin := compare.origin
 	at := func(offset time.Duration) time.Time { return origin.Add(offset) }
 	reference := "framework.http.response_codes:10|c|#controller:fees,action:show,code:200"
@@ -167,7 +182,8 @@ func TestComparatorJudgesASilentCandidateAfterItsStartupTimeout(t *testing.T) {
 	quarantines := &recordingQuarantiner{}
 	config := NewConfig()
 	config.Window, config.Settle, config.CandidateStartupTimeout = time.Minute, 0, 2*time.Minute
-	compare := newComparator(t.Context(), config, newTestResolver(t), quarantines, proxy.NewCandidates(proxy.NewCandidatesConfig()))
+	compare, err := newComparator(t.Context(), config, newTestResolver(t), quarantines, proxy.NewCandidates(proxy.NewCandidatesConfig()))
+	assert.NoError(t, err)
 	reference := []byte("framework.http.response_codes:10|c|#controller:fees,action:show,code:200")
 	for minute := range 3 {
 		compare.add(t.Context(), observation{side: model.Reference, at: compare.origin.Add(time.Duration(minute)*time.Minute + time.Second), datagram: reference})
@@ -186,7 +202,8 @@ func TestComparatorStopsOnceTheCandidateIsQuarantined(t *testing.T) {
 	config := NewConfig()
 	config.Window, config.Settle, config.CandidateStartupTimeout = time.Minute, 0, 0
 	ingress := proxy.NewCandidates(proxy.NewCandidatesConfig())
-	compare := newComparator(t.Context(), config, newTestResolver(t), quarantines, ingress)
+	compare, err := newComparator(t.Context(), config, newTestResolver(t), quarantines, ingress)
+	assert.NoError(t, err)
 	reference := []byte("framework.http.response_codes:10|c|#controller:fees,action:show,code:200")
 	compare.add(t.Context(), observation{side: model.Reference, at: compare.origin.Add(time.Second), datagram: reference})
 	ingress.Quarantine(t.Context(), model.QuarantineReason{Kind: model.QuarantineDivergent, Detail: "ingress"})

@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/DataDog/sketches-go/ddsketch/mapping"
 	. "github.com/alecthomas/types/optional"
 
 	"github.com/block/spectre/internal/engine"
@@ -40,13 +41,18 @@ type comparator struct {
 	queue       chan observation
 	origin      time.Time
 	windows     map[int64]*window
+	indexes     mapping.IndexMapping
 	// candidateFrom is when the candidate first sent a compared series.
 	candidateFrom Option[time.Time]
 	stopped       bool
 	lost          *losses
 }
 
-func newComparator(ctx context.Context, config Config, resolver *resolver, quarantiner engine.Quarantiner, status protocols.QuarantineStatus) *comparator {
+func newComparator(ctx context.Context, config Config, resolver *resolver, quarantiner engine.Quarantiner, status protocols.QuarantineStatus) (*comparator, error) {
+	indexes, err := newSketchMapping()
+	if err != nil {
+		return nil, err
+	}
 	return &comparator{
 		config:        config,
 		resolver:      resolver,
@@ -56,9 +62,10 @@ func newComparator(ctx context.Context, config Config, resolver *resolver, quara
 		queue:         make(chan observation, queuedObservations),
 		origin:        time.Now(),
 		windows:       map[int64]*window{},
+		indexes:       indexes,
 		candidateFrom: None[time.Time](),
 		lost:          newLosses(),
-	}
+	}, nil
 }
 
 // observe returns the function a side's relay passes each datagram to. It never blocks.
@@ -137,7 +144,7 @@ func (c *comparator) window(at time.Time) *window {
 	index := int64(at.Sub(c.origin) / c.config.Window)
 	found, ok := c.windows[index]
 	if !ok {
-		found = newWindow(c.origin.Add(time.Duration(index) * c.config.Window))
+		found = newWindow(c.origin.Add(time.Duration(index)*c.config.Window), c.indexes)
 		c.windows[index] = found
 	}
 	return found

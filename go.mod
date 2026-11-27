@@ -8,6 +8,7 @@ retract [v1.0.0, v1.8.1]
 require (
 	connectrpc.com/connect/v2 v2.0.2
 	connectrpc.com/grpcreflect/v2 v2.0.0
+	github.com/DataDog/sketches-go v1.4.8
 	github.com/alecthomas/assert/v2 v2.11.0
 	github.com/alecthomas/errors v0.9.1
 	github.com/alecthomas/kong v1.17.0

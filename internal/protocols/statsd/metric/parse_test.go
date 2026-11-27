@@ -38,8 +38,8 @@ func TestParseReadsDogStatsDLines(t *testing.T) {
 			samples:  []metric.Sample{{Series: metric.Series{Name: "up", Type: metric.Counter, Tags: map[string]string{}}, Values: []float64{1}, Rate: 1}},
 		},
 		"MalformedLinesCounted": {
-			datagram:  "noValue|c\nbad:x|c\nunknown:1|q\nrate:1|c|@2",
-			malformed: 4,
+			datagram:  "noValue|c\nbad:x|c\nunknown:1|q\nrate:1|c|@2\nnan:NaN|ms\ninf:+Inf|g",
+			malformed: 6,
 		},
 	} {
 		t.Run(name, func(t *testing.T) {

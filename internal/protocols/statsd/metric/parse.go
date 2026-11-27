@@ -1,6 +1,7 @@
 package metric
 
 import (
+	"math"
 	"strconv"
 	"strings"
 
@@ -78,7 +79,7 @@ func parseLine(line string) (Sample, error) {
 			continue
 		}
 		number, err := strconv.ParseFloat(value, 64)
-		if err != nil {
+		if err != nil || math.IsNaN(number) || math.IsInf(number, 0) {
 			return Sample{}, errors.Errorf("metric %q has invalid value %q", name, value)
 		}
 		sample.Values = append(sample.Values, number)

@@ -2,6 +2,7 @@ package scripted
 
 import (
 	"maps"
+	"math"
 
 	"github.com/alecthomas/errors"
 	. "github.com/alecthomas/types/optional"
@@ -102,6 +103,9 @@ func readMapped(js *sobek.Runtime, original metric.Series, result sobek.Value) (
 	}
 	if scale := object.Get("scale"); scale != nil && !sobek.IsUndefined(scale) {
 		mapped.Scale = scale.ToFloat()
+		if math.IsNaN(mapped.Scale) || math.IsInf(mapped.Scale, 0) {
+			return None[Mapped](), errors.New("StatsD map function must return a finite scale")
+		}
 	}
 	return Some(mapped), nil
 }

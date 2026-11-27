@@ -41,7 +41,10 @@ func (s *server) Serve(ctx context.Context, listeners protocols.Listeners) error
 	observers := map[model.Side]func([]byte){model.Reference: unobserved, model.Candidate: unobserved}
 	comparing := None[*comparator]()
 	if hasReference && hasCandidate && s.resolver.declared() {
-		compare := newComparator(ctx, s.config, s.resolver, s.quarantiner, s.quarantines)
+		compare, err := newComparator(ctx, s.config, s.resolver, s.quarantiner, s.quarantines)
+		if err != nil {
+			return err
+		}
 		observers[model.Reference], observers[model.Candidate] = compare.observe(model.Reference), compare.observe(model.Candidate)
 		comparing = Some(compare)
 		logger.FromContext(ctx).InfoContext(ctx, "Comparing StatsD metrics", "window", s.config.Window)
