@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -31,6 +32,7 @@ import (
 	mysqlprotocol "github.com/block/spectre/internal/protocols/mysql"
 	"github.com/block/spectre/internal/protocols/mysql/scripted"
 	"github.com/block/spectre/internal/protocols/protocolstest"
+	statsdprotocol "github.com/block/spectre/internal/protocols/statsd"
 	"github.com/block/spectre/internal/proxies"
 	spectreserver "github.com/block/spectre/internal/server"
 	"github.com/block/spectre/internal/server/client"
@@ -101,6 +103,8 @@ type setup struct {
 	matchWindow    time.Duration
 	// mysql holds the statements that set up the mirror's database, if it has one.
 	mysql Option[[]string]
+	// statsd opens the StatsD sockets.
+	statsd bool
 	// mysqlSavedRepliesSize overrides the bytes of reference replies the MySQL proxy saves.
 	mysqlSavedRepliesSize Option[int]
 }
@@ -198,6 +202,18 @@ func (s *setup) createDatabase(t *testing.T, w *watch, listeners proxies.Listene
 	return args, Some(created)
 }
 
+// createStatsD opens the StatsD sockets, if the mirror has them, and returns the proxy's
+// flags for them. It opens the StatsD provider's listeners in listeners.
+func (s *setup) createStatsD(t *testing.T, listeners proxies.Listeners) (args []string, statsd Option[*StatsD]) {
+	t.Helper()
+	if !s.statsd {
+		return nil, None[*StatsD]()
+	}
+	created, opened := newStatsD(t)
+	listeners.Providers[statsdProtocol] = opened
+	return created.flags(), Some(created)
+}
+
 // writeScripts returns the directory of the comparison scripts, writing those
 // given inline to a temporary one.
 func (s *setup) writeScripts(t *testing.T) string {
@@ -275,6 +291,7 @@ type Mirror struct {
 	Candidate    *Counter
 	t            *testing.T
 	mysql        Option[*Database]
+	statsd       Option[*StatsD]
 	dependencies map[string]*Counter
 	client       *http.Client
 	server       *client.Client
@@ -321,6 +338,8 @@ func Start(t *testing.T, settings ...Setting) *Mirror {
 	m.CandidateEgress = newEgressEndpoint(t, httpClient, baseURL(bound[httpprotocol.CandidateEgressListener]))
 	mysqlArgs, database := setup.createDatabase(t, m.watch, listeners)
 	m.mysql = database
+	statsdArgs, statsd := setup.createStatsD(t, listeners)
+	m.statsd = statsd
 	referenceListener, candidateListener := listen(t), listen(t)
 	m.Reference = serveService(t, referenceListener, referenceService, m.ReferenceEgress.url(), m.mysqlHandle(false))
 	m.Candidate = serveService(t, candidateListener, candidateService, m.CandidateEgress.url(), m.mysqlHandle(true))
@@ -331,7 +350,8 @@ func Start(t *testing.T, settings ...Setting) *Mirror {
 	registry := protocols.NewRegistry()
 	assert.NoError(t, registry.Register(httpprotocol.NewProvider()))
 	assert.NoError(t, registry.Register(mysqlprotocol.NewProvider()))
-	protocolstest.Configure(t, registry.Plugins(), append(httpArgs, mysqlArgs...)...)
+	assert.NoError(t, registry.Register(statsdprotocol.NewProvider()))
+	protocolstest.Configure(t, registry.Plugins(), slices.Concat(httpArgs, mysqlArgs, statsdArgs)...)
 	proxy, err := proxies.New(ctx, proxyConfig, registry)
 	assert.NoError(t, err)
 	assert.NoError(t, proxy.StartListeners(ctx, listeners))
@@ -358,6 +378,16 @@ func (m *Mirror) MySQL() *Database {
 		m.t.Fatal("the mirror has no MySQL database")
 	}
 	return database
+}
+
+// StatsD returns the mirror's StatsD sockets.
+func (m *Mirror) StatsD() *StatsD {
+	m.t.Helper()
+	statsd, ok := m.statsd.Get()
+	if !ok {
+		m.t.Fatal("the mirror has no StatsD sockets")
+	}
+	return statsd
 }
 
 // mysqlHandle returns where the reference or the candidate reaches the mirror's database, if it has one.
@@ -405,16 +435,33 @@ func (m *Mirror) ExpectCalls(expected Calls) {
 // of the expected reason's traffic, and checks its reason.
 func (m *Mirror) ExpectQuarantine(expected model.QuarantineReason) {
 	m.t.Helper()
-	traffic, hasTraffic := expected.Traffic.Get()
+	assert.Equal(m.t, expected, m.awaitQuarantine(expected.Traffic))
+}
+
+// ExpectQuarantineDetailPrefix is ExpectQuarantine for a detail that ends with a
+// time. It checks the detail starts with prefix, and the rest against expected.
+func (m *Mirror) ExpectQuarantineDetailPrefix(expected model.QuarantineReason, prefix string) {
+	m.t.Helper()
+	reason := m.awaitQuarantine(expected.Traffic)
+	assert.True(m.t, strings.HasPrefix(reason.Detail, prefix), "detail %q does not start with %q", reason.Detail, prefix)
+	reason.Detail = ""
+	assert.Equal(m.t, expected, reason)
+}
+
+// awaitQuarantine waits until the proxy reports a quarantine in the direction of
+// traffic, and returns its reason.
+func (m *Mirror) awaitQuarantine(traffic Option[model.Traffic]) model.QuarantineReason {
+	m.t.Helper()
+	found, hasTraffic := traffic.Get()
 	if !hasTraffic {
 		m.t.Fatal("expect a quarantine reason with traffic")
 	}
-	direction := traffic.Direction
+	direction := found.Direction
 	state := m.waitForState(fmt.Sprintf("an %s quarantine", direction), func(state model.State) bool {
 		_, ok := state.Quarantines[direction]
 		return ok
 	})
-	assert.Equal(m.t, expected, state.Quarantines[direction].Reason)
+	return state.Quarantines[direction].Reason
 }
 
 // waitForState waits until the state the proxy reported to the SPECTRE server
