@@ -603,10 +603,11 @@ Comparison starts with the window in which the candidate first sends a
 compared series, or once `--statsd-candidate-startup-timeout` (5m) passes.
 Windows in which the proxy could not keep up and dropped datagrams are skipped,
 and comparison stops once the candidate is quarantined in either direction.
-Quarantine reasons name the series with its tags, the statistic's value on
-each side, and what the rule allows, for example `distribution http.latency p95
-is 340 on the candidate and 250 on the reference, 36% above; the rule allows up
-to 20% above and 100% below, in the 1m0s window from 10:02:00`.
+Quarantine reasons never quote values. They name the series by its name and
+tag names, such as `http.latency{endpoint}`, and say which bound each statistic
+exceeded, for example `distribution http.latency{endpoint}: p95 above the 20%
+upper bound, in the 1m0s window from 10:02:00`. A divergence also lists each
+statistic that differs, such as `~ p95`.
 
 ### Quarantine
 
@@ -863,8 +864,9 @@ status = "pending"
 | `<direction>.<protocol>` | A kind of IO the node's own code performs, holding that kind's settings. |
 
 The kinds of IO are `ingress[http]`, which lists the routes it handles under
-`routes`, and `egress[http]` and `egress[mysql]`, which take no settings. Write
-a node that sends MySQL statements as `[nodes.<id>.egress.mysql]`.
+`routes`, and `egress[http]`, `egress[mysql]` and `egress[statsd]`, which take
+no settings. Write a node that sends MySQL statements as
+`[nodes.<id>.egress.mysql]`.
 
 A node with no IO is a library, shared by more than one other node. Each route
 belongs to one node, so a divergence on a route also names the node to fix.

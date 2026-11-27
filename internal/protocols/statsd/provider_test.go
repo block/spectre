@@ -114,7 +114,7 @@ func TestServeQuarantinesACandidateThatLeavesOutAComparedMetric(t *testing.T) {
 	case quarantine := <-candidates.Quarantined():
 		assert.Equal(t, model.QuarantineUnmatched, quarantine.Reason.Kind)
 		assert.Equal(t, Some(model.Traffic{Direction: model.Egress, Protocol: "statsd", Route: "framework.http.response_codes"}), quarantine.Reason.Traffic)
-		assert.Contains(t, quarantine.Reason.Detail, "candidate left out counter framework.http.response_codes, which the reference sent with total 5")
+		assert.Contains(t, quarantine.Reason.Detail, "candidate left out counter framework.http.response_codes that the reference sent: total below the 10% lower bound")
 	case <-time.After(receiveTimeout):
 		t.Fatal("candidate was not quarantined")
 	}

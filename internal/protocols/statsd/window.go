@@ -3,9 +3,7 @@ package statsd
 import (
 	"fmt"
 	"maps"
-	"math"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 
@@ -29,7 +27,7 @@ func newWindow(start time.Time) *window {
 }
 
 // add counts a sample under its resolution, and reports whether the series is new to the window.
-func (w *window) add(side metric.Side, sample metric.Sample, resolved resolution) (added bool) {
+func (w *window) add(side model.Side, sample metric.Sample, resolved resolution) (added bool) {
 	key := resolved.series.Key()
 	entry, found := w.series[key]
 	if !found {
@@ -74,14 +72,14 @@ func (w *window) verdict(length time.Duration) Option[model.QuarantineReason] {
 // windowSeries is one mapped series in a window, with each side's values.
 type windowSeries struct {
 	resolution resolution
-	sides      map[metric.Side]*aggregate
+	sides      map[model.Side]*aggregate
 }
 
 func newWindowSeries(resolved resolution) *windowSeries {
-	return &windowSeries{resolution: resolved, sides: map[metric.Side]*aggregate{}}
+	return &windowSeries{resolution: resolved, sides: map[model.Side]*aggregate{}}
 }
 
-func (s *windowSeries) add(side metric.Side, sample metric.Sample, scale float64) {
+func (s *windowSeries) add(side model.Side, sample metric.Sample, scale float64) {
 	values, found := s.sides[side]
 	if !found {
 		values = newAggregate(s.resolution.series.Type.Class())
@@ -90,34 +88,39 @@ func (s *windowSeries) add(side metric.Side, sample metric.Sample, scale float64
 	values.add(sample, scale)
 }
 
-// verdict is why the series quarantines the candidate, if it does.
+// verdict is why the series quarantines the candidate, if it does. Reasons name the
+// series by its route and the rule's bounds, never by values.
 func (s *windowSeries) verdict() Option[model.QuarantineReason] {
 	series := s.resolution.series
 	if s.resolution.outcome == uncovered {
-		sender := metric.Reference
-		if _, fromReference := s.sides[metric.Reference]; !fromReference {
-			sender = metric.Candidate
+		sender := model.Reference
+		if _, fromReference := s.sides[model.Reference]; !fromReference {
+			sender = model.Candidate
 		}
-		return s.fail(model.QuarantineUnable, "no StatsD rule compares or ignores %s %s from the %s", series.Type, series, sender)
+		return s.fail(model.QuarantineUnable, nil, "no StatsD rule compares or ignores %s %s from the %s", series.Type, series.Route(), sender)
 	}
 	class := series.Type.Class()
 	checks := s.resolution.comparison.For(class)
 	if len(checks) == 0 {
-		return s.fail(model.QuarantineUnable, "the StatsD rule compares %s, which %s %s does not have", joinStatistics(s.resolution.comparison.Statistics()), class, series)
+		return s.fail(model.QuarantineUnable, nil, "the StatsD rule compares %s, which %s %s does not have", joinStatistics(s.resolution.comparison.Statistics()), class, series.Route())
 	}
-	reference, hasReference := s.sides[metric.Reference]
-	candidate, hasCandidate := s.sides[metric.Candidate]
+	reference, hasReference := s.sides[model.Reference]
+	candidate, hasCandidate := s.sides[model.Candidate]
 	if !hasReference || !hasCandidate {
 		return s.presence(checks)
 	}
+	differences, exceeded := []model.Difference{}, []string{}
 	for _, check := range checks {
-		referenceValue, candidateValue := reference.statistic(check.Statistic), candidate.statistic(check.Statistic)
-		if !check.Tolerance.Allows(referenceValue, candidateValue) {
-			return s.fail(model.QuarantineDivergent, "%s %s %s is %g on the candidate and %g on the reference, %s; the rule allows %s",
-				class, series, check.Statistic, candidateValue, referenceValue, difference(referenceValue, candidateValue), check.Tolerance)
+		bound, exceeds := check.Tolerance.Exceeds(reference.statistic(check.Statistic), candidate.statistic(check.Statistic)).Get()
+		if exceeds {
+			differences = append(differences, model.Difference{Path: string(check.Statistic), Change: model.ChangeChanged, Count: 1})
+			exceeded = append(exceeded, fmt.Sprintf("%s %s", check.Statistic, bound))
 		}
 	}
-	return None[model.QuarantineReason]()
+	if len(differences) == 0 {
+		return None[model.QuarantineReason]()
+	}
+	return s.fail(model.QuarantineDivergent, differences, "%s %s: %s", class, series.Route(), strings.Join(exceeded, ", "))
 }
 
 // presence judges a series that only one side sent. The other side's measure counts as 0,
@@ -126,50 +129,31 @@ func (s *windowSeries) presence(checks []scripted.Check) Option[model.Quarantine
 	series := s.resolution.series
 	class := series.Type.Class()
 	measure := class.Measure()
-	sent, fromReference := s.sides[metric.Reference]
+	sent, fromReference := s.sides[model.Reference]
 	if !fromReference {
-		sent = s.sides[metric.Candidate]
+		return s.fail(model.QuarantineUnmatched, nil, "candidate sent %s %s that the reference did not", class, series.Route())
 	}
-	value := sent.statistic(measure)
-	allowance := "both sides must send a gauge"
+	because := ""
 	if class != metric.Levelled {
-		allowance = fmt.Sprintf("the rule checks no %s, so both sides must send it", measure)
+		because = fmt.Sprintf("; the rule checks no %s", measure)
 		for _, check := range checks {
 			if check.Statistic != measure {
 				continue
 			}
-			referenceValue, candidateValue := value, 0.0
-			if !fromReference {
-				referenceValue, candidateValue = 0, value
-			}
-			if check.Tolerance.Allows(referenceValue, candidateValue) {
+			bound, exceeds := check.Tolerance.Exceeds(sent.statistic(measure), 0).Get()
+			if !exceeds {
 				return None[model.QuarantineReason]()
 			}
-			allowance = "the rule allows " + check.Tolerance.String()
+			because = fmt.Sprintf(": %s %s", measure, bound)
 		}
 	}
-	if fromReference {
-		return s.fail(model.QuarantineUnmatched, "candidate left out %s %s, which the reference sent with %s %g; %s", class, series, measure, value, allowance)
-	}
-	return s.fail(model.QuarantineUnmatched, "candidate sent %s %s with %s %g, which the reference did not send; %s", class, series, measure, value, allowance)
+	return s.fail(model.QuarantineUnmatched, nil, "candidate left out %s %s that the reference sent%s", class, series.Route(), because)
 }
 
 // fail is a quarantine of the series' traffic.
-func (s *windowSeries) fail(kind model.QuarantineKind, format string, arguments ...any) Option[model.QuarantineReason] {
+func (s *windowSeries) fail(kind model.QuarantineKind, differences []model.Difference, format string, arguments ...any) Option[model.QuarantineReason] {
 	traffic := Some(model.Traffic{Direction: model.Egress, Protocol: scripted.Protocol, Route: s.resolution.series.Route()})
-	return Some(model.QuarantineReason{Kind: kind, Traffic: traffic, Detail: fmt.Sprintf(format, arguments...)})
-}
-
-// difference says how far candidate is from reference, as in "36% above".
-func difference(reference, candidate float64) string {
-	direction, gap := "above", candidate-reference
-	if gap < 0 {
-		direction, gap = "below", -gap
-	}
-	if reference == 0 {
-		return strconv.FormatFloat(gap, 'g', 4, 64) + " " + direction
-	}
-	return strconv.FormatFloat(gap/math.Abs(reference)*100, 'g', 3, 64) + "% " + direction
+	return Some(model.QuarantineReason{Kind: kind, Traffic: traffic, Differences: differences, Detail: fmt.Sprintf(format, arguments...)})
 }
 
 // joinStatistics lists statistics, as in "count and p95".

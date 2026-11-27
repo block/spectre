@@ -8,6 +8,7 @@ import (
 	"github.com/alecthomas/errors"
 
 	"github.com/block/spectre/internal/comparison/javascript"
+	"github.com/block/spectre/internal/model"
 	"github.com/block/spectre/internal/schema"
 )
 
@@ -44,11 +45,11 @@ func (o occurrence) apply(payload *document, normalised documentValue) error {
 	return errors.Wrap(payload.Delete(o.path), "remove normalised value")
 }
 
-func (o occurrence) logAttributes(side string) []slog.Attr {
+func (o occurrence) logAttributes(side model.Side) []slog.Attr {
 	return []slog.Attr{
 		slog.Any("kind", o.target.kind()),
 		slog.String("target", o.target.name()),
-		slog.String("side", side),
+		slog.String("side", string(side)),
 		slog.String("payload_path", o.path.String()),
 	}
 }

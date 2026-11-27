@@ -9,6 +9,7 @@ import (
 
 	"github.com/block/spectre/internal/comparison"
 	"github.com/block/spectre/internal/comparison/javascript"
+	"github.com/block/spectre/internal/model"
 	"github.com/block/spectre/internal/protocols/statsd/metric"
 	"github.com/block/spectre/internal/protocols/statsd/scripted"
 )
@@ -46,20 +47,16 @@ func (r rule) selects(callbacks scripted.Callbacks, series metric.Series) (bool,
 		return false, nil
 	}
 	for _, tag := range r.declared.Selector.Tags {
-		value, present := series.Tags[tag.Name]
-		if want, byValue := tag.Value.Get(); byValue {
-			if !present || value != want {
+		switch tag := tag.(type) {
+		case scripted.TagValue:
+			if !tag.Selects(tagValue(series, tag.Name)) {
 				return false, nil
 			}
-			continue
-		}
-		argument := None[string]()
-		if present {
-			argument = Some(value)
-		}
-		selected, err := callbacks.Selects(tag.Callback, argument)
-		if err != nil || !selected {
-			return false, errors.WithStack(err)
+		case scripted.TagScript:
+			selected, err := callbacks.Selects(tag.Callback, tagValue(series, tag.Name))
+			if err != nil || !selected {
+				return false, errors.WithStack(err)
+			}
 		}
 	}
 	return true, nil
@@ -70,14 +67,18 @@ func newRule(declared scripted.Rule) (rule, error) {
 	return rule{declared: declared, name: name}, errors.WithStack(err)
 }
 
-// mapping is the index of the rule's map callback, if it maps.
-func (r rule) mapping() Option[int] {
-	return r.declared.Map
+// action is what the rule does with the series it selects.
+func (r rule) action() scripted.Action {
+	return r.declared.Action
 }
 
-// compare is the rule's comparison, if it compares.
-func (r rule) compare() Option[scripted.Comparison] {
-	return r.declared.Compare
+// tagValue is a series' tag, absent when the series has no such tag.
+func tagValue(series metric.Series, name string) Option[string] {
+	value, present := series.Tags[name]
+	if !present {
+		return None[string]()
+	}
+	return Some(value)
 }
 
 // resolver applies the scripts' StatsD rules, once for each distinct series of each side.
@@ -113,7 +114,7 @@ func (r *resolver) size() int {
 
 // resolve returns the resolution of each of side's series, running the rules' callbacks
 // in one evaluator for those not seen before. fresh lists the series seen for the first time.
-func (r *resolver) resolve(ctx context.Context, side metric.Side, series []metric.Series) (resolutions []resolution, fresh []int, err error) {
+func (r *resolver) resolve(ctx context.Context, side model.Side, series []metric.Series) (resolutions []resolution, fresh []int, err error) {
 	resolutions = make([]resolution, len(series))
 	for index, one := range series {
 		known, ok := r.resolved[resolutionKey(side, one)]
@@ -141,7 +142,7 @@ func (r *resolver) resolve(ctx context.Context, side metric.Side, series []metri
 }
 
 // apply runs the rules in order: a mapping passes its series on, and a comparison or an ignore decides.
-func (r *resolver) apply(callbacks scripted.Callbacks, side metric.Side, raw metric.Series) (resolution, error) {
+func (r *resolver) apply(callbacks scripted.Callbacks, side model.Side, raw metric.Series) (resolution, error) {
 	current := resolution{outcome: uncovered, series: raw, scale: 1}
 	for _, candidateRule := range r.rules {
 		selected, err := candidateRule.selects(callbacks, current.series)
@@ -151,8 +152,9 @@ func (r *resolver) apply(callbacks scripted.Callbacks, side metric.Side, raw met
 		if !selected {
 			continue
 		}
-		if index, hasMapping := candidateRule.mapping().Get(); hasMapping {
-			mapped, err := callbacks.Map(index, side, current.series)
+		switch action := candidateRule.action().(type) {
+		case scripted.ActionMap:
+			mapped, err := callbacks.Map(action.Callback, side, current.series)
 			if err != nil {
 				return resolution{}, errors.WithStack(err)
 			}
@@ -162,19 +164,18 @@ func (r *resolver) apply(callbacks scripted.Callbacks, side metric.Side, raw met
 				return current, nil
 			}
 			current.series, current.scale = value.Series, current.scale*value.Scale
-			continue
-		}
-		if comparison, compares := candidateRule.compare().Get(); compares {
-			current.outcome, current.comparison = compared, comparison
+		case scripted.ActionCompare:
+			current.outcome, current.comparison = compared, action.Comparison
+			return current, nil
+		case scripted.ActionIgnore:
+			current.outcome = ignored
 			return current, nil
 		}
-		current.outcome = ignored
-		return current, nil
 	}
 	return current, nil
 }
 
 // resolutionKey identifies a side's series, with its exact type, since a mapping may read it.
-func resolutionKey(side metric.Side, series metric.Series) string {
+func resolutionKey(side model.Side, series metric.Series) string {
 	return string(side) + "|" + string(series.Type) + "|" + series.Key()
 }

@@ -12,16 +12,6 @@ import (
 	"github.com/block/spectre/internal/model"
 )
 
-// Side is the service that sent a metric.
-type Side string
-
-const (
-	// Reference is the service being migrated from.
-	Reference Side = "reference"
-	// Candidate is the service being migrated to.
-	Candidate Side = "candidate"
-)
-
 // Type is a metric's StatsD type, as scripts name it.
 type Type string
 
@@ -117,7 +107,11 @@ func (s Series) String() string {
 	return s.Name + "{" + strings.Join(tags, ",") + "}"
 }
 
-// Route names the series in quarantine reasons, as String does.
+// Route names the series in quarantine reasons by its name and tag names, as in
+// name{tag,...}, since tag values may be payload.
 func (s Series) Route() model.Route {
-	return model.Route(s.String())
+	if len(s.Tags) == 0 {
+		return model.Route(s.Name)
+	}
+	return model.Route(s.Name + "{" + strings.Join(slices.Sorted(maps.Keys(s.Tags)), ",") + "}")
 }

@@ -42,7 +42,7 @@ type QuarantineReason struct {
 
 // String describes the reason for logs.
 func (r QuarantineReason) String() string {
-	if r.Kind == QuarantineDivergent && len(r.Differences) > 0 {
+	if r.Kind == QuarantineDivergent {
 		return "response differences: " + strings.Join(DifferenceLines(r.Differences, r.Truncated), ", ")
 	}
 	return r.Detail

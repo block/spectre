@@ -35,18 +35,18 @@ const feeplansScript = `
 func TestResolverMapsComparesAndIgnores(t *testing.T) {
 	resolve := newTestResolver(t)
 	for name, test := range map[string]struct {
-		side     metric.Side
+		side     model.Side
 		series   metric.Series
 		outcome  outcome
 		resolved string
 	}{
-		"Ignored":         {side: metric.Candidate, series: series("jvm.gc.pause", metric.Timer, map[string]string{}), outcome: ignored, resolved: "jvm.gc.pause"},
-		"IgnoredByTag":    {side: metric.Candidate, series: series("framework.actions.service_api.response_codes", metric.Counter, map[string]string{"code": "200s"}), outcome: ignored, resolved: "framework.actions.service_api.response_codes{code:200s}"},
-		"MappedCandidate": {side: metric.Candidate, series: series("framework.actions.service_api.response_codes", metric.Counter, map[string]string{"api": "fees#show", "code": "200"}), outcome: compared, resolved: "http.responses{code:200,endpoint:fees#show}"},
-		"MappedReference": {side: metric.Reference, series: series("framework.http.response_codes", metric.Counter, map[string]string{"controller": "fees", "action": "show", "code": "200"}), outcome: compared, resolved: "http.responses{code:200,endpoint:fees#show}"},
-		"IgnoredBySide":   {side: metric.Candidate, series: series("framework.http.response_codes", metric.Counter, map[string]string{}), outcome: ignored, resolved: "framework.http.response_codes"},
-		"MappedByName":    {side: metric.Candidate, series: series("framework.actions.Fees.show.response_times", metric.Distribution, map[string]string{}), outcome: compared, resolved: "http.latency{endpoint:show}"},
-		"Uncovered":       {side: metric.Reference, series: series("ruby.gc.count", metric.Gauge, map[string]string{}), outcome: uncovered, resolved: "ruby.gc.count"},
+		"Ignored":         {side: model.Candidate, series: series("jvm.gc.pause", metric.Timer, map[string]string{}), outcome: ignored, resolved: "jvm.gc.pause"},
+		"IgnoredByTag":    {side: model.Candidate, series: series("framework.actions.service_api.response_codes", metric.Counter, map[string]string{"code": "200s"}), outcome: ignored, resolved: "framework.actions.service_api.response_codes{code:200s}"},
+		"MappedCandidate": {side: model.Candidate, series: series("framework.actions.service_api.response_codes", metric.Counter, map[string]string{"api": "fees#show", "code": "200"}), outcome: compared, resolved: "http.responses{code:200,endpoint:fees#show}"},
+		"MappedReference": {side: model.Reference, series: series("framework.http.response_codes", metric.Counter, map[string]string{"controller": "fees", "action": "show", "code": "200"}), outcome: compared, resolved: "http.responses{code:200,endpoint:fees#show}"},
+		"IgnoredBySide":   {side: model.Candidate, series: series("framework.http.response_codes", metric.Counter, map[string]string{}), outcome: ignored, resolved: "framework.http.response_codes"},
+		"MappedByName":    {side: model.Candidate, series: series("framework.actions.Fees.show.response_times", metric.Distribution, map[string]string{}), outcome: compared, resolved: "http.latency{endpoint:show}"},
+		"Uncovered":       {side: model.Reference, series: series("ruby.gc.count", metric.Gauge, map[string]string{}), outcome: uncovered, resolved: "ruby.gc.count"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			resolutions, fresh, err := resolve.resolve(t.Context(), test.side, []metric.Series{test.series})
@@ -62,8 +62,14 @@ func TestResolverMapsComparesAndIgnores(t *testing.T) {
 	}
 }
 
+func TestResolverRejectsATagFunctionThatReturnsANonBoolean(t *testing.T) {
+	resolve := newScriptResolver(t, `egress.statsd("http.**").tag("code", ((code: string | undefined) => code) as never).ignore();`)
+	_, _, err := resolve.resolve(t.Context(), model.Reference, []metric.Series{series("http.responses", metric.Counter, map[string]string{"code": "200"})})
+	assert.EqualError(t, err, "StatsD rules for http.responses{code:200}: StatsD tag function returned a value that is not a boolean")
+}
+
 func TestWindowVerdicts(t *testing.T) {
-	responses := resolution{outcome: compared, series: series("http.responses", metric.Counter, map[string]string{}), scale: 1,
+	responses := resolution{outcome: compared, series: series("http.responses", metric.Counter, map[string]string{"code": "200", "endpoint": "fees#show"}), scale: 1,
 		comparison: scripted.Comparison{Checks: []scripted.Check{{Statistic: metric.Total, Tolerance: scripted.Tolerance{Upper: 0.1, Lower: 0.1}}}}}
 	latencyComparison := scripted.Comparison{Checks: []scripted.Check{
 		{Statistic: metric.Count, Tolerance: scripted.Tolerance{Upper: 0.5, Lower: 0.5}},
@@ -75,32 +81,40 @@ func TestWindowVerdicts(t *testing.T) {
 		comparison: scripted.Comparison{Checks: []scripted.Check{{Statistic: metric.Mean, Tolerance: scripted.Tolerance{}}}}}
 	optional := resolution{outcome: compared, series: series("http.retries", metric.Counter, map[string]string{}), scale: 1,
 		comparison: scripted.Comparison{Checks: []scripted.Check{{Statistic: metric.Total, Tolerance: scripted.Tolerance{Upper: 0.1, Lower: 1}}}}}
-	allowed := "the rule allows up to 10% above or below"
+	changed := func(statistics ...metric.Statistic) []model.Difference {
+		differences := []model.Difference{}
+		for _, statistic := range statistics {
+			differences = append(differences, model.Difference{Path: string(statistic), Change: model.ChangeChanged, Count: 1})
+		}
+		return differences
+	}
 	for name, test := range map[string]struct {
-		resolved  resolution
-		reference []string
-		candidate []string
-		kind      model.QuarantineKind
-		detail    string
+		resolved    resolution
+		reference   []string
+		candidate   []string
+		kind        model.QuarantineKind
+		differences []model.Difference
+		detail      string
 	}{
 		"WithinTolerance":    {resolved: responses, reference: []string{"r:10|c"}, candidate: []string{"r:9|c"}},
 		"SampleRateCounted":  {resolved: responses, reference: []string{"r:10|c"}, candidate: []string{"r:5|c|@0.5"}},
-		"CandidateLeftOut":   {resolved: responses, reference: []string{"r:10|c"}, kind: model.QuarantineUnmatched, detail: "candidate left out counter http.responses, which the reference sent with total 10; " + allowed},
+		"CandidateLeftOut":   {resolved: responses, reference: []string{"r:10|c"}, kind: model.QuarantineUnmatched, detail: "candidate left out counter http.responses{code,endpoint} that the reference sent: total below the 10% lower bound"},
 		"LeftOutWithinLower": {resolved: optional, reference: []string{"r:3|c"}},
-		"CandidateExtra":     {resolved: responses, candidate: []string{"r:3|c"}, kind: model.QuarantineUnmatched, detail: "candidate sent counter http.responses with total 3, which the reference did not send; " + allowed},
-		"Divergent":          {resolved: responses, reference: []string{"r:20|c"}, candidate: []string{"r:10|c"}, kind: model.QuarantineDivergent, detail: "counter http.responses total is 10 on the candidate and 20 on the reference, 50% below; " + allowed},
+		"CandidateExtra":     {resolved: responses, candidate: []string{"r:3|c"}, kind: model.QuarantineUnmatched, detail: "candidate sent counter http.responses{code,endpoint} that the reference did not"},
+		"Divergent":          {resolved: responses, reference: []string{"r:20|c"}, candidate: []string{"r:10|c"}, kind: model.QuarantineDivergent, differences: changed(metric.Total), detail: "counter http.responses{code,endpoint}: total below the 10% lower bound"},
 		"FasterCandidate":    {resolved: latency, reference: []string{"r:100:100|ms"}, candidate: []string{"r:10:10|ms"}},
-		"SlowerCandidate":    {resolved: latency, reference: []string{"r:100:100|ms"}, candidate: []string{"r:200:200|ms"}, kind: model.QuarantineDivergent, detail: "% above; the rule allows up to 20% above and 100% below"},
-		"FewerSamples":       {resolved: latency, reference: []string{"r:1:1:1:1|ms"}, candidate: []string{"r:1|ms"}, kind: model.QuarantineDivergent, detail: "distribution http.latency count is 1 on the candidate and 4 on the reference, 75% below; the rule allows up to 50% above or below"},
+		"SlowerCandidate":    {resolved: latency, reference: []string{"r:100:100|ms"}, candidate: []string{"r:200:200|ms"}, kind: model.QuarantineDivergent, differences: changed(metric.P95), detail: "distribution http.latency: p95 above the 20% upper bound"},
+		"FewerSamples":       {resolved: latency, reference: []string{"r:1:1:1:1|ms"}, candidate: []string{"r:1|ms"}, kind: model.QuarantineDivergent, differences: changed(metric.Count), detail: "distribution http.latency: count below the 50% lower bound"},
+		"FewerAndSlower":     {resolved: latency, reference: []string{"r:1:1:1:1|ms"}, candidate: []string{"r:5|ms"}, kind: model.QuarantineDivergent, differences: changed(metric.Count, metric.P95), detail: "distribution http.latency: count below the 50% lower bound, p95 above the 20% upper bound"},
 		"StatisticNotOfType": {resolved: latencyAsCounter, reference: []string{"r:1|c"}, candidate: []string{"r:1|c"}, kind: model.QuarantineUnable, detail: "the StatsD rule compares count and p95, which counter http.latency does not have"},
-		"GaugeMissing":       {resolved: depth, reference: []string{"r:3|g"}, kind: model.QuarantineUnmatched, detail: "candidate left out gauge queue.depth, which the reference sent with mean 3; both sides must send a gauge"},
-		"GaugeDiffers":       {resolved: depth, reference: []string{"r:3|g"}, candidate: []string{"r:4|g"}, kind: model.QuarantineDivergent, detail: "gauge queue.depth mean is 4 on the candidate and 3 on the reference, 33.3% above; the rule allows no difference"},
-		"Uncovered":          {resolved: resolution{outcome: uncovered, series: series("ruby.gc", metric.Counter, map[string]string{}), scale: 1}, reference: []string{"r:1|c"}, kind: model.QuarantineUnable, detail: "no StatsD rule compares or ignores counter ruby.gc from the reference"},
+		"GaugeMissing":       {resolved: depth, reference: []string{"r:3|g"}, kind: model.QuarantineUnmatched, detail: "candidate left out gauge queue.depth that the reference sent"},
+		"GaugeDiffers":       {resolved: depth, reference: []string{"r:3|g"}, candidate: []string{"r:4|g"}, kind: model.QuarantineDivergent, differences: changed(metric.Mean), detail: "gauge queue.depth: mean above the 0% upper bound"},
+		"Uncovered":          {resolved: resolution{outcome: uncovered, series: series("ruby.gc", metric.Counter, map[string]string{"pid": "42"}), scale: 1}, reference: []string{"r:1|c"}, kind: model.QuarantineUnable, detail: "no StatsD rule compares or ignores counter ruby.gc{pid} from the reference"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			start := time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC)
 			counted := newWindow(start)
-			for side, datagrams := range map[metric.Side][]string{metric.Reference: test.reference, metric.Candidate: test.candidate} {
+			for side, datagrams := range map[model.Side][]string{model.Reference: test.reference, model.Candidate: test.candidate} {
 				for _, datagram := range datagrams {
 					samples, _ := metric.Parse([]byte(datagram))
 					counted.add(side, samples[0], test.resolved)
@@ -112,10 +126,12 @@ func TestWindowVerdicts(t *testing.T) {
 				return
 			}
 			assert.True(t, failed)
-			assert.Equal(t, test.kind, reason.Kind)
-			assert.Contains(t, reason.Detail, test.detail)
-			assert.Contains(t, reason.Detail, "in the 1m0s window from 12:00:00")
-			assert.Equal(t, Some(model.Traffic{Direction: model.Egress, Protocol: scripted.Protocol, Route: test.resolved.series.Route()}), reason.Traffic)
+			assert.Equal(t, model.QuarantineReason{
+				Kind:        test.kind,
+				Traffic:     Some(model.Traffic{Direction: model.Egress, Protocol: scripted.Protocol, Route: test.resolved.series.Route()}),
+				Differences: test.differences,
+				Detail:      test.detail + ", in the 1m0s window from 12:00:00",
+			}, reason)
 		})
 	}
 }
@@ -132,11 +148,11 @@ func TestComparatorJudgesSettledWindowsAfterTheCandidateStarts(t *testing.T) {
 	reference := "framework.http.response_codes:10|c|#controller:fees,action:show,code:200"
 	candidate := "framework.actions.service_api.response_codes:10|c|#api:fees#show,code:200"
 
-	compare.add(t.Context(), observation{side: metric.Reference, at: at(time.Second), datagram: []byte(reference)})
-	compare.add(t.Context(), observation{side: metric.Candidate, at: at(50 * time.Second), datagram: []byte(candidate)})
-	compare.add(t.Context(), observation{side: metric.Reference, at: at(61 * time.Second), datagram: []byte(reference)})
-	compare.add(t.Context(), observation{side: metric.Candidate, at: at(62 * time.Second), datagram: []byte(candidate)})
-	compare.add(t.Context(), observation{side: metric.Reference, at: at(121 * time.Second), datagram: []byte(reference)})
+	compare.add(t.Context(), observation{side: model.Reference, at: at(time.Second), datagram: []byte(reference)})
+	compare.add(t.Context(), observation{side: model.Candidate, at: at(50 * time.Second), datagram: []byte(candidate)})
+	compare.add(t.Context(), observation{side: model.Reference, at: at(61 * time.Second), datagram: []byte(reference)})
+	compare.add(t.Context(), observation{side: model.Candidate, at: at(62 * time.Second), datagram: []byte(candidate)})
+	compare.add(t.Context(), observation{side: model.Reference, at: at(121 * time.Second), datagram: []byte(reference)})
 
 	compare.judge(t.Context(), at(130*time.Second))
 	assert.Equal(t, 0, len(quarantines.reasons))
@@ -154,14 +170,14 @@ func TestComparatorJudgesASilentCandidateAfterItsStartupTimeout(t *testing.T) {
 	compare := newComparator(t.Context(), config, newTestResolver(t), quarantines, proxy.NewCandidates(proxy.NewCandidatesConfig()))
 	reference := []byte("framework.http.response_codes:10|c|#controller:fees,action:show,code:200")
 	for minute := range 3 {
-		compare.add(t.Context(), observation{side: metric.Reference, at: compare.origin.Add(time.Duration(minute)*time.Minute + time.Second), datagram: reference})
+		compare.add(t.Context(), observation{side: model.Reference, at: compare.origin.Add(time.Duration(minute)*time.Minute + time.Second), datagram: reference})
 	}
 
 	compare.judge(t.Context(), compare.origin.Add(2*time.Minute))
 	assert.Equal(t, 0, len(quarantines.reasons))
 	compare.judge(t.Context(), compare.origin.Add(3*time.Minute))
 	assert.Equal(t, 1, len(quarantines.reasons))
-	assert.Contains(t, quarantines.reasons[0].Detail, "candidate left out counter http.responses{code:200,endpoint:fees#show}")
+	assert.Contains(t, quarantines.reasons[0].Detail, "candidate left out counter http.responses{code,endpoint} that the reference sent")
 }
 
 // Once either direction quarantines the candidate it gets no traffic, so its missing metrics never quarantine it again.
@@ -172,7 +188,7 @@ func TestComparatorStopsOnceTheCandidateIsQuarantined(t *testing.T) {
 	ingress := proxy.NewCandidates(proxy.NewCandidatesConfig())
 	compare := newComparator(t.Context(), config, newTestResolver(t), quarantines, ingress)
 	reference := []byte("framework.http.response_codes:10|c|#controller:fees,action:show,code:200")
-	compare.add(t.Context(), observation{side: metric.Reference, at: compare.origin.Add(time.Second), datagram: reference})
+	compare.add(t.Context(), observation{side: model.Reference, at: compare.origin.Add(time.Second), datagram: reference})
 	ingress.Quarantine(t.Context(), model.QuarantineReason{Kind: model.QuarantineDivergent, Detail: "ingress"})
 
 	compare.judge(t.Context(), compare.origin.Add(2*time.Minute))
@@ -196,9 +212,15 @@ func series(name string, metricType metric.Type, tags map[string]string) metric.
 // newTestResolver loads feeplansScript with egress imported, and resolves by its StatsD rules.
 func newTestResolver(t *testing.T) *resolver {
 	t.Helper()
+	return newScriptResolver(t, feeplansScript)
+}
+
+// newScriptResolver resolves with the rules of one script.
+func newScriptResolver(t *testing.T, script string) *resolver {
+	t.Helper()
 	config := comparison.NewConfig()
 	config.ScriptsDir, config.Schema.SchemaDir = t.TempDir(), t.TempDir()
-	assert.NoError(t, os.WriteFile(filepath.Join(config.ScriptsDir, "statsd.ts"), []byte(`import { egress } from "spectre";`+feeplansScript), 0o600))
+	assert.NoError(t, os.WriteFile(filepath.Join(config.ScriptsDir, "statsd.ts"), []byte(`import { egress } from "spectre";`+script), 0o600))
 	binding, handle := scripted.NewBinding()
 	loaded, err := comparison.New(t.Context(), config, []javascript.Binding{binding})
 	assert.NoError(t, err)

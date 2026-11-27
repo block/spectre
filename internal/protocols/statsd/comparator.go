@@ -24,7 +24,7 @@ const queuedObservations = 4096
 
 // observation is a datagram from one side, stamped with when it arrived.
 type observation struct {
-	side     metric.Side
+	side     model.Side
 	at       time.Time
 	datagram []byte
 }
@@ -62,7 +62,7 @@ func newComparator(ctx context.Context, config Config, resolver *resolver, quara
 }
 
 // observe returns the function a side's relay passes each datagram to. It never blocks.
-func (c *comparator) observe(side metric.Side) func(datagram []byte) {
+func (c *comparator) observe(side model.Side) func(datagram []byte) {
 	return func(datagram []byte) {
 		arrived := observation{side: side, at: time.Now(), datagram: bytes.Clone(datagram)}
 		select {
@@ -120,9 +120,9 @@ func (c *comparator) add(ctx context.Context, arrived observation) {
 		if resolved.outcome == ignored {
 			continue
 		}
-		if arrived.side == metric.Candidate && resolved.outcome == compared && !c.candidateFrom.Ok() {
+		if arrived.side == model.Candidate && resolved.outcome == compared && !c.candidateFrom.Ok() {
 			c.candidateFrom = Some(arrived.at)
-			c.log.InfoContext(ctx, "Candidate sent its first compared StatsD metric", "series", resolved.series.String())
+			c.log.InfoContext(ctx, "Candidate sent its first compared StatsD metric", "series", resolved.series.Route())
 		}
 		target := c.window(arrived.at)
 		if target.add(arrived.side, sample, resolved) && target.size() > c.config.MaxSeries {
@@ -188,7 +188,6 @@ func (c *comparator) markLossy() {
 // quarantine quarantines the candidate and stops comparing.
 func (c *comparator) quarantine(ctx context.Context, reason model.QuarantineReason) {
 	c.stopped = true
-	c.log.WarnContext(ctx, "StatsD metrics quarantine the candidate", "kind", reason.Kind, "reason", reason.Detail)
 	c.quarantiner.Quarantine(ctx, reason)
 }
 

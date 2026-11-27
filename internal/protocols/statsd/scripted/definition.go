@@ -11,6 +11,17 @@ import (
 	"github.com/block/spectre/internal/protocols/statsd/metric"
 )
 
+// The rule object and its methods, as scripts name them.
+const (
+	ruleObject    = "EgressStatsDRule"
+	tagMethod     = "tag"
+	mapMethod     = "map"
+	compareMethod = "compare"
+	ignoreMethod  = "ignore"
+	// qualifiedCompare prefixes the comparison's errors.
+	qualifiedCompare = "spectre." + ruleObject + "." + compareMethod
+)
+
 // definition defines the StatsD binding's members in one runtime.
 type definition struct {
 	scope     *javascript.Scope
@@ -30,9 +41,13 @@ func newDefinition(scope *javascript.Scope) *definition {
 // members defines egress.statsd and returns it.
 func (d *definition) members() (javascript.Members[Declarations, Callbacks], error) {
 	statsd := d.runtime.ToValue(func(call sobek.FunctionCall) sobek.Value {
-		pattern := d.scope.StringArgument(call, 0, "egress.statsd", "pattern")
+		const qualified = "egress.statsd"
+		if len(call.Arguments) != 1 {
+			panic(d.runtime.NewTypeError("spectre.%s requires a pattern", qualified))
+		}
+		pattern := d.scope.StringArgument(call, 0, qualified, "pattern")
 		if _, err := PatternExpression(pattern); err != nil {
-			panic(d.runtime.NewTypeError("spectre.egress.statsd: %v", err))
+			panic(d.runtime.NewTypeError("spectre.%s: %v", qualified, err))
 		}
 		return d.rule(Selector{Pattern: pattern})
 	})
@@ -48,35 +63,45 @@ func (d *definition) members() (javascript.Members[Declarations, Callbacks], err
 // rule is the object that narrows selector and declares what happens to what it selects.
 func (d *definition) rule(selector Selector) sobek.Value {
 	object := d.runtime.NewObject()
-	d.defineMethod(object, "tag", func(call sobek.FunctionCall) sobek.Value {
-		name := d.scope.StringArgument(call, 0, "EgressStatsDRule.tag", "name")
-		tag := TagSelector{Name: name, Value: None[string]()}
+	d.defineMethod(object, tagMethod, func(call sobek.FunctionCall) sobek.Value {
+		const qualified = ruleObject + "." + tagMethod
+		if len(call.Arguments) != 2 {
+			panic(d.runtime.NewTypeError("spectre.%s requires a name and a value or function", qualified))
+		}
+		name := d.scope.StringArgument(call, 0, qualified, "name")
+		var tag TagSelector
 		if value, isString := call.Argument(1).Export().(string); isString {
-			tag.Value = Some(value)
+			tag = TagValue{Name: name, Value: value}
 		} else if callback, isFunction := sobek.AssertFunction(call.Argument(1)); isFunction {
-			tag.Callback = len(d.callbacks.selects)
+			tag = TagScript{Name: name, Callback: len(d.callbacks.selects)}
 			d.callbacks.selects = append(d.callbacks.selects, callback)
 		} else {
-			panic(d.runtime.NewTypeError("spectre.EgressStatsDRule.tag requires a string or a function"))
+			panic(d.runtime.NewTypeError("spectre.%s requires a string or a function", qualified))
 		}
 		narrowed := Selector{Pattern: selector.Pattern, Tags: append(slices.Clone(selector.Tags), tag)}
 		return d.rule(narrowed)
 	})
-	d.defineMethod(object, "map", func(call sobek.FunctionCall) sobek.Value {
+	d.defineMethod(object, mapMethod, func(call sobek.FunctionCall) sobek.Value {
 		mapping, isFunction := sobek.AssertFunction(call.Argument(0))
-		if !isFunction {
-			panic(d.runtime.NewTypeError("spectre.EgressStatsDRule.map requires a function"))
+		if len(call.Arguments) != 1 || !isFunction {
+			panic(d.runtime.NewTypeError("spectre.%s.%s requires a function", ruleObject, mapMethod))
 		}
-		d.declare(Rule{Selector: selector, Map: Some(len(d.callbacks.mappings)), Compare: None[Comparison]()})
+		d.declare(Rule{Selector: selector, Action: ActionMap{Callback: len(d.callbacks.mappings)}})
 		d.callbacks.mappings = append(d.callbacks.mappings, mapping)
 		return sobek.Undefined()
 	})
-	d.defineMethod(object, "compare", func(call sobek.FunctionCall) sobek.Value {
-		d.declare(Rule{Selector: selector, Map: None[int](), Compare: Some(d.comparison(call.Argument(0)))})
+	d.defineMethod(object, compareMethod, func(call sobek.FunctionCall) sobek.Value {
+		if len(call.Arguments) != 1 {
+			panic(d.runtime.NewTypeError("spectre.%s.%s requires a comparison", ruleObject, compareMethod))
+		}
+		d.declare(Rule{Selector: selector, Action: ActionCompare{Comparison: d.comparison(call.Argument(0))}})
 		return sobek.Undefined()
 	})
-	d.defineMethod(object, "ignore", func(sobek.FunctionCall) sobek.Value {
-		d.declare(Rule{Selector: selector, Map: None[int](), Compare: None[Comparison]()})
+	d.defineMethod(object, ignoreMethod, func(call sobek.FunctionCall) sobek.Value {
+		if len(call.Arguments) != 0 {
+			panic(d.runtime.NewTypeError("spectre.%s.%s takes no arguments", ruleObject, ignoreMethod))
+		}
+		d.declare(Rule{Selector: selector, Action: ActionIgnore{}})
 		return sobek.Undefined()
 	})
 	return object
@@ -89,7 +114,7 @@ func (d *definition) declare(rule Rule) {
 // comparison reads a MetricComparison object.
 func (d *definition) comparison(value sobek.Value) Comparison {
 	if sobek.IsUndefined(value) || sobek.IsNull(value) {
-		panic(d.runtime.NewTypeError("spectre.EgressStatsDRule.compare requires a comparison"))
+		panic(d.runtime.NewTypeError(qualifiedCompare + " requires a comparison"))
 	}
 	object := value.ToObject(d.runtime)
 	statistics := metric.Statistics()
@@ -99,7 +124,7 @@ func (d *definition) comparison(value sobek.Value) Comparison {
 	}
 	for _, key := range object.Keys() {
 		if !slices.Contains(names, key) {
-			panic(d.runtime.NewTypeError("spectre.EgressStatsDRule.compare does not compare %q; it compares %s", key, strings.Join(names, ", ")))
+			panic(d.runtime.NewTypeError(qualifiedCompare+" does not compare %q; it compares %s", key, strings.Join(names, ", ")))
 		}
 	}
 	comparison := Comparison{}
@@ -109,7 +134,7 @@ func (d *definition) comparison(value sobek.Value) Comparison {
 		}
 	}
 	if len(comparison.Checks) == 0 {
-		panic(d.runtime.NewTypeError("spectre.EgressStatsDRule.compare requires at least one of %s", strings.Join(names, ", ")))
+		panic(d.runtime.NewTypeError(qualifiedCompare+" requires at least one of %s", strings.Join(names, ", ")))
 	}
 	return comparison
 }
@@ -118,12 +143,12 @@ func (d *definition) comparison(value sobek.Value) Comparison {
 func (d *definition) tolerance(statistic string, value sobek.Value) Tolerance {
 	object, isObject := value.(*sobek.Object)
 	if !isObject {
-		panic(d.runtime.NewTypeError("spectre.EgressStatsDRule.compare %s requires a tolerance", statistic))
+		panic(d.runtime.NewTypeError(qualifiedCompare+" %s requires a tolerance", statistic))
 	}
 	properties := []string{"upper", "lower"}
 	for _, key := range object.Keys() {
 		if !slices.Contains(properties, key) {
-			panic(d.runtime.NewTypeError("spectre.EgressStatsDRule.compare %s does not take %q; it takes upper and lower", statistic, key))
+			panic(d.runtime.NewTypeError(qualifiedCompare+" %s does not take %q; it takes upper and lower", statistic, key))
 		}
 	}
 	number := func(property string) float64 {
@@ -136,7 +161,7 @@ func (d *definition) tolerance(statistic string, value sobek.Value) Tolerance {
 			number, isNumber = float64(integer), true
 		}
 		if !isNumber || number < 0 {
-			panic(d.runtime.NewTypeError("spectre.EgressStatsDRule.compare %s %s must be a number of at least 0", statistic, property))
+			panic(d.runtime.NewTypeError(qualifiedCompare+" %s %s must be a number of at least 0", statistic, property))
 		}
 		return number
 	}
@@ -146,6 +171,6 @@ func (d *definition) tolerance(statistic string, value sobek.Value) Tolerance {
 // defineMethod binds one object method, panicking if sobek rejects it.
 func (d *definition) defineMethod(object *sobek.Object, method string, fn func(sobek.FunctionCall) sobek.Value) {
 	if err := object.Set(method, fn); err != nil {
-		panic(d.runtime.NewTypeError("define spectre.EgressStatsDRule.%s: %v", method, err))
+		panic(d.runtime.NewTypeError("define spectre.%s.%s: %v", ruleObject, method, err))
 	}
 }

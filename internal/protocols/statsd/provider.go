@@ -6,6 +6,7 @@ import (
 	"github.com/alecthomas/errors"
 
 	"github.com/block/spectre/internal/comparison/javascript"
+	"github.com/block/spectre/internal/logger"
 	"github.com/block/spectre/internal/model"
 	"github.com/block/spectre/internal/protocols"
 	"github.com/block/spectre/internal/protocols/statsd/scripted"
@@ -19,6 +20,9 @@ const (
 	// CandidateListener receives the candidate's metrics.
 	CandidateListener = "candidate"
 )
+
+// subsystem tags the StatsD logs.
+const subsystem = "statsd"
 
 // Provider is the StatsD protocol. Its metrics are egress, compared in windows rather
 // than paired by the engine. The handle reads what scripts declared.
@@ -66,6 +70,7 @@ func (p *Provider) Listens(config Config) []protocols.Listen { //nolint:narrowde
 
 // New builds the relay on the egress side, comparing the sides' metrics when scripts declare StatsD rules.
 func (p *Provider) New(ctx context.Context, config Config, runtime protocols.Runtime) (protocols.Server, error) {
+	ctx = logger.WithSubsystem(ctx, subsystem)
 	side, hasEgress := runtime.Egress.Get()
 	if !hasEgress {
 		return nil, errors.New("StatsD needs an egress side")

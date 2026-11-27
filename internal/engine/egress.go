@@ -154,7 +154,7 @@ func (q *egressQueue) shutdown(ctx context.Context) error {
 }
 
 // hash identifies a request by its protocol, route, and normalised payload.
-func (q *egressQueue) hash(ctx context.Context, protocol model.Protocol, route model.Route, side string,
+func (q *egressQueue) hash(ctx context.Context, protocol model.Protocol, route model.Route, side model.Side,
 	request func(ctx context.Context) (schema.Value, error),
 ) (comparison.Hash, error) {
 	message, err := request(ctx)
@@ -185,7 +185,7 @@ func (q *egressQueue) forward(ctx context.Context, requestID Option[RequestID], 
 	background := context.WithoutCancel(ctx)
 	go func() {
 		defer q.finishHashing()
-		hash, err := q.hash(background, protocol, route, "reference", request)
+		hash, err := q.hash(background, protocol, route, model.Reference, request)
 		if err != nil {
 			pending.abandon()
 			pending.forget()
@@ -240,7 +240,7 @@ func (q *egressQueue) match(ctx context.Context, requestID RequestID, protocol m
 	request func(ctx context.Context) (schema.Value, error),
 ) (Raw, model.QuarantineKind, error) {
 	arrival := q.arrive()
-	hash, err := q.hash(ctx, protocol, route, "candidate", request)
+	hash, err := q.hash(ctx, protocol, route, model.Candidate, request)
 	if err != nil {
 		return nil, model.QuarantineUnable, errors.Wrap(err, "identify candidate request")
 	}
@@ -306,7 +306,7 @@ func (q *egressQueue) respond(ctx context.Context, requestID RequestID, protocol
 	if err != nil {
 		return nil, model.QuarantineUnable, errors.Wrap(err, "map candidate request to a source request")
 	}
-	sourceHash, err := q.scripts.Hash(ctx, string(protocol)+" "+replacement.Source(), "candidate", sourceRequest)
+	sourceHash, err := q.scripts.Hash(ctx, string(protocol)+" "+replacement.Source(), model.Candidate, sourceRequest)
 	if err != nil {
 		return nil, model.QuarantineUnable, errors.Wrap(err, "identify source request")
 	}
@@ -340,7 +340,7 @@ func (q *egressQueue) identify(ctx context.Context, protocol model.Protocol, rou
 	if err != nil {
 		return comparison.Hash{}, nil, errors.Wrap(err, "identify candidate request")
 	}
-	hash, err := q.scripts.Hash(ctx, string(protocol)+" "+string(route), "candidate", message)
+	hash, err := q.scripts.Hash(ctx, string(protocol)+" "+string(route), model.Candidate, message)
 	if err != nil {
 		return comparison.Hash{}, nil, errors.Wrap(err, "identify candidate request")
 	}

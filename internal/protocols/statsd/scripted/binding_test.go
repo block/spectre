@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	"github.com/alecthomas/assert/v2"
-	. "github.com/alecthomas/types/optional"
 
 	"github.com/block/spectre/internal/comparison"
 	"github.com/block/spectre/internal/comparison/javascript"
@@ -48,23 +47,21 @@ func TestDeclaresRulesInOrder(t *testing.T) {
 	assert.NoError(t, err)
 
 	assert.Equal(t, scripted.Declarations{Rules: []scripted.Rule{
-		{Selector: scripted.Selector{Pattern: "jvm.**"}, Map: None[int](), Compare: None[scripted.Comparison]()},
+		{Selector: scripted.Selector{Pattern: "jvm.**"}, Action: scripted.ActionIgnore{}},
 		{
 			Selector: scripted.Selector{Pattern: "framework.actions.**", Tags: []scripted.TagSelector{
-				{Name: "code", Value: Some("200")},
-				{Name: "api", Value: None[string](), Callback: 0},
+				scripted.TagValue{Name: "code", Value: "200"},
+				scripted.TagScript{Name: "api", Callback: 0},
 			}},
-			Map:     Some(0),
-			Compare: None[scripted.Comparison](),
+			Action: scripted.ActionMap{Callback: 0},
 		},
 		{
 			Selector: scripted.Selector{Pattern: "http"},
-			Map:      None[int](),
-			Compare: Some(scripted.Comparison{Checks: []scripted.Check{
+			Action: scripted.ActionCompare{Comparison: scripted.Comparison{Checks: []scripted.Check{
 				{Statistic: metric.Mean, Tolerance: scripted.Tolerance{}},
 				{Statistic: metric.Count, Tolerance: scripted.Tolerance{Upper: 0.05, Lower: 0.1}},
 				{Statistic: metric.P95, Tolerance: scripted.Tolerance{Upper: 0.5}},
-			}}),
+			}}},
 		},
 	}}, handle.Declared(loaded.Program()))
 }
@@ -81,6 +78,8 @@ func TestRejectsInvalidRules(t *testing.T) {
 		"NotATolerance":     {body: `egress.statsd("a").compare({ total: 0.1 as never });`, message: "compare total requires a tolerance"},
 		"NoStatistic":       {body: `egress.statsd("a").compare({});`, message: "compare requires at least one of total, mean"},
 		"NoComparison":      {body: `egress.statsd("a").compare(undefined as never);`, message: "compare requires a comparison"},
+		"IgnoreArguments":   {body: `(egress.statsd("a").ignore as (extra: number) => void)(1);`, message: "spectre.EgressStatsDRule.ignore takes no arguments"},
+		"TagWithoutValue":   {body: `egress.statsd("a").tag("code", undefined as never).ignore();`, message: "spectre.EgressStatsDRule.tag requires a string or a function"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, _, err := load(t, test.body)

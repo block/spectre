@@ -181,7 +181,7 @@ func renderReason(text *strings.Builder, colour func(text string) string, direct
 // describe summarises a quarantine with the direction, route, and node it names.
 func describe(direction model.Direction, reason model.QuarantineReason) string {
 	summary := reason.String()
-	if reason.Kind == model.QuarantineDivergent && len(reason.Differences) > 0 {
+	if reason.Kind == model.QuarantineDivergent {
 		summary = "response differences"
 	}
 	text := fmt.Sprintf("%s: %s", direction, summary)

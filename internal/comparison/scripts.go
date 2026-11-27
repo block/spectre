@@ -176,11 +176,11 @@ func (s *Scripts) Compare(ctx context.Context, reference, candidate schema.Value
 	}
 	ctx, cancel := context.WithTimeout(ctx, s.timeout)
 	defer cancel()
-	normalisedReference, err := s.normalise(ctx, "reference", reference)
+	normalisedReference, err := s.normalise(ctx, model.Reference, reference)
 	if err != nil {
 		return nil, false, errors.Wrap(err, "normalise reference")
 	}
-	normalisedCandidate, err := s.normalise(ctx, "candidate", candidate)
+	normalisedCandidate, err := s.normalise(ctx, model.Candidate, candidate)
 	if err != nil {
 		return nil, false, errors.Wrap(err, "normalise candidate")
 	}
@@ -190,7 +190,7 @@ func (s *Scripts) Compare(ctx context.Context, reference, candidate schema.Value
 
 // Hash returns SHA-256 over identity and the canonical JSON of the normalised
 // payload. side only labels log records.
-func (s *Scripts) Hash(ctx context.Context, identity string, side string, payload schema.Value) (Hash, error) {
+func (s *Scripts) Hash(ctx context.Context, identity string, side model.Side, payload schema.Value) (Hash, error) {
 	ctx, cancel := context.WithTimeout(ctx, s.timeout)
 	defer cancel()
 	normalised, err := s.normalise(ctx, side, payload)
@@ -211,7 +211,7 @@ func (s *Scripts) Hash(ctx context.Context, identity string, side string, payloa
 
 // normalise gives each object payload a fresh evaluator, so script state cannot carry
 // between payloads. Normalisers apply only to object types; others compare as they are.
-func (s *Scripts) normalise(ctx context.Context, side string, payload schema.Value) (*comparisoninternal.Normalised, error) {
+func (s *Scripts) normalise(ctx context.Context, side model.Side, payload schema.Value) (*comparisoninternal.Normalised, error) {
 	root, isObject := schema.NonNull(payload.Type()).(*schema.ObjectType)
 	if !isObject {
 		return comparisoninternal.Raw(payload), nil

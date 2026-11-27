@@ -8,6 +8,7 @@ import (
 	"github.com/grafana/sobek"
 
 	"github.com/block/spectre/internal/comparison/javascript"
+	"github.com/block/spectre/internal/model"
 	"github.com/block/spectre/internal/protocols/statsd/metric"
 )
 
@@ -48,13 +49,19 @@ func (c Callbacks) Selects(index int, value Option[string]) (bool, error) {
 	if text, present := value.Get(); present {
 		argument = runtime.scope.Runtime().ToValue(text)
 	}
-	read := func(result sobek.Value) (bool, error) { return result.ToBoolean(), nil }
+	read := func(result sobek.Value) (bool, error) {
+		selected, isBoolean := result.Export().(bool)
+		if !isBoolean {
+			return false, errors.New("StatsD tag function returned a value that is not a boolean")
+		}
+		return selected, nil
+	}
 	selected, err := runtime.scope.Invoke(runtime.selects[index], "StatsD tag function threw an exception", read, argument)
 	return selected, errors.WithStack(err)
 }
 
 // Map returns what a map callback makes of series from side, or nothing when it ignores the series.
-func (c Callbacks) Map(index int, side metric.Side, series metric.Series) (Option[Mapped], error) {
+func (c Callbacks) Map(index int, side model.Side, series metric.Series) (Option[Mapped], error) {
 	runtime, ok := c.runtime.Get()
 	if !ok || index < 0 || index >= len(runtime.mappings) {
 		return None[Mapped](), errors.Errorf("StatsD map function %d is unavailable", index)

@@ -39,20 +39,52 @@ type Selector struct {
 	Tags    []TagSelector
 }
 
-// TagSelector selects by a tag's value, or by a callback when Value is absent.
-type TagSelector struct {
+// TagSelector selects metrics by one tag.
+//
+//sumtype:decl
+type TagSelector interface{ tagSelector() }
+
+// TagValue selects metrics whose tag equals Value. It never selects a metric without the tag.
+type TagValue struct{ Name, Value string }
+
+// Selects reports whether a tag's value, absent when the metric has no such tag, equals Value.
+func (t TagValue) Selects(value Option[string]) bool {
+	present, ok := value.Get()
+	return ok && present == t.Value
+}
+
+// TagScript selects the metrics whose tag a script function accepts.
+type TagScript struct {
 	Name     string
-	Value    Option[string]
 	Callback int
 }
 
-// Rule maps, compares or ignores the metrics it selects. A rule with neither
-// a mapping nor a comparison ignores them.
+func (TagValue) tagSelector()  {}
+func (TagScript) tagSelector() {}
+
+// Rule selects metrics and says what happens to them.
 type Rule struct {
 	Selector Selector
-	Map      Option[int]
-	Compare  Option[Comparison]
+	Action   Action
 }
+
+// Action is what a rule does with the metrics it selects.
+//
+//sumtype:decl
+type Action interface{ action() }
+
+// ActionMap maps the metrics with a script function, then passes them on to the later rules.
+type ActionMap struct{ Callback int }
+
+// ActionCompare expects both sides to send the series, and checks the comparison's statistics.
+type ActionCompare struct{ Comparison Comparison }
+
+// ActionIgnore drops the metrics from both sides.
+type ActionIgnore struct{}
+
+func (ActionMap) action()     {}
+func (ActionCompare) action() {}
+func (ActionIgnore) action()  {}
 
 // Comparison is the statistics a rule checks, in order, and how far each may differ.
 type Comparison struct {
@@ -91,20 +123,15 @@ type Tolerance struct {
 	Lower float64
 }
 
-// Allows reports whether candidate is close enough to reference.
-func (t Tolerance) Allows(reference, candidate float64) bool {
-	return candidate <= reference+t.Upper*math.Abs(reference) && candidate >= reference-t.Lower*math.Abs(reference)
-}
-
-// String says what the tolerance allows, as in "up to 20% above and 0% below".
-func (t Tolerance) String() string {
+// Exceeds names the bound that candidate exceeds, as in "above the 20% upper bound".
+func (t Tolerance) Exceeds(reference, candidate float64) Option[string] {
 	switch {
-	case t.Upper == 0 && t.Lower == 0:
-		return "no difference"
-	case t.Upper == t.Lower:
-		return "up to " + percent(t.Upper) + " above or below"
+	case candidate > reference+t.Upper*math.Abs(reference):
+		return Some("above the " + percent(t.Upper) + " upper bound")
+	case candidate < reference-t.Lower*math.Abs(reference):
+		return Some("below the " + percent(t.Lower) + " lower bound")
 	}
-	return "up to " + percent(t.Upper) + " above and " + percent(t.Lower) + " below"
+	return None[string]()
 }
 
 // percent writes a fraction as a percentage, as in "20%".
