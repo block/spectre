@@ -10,9 +10,9 @@ import (
 
 func TestParseReadsDogStatsDLines(t *testing.T) {
 	for name, test := range map[string]struct {
-		datagram  string
-		samples   []metric.Sample
-		malformed int
+		datagram string
+		samples  []metric.Sample
+		err      string
 	}{
 		"CounterWithRateAndTags": {
 			datagram: "framework.http.response_codes:2|c|@0.5|#code:200,controller:fees,canary",
@@ -37,15 +37,25 @@ func TestParseReadsDogStatsDLines(t *testing.T) {
 			datagram: "_e{5,4}:title|text\n_sc|check|0\nup:1|c",
 			samples:  []metric.Sample{{Series: metric.Series{Name: "up", Type: metric.Counter, Tags: map[string]string{}}, Values: []float64{1}, Rate: 1}},
 		},
-		"MalformedLinesCounted": {
-			datagram:  "noValue|c\nbad:x|c\nunknown:1|q\nrate:1|c|@2\nnan:NaN|ms\ninf:+Inf|g",
-			malformed: 6,
+		"MalformedLinesSkipped": {
+			datagram: "noValue|c\nbad:x|c\nup:1|c\nunknown:1|q\nrate:1|c|@2\nnan:NaN|ms\ninf:+Inf|g",
+			samples:  []metric.Sample{{Series: metric.Series{Name: "up", Type: metric.Counter, Tags: map[string]string{}}, Values: []float64{1}, Rate: 1}},
+			err: `metric "noValue|c" has no value
+metric "bad" has invalid value "x"
+metric "unknown" has unknown type "q"
+metric "rate" has invalid sample rate "@2"
+metric "nan" has invalid value "NaN"
+metric "inf" has invalid value "+Inf"`,
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			samples, malformed := metric.Parse([]byte(test.datagram))
+			samples, err := metric.Parse([]byte(test.datagram))
 			assert.Equal(t, test.samples, samples)
-			assert.Equal(t, test.malformed, malformed)
+			if test.err == "" {
+				assert.NoError(t, err)
+				return
+			}
+			assert.EqualError(t, err, test.err)
 		})
 	}
 }

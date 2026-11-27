@@ -133,7 +133,8 @@ func TestWindowVerdicts(t *testing.T) {
 			counted := newWindow(start, indexes)
 			for side, datagrams := range map[model.Side][]string{model.Reference: test.reference, model.Candidate: test.candidate} {
 				for _, datagram := range datagrams {
-					samples, _ := metric.Parse([]byte(datagram))
+					samples, err := metric.Parse([]byte(datagram))
+					assert.NoError(t, err)
 					counted.add(side, samples[0], test.resolved)
 				}
 			}

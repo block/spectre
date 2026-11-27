@@ -106,9 +106,9 @@ func (c *comparator) add(ctx context.Context, arrived observation) {
 	if c.stopped {
 		return
 	}
-	samples, malformed := metric.Parse(arrived.datagram)
-	if malformed > 0 {
-		c.log.DebugContext(ctx, "Skipped malformed StatsD lines", "side", arrived.side, "lines", malformed)
+	samples, err := metric.Parse(arrived.datagram)
+	if err != nil {
+		c.log.DebugContext(ctx, "Skipped malformed StatsD lines", "side", arrived.side, "error", err)
 	}
 	series := make([]metric.Series, 0, len(samples))
 	for _, sample := range samples {

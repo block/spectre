@@ -23,9 +23,10 @@ func (s Sample) Weight() float64 {
 	return 1 / s.Rate
 }
 
-// Parse reads the metric lines of a datagram. Events and service checks are skipped,
-// and each malformed line is skipped and counted.
-func Parse(datagram []byte) (samples []Sample, malformed int) {
+// Parse reads the metric lines of a datagram, skipping events and service checks. It returns
+// every well-formed sample, and an error that joins each malformed line's.
+func Parse(datagram []byte) (samples []Sample, err error) {
+	malformed := []error{}
 	for line := range strings.SplitSeq(string(datagram), "\n") {
 		line = strings.TrimSuffix(line, "\r")
 		if line == "" || strings.HasPrefix(line, "_e{") || strings.HasPrefix(line, "_sc|") {
@@ -33,12 +34,12 @@ func Parse(datagram []byte) (samples []Sample, malformed int) {
 		}
 		sample, err := parseLine(line)
 		if err != nil {
-			malformed++
+			malformed = append(malformed, err)
 			continue
 		}
 		samples = append(samples, sample)
 	}
-	return samples, malformed
+	return samples, errors.Join(malformed...)
 }
 
 // parseLine reads name:value[:value...]|type[|@rate][|#tag,tag:value][|...].
