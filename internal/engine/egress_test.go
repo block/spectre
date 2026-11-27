@@ -27,9 +27,7 @@ func TestEgressCandidatePairsWithEquivalentReference(t *testing.T) {
 		referenceRequest func(ctx context.Context) (schema.Value, error)
 		candidateRoute   model.Route
 		candidateRequest func(ctx context.Context) (schema.Value, error)
-		// shared sends the candidate request as one whose request ID spans unrelated work.
-		shared  bool
-		matched bool
+		matched          bool
 		// differences are how the candidate differs from the reference it nearly matches, if any.
 		differences []model.Difference
 	}{
@@ -53,11 +51,6 @@ func TestEgressCandidatePairsWithEquivalentReference(t *testing.T) {
 			candidateRoute: "query", candidateRequest: query(t, queryType, "paris", "second"),
 			differences: []model.Difference{{Path: "$.value", Change: model.ChangeChanged, Count: 1}},
 		},
-		"DifferentValueSharingRequestID": {
-			referenceRoute: "query", referenceRequest: query(t, queryType, "london", ""),
-			candidateRoute: "query", candidateRequest: query(t, queryType, "paris", ""),
-			shared: true,
-		},
 		"DifferentRoute": {
 			referenceRoute: "query", referenceRequest: query(t, queryType, "london", ""),
 			candidateRoute: "other-query", candidateRequest: query(t, queryType, "london", ""),
@@ -69,11 +62,7 @@ func TestEgressCandidatePairsWithEquivalentReference(t *testing.T) {
 			raw := newRaw("reference")
 			h.reference(t, test.referenceRoute, test.referenceRequest, raw)
 
-			ctx := h.ctx
-			if test.shared {
-				ctx = engine.WithSharedRequestID(ctx)
-			}
-			decision, err := h.engine.EgressCandidate(fake).ProcessRequest(ctx, Some(h.requestID), test.candidateRoute, notIgnored, test.candidateRequest)
+			decision, err := h.engine.EgressCandidate(fake).ProcessRequest(h.ctx, Some(h.requestID), test.candidateRoute, notIgnored, test.candidateRequest)
 
 			if test.matched {
 				assert.NoError(t, err)

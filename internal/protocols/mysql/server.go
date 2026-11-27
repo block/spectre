@@ -18,7 +18,6 @@ import (
 	"github.com/go-mysql-org/go-mysql/mysql"
 	"github.com/go-mysql-org/go-mysql/server"
 	"github.com/pingcap/tidb/pkg/parser/charset"
-	"go.jetify.com/typeid"
 
 	"github.com/block/spectre/internal/engine"
 	"github.com/block/spectre/internal/httpservice/health"
@@ -58,8 +57,6 @@ type Server struct {
 	parser     *normaliser.Parser
 	// schema types the pairings egress hashes.
 	schema *schema.Schema
-	// scope pairs every unit with every other, because statements carry no request ID.
-	scope engine.RequestID
 	// version is the database's version once the proxy has connected to it.
 	versionMu sync.Mutex
 	version   Option[string]
@@ -85,10 +82,7 @@ func New(config Config, handle scripted.Handle, runtime protocols.Runtime, side 
 	if err != nil {
 		return nil, errors.Wrap(err, "configure MySQL statement replacements")
 	}
-	scope, err := typeid.New[engine.RequestID]()
-	if err != nil {
-		return nil, errors.Wrap(err, "name the pairing scope")
-	}
+	parser := normaliser.NewParser()
 	return &Server{
 		upstream:     config.Upstream,
 		user:         config.UpstreamUser,
@@ -96,14 +90,13 @@ func New(config Config, handle scripted.Handle, runtime protocols.Runtime, side 
 		upstreamTLS:  upstreamTLS,
 		candidates:   side.Candidates,
 		health:       side.Health,
-		threads:      newThreads(),
+		threads:      newThreads(parser),
 		reference:    side.Reference,
 		candidate:    side.Candidate,
 		budget:       proxy.NewBudget(config.SavedRepliesBytes),
 		normaliser:   statements,
-		parser:       normaliser.NewParser(),
+		parser:       parser,
 		schema:       runtime.Schema,
-		scope:        scope,
 	}, nil
 }
 
@@ -344,13 +337,18 @@ func (s *Server) offer(ctx context.Context, units []scopedUnit) {
 		return
 	}
 	for _, unit := range units {
+		requestID, ok := unit.requestID.Get()
+		if !ok {
+			// The observer quarantines the candidate for units of no request instead of offering them.
+			continue
+		}
 		saved, reserved := reserveReply(s.budget, unit.Reply)
 		if !reserved {
 			s.exceed(ctx, []scopedUnit{unit})
 			return
 		}
 		saved.name(unit.names)
-		decision, err := s.reference.ProcessRequest(ctx, Some(s.scope), unit.Route, None[string](), s.request(unit.pairing))
+		decision, err := s.reference.ProcessRequest(ctx, Some(requestID), unit.Route, None[string](), s.request(unit.pairing))
 		forward, ok := decision.(engine.DecisionForward)
 		if err != nil || !ok {
 			saved.Release()
@@ -382,13 +380,12 @@ func (s *Server) admit(ctx context.Context, stop context.CancelFunc) (finish fun
 	return func() { s.candidates.Finish(run) }, true
 }
 
-// claim waits for the reply of an equivalent reference unit, and keeps it in claimed
-// until released. The engine quarantines the candidate when there is none.
-func (s *Server) claim(ctx context.Context, claimed *[]*savedReply, route model.Route, by pairing) (*savedReply, error) {
-	// Temporary: scope spans unrelated statements, so a near match would diff the wrong
-	// pair. Remove once statements carry their own request IDs.
-	ctx = engine.WithSharedRequestID(ctx)
-	decision, err := s.candidate.ProcessRequest(ctx, Some(s.scope), route, None[string](), s.request(by))
+// claim waits for the reply of an equivalent reference unit of the same request, and keeps it in
+// claimed until released. The engine quarantines the candidate when there is none, or no request.
+func (s *Server) claim(ctx context.Context, claimed *[]*savedReply, requestID Option[engine.RequestID], route model.Route,
+	by pairing,
+) (*savedReply, error) {
+	decision, err := s.candidate.ProcessRequest(ctx, requestID, route, None[string](), s.request(by))
 	if err != nil {
 		return nil, errors.WithStack(err)
 	}
@@ -415,6 +412,15 @@ func (s *Server) unable(ctx context.Context, route model.Route, reason string) {
 		Kind:    model.QuarantineUnable,
 		Traffic: Some(model.Traffic{Direction: model.Egress, Protocol: scripted.Protocol, Route: route}),
 		Detail:  reason,
+	})
+}
+
+// unpaired quarantines the candidate for a statement that names no valid request.
+func (s *Server) unpaired(ctx context.Context, route model.Route, err error) {
+	s.candidates.Quarantine(ctx, model.QuarantineReason{
+		Kind:    model.QuarantinePairing,
+		Traffic: Some(model.Traffic{Direction: model.Egress, Protocol: scripted.Protocol, Route: route}),
+		Detail:  err.Error(),
 	})
 }
 

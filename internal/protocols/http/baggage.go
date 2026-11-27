@@ -11,10 +11,6 @@ import (
 	"github.com/block/spectre/internal/engine"
 )
 
-// requestIDBaggageKey names the W3C baggage member that carries a mirrored request's ID
-// from ingress, through the services, to egress. Egress removes it before a dependency sees it.
-const requestIDBaggageKey = "spectre_request_id"
-
 const baggageHeader = "Baggage"
 
 // splitBaggage separates a header's baggage members from the values of its SPECTRE request ID members.
@@ -26,7 +22,7 @@ func splitBaggage(header nethttp.Header) (others, requestIDs []string) {
 				continue
 			}
 			key, value, _ := strings.Cut(member, "=")
-			if strings.TrimSpace(key) != requestIDBaggageKey {
+			if strings.TrimSpace(key) != engine.RequestIDKey {
 				others = append(others, member)
 				continue
 			}
@@ -48,7 +44,7 @@ func setBaggage(header nethttp.Header, members []string) {
 // setRequestID replaces any SPECTRE request ID in a header's baggage with id.
 func setRequestID(header nethttp.Header, id engine.RequestID) {
 	others, _ := splitBaggage(header)
-	setBaggage(header, append(others, requestIDBaggageKey+"="+id.String()))
+	setBaggage(header, append(others, engine.RequestIDKey+"="+id.String()))
 }
 
 // removeRequestID removes every SPECTRE request ID from a header's baggage and returns their

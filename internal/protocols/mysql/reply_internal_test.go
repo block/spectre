@@ -125,7 +125,7 @@ func TestRepliesBeyondTheBudgetQuarantineAndReturnIt(t *testing.T) {
 		long.Rows = append(long.Rows, items.Rows[0])
 	}
 
-	observer.sent(append([]byte{mysql.COM_QUERY}, "SELECT id, sku FROM items"...), true)
+	observer.sent(append([]byte{mysql.COM_QUERY}, "SELECT id, sku FROM items /* srid_01jx0000000000000000000000 */"...), true)
 	for _, b := range packetsOf(long, 0, true) {
 		receive(observer, []byte{b})
 	}
@@ -137,6 +137,59 @@ func TestRepliesBeyondTheBudgetQuarantineAndReturnIt(t *testing.T) {
 		Detail:  "saved reference replies exceed the MySQL saved replies size",
 	}, quarantine.Reason)
 	assert.True(t, budget.Reserve(budget.Limit()))
+}
+
+// Reference statements that name no valid request quarantine the candidate, as prepared statements
+// do, unless they only change session state. Either way, their replies give back what they held.
+func TestReferenceStatementsOfNoRequestQuarantineUnlessTheyChangeSessionState(t *testing.T) {
+	for name, test := range map[string]struct {
+		command  byte
+		text     string
+		expected Option[model.QuarantineReason]
+	}{
+		"NoRequest": {
+			command: mysql.COM_QUERY, text: "SELECT id, sku FROM items",
+			expected: Some(egressReason(model.QuarantinePairing, "SELECT", "reference statement carries no SPECTRE request ID")),
+		},
+		"Malformed": {
+			command: mysql.COM_QUERY, text: "SELECT id, sku FROM items /* srid_nonsense */",
+			expected: Some(egressReason(model.QuarantinePairing, "SELECT", "statement carries a malformed SPECTRE request ID")),
+		},
+		"Prepared": {
+			command: mysql.COM_STMT_PREPARE, text: "SELECT sku FROM items WHERE id = ?",
+			expected: Some(egressReason(model.QuarantineUnable, "command", "prepared statements are not supported")),
+		},
+		"Set":    {command: mysql.COM_QUERY, text: "SET time_zone = '+00:00'; SET @mark = 1", expected: None[model.QuarantineReason]()},
+		"Use":    {command: mysql.COM_QUERY, text: "USE shop", expected: None[model.QuarantineReason]()},
+		"InitDB": {command: mysql.COM_INIT_DB, text: "shop", expected: None[model.QuarantineReason]()},
+		"SetAndOther": {
+			command: mysql.COM_QUERY, text: "SET @mark = 1; SELECT id, sku FROM items",
+			expected: Some(egressReason(model.QuarantinePairing, "SET", "reference statement carries no SPECTRE request ID")),
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			server, budget := budgetedServer()
+			observer := newObserver(t.Context(), server, exact.New().NewSession(), mysql.CLIENT_PROTOCOL_41|mysql.CLIENT_DEPRECATE_EOF)
+
+			observer.sent(append([]byte{test.command}, test.text...), true)
+			receive(observer, packetsOf(items, 0, true))
+			reason := None[model.QuarantineReason]()
+			if quarantine, ok := server.candidates.QuarantineStatus().Get(); ok {
+				reason = Some(quarantine.Reason)
+			}
+			assert.Equal(t, test.expected, reason)
+			assert.True(t, budget.Reserve(budget.Limit()))
+		})
+	}
+}
+
+// egressReason is the reason MySQL traffic of route quarantined the candidate for.
+func egressReason(kind model.QuarantineKind, route model.Route, detail string) model.QuarantineReason {
+	return model.QuarantineReason{
+		Kind:    kind,
+		Traffic: Some(model.Traffic{Direction: model.Egress, Protocol: scripted.Protocol, Route: route}),
+		Detail:  detail,
+	}
 }
 
 func TestRepliesBeingReadHoldTheBudgetUntilTheConnectionEnds(t *testing.T) {

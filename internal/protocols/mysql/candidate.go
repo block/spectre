@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/alecthomas/errors"
+	. "github.com/alecthomas/types/optional"
 	"github.com/go-mysql-org/go-mysql/mysql"
 
 	"github.com/block/spectre/internal/engine"
@@ -43,7 +44,13 @@ func (c *candidateConn) UseDB(database string) error {
 // answered quarantines the candidate.
 func (c *candidateConn) HandleQuery(query string) (*mysql.Result, error) {
 	// The statement outlives the wire library's buffer, as do the parts parsed from it.
-	return c.answer(c.server.command(mysql.COM_QUERY, strings.Clone(query)))
+	query = strings.Clone(query)
+	named, err := statementRequestID(query)
+	malformed := None[error]()
+	if err != nil {
+		malformed = Some(err)
+	}
+	return c.answer(c.server.command(mysql.COM_QUERY, query), named, malformed)
 }
 
 // HandleFieldList is refused, because it reads the database's schema.
@@ -71,9 +78,10 @@ func (c *candidateConn) HandleOtherCommand(_ byte, _ []byte) error {
 	return c.unsupported("command is not supported")
 }
 
-// answer runs a command as admitted candidate work, and replies with what the
-// normaliser claimed. Claimed replies are released once converted.
-func (c *candidateConn) answer(command normaliser.Command) (*mysql.Result, error) {
+// answer runs a command that names a request, if any, as admitted candidate work, and replies with
+// what the normaliser claimed. Claimed replies are released once converted.
+func (c *candidateConn) answer(command normaliser.Command, named Option[engine.RequestID], malformed Option[error],
+) (*mysql.Result, error) {
 	ctx, cancel := context.WithCancelCause(c.ctx)
 	defer cancel(nil)
 	finish, admitted := c.server.admit(ctx, func() { cancel(engine.ErrCandidateStopped) })
@@ -87,9 +95,17 @@ func (c *candidateConn) answer(command normaliser.Command) (*mysql.Result, error
 			saved.Release()
 		}
 	}()
-	c.transactions.next(command)
+	c.transactions.next(command, named)
 	reply, err := c.session.Candidate(ctx, command, func(ctx context.Context, route model.Route, key normaliser.Key) (normaliser.Reply, error) {
-		saved, err := c.server.claim(ctx, &claimed, route, c.transactions.key(key))
+		if sessionCommand(command) {
+			// The reference's SET statements are never offered, so the proxy accepts the candidate's.
+			return normaliser.OK{}, nil
+		}
+		if invalid, ok := malformed.Get(); ok {
+			c.server.unpaired(ctx, route, invalid)
+			return nil, errors.WithStack(invalid)
+		}
+		saved, err := c.server.claim(ctx, &claimed, c.transactions.requestID(), route, c.transactions.key(key))
 		if err != nil {
 			return nil, err
 		}
@@ -99,6 +115,9 @@ func (c *candidateConn) answer(command normaliser.Command) (*mysql.Result, error
 	if unsupported, ok := errors.AsType[normaliser.UnsupportedError](err); ok {
 		c.server.unable(ctx, unsupported.Route, unsupported.Reason)
 		return nil, refusal(unsupported.Reason)
+	}
+	if invalid, ok := malformed.Get(); ok && errors.Is(err, invalid) {
+		return nil, refusal("request ID is invalid")
 	}
 	if err != nil {
 		return nil, refusal("no matching reference reply")
