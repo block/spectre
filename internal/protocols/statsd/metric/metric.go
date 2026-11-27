@@ -69,6 +69,20 @@ func (t Type) Class() Class {
 	return Counted
 }
 
+// Measure is the statistic that says how much a series of the class sent.
+func (c Class) Measure() Statistic {
+	switch c {
+	case Sampled:
+		return Count
+	case Levelled:
+		return Mean
+	case Distinct:
+		return Members
+	case Counted:
+	}
+	return Total
+}
+
 // Series is one metric with one set of tags. A tag without a value has an empty value.
 type Series struct {
 	Name string

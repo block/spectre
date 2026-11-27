@@ -536,8 +536,8 @@ optionally by tag. Rules apply in declaration order:
   `side`, never its values, and returns a `name`, optional `tags` that replace
   the metric's own, and an optional `scale` for its values. Returning
   `undefined` ignores the metric.
-- `compare(tolerance)` expects both sides to send the series, and compares
-  them.
+- `compare(statistics)` expects both sides to send the series, and checks the
+  statistics it names in each window.
 - `ignore()` drops the series from both sides.
 
 ```ts
@@ -552,39 +552,65 @@ egress.statsd("framework.actions.service_api.response_codes").map((m) => ({
   name: "framework.http.response_codes",
   tags: { endpoint: m.tags.api, code: m.tags.code },
 }));
-egress.statsd("framework.http.response_codes").compare({ relative: 0.05, absolute: 5 });
+egress.statsd("framework.http.response_codes").compare({ total: { within: 0.05, slack: 5 } });
 egress.statsd("framework.http.response_times").compare({
-  relative: 0.05,
-  absolute: 5,
-  p95: { relative: 0.5, only: "higher" },
+  count: { within: 0.05, slack: 5 },
+  p95: { above: 0.5 },
 });
 egress.statsd("**").ignore();
 ```
 
 The proxy totals each series per side over `--statsd-window` (1m by default),
 and judges a window `--statsd-settle` (10s) after it ends, so that late metrics
-still count. A tolerance allows the candidate to differ from the reference by
-`max(absolute, relative × reference)`, and `only` fails only a candidate that is
-`"higher"` or `"lower"`. It applies to a counter's total, a timer's, histogram's
-or distribution's sample count, a gauge's mean, and a set's number of members.
-A gauge that only one side sends always fails. `p50`,
-`p75`, `p90`, `p95` and `p99` compare a distribution's percentiles. Sample
-rates are taken into account.
+still count. Sample rates are taken into account. A comparison names the
+statistics it checks:
+
+| Statistic | Metric types | Value |
+| --- | --- | --- |
+| `total` | counter | The sum of the counts. |
+| `mean` | gauge | The mean of the values. |
+| `members` | set | How many distinct members were sent. |
+| `count` | timer, histogram, distribution | How many values were sent. |
+| `p50`, `p75`, `p90`, `p95`, `p99` | timer, histogram, distribution | The percentile of the values. |
+
+A series is checked only on the statistics its type has, so one rule can
+compare counters and distributions. A rule whose statistics a series' type has
+none of quarantines it as `unable`.
+
+Each statistic takes a tolerance in fractions of the reference's value, where
+`0.1` is 10%:
+
+- `within` fails a candidate more than that fraction above or below the
+  reference.
+- `above` fails a candidate more than that fraction above the reference, and
+  `below` one more than that fraction below it. A direction without a bound
+  passes any amount. They cannot be combined with `within`.
+- `slack` is an absolute difference that always passes, for series too quiet
+  for fractions.
+- `{}` requires equal values.
+
+A series that only one side sends counts as 0 on the other side, so its
+`total`, `count` or `members` check decides whether that fails. Without such a
+check, and always for gauges, a series sent by one side only fails.
 
 The first window that fails quarantines the candidate:
 
 - `unmatched` when the reference sends a compared series that the candidate
   leaves out, or the other way round, beyond the tolerance.
-- `divergent` when both send it and it differs beyond the tolerance.
-- `unable` when a series reaches no rule that compares or ignores it. End the
-  scripts with `egress.statsd("**").ignore()` to ignore every other series.
+- `divergent` when both send it and a statistic differs beyond its tolerance.
+- `unable` when a series reaches no rule that compares or ignores it, or none
+  of its rule's statistics fit its type. End the scripts with
+  `egress.statsd("**").ignore()` to ignore every other series.
 - `capacity` when a window holds more than `--statsd-max-series` series.
 
 Comparison starts with the window in which the candidate first sends a
 compared series, or once `--statsd-candidate-startup-timeout` (5m) passes.
 Windows in which the proxy could not keep up and dropped datagrams are skipped,
 and comparison stops once the candidate is quarantined in either direction.
-Quarantine reasons name the series with its tags, but never its values.
+Quarantine reasons name the series with its tags, the statistic's value on
+each side, and what the rule allows, for example `distribution http.latency p95
+is 340 on the candidate and 250 on the reference, 36% above; the rule allows up
+to 20% above, in the 1m0s window from 10:02:00`.
 
 ### Quarantine
 

@@ -5,7 +5,9 @@ package scripted
 
 import (
 	_ "embed"
+	"math"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/alecthomas/errors"
@@ -13,6 +15,7 @@ import (
 
 	"github.com/block/spectre/internal/comparison/javascript"
 	"github.com/block/spectre/internal/model"
+	"github.com/block/spectre/internal/protocols/statsd/metric"
 )
 
 // Protocol is "statsd".
@@ -51,48 +54,85 @@ type Rule struct {
 	Compare  Option[Comparison]
 }
 
-// Comparison is how far the candidate may differ from the reference in a window.
+// Comparison is the statistics a rule checks, in order, and how far each may differ.
 type Comparison struct {
-	Tolerance   Tolerance
-	Percentiles []Percentile
+	Checks []Check
 }
 
-// Percentile is a distribution's percentile, from 0 to 100, and its tolerance.
-type Percentile struct {
-	Rank      float64
+// For is the checks of the statistics that series of class have.
+func (c Comparison) For(class metric.Class) []Check {
+	fitting := []Check{}
+	for _, check := range c.Checks {
+		if check.Statistic.Fits(class) {
+			fitting = append(fitting, check)
+		}
+	}
+	return fitting
+}
+
+// Statistics are the statistics the comparison checks.
+func (c Comparison) Statistics() []metric.Statistic {
+	statistics := make([]metric.Statistic, 0, len(c.Checks))
+	for _, check := range c.Checks {
+		statistics = append(statistics, check.Statistic)
+	}
+	return statistics
+}
+
+// Check is a statistic, and how far the candidate's may differ from the reference's.
+type Check struct {
+	Statistic metric.Statistic
 	Tolerance Tolerance
 }
 
-// Bound limits which way the candidate may not differ.
-type Bound string
-
-const (
-	// Both fails a candidate that is too high or too low.
-	Both Bound = ""
-	// Higher fails only a candidate that is too high.
-	Higher Bound = "higher"
-	// Lower fails only a candidate that is too low.
-	Lower Bound = "lower"
-)
-
-// Tolerance allows the candidate to differ by max(Absolute, Relative × reference).
+// Tolerance bounds the candidate above and below the reference by fractions of the reference.
+// An absent bound is unlimited, and a difference up to Slack always passes.
 type Tolerance struct {
-	Relative float64
-	Absolute float64
-	Only     Bound
+	Above Option[float64]
+	Below Option[float64]
+	Slack float64
 }
 
 // Allows reports whether candidate is close enough to reference.
 func (t Tolerance) Allows(reference, candidate float64) bool {
-	allowed := max(t.Absolute, t.Relative*reference)
-	switch t.Only {
-	case Higher:
-		return candidate <= reference+allowed
-	case Lower:
-		return candidate >= reference-allowed
-	case Both:
+	gap := func(fraction float64) float64 { return max(t.Slack, fraction*math.Abs(reference)) }
+	if above, bounded := t.Above.Get(); bounded && candidate > reference+gap(above) {
+		return false
 	}
-	return candidate <= reference+allowed && candidate >= reference-allowed
+	if below, bounded := t.Below.Get(); bounded && candidate < reference-gap(below) {
+		return false
+	}
+	return true
+}
+
+// String says what the tolerance allows, as in "up to 20% above".
+func (t Tolerance) String() string {
+	above, hasAbove := t.Above.Get()
+	below, hasBelow := t.Below.Get()
+	var allowed string
+	switch {
+	case !hasAbove && !hasBelow:
+		allowed = "any difference"
+	case hasAbove && hasBelow && above == 0 && below == 0:
+		allowed = "no difference"
+	case hasAbove && hasBelow && above == below:
+		allowed = "up to " + percent(above) + " above or below"
+	case hasAbove && hasBelow:
+		allowed = "up to " + percent(above) + " above and " + percent(below) + " below"
+	case hasAbove:
+		allowed = "up to " + percent(above) + " above"
+	default:
+		allowed = "up to " + percent(below) + " below"
+	}
+	if t.Slack > 0 {
+		allowed += ", or a difference of up to " + strconv.FormatFloat(t.Slack, 'g', -1, 64)
+	}
+	return allowed
+}
+
+// percent writes a fraction as a percentage, as in "20%".
+func percent(fraction float64) string {
+	return strconv.FormatFloat(fraction*100, 'g', 4, 64) + "%"
 }
 
 // NewBinding returns the StatsD binding, which the script loader adds to its bindings, and the

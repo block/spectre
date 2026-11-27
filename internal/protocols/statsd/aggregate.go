@@ -41,23 +41,20 @@ func (a *aggregate) add(sample metric.Sample, scale float64) {
 	}
 }
 
-// value is what a comparison's tolerance applies to: a counter's total, a distribution's
-// sample count, a gauge's mean, or a set's size.
-func (a *aggregate) value() float64 {
-	switch a.class {
-	case metric.Levelled:
+// statistic is one of the window's statistics of the values.
+func (a *aggregate) statistic(statistic metric.Statistic) float64 {
+	switch statistic {
+	case metric.Mean:
 		if a.gauges == 0 {
 			return 0
 		}
 		return a.total / a.gauges
-	case metric.Distinct:
+	case metric.Members:
 		return float64(len(a.members))
-	case metric.Counted, metric.Sampled:
+	case metric.P50, metric.P75, metric.P90, metric.P95, metric.P99:
+		rank, _ := statistic.Rank()
+		return a.sketch.percentile(rank)
+	case metric.Total, metric.Count:
 	}
 	return a.total
-}
-
-// percentile is a distribution's percentile, by rank from 0 to 100.
-func (a *aggregate) percentile(rank float64) float64 {
-	return a.sketch.percentile(rank)
 }

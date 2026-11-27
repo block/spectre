@@ -2,12 +2,13 @@ package scripted
 
 import (
 	"slices"
-	"strconv"
+	"strings"
 
 	. "github.com/alecthomas/types/optional"
 	"github.com/grafana/sobek"
 
 	"github.com/block/spectre/internal/comparison/javascript"
+	"github.com/block/spectre/internal/protocols/statsd/metric"
 )
 
 // definition defines the StatsD binding's members in one runtime.
@@ -91,42 +92,66 @@ func (d *definition) comparison(value sobek.Value) Comparison {
 		panic(d.runtime.NewTypeError("spectre.EgressStatsDRule.compare requires a comparison"))
 	}
 	object := value.ToObject(d.runtime)
-	comparison := Comparison{Tolerance: d.tolerance("compare", object)}
-	for _, rank := range []float64{50, 75, 90, 95, 99} {
-		name := "p" + strconv.Itoa(int(rank))
-		if property := object.Get(name); property != nil && !sobek.IsUndefined(property) {
-			tolerance := d.tolerance("compare "+name, property.ToObject(d.runtime))
-			comparison.Percentiles = append(comparison.Percentiles, Percentile{Rank: rank, Tolerance: tolerance})
+	statistics := metric.Statistics()
+	names := make([]string, 0, len(statistics))
+	for _, statistic := range statistics {
+		names = append(names, string(statistic))
+	}
+	for _, key := range object.Keys() {
+		if !slices.Contains(names, key) {
+			panic(d.runtime.NewTypeError("spectre.EgressStatsDRule.compare does not compare %q; it compares %s", key, strings.Join(names, ", ")))
 		}
+	}
+	comparison := Comparison{}
+	for _, statistic := range statistics {
+		if property := object.Get(string(statistic)); property != nil && !sobek.IsUndefined(property) {
+			comparison.Checks = append(comparison.Checks, Check{Statistic: statistic, Tolerance: d.tolerance(string(statistic), property)})
+		}
+	}
+	if len(comparison.Checks) == 0 {
+		panic(d.runtime.NewTypeError("spectre.EgressStatsDRule.compare requires at least one of %s", strings.Join(names, ", ")))
 	}
 	return comparison
 }
 
-// tolerance reads a Tolerance object's properties.
-func (d *definition) tolerance(name string, object *sobek.Object) Tolerance {
-	number := func(property string) float64 {
-		value := object.Get(property)
-		if value == nil || sobek.IsUndefined(value) {
-			return 0
+// tolerance reads a statistic's Tolerance object. Within bounds both ways, and no bound
+// at all requires equal values.
+func (d *definition) tolerance(statistic string, value sobek.Value) Tolerance {
+	object, isObject := value.(*sobek.Object)
+	if !isObject {
+		panic(d.runtime.NewTypeError("spectre.EgressStatsDRule.compare %s requires a tolerance", statistic))
+	}
+	properties := []string{"within", "above", "below", "slack"}
+	for _, key := range object.Keys() {
+		if !slices.Contains(properties, key) {
+			panic(d.runtime.NewTypeError("spectre.EgressStatsDRule.compare %s does not take %q; it takes within, above, below and slack", statistic, key))
 		}
-		number, isNumber := value.Export().(float64)
-		if integer, isInteger := value.Export().(int64); isInteger {
+	}
+	number := func(property string) Option[float64] {
+		read := object.Get(property)
+		if read == nil || sobek.IsUndefined(read) {
+			return None[float64]()
+		}
+		number, isNumber := read.Export().(float64)
+		if integer, isInteger := read.Export().(int64); isInteger {
 			number, isNumber = float64(integer), true
 		}
 		if !isNumber || number < 0 {
-			panic(d.runtime.NewTypeError("spectre.EgressStatsDRule.%s %s must be a number of at least 0", name, property))
+			panic(d.runtime.NewTypeError("spectre.EgressStatsDRule.compare %s %s must be a number of at least 0", statistic, property))
 		}
-		return number
+		return Some(number)
 	}
-	tolerance := Tolerance{Relative: number("relative"), Absolute: number("absolute"), Only: Both}
-	if only := object.Get("only"); only != nil && !sobek.IsUndefined(only) {
-		bound := Bound(only.String())
-		if bound != Higher && bound != Lower {
-			panic(d.runtime.NewTypeError(`spectre.EgressStatsDRule.%s only must be "higher" or "lower"`, name))
-		}
-		tolerance.Only = bound
+	within, above, below := number("within"), number("above"), number("below")
+	if within.Ok() && (above.Ok() || below.Ok()) {
+		panic(d.runtime.NewTypeError("spectre.EgressStatsDRule.compare %s takes within, or above and below, not both", statistic))
 	}
-	return tolerance
+	if within.Ok() {
+		above, below = within, within
+	}
+	if !above.Ok() && !below.Ok() {
+		above, below = Some(0.0), Some(0.0)
+	}
+	return Tolerance{Above: above, Below: below, Slack: number("slack").Default(0)}
 }
 
 // defineMethod binds one object method, panicking if sobek rejects it.

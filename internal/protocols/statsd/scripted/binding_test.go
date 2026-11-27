@@ -10,6 +10,7 @@ import (
 
 	"github.com/block/spectre/internal/comparison"
 	"github.com/block/spectre/internal/comparison/javascript"
+	"github.com/block/spectre/internal/protocols/statsd/metric"
 	"github.com/block/spectre/internal/protocols/statsd/scripted"
 )
 
@@ -42,7 +43,7 @@ func TestDeclaresRulesInOrder(t *testing.T) {
 	loaded, handle, err := load(t, `
 		egress.statsd("jvm.**").ignore();
 		egress.statsd("framework.actions.**").tag("code", "200").tag("api", (api) => api !== undefined).map((m) => ({ name: "http" }));
-		egress.statsd("http").compare({ relative: 0.05, absolute: 2, p95: { relative: 0.5, only: "higher" } });
+		egress.statsd("http").compare({ p95: { above: 0.5 }, count: { within: 0.05, slack: 2 }, mean: {} });
 	`)
 	assert.NoError(t, err)
 
@@ -59,10 +60,11 @@ func TestDeclaresRulesInOrder(t *testing.T) {
 		{
 			Selector: scripted.Selector{Pattern: "http"},
 			Map:      None[int](),
-			Compare: Some(scripted.Comparison{
-				Tolerance:   scripted.Tolerance{Relative: 0.05, Absolute: 2, Only: scripted.Both},
-				Percentiles: []scripted.Percentile{{Rank: 95, Tolerance: scripted.Tolerance{Relative: 0.5, Only: scripted.Higher}}},
-			}),
+			Compare: Some(scripted.Comparison{Checks: []scripted.Check{
+				{Statistic: metric.Mean, Tolerance: scripted.Tolerance{Above: Some(0.0), Below: Some(0.0)}},
+				{Statistic: metric.Count, Tolerance: scripted.Tolerance{Above: Some(0.05), Below: Some(0.05), Slack: 2}},
+				{Statistic: metric.P95, Tolerance: scripted.Tolerance{Above: Some(0.5), Below: None[float64]()}},
+			}}),
 		},
 	}}, handle.Declared(loaded.Program()))
 }
@@ -73,8 +75,12 @@ func TestRejectsInvalidRules(t *testing.T) {
 		message string
 	}{
 		"EmptyPattern":      {body: `egress.statsd("").ignore();`, message: "spectre.egress.statsd pattern must be a non-empty string"},
-		"NegativeTolerance": {body: `egress.statsd("a").compare({ relative: -1 });`, message: "relative must be a number of at least 0"},
-		"UnknownBound":      {body: `egress.statsd("a").compare({ only: "sideways" as "higher" });`, message: `only must be "higher" or "lower"`},
+		"NegativeTolerance": {body: `egress.statsd("a").compare({ total: { within: -1 } });`, message: "compare total within must be a number of at least 0"},
+		"WithinAndAbove":    {body: `egress.statsd("a").compare({ total: { within: 0.1, above: 0.2 } as never });`, message: "compare total takes within, or above and below, not both"},
+		"UnknownStatistic":  {body: `egress.statsd("a").compare({ relative: 0.1 } as never);`, message: `compare does not compare "relative"; it compares total, mean, members, count, p50, p75, p90, p95, p99`},
+		"UnknownBound":      {body: `egress.statsd("a").compare({ total: { only: "higher" } as never });`, message: `compare total does not take "only"`},
+		"NotATolerance":     {body: `egress.statsd("a").compare({ total: 0.1 as never });`, message: "compare total requires a tolerance"},
+		"NoStatistic":       {body: `egress.statsd("a").compare({});`, message: "compare requires at least one of total, mean"},
 		"NoComparison":      {body: `egress.statsd("a").compare(undefined as never);`, message: "compare requires a comparison"},
 	} {
 		t.Run(name, func(t *testing.T) {

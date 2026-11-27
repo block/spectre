@@ -17,15 +17,36 @@ declare module "spectre" {
   }
   /** Selects by a tag's value, or by a function of it, which receives undefined when the tag is absent. */
   type TagSelect = string | ((value: string | undefined) => boolean);
-  /** Allows the candidate to differ from the reference by max(absolute, relative × reference). */
-  export interface Tolerance {
-    relative?: number;
-    absolute?: number;
-    /** Fails only when the candidate is higher, or only when it is lower. */
-    only?: "higher" | "lower";
+  /** How far a statistic may differ, in fractions of the reference's value: 0.1 is 10%. With no bound, the values must be equal. */
+  export type Tolerance = Within | Bounds;
+  export interface Within {
+    /** Fails when the candidate is more than this fraction above or below the reference. */
+    within: number;
+    above?: never;
+    below?: never;
+    /** A difference up to this absolute amount always passes, for series too quiet for fractions. */
+    slack?: number;
   }
-  /** Compares a window's counter total, gauge mean, set size, or distribution sample count, and the percentiles of a distribution. */
-  export interface MetricComparison extends Tolerance {
+  export interface Bounds {
+    within?: never;
+    /** Fails when the candidate is more than this fraction above the reference. Without it, any amount above passes. */
+    above?: number;
+    /** Fails when the candidate is more than this fraction below the reference. Without it, any amount below passes. */
+    below?: number;
+    /** A difference up to this absolute amount always passes, for series too quiet for fractions. */
+    slack?: number;
+  }
+  /** The statistics a rule checks in each window. A series is checked on the statistics its type has. */
+  export interface MetricComparison {
+    /** A counter's total. */
+    total?: Tolerance;
+    /** A gauge's mean. */
+    mean?: Tolerance;
+    /** How many distinct members a set has. */
+    members?: Tolerance;
+    /** How many values a timer, histogram or distribution has. */
+    count?: Tolerance;
+    /** Percentiles of a timer, histogram or distribution. */
     p50?: Tolerance;
     p75?: Tolerance;
     p90?: Tolerance;
@@ -38,7 +59,7 @@ declare module "spectre" {
     tag(name: string, select: TagSelect): EgressStatsDRule;
     /** Maps the selected metrics, then applies the later rules to the result; returning undefined ignores a metric. */
     map(mapping: (metric: Metric) => MappedMetric | undefined): void;
-    /** Expects both sides to send the selected series, and compares them in each window. */
+    /** Expects both sides to send the selected series, and checks the comparison's statistics in each window. */
     compare(comparison: MetricComparison): void;
     /** Ignores the selected metrics, so they are neither compared nor expected. */
     ignore(): void;

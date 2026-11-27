@@ -27,9 +27,9 @@ const feeplansScript = `
 		? { name: "http.responses", tags: { endpoint: m.tags.controller + "#" + m.tags.action, code: m.tags.code } }
 		: undefined);
 	egress.statsd("framework.actions.*.*.response_times").map((m) => ({ name: "http.latency", tags: { endpoint: m.name.split(".")[3] } }));
-	egress.statsd("http.responses").compare({ relative: 0.1, absolute: 1 });
-	egress.statsd("http.latency").compare({ relative: 0.1, p95: { relative: 0.2, only: "higher" } });
-	egress.statsd("queue.depth").compare({});
+	egress.statsd("http.responses").compare({ total: { within: 0.1, slack: 1 } });
+	egress.statsd("http.latency").compare({ count: { within: 0.1 }, p95: { above: 0.2 } });
+	egress.statsd("queue.depth").compare({ mean: {} });
 `
 
 func TestResolverMapsComparesAndIgnores(t *testing.T) {
@@ -64,10 +64,16 @@ func TestResolverMapsComparesAndIgnores(t *testing.T) {
 
 func TestWindowVerdicts(t *testing.T) {
 	responses := resolution{outcome: compared, series: series("http.responses", metric.Counter, map[string]string{}), scale: 1,
-		comparison: scripted.Comparison{Tolerance: scripted.Tolerance{Relative: 0.1, Absolute: 1}}}
-	latency := resolution{outcome: compared, series: series("http.latency", metric.Timer, map[string]string{}), scale: 1,
-		comparison: scripted.Comparison{Percentiles: []scripted.Percentile{{Rank: 95, Tolerance: scripted.Tolerance{Relative: 0.2, Only: scripted.Higher}}}, Tolerance: scripted.Tolerance{Relative: 0.5}}}
-	depth := resolution{outcome: compared, series: series("queue.depth", metric.Gauge, map[string]string{}), scale: 1}
+		comparison: scripted.Comparison{Checks: []scripted.Check{{Statistic: metric.Total, Tolerance: scripted.Tolerance{Above: Some(0.1), Below: Some(0.1), Slack: 1}}}}}
+	latencyComparison := scripted.Comparison{Checks: []scripted.Check{
+		{Statistic: metric.Count, Tolerance: scripted.Tolerance{Above: Some(0.5), Below: Some(0.5)}},
+		{Statistic: metric.P95, Tolerance: scripted.Tolerance{Above: Some(0.2), Below: None[float64]()}},
+	}}
+	latency := resolution{outcome: compared, series: series("http.latency", metric.Timer, map[string]string{}), scale: 1, comparison: latencyComparison}
+	latencyAsCounter := resolution{outcome: compared, series: series("http.latency", metric.Counter, map[string]string{}), scale: 1, comparison: latencyComparison}
+	depth := resolution{outcome: compared, series: series("queue.depth", metric.Gauge, map[string]string{}), scale: 1,
+		comparison: scripted.Comparison{Checks: []scripted.Check{{Statistic: metric.Mean, Tolerance: scripted.Tolerance{Above: Some(0.0), Below: Some(0.0)}}}}}
+	allowed := "the rule allows up to 10% above or below, or a difference of up to 1"
 	for name, test := range map[string]struct {
 		resolved  resolution
 		reference []string
@@ -77,13 +83,16 @@ func TestWindowVerdicts(t *testing.T) {
 	}{
 		"WithinTolerance":     {resolved: responses, reference: []string{"r:10|c"}, candidate: []string{"r:9|c"}},
 		"SampleRateCounted":   {resolved: responses, reference: []string{"r:10|c"}, candidate: []string{"r:5|c|@0.5"}},
-		"CandidateLeftOut":    {resolved: responses, reference: []string{"r:10|c"}, kind: model.QuarantineUnmatched, detail: "candidate left out counter http.responses, which the reference sent with total 10"},
+		"CandidateLeftOut":    {resolved: responses, reference: []string{"r:10|c"}, kind: model.QuarantineUnmatched, detail: "candidate left out counter http.responses, which the reference sent with total 10; " + allowed},
 		"RareSeriesTolerated": {resolved: responses, reference: []string{"r:1|c"}},
-		"CandidateExtra":      {resolved: responses, candidate: []string{"r:3|c"}, kind: model.QuarantineUnmatched, detail: "candidate sent counter http.responses with total 3, which the reference did not send"},
-		"Divergent":           {resolved: responses, reference: []string{"r:20|c"}, candidate: []string{"r:10|c"}, kind: model.QuarantineDivergent, detail: "counter http.responses total is 10 on the candidate and 20 on the reference"},
+		"CandidateExtra":      {resolved: responses, candidate: []string{"r:3|c"}, kind: model.QuarantineUnmatched, detail: "candidate sent counter http.responses with total 3, which the reference did not send; " + allowed},
+		"Divergent":           {resolved: responses, reference: []string{"r:20|c"}, candidate: []string{"r:10|c"}, kind: model.QuarantineDivergent, detail: "counter http.responses total is 10 on the candidate and 20 on the reference, 50% below; " + allowed},
 		"FasterCandidate":     {resolved: latency, reference: []string{"r:100:100|ms"}, candidate: []string{"r:10:10|ms"}},
-		"SlowerCandidate":     {resolved: latency, reference: []string{"r:100:100|ms"}, candidate: []string{"r:200:200|ms"}, kind: model.QuarantineDivergent, detail: "distribution http.latency p95 is "},
-		"GaugeMissing":        {resolved: depth, reference: []string{"r:3|g"}, kind: model.QuarantineUnmatched, detail: "candidate left out gauge queue.depth"},
+		"SlowerCandidate":     {resolved: latency, reference: []string{"r:100:100|ms"}, candidate: []string{"r:200:200|ms"}, kind: model.QuarantineDivergent, detail: "% above; the rule allows up to 20% above"},
+		"FewerSamples":        {resolved: latency, reference: []string{"r:1:1:1:1|ms"}, candidate: []string{"r:1|ms"}, kind: model.QuarantineDivergent, detail: "distribution http.latency count is 1 on the candidate and 4 on the reference, 75% below; the rule allows up to 50% above or below"},
+		"StatisticNotOfType":  {resolved: latencyAsCounter, reference: []string{"r:1|c"}, candidate: []string{"r:1|c"}, kind: model.QuarantineUnable, detail: "the StatsD rule compares count and p95, which counter http.latency does not have"},
+		"GaugeMissing":        {resolved: depth, reference: []string{"r:3|g"}, kind: model.QuarantineUnmatched, detail: "candidate left out gauge queue.depth, which the reference sent with mean 3; both sides must send a gauge"},
+		"GaugeDiffers":        {resolved: depth, reference: []string{"r:3|g"}, candidate: []string{"r:4|g"}, kind: model.QuarantineDivergent, detail: "gauge queue.depth mean is 4 on the candidate and 3 on the reference, 33.3% above; the rule allows no difference"},
 		"Uncovered":           {resolved: resolution{outcome: uncovered, series: series("ruby.gc", metric.Counter, map[string]string{}), scale: 1}, reference: []string{"r:1|c"}, kind: model.QuarantineUnable, detail: "no StatsD rule compares or ignores counter ruby.gc from the reference"},
 	} {
 		t.Run(name, func(t *testing.T) {
