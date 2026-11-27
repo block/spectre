@@ -5,11 +5,11 @@ on:
     branches:
       - main
   pull_request:
-  # Fills the UTC day's build cache on main, so branch builds after it do not
-  # start empty. Midnight in Sydney is 13:00 or 14:00 UTC, far enough from the
-  # UTC date change that a late start still saves under the same day's key.
+  # Fills the day's build cache on main just after the cache keys' Sydney date
+  # changes, so the first branch builds each day do not start empty. Off the
+  # hour, when GitHub delays scheduled runs most.
   schedule:
-    - cron: "0 0 * * *"
+    - cron: "15 0 * * *"
       timezone: "Australia/Sydney"
 
 permissions:
@@ -26,8 +26,10 @@ env:
 
 # Only main saves the build cache, so every branch restores main's latest
 # entry and branches never evict it with entries nothing else reads. Keys
-# include the UTC date and never fall back to an earlier day, so the cache
-# starts empty each day instead of accumulating old builds.
+# include the Sydney date and never fall back to an earlier day, so the cache
+# starts empty each day instead of accumulating old builds. The date changes
+# at midnight in Sydney, outside working hours, rather than mid-morning at
+# the UTC date change.
 jobs:
   test:
     name: Test
@@ -36,7 +38,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # ratchet:actions/checkout@v7
       - uses: cashapp/activate-hermit@cea9af7913204a965fd488637a8d1811bba2e616 # ratchet:cashapp/activate-hermit@v1
       - id: cache-day
-        run: echo "day=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+        run: echo "day=$(TZ=Australia/Sydney date +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ${{ env.BUILD_CACHE_PATHS }}
@@ -57,7 +59,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # ratchet:actions/checkout@v7
       - uses: cashapp/activate-hermit@cea9af7913204a965fd488637a8d1811bba2e616 # ratchet:cashapp/activate-hermit@v1
       - id: cache-day
-        run: echo "day=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+        run: echo "day=$(TZ=Australia/Sydney date +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
       # Reads the Test job's cache, which holds most of the packages these
       # tests compile. Only the Test job saves it.
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
@@ -75,7 +77,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # ratchet:actions/checkout@v7
       - uses: cashapp/activate-hermit@cea9af7913204a965fd488637a8d1811bba2e616 # ratchet:cashapp/activate-hermit@v1
       - id: cache-day
-        run: echo "day=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+        run: echo "day=$(TZ=Australia/Sydney date +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ${{ env.BUILD_CACHE_PATHS }}
@@ -96,7 +98,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # ratchet:actions/checkout@v7
       - uses: cashapp/activate-hermit@cea9af7913204a965fd488637a8d1811bba2e616 # ratchet:cashapp/activate-hermit@v1
       - id: cache-day
-        run: echo "day=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+        run: echo "day=$(TZ=Australia/Sydney date +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
       # Reads the Test job's cache, so building the images' binaries reuses its
       # compiled Go packages. Only the Test job saves it.
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
