@@ -149,6 +149,10 @@ func (o *observer) units(sent sentCommand, reply normaliser.Reply,
 				// use still gets no units, so the reply's hold on the budget is returned.
 				return nil
 			}
+			if sessionCommand(command) {
+				// The session follows it, but it offers nothing, so it cannot open a transaction's pairing.
+				return nil
+			}
 			return units
 		})
 		route := unsupportedRoute

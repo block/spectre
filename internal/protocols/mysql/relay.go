@@ -4,15 +4,17 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"regexp"
-	"strconv"
 	"sync"
 
 	"github.com/alecthomas/errors"
 	"github.com/go-mysql-org/go-mysql/mysql"
+	"github.com/pingcap/tidb/pkg/parser/ast"
 
 	"github.com/block/spectre/internal/logger"
+	"github.com/block/spectre/internal/protocols/mysql/normaliser"
 )
 
 // firstThread is the first thread ID the proxy gives references, far above the
@@ -24,14 +26,17 @@ type threads struct {
 	mu       sync.Mutex
 	next     uint32
 	database map[uint32]uint32
-	kill     *regexp.Regexp
+	// mentionsKill finds statements worth parsing as a KILL, so the relay parses few statements.
+	mentionsKill *regexp.Regexp
+	parser       *normaliser.Parser
 }
 
-func newThreads() *threads {
+func newThreads(parser *normaliser.Parser) *threads {
 	return &threads{
-		next:     firstThread,
-		database: map[uint32]uint32{},
-		kill:     regexp.MustCompile(`(?is)^\s*KILL\s+((?:QUERY|CONNECTION)\s+)?(\d+)\s*;?\s*$`),
+		next:         firstThread,
+		database:     map[uint32]uint32{},
+		mentionsKill: regexp.MustCompile(`(?i)kill`),
+		parser:       parser,
 	}
 }
 
@@ -59,25 +64,31 @@ func (t *threads) connect(thread, database uint32) (release func()) {
 	}
 }
 
-// rewriteKill returns statement with the database thread in place of a reference's
-// thread, or the error the reference gets for a thread the proxy does not know.
+// rewriteKill returns statement with the database thread in place of a reference's thread, or the
+// error the reference gets for a thread the proxy does not know. The parser reads it as MySQL does, comments included.
 func (t *threads) rewriteKill(statement []byte) (rewritten []byte, changed bool, err error) {
-	match := t.kill.FindSubmatch(statement)
-	if match == nil {
+	if !t.mentionsKill.Match(statement) {
 		return statement, false, nil
 	}
-	thread, err := strconv.ParseUint(string(match[2]), 10, 32)
-	if err != nil || uint32(thread) < firstThread {
-		// A thread the reference read from the database, such as with CONNECTION_ID().
-		return statement, false, nil //nolint:nilerr // Too large for a thread the proxy gave.
+	query, ok := t.parser.Parse(string(statement)).(normaliser.Query)
+	if !ok || len(query.Statements) != 1 {
+		return statement, false, nil
+	}
+	kill, ok := query.Statements[0].(*ast.KillStmt)
+	if !ok || kill.TiDBExtension || kill.Expr != nil || kill.ConnectionID < uint64(firstThread) || kill.ConnectionID > math.MaxUint32 {
+		// A thread the reference read from the database, such as with CONNECTION_ID(), or none.
+		return statement, false, nil
 	}
 	t.mu.Lock()
-	database, ok := t.database[uint32(thread)]
+	database, ok := t.database[uint32(kill.ConnectionID)]
 	t.mu.Unlock()
 	if !ok {
-		return nil, false, mysql.NewError(mysql.ER_NO_SUCH_THREAD, fmt.Sprintf("Unknown thread id: %d", thread))
+		return nil, false, mysql.NewError(mysql.ER_NO_SUCH_THREAD, fmt.Sprintf("Unknown thread id: %d", kill.ConnectionID))
 	}
-	return fmt.Appendf(nil, "KILL %s%d", match[1], database), true, nil
+	if kill.Query {
+		return fmt.Appendf(nil, "KILL QUERY %d", database), true, nil
+	}
+	return fmt.Appendf(nil, "KILL %d", database), true, nil
 }
 
 // relay passes packets between the reference and the database, rewriting KILL and

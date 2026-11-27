@@ -15,7 +15,7 @@ import (
 )
 
 func TestKillStatementsNameTheDatabaseThread(t *testing.T) {
-	threads := newThreads()
+	threads := newThreads(normaliser.NewParser())
 	thread := threads.reserve()
 	defer threads.connect(thread, 42)()
 	for _, test := range []struct {
@@ -26,10 +26,14 @@ func TestKillStatementsNameTheDatabaseThread(t *testing.T) {
 		err       string
 	}{
 		{name: "Query", statement: "KILL QUERY 3000000000", expected: "KILL QUERY 42", changed: true},
-		{name: "Connection", statement: " kill connection 3000000000 ; ", expected: "KILL connection 42", changed: true},
+		{name: "Connection", statement: " kill connection 3000000000 ; ", expected: "KILL 42", changed: true},
+		{name: "TrailingComment", statement: "KILL QUERY 3000000000 /* srid_01jx0000000000000000000000 */", expected: "KILL QUERY 42", changed: true},
+		{name: "LeadingComment", statement: "/* srid_01jx0000000000000000000000 */ KILL 3000000000", expected: "KILL 42", changed: true},
+		{name: "LineComment", statement: "KILL /* a */ QUERY 3000000000 -- caller", expected: "KILL QUERY 42", changed: true},
 		{name: "Bare", statement: "KILL 3000000000", expected: "KILL 42", changed: true},
 		{name: "DatabaseThread", statement: "KILL QUERY 17", expected: "KILL QUERY 17"},
 		{name: "OtherStatement", statement: "SELECT 'KILL 3000000000'", expected: "SELECT 'KILL 3000000000'"},
+		{name: "WithOtherStatements", statement: "KILL 3000000000; SELECT 1", expected: "KILL 3000000000; SELECT 1"},
 		{name: "UnknownThread", statement: "KILL 3000000001", err: "ERROR 1094 (HY000): Unknown thread id: 3000000001"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -56,7 +60,7 @@ func TestRepliesReachTheReferenceWhileEarlierOnesAreOffered(t *testing.T) {
 	go func() {
 		defer close(relayed)
 		observer := newObserver(t.Context(), server, session, mysql.CLIENT_PROTOCOL_41|mysql.CLIENT_DEPRECATE_EOF)
-		relay(t.Context(), newThreads(), observer, referenceSide, referenceSide, upstream)
+		relay(t.Context(), newThreads(normaliser.NewParser()), observer, referenceSide, referenceSide, upstream)
 	}()
 	// A broken relay fails the test instead of hanging it.
 	deadline := time.Now().Add(10 * time.Second)

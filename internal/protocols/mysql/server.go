@@ -82,6 +82,7 @@ func New(config Config, handle scripted.Handle, runtime protocols.Runtime, side 
 	if err != nil {
 		return nil, errors.Wrap(err, "configure MySQL statement replacements")
 	}
+	parser := normaliser.NewParser()
 	return &Server{
 		upstream:     config.Upstream,
 		user:         config.UpstreamUser,
@@ -89,12 +90,12 @@ func New(config Config, handle scripted.Handle, runtime protocols.Runtime, side 
 		upstreamTLS:  upstreamTLS,
 		candidates:   side.Candidates,
 		health:       side.Health,
-		threads:      newThreads(),
+		threads:      newThreads(parser),
 		reference:    side.Reference,
 		candidate:    side.Candidate,
 		budget:       proxy.NewBudget(config.SavedRepliesBytes),
 		normaliser:   statements,
-		parser:       normaliser.NewParser(),
+		parser:       parser,
 		schema:       runtime.Schema,
 	}, nil
 }

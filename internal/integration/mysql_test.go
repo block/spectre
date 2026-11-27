@@ -224,6 +224,24 @@ func TestMySQLCandidateTransactionsReadTheirOwnReferenceTransaction(t *testing.T
 	m.ExpectCalls(it.Calls{})
 }
 
+// A SET statement pairs with nothing, so when it starts a transaction's work, the transaction's
+// first paired statement still opens the transaction's pairing on both sides.
+func TestMySQLSetStatementsDoNotOpenTransactionsPairing(t *testing.T) {
+	const selectOrders = "SELECT id, label FROM orders WHERE merchant_id = 1 ORDER BY id"
+	m := startOrdersMirror(t, it.Reference(idleService), it.Candidate(idleService))
+	inTransaction := func(database *sql.DB) [][]Option[string] {
+		transaction := begin(t, database)
+		_, err := transaction.ExecContext(t.Context(), "SET @mark = 1")
+		assert.NoError(t, err)
+		_, orders := queried(t, transaction, selectOrders)
+		commit(t, transaction)
+		return orders
+	}
+
+	assert.Equal(t, inTransaction(m.MySQL().Reference), inTransaction(m.MySQL().Candidate))
+	m.ExpectCalls(it.Calls{})
+}
+
 // The reference reads merchant 1's orders on their own, then in a transaction; the
 // candidate runs its transaction first, which still pairs with the reference's transaction.
 func TestMySQLCandidateTransactionsPairOnlyWithReferenceTransactions(t *testing.T) {
@@ -725,8 +743,8 @@ func TestMySQLReferenceKillsItsOwnQuery(t *testing.T) {
 	}()
 	m.MySQL().AwaitRunning("SELECT SLEEP(60)")
 
-	// The thread the proxy reported names the query's own database thread.
-	_, err := m.MySQL().ConnectReference().Execute(fmt.Sprintf("KILL QUERY %d", sleeping.GetConnectionID()))
+	// The thread the proxy reported names the query's own database thread, whatever its request comment.
+	_, err := m.MySQL().ConnectReference().Execute(it.InTestRequest(fmt.Sprintf("KILL QUERY %d", sleeping.GetConnectionID())))
 	assert.NoError(t, err)
 	// A killed sleep ends early and returns 1.
 	interrupted, err := (<-done).GetInt(0, 0)

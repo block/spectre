@@ -352,8 +352,8 @@ listener reports the server's version. The listener offers no TLS,
 compression or query attributes.
 
 The listener reports its own thread ID for each connection, so a `KILL` or
-`KILL QUERY` of that ID is sent with the server's thread ID instead. The
-reported IDs start at 3000000000, and one the proxy no longer knows gets
+`KILL QUERY` of that ID is sent with the server's thread ID instead, without
+its comments. The reported IDs start at 3000000000, and one the proxy no longer knows gets
 `Unknown thread id`. A `KILL` of a server thread ID, such as one read with
 `CONNECTION_ID()`, is sent unchanged. Changing the user of a connection is
 refused, because the proxy always connects with its own credentials.
