@@ -6,6 +6,7 @@ import (
 
 	"github.com/block/spectre/internal/comparison/javascript"
 	"github.com/block/spectre/internal/logger"
+	"github.com/block/spectre/internal/model"
 	"github.com/block/spectre/internal/schema"
 )
 
@@ -15,7 +16,7 @@ type normalisationRun struct {
 	evaluator func() (*javascript.Evaluator, error)
 	root      *schema.ObjectType
 	targets   []normalisationTarget
-	side      string
+	side      model.Side
 	payload   *document
 }
 
@@ -23,7 +24,7 @@ func newNormalisationRun(
 	evaluator func() (*javascript.Evaluator, error),
 	root *schema.ObjectType,
 	targets []normalisationTarget,
-	side string,
+	side model.Side,
 	payload *document,
 ) *normalisationRun {
 	return &normalisationRun{

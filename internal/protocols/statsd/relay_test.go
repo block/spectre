@@ -29,9 +29,9 @@ func TestForwardSendsReferenceDatagramsUnchangedAndDiscardsCandidates(t *testing
 	forwarded := make(chan error, 1)
 	discarded := make(chan error, 1)
 	go func() {
-		forwarded <- statsd.Forward(ctx, reference, netaddr.ParsePacket("unix:"+filepath.Join(dir, "agent.sock")))
+		forwarded <- statsd.Forward(ctx, reference, netaddr.ParsePacket("unix:"+filepath.Join(dir, "agent.sock")), unobserved)
 	}()
-	go func() { discarded <- statsd.Discard(ctx, candidate) }()
+	go func() { discarded <- statsd.Discard(ctx, candidate, unobserved) }()
 
 	send(t, filepath.Join(dir, "candidate.sock"), "candidate.requests:1|c")
 	datagram := "framework.http.response_codes:1|c|#code:200\nframework.http.response_times:12|ms"
@@ -54,7 +54,9 @@ func TestForwardReachesAnAgentThatStartsLate(t *testing.T) {
 	ctx, logs := capturedLogs(t)
 	ctx, cancel := context.WithCancel(ctx)
 	forwarded := make(chan error, 1)
-	go func() { forwarded <- statsd.Forward(ctx, reference, netaddr.ParsePacket("unix:"+agentSocket)) }()
+	go func() {
+		forwarded <- statsd.Forward(ctx, reference, netaddr.ParsePacket("unix:"+agentSocket), unobserved)
+	}()
 	send(t, filepath.Join(dir, "reference.sock"), "dropped:1|c")
 	awaitLog(t, logs, "Dropping reference StatsD metrics until the agent takes them")
 
@@ -76,7 +78,9 @@ func TestForwardDropsWhileTheAgentStopsReading(t *testing.T) {
 	ctx, logs := capturedLogs(t)
 	ctx, cancel := context.WithCancel(ctx)
 	forwarded := make(chan error, 1)
-	go func() { forwarded <- statsd.Forward(ctx, reference, netaddr.ParsePacket("unix:"+agentSocket)) }()
+	go func() {
+		forwarded <- statsd.Forward(ctx, reference, netaddr.ParsePacket("unix:"+agentSocket), unobserved)
+	}()
 
 	client, err := netaddr.ParsePacket("unix:" + filepath.Join(dir, "reference.sock")).Dial(t.Context())
 	assert.NoError(t, err)
@@ -186,3 +190,6 @@ func shortSocketDir(t *testing.T) string {
 	t.Cleanup(func() { assert.NoError(t, os.RemoveAll(dir)) })
 	return dir
 }
+
+// unobserved is a relay observer that does nothing.
+func unobserved([]byte) {}

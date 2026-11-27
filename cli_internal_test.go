@@ -139,11 +139,10 @@ func TestProxyCommandReadsFlagsFromEnvironment(t *testing.T) {
 	assert.Equal(t, expected, command.Proxy.Proxy)
 	assert.Equal(t, expectedHTTPConfig, parsedProviderConfig[httpprotocol.Config](t, command))
 	assert.Equal(t, expectedMySQL, parsedProviderConfig[mysqlprotocol.Config](t, command))
-	expectedStatsd := statsdprotocol.Config{
-		ReferenceListen: "unix:@statsd-reference.sock",
-		CandidateListen: "unix:@statsd-candidate.sock",
-		Forward:         "unix:@veneur.sock",
-	}
+	expectedStatsd := statsdprotocol.NewConfig()
+	expectedStatsd.ReferenceListen = "unix:@statsd-reference.sock"
+	expectedStatsd.CandidateListen = "unix:@statsd-candidate.sock"
+	expectedStatsd.Forward = "unix:@veneur.sock"
 	assert.Equal(t, expectedStatsd, parsedProviderConfig[statsdprotocol.Config](t, command))
 }
 

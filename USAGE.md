@@ -524,6 +524,106 @@ within 100ms, such as while it is starting or has stopped reading, is dropped,
 as StatsD clients drop it. The proxy logs when forwarding starts, stops and
 recovers, and the first time it discards a candidate datagram.
 
+#### Comparing metrics
+
+When scripts declare StatsD rules and both StatsD sockets are set, the proxy
+also compares the two sides' metrics. Each rule selects metrics by name, where
+`*` matches within a dot-separated segment and `**` across segments, and
+optionally by tag. Rules apply in declaration order:
+
+- `map(fn)` maps a metric to the series it is compared as, then passes it on
+  to the later rules. `fn` receives the metric's `name`, `type`, `tags` and
+  `side`, never its values, and returns a `name`, optional `tags` that replace
+  the metric's own, and an optional `scale` for its values. Returning
+  `undefined` ignores the metric.
+- `compare(statistics)` expects both sides to send the series, and checks the
+  statistics it names in each window.
+- `ignore()` drops the series from both sides.
+
+```ts
+import { egress } from "spectre";
+
+egress.statsd("jvm.**").ignore();
+egress.statsd("feeplans-fe.cache_*").ignore();
+egress.statsd("framework.actions.service_api.response_codes")
+  .tag("code", (code) => code !== undefined && code.endsWith("s"))
+  .ignore();
+egress.statsd("framework.actions.service_api.response_codes").map((m) => ({
+  name: "framework.http.response_codes",
+  tags: { endpoint: m.tags.api, code: m.tags.code },
+}));
+egress.statsd("framework.http.response_codes").compare({ total: { upper: 0.05, lower: 0.05 } });
+egress.statsd("framework.http.response_times").compare({
+  count: { upper: 0.05, lower: 0.05 },
+  p95: { upper: 0.5, lower: 1, slack: 1 },
+});
+egress.statsd("**").ignore();
+```
+
+The proxy totals each series per side over `--statsd-window` (1m by default),
+and judges a window `--statsd-settle` (10s) after it ends, so that late metrics
+still count. Sample rates are taken into account. A comparison names the
+statistics it checks:
+
+| Statistic | Metric types | Value |
+| --- | --- | --- |
+| `total` | counter | The sum of the counts. |
+| `mean` | gauge | The mean of the values. |
+| `members` | set | How many distinct members were sent. |
+| `count` | timer, histogram, distribution | How many values were sent. |
+| `p50`, `p75`, `p90`, `p95`, `p99` | timer, histogram, distribution | The percentile of the values, within 1%. |
+
+`total` and `count` are compared on running totals since comparison started,
+not per window. Both sides get the same requests, so their totals converge,
+and a metric that lands in the next window shifts them only briefly. Running
+totals are compared once either side's reaches `--statsd-min-total` (50). The
+other statistics are compared per window.
+
+A series is checked only on the statistics its type has, so one rule can
+compare counters and distributions. A rule whose statistics a series' type has
+none of quarantines it as `unable`.
+
+Each statistic takes a tolerance in fractions of the reference's value, where
+`0.1` is 10%. `upper` fails a candidate more than that fraction above the
+reference, and `lower` one more than that fraction below it. A bound left out
+is 0, so `{}` requires equal values, and `lower: 1` lets a non-negative value
+fall to 0. `slack` widens both bounds by an amount in the statistic's own units.
+Use it where values are small or whole numbers, such as a timer that records
+whole milliseconds: `p95: { upper: 0.2, lower: 0.2, slack: 1 }` lets a 1ms
+reference p95 meet a 0ms or 2ms one.
+
+A series that only one side has sent counts as 0 on the other side, so its
+`total` or `count` check, or a set's `members` check in the window, decides
+whether that fails. `lower: 1`, or a slack of at least the reference's value,
+lets the candidate leave it out, and a slack of at least the candidate's value
+lets it send a series the reference does not. Without such a check, and always
+for gauges, a series that one side leaves out of a window fails.
+
+A series that fails in `--statsd-failing-windows` (3) of its windows in a row
+quarantines the candidate. A window in which it matches ends the run, and a
+window without it does not. A rule that cannot judge a series quarantines the
+candidate at once. The reasons are:
+
+- `unmatched` when the reference sends a compared series that the candidate
+  leaves out, or the other way round, beyond the tolerance.
+- `divergent` when both send it and a statistic differs beyond its tolerance.
+- `unable` when a series reaches no rule that compares or ignores it, none
+  of its rule's statistics fit its type, or a mapped scale makes a value too
+  large to take percentiles of. End the scripts with
+  `egress.statsd("**").ignore()` to ignore every other series.
+- `capacity` when a window holds more than `--statsd-max-series` series.
+
+Comparison starts with the window in which the candidate first sends a
+compared series, or once `--statsd-candidate-startup-timeout` (5m) passes.
+Windows in which the proxy could not keep up and dropped datagrams are skipped
+and restart the running totals and runs, and comparison stops once the candidate is quarantined in either direction.
+Quarantine reasons never quote values. They name the series by its name and
+tag names, such as `http.latency{endpoint}`, and say which bound each statistic
+exceeded, for example `distribution http.latency{endpoint}: running count
+below the 10% lower bound, p95 above the 20% upper bound, in 3 successive 1m0s
+windows from 10:02:00`. A divergence also lists each statistic that differs,
+such as `~ count` and `~ p95`.
+
 ### Quarantine
 
 A mirror quarantines its candidate for one of these reasons:
@@ -779,8 +879,9 @@ status = "pending"
 | `<direction>.<protocol>` | A kind of IO the node's own code performs, holding that kind's settings. |
 
 The kinds of IO are `ingress[http]`, which lists the routes it handles under
-`routes`, and `egress[http]` and `egress[mysql]`, which take no settings. Write
-a node that sends MySQL statements as `[nodes.<id>.egress.mysql]`.
+`routes`, and `egress[http]`, `egress[mysql]` and `egress[statsd]`, which take
+no settings. Write a node that sends MySQL statements as
+`[nodes.<id>.egress.mysql]`.
 
 A node with no IO is a library, shared by more than one other node. Each route
 belongs to one node, so a divergence on a route also names the node to fix.

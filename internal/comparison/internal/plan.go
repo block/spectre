@@ -56,7 +56,7 @@ func (p *Plan) Normalise(
 	ctx context.Context,
 	evaluator func() (*javascript.Evaluator, error),
 	root *schema.ObjectType,
-	side string,
+	side model.Side,
 	payload schema.Value,
 ) (*Normalised, error) {
 	if normalised := p.types.slot(payload.Type()); !sameType(normalised, payload.Type()) {

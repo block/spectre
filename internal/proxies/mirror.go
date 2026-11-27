@@ -250,7 +250,7 @@ func (m *Mirror) runtime(built *shared, protocol model.Protocol) protocols.Runti
 		runtime.Ingress = Some(m.ingressSide(built, protocol))
 	}
 	if _, ok := kinds.Kind(model.Egress, protocol); ok {
-		runtime.Egress = Some(m.egressSide(built.Engine, built.EgressCandidates, protocol))
+		runtime.Egress = Some(m.egressSide(built.Engine, built.EgressCandidates, built.quarantines(), protocol))
 	}
 	return runtime
 }
@@ -263,6 +263,7 @@ func (m *Mirror) ingressSide(built *shared, protocol model.Protocol) protocols.S
 		Candidate:      built.Engine.IngressCandidate(protocol),
 		Candidates:     built.IngressCandidates,
 		Quarantiner:    built.IngressQuarantiner,
+		Quarantines:    built.quarantines(),
 		Health:         health.New(http.NotFoundHandler()),
 		Nodes:          m.nodes(model.Ingress, protocol),
 		SourceResponse: func(model.Route) Option[schema.TypeRef] { return None[schema.TypeRef]() },
@@ -270,8 +271,9 @@ func (m *Mirror) ingressSide(built *shared, protocol model.Protocol) protocols.S
 }
 
 // egressSide is the egress machinery of protocol.
-func (m *Mirror) egressSide(comparison *engine.Engine, candidates *proxy.Candidates, protocol model.Protocol) protocols.Side {
+func (m *Mirror) egressSide(comparison *engine.Engine, candidates *proxy.Candidates, quarantines protocols.QuarantineStatus, protocol model.Protocol) protocols.Side {
 	return protocols.Side{
+		Quarantines: quarantines,
 		Reference:   comparison.EgressReference(protocol),
 		Candidate:   comparison.EgressCandidate(protocol),
 		Candidates:  candidates,

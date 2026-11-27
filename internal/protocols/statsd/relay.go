@@ -23,9 +23,9 @@ const (
 	writeTimeout = 100 * time.Millisecond
 )
 
-// Forward sends every datagram on conn to destination unchanged until ctx ends,
-// then closes conn. A datagram the agent does not take is dropped, as StatsD clients do.
-func Forward(ctx context.Context, conn net.PacketConn, destination *netaddr.PacketEndpoint) error {
+// Forward sends every datagram on conn to destination unchanged until ctx ends, then closes conn,
+// passing each to observe first. A datagram the agent does not take is dropped, as StatsD clients do.
+func Forward(ctx context.Context, conn net.PacketConn, destination *netaddr.PacketEndpoint, observe func(datagram []byte)) error {
 	forwarder := newForwarder(ctx, destination)
 	queue := make(chan []byte, queuedDatagrams)
 	written := make(chan struct{})
@@ -35,6 +35,7 @@ func Forward(ctx context.Context, conn net.PacketConn, destination *netaddr.Pack
 	}()
 	overflowing := false
 	err := receive(ctx, conn, func(datagram []byte) {
+		observe(datagram)
 		select {
 		case queue <- bytes.Clone(datagram):
 			overflowing = false
@@ -50,10 +51,12 @@ func Forward(ctx context.Context, conn net.PacketConn, destination *netaddr.Pack
 	return err
 }
 
-// Discard reads and drops every datagram on conn until ctx ends, then closes conn.
-func Discard(ctx context.Context, conn net.PacketConn) error {
+// Discard reads and drops every datagram on conn until ctx ends, then closes conn,
+// passing each to observe first.
+func Discard(ctx context.Context, conn net.PacketConn, observe func(datagram []byte)) error {
 	discarded := false
-	return receive(ctx, conn, func([]byte) {
+	return receive(ctx, conn, func(datagram []byte) {
+		observe(datagram)
 		if !discarded {
 			discarded = true
 			logger.FromContext(ctx).InfoContext(ctx, "Discarding candidate StatsD metrics")

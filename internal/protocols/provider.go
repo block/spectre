@@ -24,8 +24,8 @@ type Config interface {
 type Provider[C Config] interface {
 	// Protocol names the protocol in scripts, the migration state and quarantine reasons.
 	Protocol() model.Protocol
-	// Kinds describes each direction the protocol proxies through the engine and its migration-state
-	// settings. A protocol the engine never pairs has none, and its runtime has no sides.
+	// Kinds describes each direction whose traffic the protocol compares, and its migration-state
+	// settings. A protocol that compares nothing has none, and its runtime has no sides.
 	Kinds() []state.Kind
 	// Scripts is the protocol's part of the spectre script module.
 	Scripts() javascript.Binding

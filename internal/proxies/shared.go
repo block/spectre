@@ -8,6 +8,8 @@ import (
 
 	"github.com/block/spectre/internal/comparison/javascript"
 	"github.com/block/spectre/internal/engine"
+	"github.com/block/spectre/internal/model"
+	"github.com/block/spectre/internal/protocols"
 	"github.com/block/spectre/internal/proxy"
 	"github.com/block/spectre/internal/state"
 )
@@ -60,4 +62,26 @@ func (s *shared) shutdown(ctx context.Context) error {
 		errors.WithStack(s.EgressCandidates.Shutdown(ctx)),
 		errors.WithStack(s.Engine.Shutdown(ctx)),
 	)
+}
+
+// quarantines reports the ingress quarantine, or else the egress one.
+func (s *shared) quarantines() protocols.QuarantineStatus {
+	return newEitherQuarantine(s.IngressCandidates, s.EgressCandidates)
+}
+
+// eitherQuarantine reports the first of two directions' quarantines.
+type eitherQuarantine struct {
+	first, second protocols.QuarantineStatus
+}
+
+func newEitherQuarantine(first, second protocols.QuarantineStatus) eitherQuarantine {
+	return eitherQuarantine{first: first, second: second}
+}
+
+// QuarantineStatus is the first direction's quarantine, or else the second's.
+func (e eitherQuarantine) QuarantineStatus() Option[model.Quarantine] {
+	if quarantine, ok := e.first.QuarantineStatus().Get(); ok {
+		return Some(quarantine)
+	}
+	return e.second.QuarantineStatus()
 }

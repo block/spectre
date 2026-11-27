@@ -1,0 +1,102 @@
+package scripted_test
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/alecthomas/assert/v2"
+
+	"github.com/block/spectre/internal/comparison"
+	"github.com/block/spectre/internal/comparison/javascript"
+	"github.com/block/spectre/internal/protocols/statsd/metric"
+	"github.com/block/spectre/internal/protocols/statsd/scripted"
+)
+
+func TestPatternExpressionMatchesSegments(t *testing.T) {
+	for name, test := range map[string]struct {
+		pattern string
+		matches []string
+		misses  []string
+	}{
+		"Exact":          {pattern: "framework.http.response_codes", matches: []string{"framework.http.response_codes"}, misses: []string{"framework.http.response_codesX", "frameworkXhttp.response_codes"}},
+		"WithinSegment":  {pattern: "feeplans-fe.cache_*", matches: []string{"feeplans-fe.cache_hits", "feeplans-fe.cache_"}, misses: []string{"feeplans-fe.cache_hits.total"}},
+		"OneSegment":     {pattern: "framework.actions.*.*.response_times", matches: []string{"framework.actions.Fees.get.response_times"}, misses: []string{"framework.actions.Fees.response_times"}},
+		"AcrossSegments": {pattern: "jvm.**", matches: []string{"jvm.gc.pause", "jvm.threads"}, misses: []string{"jvm", "other.jvm.gc"}},
+		"Everything":     {pattern: "**", matches: []string{"a", "a.b.c"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			expression, err := scripted.PatternExpression(test.pattern)
+			assert.NoError(t, err)
+			for _, name := range test.matches {
+				assert.True(t, expression.MatchString(name), name)
+			}
+			for _, name := range test.misses {
+				assert.False(t, expression.MatchString(name), name)
+			}
+		})
+	}
+}
+
+func TestDeclaresRulesInOrder(t *testing.T) {
+	loaded, handle, err := load(t, `
+		egress.statsd("jvm.**").ignore();
+		egress.statsd("framework.actions.**").tag("code", "200").tag("api", (api) => api !== undefined).map((m) => ({ name: "http" }));
+		egress.statsd("http").compare({ p95: { upper: 0.5, slack: 1 }, count: { upper: 0.05, lower: 0.1 }, mean: {} });
+	`)
+	assert.NoError(t, err)
+
+	assert.Equal(t, scripted.Declarations{Rules: []scripted.Rule{
+		{Selector: scripted.Selector{Pattern: "jvm.**"}, Action: scripted.ActionIgnore{}},
+		{
+			Selector: scripted.Selector{Pattern: "framework.actions.**", Tags: []scripted.TagSelector{
+				scripted.TagValue{Name: "code", Value: "200"},
+				scripted.TagScript{Name: "api", Callback: 0},
+			}},
+			Action: scripted.ActionMap{Callback: 0},
+		},
+		{
+			Selector: scripted.Selector{Pattern: "http"},
+			Action: scripted.ActionCompare{Comparison: scripted.Comparison{Checks: []scripted.Check{
+				{Statistic: metric.Mean, Tolerance: scripted.Tolerance{}},
+				{Statistic: metric.Count, Tolerance: scripted.Tolerance{Upper: 0.05, Lower: 0.1}},
+				{Statistic: metric.P95, Tolerance: scripted.Tolerance{Upper: 0.5, Slack: 1}},
+			}}},
+		},
+	}}, handle.Declared(loaded.Program()))
+}
+
+func TestRejectsInvalidRules(t *testing.T) {
+	for name, test := range map[string]struct {
+		body    string
+		message string
+	}{
+		"EmptyPattern":      {body: `egress.statsd("").ignore();`, message: "spectre.egress.statsd pattern must be a non-empty string"},
+		"NegativeTolerance": {body: `egress.statsd("a").compare({ total: { upper: -1 } });`, message: "compare total upper must be a number of at least 0"},
+		"UnknownStatistic":  {body: `egress.statsd("a").compare({ relative: 0.1 } as never);`, message: `compare does not compare "relative"; it compares total, mean, members, count, p50, p75, p90, p95, p99`},
+		"UnknownBound":      {body: `egress.statsd("a").compare({ total: { within: 0.1 } as never });`, message: `compare total does not take "within"; it takes upper, lower and slack`},
+		"NotATolerance":     {body: `egress.statsd("a").compare({ total: 0.1 as never });`, message: "compare total requires a tolerance"},
+		"NoStatistic":       {body: `egress.statsd("a").compare({});`, message: "compare requires at least one of total, mean"},
+		"NoComparison":      {body: `egress.statsd("a").compare(undefined as never);`, message: "compare requires a comparison"},
+		"IgnoreArguments":   {body: `(egress.statsd("a").ignore as (extra: number) => void)(1);`, message: "spectre.EgressStatsDRule.ignore takes no arguments"},
+		"TagWithoutValue":   {body: `egress.statsd("a").tag("code", undefined as never).ignore();`, message: "spectre.EgressStatsDRule.tag requires a string or a function"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, _, err := load(t, test.body)
+			assert.Error(t, err)
+			assert.Contains(t, err.Error(), test.message)
+		})
+	}
+}
+
+// load loads one script with egress imported.
+func load(t *testing.T, script string) (*comparison.Scripts, scripted.Handle, error) {
+	t.Helper()
+	config := comparison.NewConfig()
+	config.ScriptsDir, config.Schema.SchemaDir = t.TempDir(), t.TempDir()
+	source := `import { egress } from "spectre";` + script
+	assert.NoError(t, os.WriteFile(filepath.Join(config.ScriptsDir, "statsd.ts"), []byte(source), 0o600))
+	binding, handle := scripted.NewBinding()
+	loaded, err := comparison.New(t.Context(), config, []javascript.Binding{binding})
+	return loaded, handle, err
+}
