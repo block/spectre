@@ -5,10 +5,12 @@ on:
     branches:
       - main
   pull_request:
-  # Fills the day's build cache on main, so the first branch builds each day
-  # do not start empty. Off the hour, when GitHub delays scheduled runs most.
+  # Fills the UTC day's build cache on main, so branch builds after it do not
+  # start empty. Midnight in Sydney is 13:00 or 14:00 UTC, far enough from the
+  # UTC date change that a late start still saves under the same day's key.
   schedule:
-    - cron: "17 0 * * *"
+    - cron: "0 0 * * *"
+      timezone: "Australia/Sydney"
 
 permissions:
   contents: read
