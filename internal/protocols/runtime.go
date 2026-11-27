@@ -22,6 +22,11 @@ type Runtime struct {
 	Egress  Option[Side]
 }
 
+// QuarantineStatus reports the quarantine in effect, if any.
+type QuarantineStatus interface {
+	QuarantineStatus() Option[model.Quarantine]
+}
+
 // Side is one direction's shared machinery: the engine's points for this
 // protocol, the candidate admission every protocol shares, and readiness.
 type Side struct {
@@ -32,6 +37,8 @@ type Side struct {
 	// Quarantiner quarantines the candidate. Ingress reasons name the migration
 	// state node that owns their route, which Candidates alone would not.
 	Quarantiner engine.Quarantiner
+	// Quarantines reports a quarantine in either direction, after which the candidate gets no traffic.
+	Quarantines QuarantineStatus
 	// Health is this provider's own readiness, which it sets. The mirror combines all providers' handlers.
 	Health *health.Handler
 	// Nodes are the migration-state nodes with this kind, when the mirror has a state.

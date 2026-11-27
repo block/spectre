@@ -524,6 +524,68 @@ within 100ms, such as while it is starting or has stopped reading, is dropped,
 as StatsD clients drop it. The proxy logs when forwarding starts, stops and
 recovers, and the first time it discards a candidate datagram.
 
+#### Comparing metrics
+
+When scripts declare StatsD rules and both StatsD sockets are set, the proxy
+also compares the two sides' metrics. Each rule selects metrics by name, where
+`*` matches within a dot-separated segment and `**` across segments, and
+optionally by tag. Rules apply in declaration order:
+
+- `rename(fn)` maps a metric to the series it is compared as, then passes it on
+  to the later rules. `fn` receives the metric's `name`, `type`, `tags` and
+  `side`, never its values, and returns a `name`, optional `tags` that replace
+  the metric's own, and an optional `scale` for its values. Returning
+  `undefined` ignores the metric.
+- `compare(tolerance)` expects both sides to send the series, and compares
+  them.
+- `ignore()` drops the series from both sides.
+
+```ts
+import { egress } from "spectre";
+
+egress.statsd("jvm.**").ignore();
+egress.statsd("feeplans-fe.cache_*").ignore();
+egress.statsd("framework.actions.service_api.response_codes")
+  .tag("code", (code) => code !== undefined && code.endsWith("s"))
+  .ignore();
+egress.statsd("framework.actions.service_api.response_codes").rename((m) => ({
+  name: "framework.http.response_codes",
+  tags: { endpoint: m.tags.api, code: m.tags.code },
+}));
+egress.statsd("framework.http.response_codes").compare({ relative: 0.05, absolute: 5 });
+egress.statsd("framework.http.response_times").compare({
+  relative: 0.05,
+  absolute: 5,
+  p95: { relative: 0.5, only: "higher" },
+});
+egress.statsd("**").ignore();
+```
+
+The proxy totals each series per side over `--statsd-window` (1m by default),
+and judges a window `--statsd-settle` (10s) after it ends, so that late metrics
+still count. A tolerance allows the candidate to differ from the reference by
+`max(absolute, relative × reference)`, and `only` fails only a candidate that is
+`"higher"` or `"lower"`. It applies to a counter's total, a timer's, histogram's
+or distribution's sample count, a gauge's mean, and a set's number of members.
+A gauge that only one side sends always fails. `p50`,
+`p75`, `p90`, `p95` and `p99` compare a distribution's percentiles. Sample
+rates are taken into account.
+
+The first window that fails quarantines the candidate:
+
+- `unmatched` when the reference sends a compared series that the candidate
+  leaves out, or the other way round, beyond the tolerance.
+- `divergent` when both send it and it differs beyond the tolerance.
+- `unable` when a series reaches no rule that compares or ignores it. End the
+  scripts with `egress.statsd("**").ignore()` to ignore every other series.
+- `capacity` when a window holds more than `--statsd-max-series` series.
+
+Comparison starts with the window in which the candidate first sends a
+compared series, or once `--statsd-candidate-startup-timeout` (5m) passes.
+Windows in which the proxy could not keep up and dropped datagrams are skipped,
+and comparison stops once the candidate is quarantined in either direction.
+Quarantine reasons name the series with its tags, but never its values.
+
 ### Quarantine
 
 A mirror quarantines its candidate for one of these reasons:
