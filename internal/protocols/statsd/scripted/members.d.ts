@@ -23,6 +23,8 @@ declare module "spectre" {
     upper?: number;
     /** Fails when the candidate is more than this fraction below the reference. */
     lower?: number;
+    /** Widens both bounds by this amount in the statistic's own units, such as 1 for 1ms of a timer. */
+    slack?: number;
   }
   /** The statistics a rule checks in each window. A series is checked on the statistics its type has. */
   export interface MetricComparison {

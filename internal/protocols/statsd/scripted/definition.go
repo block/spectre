@@ -145,10 +145,10 @@ func (d *definition) tolerance(statistic string, value sobek.Value) Tolerance {
 	if !isObject {
 		panic(d.runtime.NewTypeError(qualifiedCompare+" %s requires a tolerance", statistic))
 	}
-	properties := []string{"upper", "lower"}
+	properties := []string{"upper", "lower", "slack"}
 	for _, key := range object.Keys() {
 		if !slices.Contains(properties, key) {
-			panic(d.runtime.NewTypeError(qualifiedCompare+" %s does not take %q; it takes upper and lower", statistic, key))
+			panic(d.runtime.NewTypeError(qualifiedCompare+" %s does not take %q; it takes upper, lower and slack", statistic, key))
 		}
 	}
 	number := func(property string) float64 {
@@ -165,7 +165,7 @@ func (d *definition) tolerance(statistic string, value sobek.Value) Tolerance {
 		}
 		return number
 	}
-	return Tolerance{Upper: number("upper"), Lower: number("lower")}
+	return Tolerance{Upper: number("upper"), Lower: number("lower"), Slack: number("slack")}
 }
 
 // defineMethod binds one object method, panicking if sobek rejects it.

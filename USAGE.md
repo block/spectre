@@ -555,7 +555,7 @@ egress.statsd("framework.actions.service_api.response_codes").map((m) => ({
 egress.statsd("framework.http.response_codes").compare({ total: { upper: 0.05, lower: 0.05 } });
 egress.statsd("framework.http.response_times").compare({
   count: { upper: 0.05, lower: 0.05 },
-  p95: { upper: 0.5, lower: 1 },
+  p95: { upper: 0.5, lower: 1, slack: 1 },
 });
 egress.statsd("**").ignore();
 ```
@@ -571,7 +571,7 @@ statistics it checks:
 | `mean` | gauge | The mean of the values. |
 | `members` | set | How many distinct members were sent. |
 | `count` | timer, histogram, distribution | How many values were sent. |
-| `p50`, `p75`, `p90`, `p95`, `p99` | timer, histogram, distribution | The percentile of the values. |
+| `p50`, `p75`, `p90`, `p95`, `p99` | timer, histogram, distribution | The percentile of the values, within 1%. |
 
 A series is checked only on the statistics its type has, so one rule can
 compare counters and distributions. A rule whose statistics a series' type has
@@ -581,11 +581,14 @@ Each statistic takes a tolerance in fractions of the reference's value, where
 `0.1` is 10%. `upper` fails a candidate more than that fraction above the
 reference, and `lower` one more than that fraction below it. A bound left out
 is 0, so `{}` requires equal values, and `lower: 1` lets a non-negative value
-fall to 0.
+fall to 0. `slack` widens both bounds by an amount in the statistic's own units.
+Use it where values are small or whole numbers, such as a timer that records
+whole milliseconds: `p95: { upper: 0.2, lower: 0.2, slack: 1 }` lets a 1ms
+reference p95 meet a 0ms or 2ms one.
 
 A series that only one side sends counts as 0 on the other side, so its
-`total`, `count` or `members` check decides whether that fails: only `lower: 1`
-lets the candidate leave it out, and a series only the candidate sends always
+`total`, `count` or `members` check decides whether that fails: only `lower: 1`,
+or a slack of at least the reference's value, lets the candidate leave it out, and a series only the candidate sends always
 fails. Without such a check, and always for gauges, a series sent by one side
 only fails.
 
@@ -594,8 +597,9 @@ The first window that fails quarantines the candidate:
 - `unmatched` when the reference sends a compared series that the candidate
   leaves out, or the other way round, beyond the tolerance.
 - `divergent` when both send it and a statistic differs beyond its tolerance.
-- `unable` when a series reaches no rule that compares or ignores it, or none
-  of its rule's statistics fit its type. End the scripts with
+- `unable` when a series reaches no rule that compares or ignores it, none
+  of its rule's statistics fit its type, or a mapped scale makes a value too
+  large to take percentiles of. End the scripts with
   `egress.statsd("**").ignore()` to ignore every other series.
 - `capacity` when a window holds more than `--statsd-max-series` series.
 

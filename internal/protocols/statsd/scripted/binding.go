@@ -117,21 +117,31 @@ type Check struct {
 	Tolerance Tolerance
 }
 
-// Tolerance bounds the candidate above and below the reference by fractions of the reference.
+// Tolerance bounds the candidate above and below the reference by fractions of the reference,
+// each widened by Slack in the statistic's own units.
 type Tolerance struct {
 	Upper float64
 	Lower float64
+	Slack float64
 }
 
 // Exceeds names the bound that candidate exceeds, as in "above the 20% upper bound".
 func (t Tolerance) Exceeds(reference, candidate float64) Option[string] {
 	switch {
-	case candidate > reference+t.Upper*math.Abs(reference):
-		return Some("above the " + percent(t.Upper) + " upper bound")
-	case candidate < reference-t.Lower*math.Abs(reference):
-		return Some("below the " + percent(t.Lower) + " lower bound")
+	case candidate > reference+t.Upper*math.Abs(reference)+t.Slack:
+		return Some("above the " + percent(t.Upper) + " upper bound" + t.slack())
+	case candidate < reference-t.Lower*math.Abs(reference)-t.Slack:
+		return Some("below the " + percent(t.Lower) + " lower bound" + t.slack())
 	}
 	return None[string]()
+}
+
+// slack describes a non-zero slack, as in " with 1 of slack".
+func (t Tolerance) slack() string {
+	if t.Slack == 0 {
+		return ""
+	}
+	return " with " + strconv.FormatFloat(t.Slack, 'g', 4, 64) + " of slack"
 }
 
 // percent writes a fraction as a percentage, as in "20%".
