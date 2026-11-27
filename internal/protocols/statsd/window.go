@@ -68,7 +68,7 @@ func (w *window) verdict(length time.Duration) Option[model.QuarantineReason] {
 	return None[model.QuarantineReason]()
 }
 
-// windowSeries is one renamed series in a window, with each side's values.
+// windowSeries is one mapped series in a window, with each side's values.
 type windowSeries struct {
 	resolution resolution
 	sides      map[metric.Side]*aggregate

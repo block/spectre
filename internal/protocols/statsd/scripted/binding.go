@@ -1,5 +1,5 @@
 // Package scripted is the StatsD binding of the spectre script module. Scripts declare
-// rules that rename, compare or ignore both sides' metrics. A rename passes the renamed
+// rules that map, compare or ignore both sides' metrics. A mapping passes the mapped
 // series on to the later rules; a comparison or an ignore decides.
 package scripted
 
@@ -43,11 +43,11 @@ type TagSelector struct {
 	Callback int
 }
 
-// Rule renames, compares or ignores the metrics it selects. A rule with neither
-// a rename nor a comparison ignores them.
+// Rule maps, compares or ignores the metrics it selects. A rule with neither
+// a mapping nor a comparison ignores them.
 type Rule struct {
 	Selector Selector
-	Rename   Option[int]
+	Map      Option[int]
 	Compare  Option[Comparison]
 }
 

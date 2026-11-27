@@ -92,7 +92,7 @@ func TestServeQuarantinesACandidateThatLeavesOutAComparedMetric(t *testing.T) {
 	agent := listen(t, dir+"/agent.sock")
 	provider := statsd.NewProvider()
 	runtime, candidates := egressRuntime(t, provider, `
-		egress.statsd("framework.actions.**").rename((m) => ({ name: "framework.http.response_codes" }));
+		egress.statsd("framework.actions.**").map((m) => ({ name: "framework.http.response_codes" }));
 		egress.statsd("framework.http.response_codes").compare({ relative: 0.1 });
 		egress.statsd("jvm.**").ignore();
 	`)

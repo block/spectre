@@ -41,24 +41,24 @@ func TestPatternExpressionMatchesSegments(t *testing.T) {
 func TestDeclaresRulesInOrder(t *testing.T) {
 	loaded, handle, err := load(t, `
 		egress.statsd("jvm.**").ignore();
-		egress.statsd("framework.actions.**").tag("code", "200").tag("api", (api) => api !== undefined).rename((m) => ({ name: "http" }));
+		egress.statsd("framework.actions.**").tag("code", "200").tag("api", (api) => api !== undefined).map((m) => ({ name: "http" }));
 		egress.statsd("http").compare({ relative: 0.05, absolute: 2, p95: { relative: 0.5, only: "higher" } });
 	`)
 	assert.NoError(t, err)
 
 	assert.Equal(t, scripted.Declarations{Rules: []scripted.Rule{
-		{Selector: scripted.Selector{Pattern: "jvm.**"}, Rename: None[int](), Compare: None[scripted.Comparison]()},
+		{Selector: scripted.Selector{Pattern: "jvm.**"}, Map: None[int](), Compare: None[scripted.Comparison]()},
 		{
 			Selector: scripted.Selector{Pattern: "framework.actions.**", Tags: []scripted.TagSelector{
 				{Name: "code", Value: Some("200")},
 				{Name: "api", Value: None[string](), Callback: 0},
 			}},
-			Rename:  Some(0),
+			Map:     Some(0),
 			Compare: None[scripted.Comparison](),
 		},
 		{
 			Selector: scripted.Selector{Pattern: "http"},
-			Rename:   None[int](),
+			Map:      None[int](),
 			Compare: Some(scripted.Comparison{
 				Tolerance:   scripted.Tolerance{Relative: 0.05, Absolute: 2, Only: scripted.Both},
 				Percentiles: []scripted.Percentile{{Rank: 95, Tolerance: scripted.Tolerance{Relative: 0.5, Only: scripted.Higher}}},

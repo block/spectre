@@ -22,17 +22,17 @@ import (
 const feeplansScript = `
 	egress.statsd("jvm.**").ignore();
 	egress.statsd("framework.actions.service_api.response_codes").tag("code", (code) => code !== undefined && code.endsWith("s")).ignore();
-	egress.statsd("framework.actions.service_api.response_codes").rename((m) => ({ name: "http.responses", tags: { endpoint: m.tags.api, code: m.tags.code } }));
-	egress.statsd("framework.http.response_codes").rename((m) => m.side === "reference"
+	egress.statsd("framework.actions.service_api.response_codes").map((m) => ({ name: "http.responses", tags: { endpoint: m.tags.api, code: m.tags.code } }));
+	egress.statsd("framework.http.response_codes").map((m) => m.side === "reference"
 		? { name: "http.responses", tags: { endpoint: m.tags.controller + "#" + m.tags.action, code: m.tags.code } }
 		: undefined);
-	egress.statsd("framework.actions.*.*.response_times").rename((m) => ({ name: "http.latency", tags: { endpoint: m.name.split(".")[3] } }));
+	egress.statsd("framework.actions.*.*.response_times").map((m) => ({ name: "http.latency", tags: { endpoint: m.name.split(".")[3] } }));
 	egress.statsd("http.responses").compare({ relative: 0.1, absolute: 1 });
 	egress.statsd("http.latency").compare({ relative: 0.1, p95: { relative: 0.2, only: "higher" } });
 	egress.statsd("queue.depth").compare({});
 `
 
-func TestResolverRenamesComparesAndIgnores(t *testing.T) {
+func TestResolverMapsComparesAndIgnores(t *testing.T) {
 	resolve := newTestResolver(t)
 	for name, test := range map[string]struct {
 		side     metric.Side
@@ -40,13 +40,13 @@ func TestResolverRenamesComparesAndIgnores(t *testing.T) {
 		outcome  outcome
 		resolved string
 	}{
-		"Ignored":          {side: metric.Candidate, series: series("jvm.gc.pause", metric.Timer, map[string]string{}), outcome: ignored, resolved: "jvm.gc.pause"},
-		"IgnoredByTag":     {side: metric.Candidate, series: series("framework.actions.service_api.response_codes", metric.Counter, map[string]string{"code": "200s"}), outcome: ignored, resolved: "framework.actions.service_api.response_codes{code:200s}"},
-		"RenamedCandidate": {side: metric.Candidate, series: series("framework.actions.service_api.response_codes", metric.Counter, map[string]string{"api": "fees#show", "code": "200"}), outcome: compared, resolved: "http.responses{code:200,endpoint:fees#show}"},
-		"RenamedReference": {side: metric.Reference, series: series("framework.http.response_codes", metric.Counter, map[string]string{"controller": "fees", "action": "show", "code": "200"}), outcome: compared, resolved: "http.responses{code:200,endpoint:fees#show}"},
-		"IgnoredBySide":    {side: metric.Candidate, series: series("framework.http.response_codes", metric.Counter, map[string]string{}), outcome: ignored, resolved: "framework.http.response_codes"},
-		"RenamedByName":    {side: metric.Candidate, series: series("framework.actions.Fees.show.response_times", metric.Distribution, map[string]string{}), outcome: compared, resolved: "http.latency{endpoint:show}"},
-		"Uncovered":        {side: metric.Reference, series: series("ruby.gc.count", metric.Gauge, map[string]string{}), outcome: uncovered, resolved: "ruby.gc.count"},
+		"Ignored":         {side: metric.Candidate, series: series("jvm.gc.pause", metric.Timer, map[string]string{}), outcome: ignored, resolved: "jvm.gc.pause"},
+		"IgnoredByTag":    {side: metric.Candidate, series: series("framework.actions.service_api.response_codes", metric.Counter, map[string]string{"code": "200s"}), outcome: ignored, resolved: "framework.actions.service_api.response_codes{code:200s}"},
+		"MappedCandidate": {side: metric.Candidate, series: series("framework.actions.service_api.response_codes", metric.Counter, map[string]string{"api": "fees#show", "code": "200"}), outcome: compared, resolved: "http.responses{code:200,endpoint:fees#show}"},
+		"MappedReference": {side: metric.Reference, series: series("framework.http.response_codes", metric.Counter, map[string]string{"controller": "fees", "action": "show", "code": "200"}), outcome: compared, resolved: "http.responses{code:200,endpoint:fees#show}"},
+		"IgnoredBySide":   {side: metric.Candidate, series: series("framework.http.response_codes", metric.Counter, map[string]string{}), outcome: ignored, resolved: "framework.http.response_codes"},
+		"MappedByName":    {side: metric.Candidate, series: series("framework.actions.Fees.show.response_times", metric.Distribution, map[string]string{}), outcome: compared, resolved: "http.latency{endpoint:show}"},
+		"Uncovered":       {side: metric.Reference, series: series("ruby.gc.count", metric.Gauge, map[string]string{}), outcome: uncovered, resolved: "ruby.gc.count"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			resolutions, fresh, err := resolve.resolve(t.Context(), test.side, []metric.Series{test.series})

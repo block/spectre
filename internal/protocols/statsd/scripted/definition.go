@@ -61,21 +61,21 @@ func (d *definition) rule(selector Selector) sobek.Value {
 		narrowed := Selector{Pattern: selector.Pattern, Tags: append(slices.Clone(selector.Tags), tag)}
 		return d.rule(narrowed)
 	})
-	d.defineMethod(object, "rename", func(call sobek.FunctionCall) sobek.Value {
-		rename, isFunction := sobek.AssertFunction(call.Argument(0))
+	d.defineMethod(object, "map", func(call sobek.FunctionCall) sobek.Value {
+		mapping, isFunction := sobek.AssertFunction(call.Argument(0))
 		if !isFunction {
-			panic(d.runtime.NewTypeError("spectre.EgressStatsDRule.rename requires a function"))
+			panic(d.runtime.NewTypeError("spectre.EgressStatsDRule.map requires a function"))
 		}
-		d.declare(Rule{Selector: selector, Rename: Some(len(d.callbacks.renames)), Compare: None[Comparison]()})
-		d.callbacks.renames = append(d.callbacks.renames, rename)
+		d.declare(Rule{Selector: selector, Map: Some(len(d.callbacks.mappings)), Compare: None[Comparison]()})
+		d.callbacks.mappings = append(d.callbacks.mappings, mapping)
 		return sobek.Undefined()
 	})
 	d.defineMethod(object, "compare", func(call sobek.FunctionCall) sobek.Value {
-		d.declare(Rule{Selector: selector, Rename: None[int](), Compare: Some(d.comparison(call.Argument(0)))})
+		d.declare(Rule{Selector: selector, Map: None[int](), Compare: Some(d.comparison(call.Argument(0)))})
 		return sobek.Undefined()
 	})
 	d.defineMethod(object, "ignore", func(sobek.FunctionCall) sobek.Value {
-		d.declare(Rule{Selector: selector, Rename: None[int](), Compare: None[Comparison]()})
+		d.declare(Rule{Selector: selector, Map: None[int](), Compare: None[Comparison]()})
 		return sobek.Undefined()
 	})
 	return object

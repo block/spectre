@@ -2,7 +2,7 @@
 declare module "spectre" {
   /** A StatsD metric type. Timers, histograms and distributions are compared alike. */
   export type MetricType = "counter" | "gauge" | "timer" | "histogram" | "distribution" | "set";
-  /** A series as one side sent it, or as an earlier rule renamed it. A tag without a value has the value "". */
+  /** A series as one side sent it, or as an earlier rule mapped it. A tag without a value has the value "". */
   export interface Metric {
     readonly name: string;
     readonly type: MetricType;
@@ -10,7 +10,7 @@ declare module "spectre" {
     readonly side: "reference" | "candidate";
   }
   /** The series a metric becomes. Leaving out tags keeps the metric's own; scale multiplies its values. */
-  export interface RenamedMetric {
+  export interface MappedMetric {
     name: string;
     tags?: Record<string, string>;
     scale?: number;
@@ -36,8 +36,8 @@ declare module "spectre" {
   export interface EgressStatsDRule {
     /** Narrows the rule to metrics whose tag matches. */
     tag(name: string, select: TagSelect): EgressStatsDRule;
-    /** Renames the selected metrics, then applies the later rules to the result; returning undefined ignores a metric. */
-    rename(rename: (metric: Metric) => RenamedMetric | undefined): void;
+    /** Maps the selected metrics, then applies the later rules to the result; returning undefined ignores a metric. */
+    map(mapping: (metric: Metric) => MappedMetric | undefined): void;
     /** Expects both sides to send the selected series, and compares them in each window. */
     compare(comparison: MetricComparison): void;
     /** Ignores the selected metrics, so they are neither compared nor expected. */

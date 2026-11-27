@@ -70,9 +70,9 @@ func newRule(declared scripted.Rule) (rule, error) {
 	return rule{declared: declared, name: name}, errors.WithStack(err)
 }
 
-// rename is the index of the rule's rename callback, if it renames.
-func (r rule) rename() Option[int] {
-	return r.declared.Rename
+// mapping is the index of the rule's map callback, if it maps.
+func (r rule) mapping() Option[int] {
+	return r.declared.Map
 }
 
 // compare is the rule's comparison, if it compares.
@@ -140,7 +140,7 @@ func (r *resolver) resolve(ctx context.Context, side metric.Side, series []metri
 	return resolutions, fresh, errors.WithStack(err)
 }
 
-// apply runs the rules in order: a rename passes its series on, and a comparison or an ignore decides.
+// apply runs the rules in order: a mapping passes its series on, and a comparison or an ignore decides.
 func (r *resolver) apply(callbacks scripted.Callbacks, side metric.Side, raw metric.Series) (resolution, error) {
 	current := resolution{outcome: uncovered, series: raw, scale: 1}
 	for _, candidateRule := range r.rules {
@@ -151,12 +151,12 @@ func (r *resolver) apply(callbacks scripted.Callbacks, side metric.Side, raw met
 		if !selected {
 			continue
 		}
-		if index, renames := candidateRule.rename().Get(); renames {
-			renamed, err := callbacks.Rename(index, side, current.series)
+		if index, hasMapping := candidateRule.mapping().Get(); hasMapping {
+			mapped, err := callbacks.Map(index, side, current.series)
 			if err != nil {
 				return resolution{}, errors.WithStack(err)
 			}
-			value, kept := renamed.Get()
+			value, kept := mapped.Get()
 			if !kept {
 				current.outcome = ignored
 				return current, nil
@@ -174,7 +174,7 @@ func (r *resolver) apply(callbacks scripted.Callbacks, side metric.Side, raw met
 	return current, nil
 }
 
-// resolutionKey identifies a side's series, with its exact type, since a rename may read it.
+// resolutionKey identifies a side's series, with its exact type, since a mapping may read it.
 func resolutionKey(side metric.Side, series metric.Series) string {
 	return string(side) + "|" + string(series.Type) + "|" + series.Key()
 }

@@ -531,7 +531,7 @@ also compares the two sides' metrics. Each rule selects metrics by name, where
 `*` matches within a dot-separated segment and `**` across segments, and
 optionally by tag. Rules apply in declaration order:
 
-- `rename(fn)` maps a metric to the series it is compared as, then passes it on
+- `map(fn)` maps a metric to the series it is compared as, then passes it on
   to the later rules. `fn` receives the metric's `name`, `type`, `tags` and
   `side`, never its values, and returns a `name`, optional `tags` that replace
   the metric's own, and an optional `scale` for its values. Returning
@@ -548,7 +548,7 @@ egress.statsd("feeplans-fe.cache_*").ignore();
 egress.statsd("framework.actions.service_api.response_codes")
   .tag("code", (code) => code !== undefined && code.endsWith("s"))
   .ignore();
-egress.statsd("framework.actions.service_api.response_codes").rename((m) => ({
+egress.statsd("framework.actions.service_api.response_codes").map((m) => ({
   name: "framework.http.response_codes",
   tags: { endpoint: m.tags.api, code: m.tags.code },
 }));
