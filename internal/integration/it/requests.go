@@ -8,6 +8,9 @@ import (
 	"testing"
 
 	"github.com/alecthomas/assert/v2"
+	"go.jetify.com/typeid"
+
+	"github.com/block/spectre/internal/engine"
 )
 
 // IngressEndpoint is where clients reach the mirrored service.
@@ -43,14 +46,17 @@ func newEgressEndpoint(t *testing.T, client *http.Client, base string) EgressEnd
 	return EgressEndpoint{t: t, client: client, base: base}
 }
 
-// testRequestBaggage puts a test's direct egress calls in one mirrored request, as ingress would.
-const testRequestBaggage = "spectre_request_id=srid_01jx0000000000000000000000"
+// TestRequestID is the one mirrored request that a test's own egress calls and statements
+// belong to, as if ingress had mirrored it.
+func TestRequestID() engine.RequestID {
+	return typeid.Must(typeid.Parse[engine.RequestID]("srid_01jx0000000000000000000000"))
+}
 
 // Get fetches path from the dependency at host through egress, as a call of the one
 // mirrored request the test stands in for.
 func (e EgressEndpoint) Get(host, path string) *Response {
 	e.t.Helper()
-	return get(e.t, e.client, e.base+path, host, http.Header{"Baggage": []string{testRequestBaggage}})
+	return get(e.t, e.client, e.base+path, host, http.Header{"Baggage": []string{engine.RequestIDKey + "=" + TestRequestID().String()}})
 }
 
 // GetUnmirrored fetches path from the dependency at host through egress, as a call

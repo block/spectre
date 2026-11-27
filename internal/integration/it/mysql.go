@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -18,7 +19,9 @@ import (
 	. "github.com/alecthomas/types/optional"
 	"github.com/go-mysql-org/go-mysql/client"
 	"github.com/go-sql-driver/mysql"
+	"go.jetify.com/typeid"
 
+	"github.com/block/spectre/internal/engine"
 	"github.com/block/spectre/internal/model"
 	"github.com/block/spectre/internal/protocols/mysql/scripted"
 )
@@ -189,6 +192,30 @@ func MySQLQuarantine(kind model.QuarantineKind, route string, detail string) mod
 		Traffic: Some(model.Traffic{Direction: model.Egress, Protocol: scripted.Protocol, Route: model.Route(route)}),
 		Detail:  detail,
 	}
+}
+
+// InRequest tags statement with a mirrored request's ID in a comment, as services must.
+func InRequest(requestID engine.RequestID, statement string) string {
+	return statement + " /* " + requestID.String() + " */"
+}
+
+// InTestRequest tags statement with the ID of the one mirrored request that the test stands in for.
+func InTestRequest(statement string) string {
+	return InRequest(TestRequestID(), statement)
+}
+
+// RequestTagger tags statements with the request ID in a request's baggage, as services must.
+// A request whose baggage carries no valid one leaves its statements untagged.
+func RequestTagger(request *http.Request) func(statement string) string {
+	for _, line := range request.Header.Values("Baggage") {
+		for member := range strings.SplitSeq(line, ",") {
+			key, value, _ := strings.Cut(strings.TrimSpace(member), "=")
+			if id, err := typeid.Parse[engine.RequestID](value); key == engine.RequestIDKey && err == nil {
+				return func(statement string) string { return InRequest(id, statement) }
+			}
+		}
+	}
+	return func(statement string) string { return statement }
 }
 
 // SetProxyPassword writes the password that the proxy connects to the database with.

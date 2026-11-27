@@ -238,13 +238,15 @@ copies the reference and candidate receive as a `spectre_request_id` member of
 the W3C `baggage` header. Both services must pass `baggage` on from each request
 to the dependency calls they make for it, as OpenTelemetry's `baggage`
 propagator does. Egress removes the member before a call reaches a dependency,
-and ingress replaces any that a client sends.
+and ingress replaces any that a client sends. MySQL statements carry the ID in
+a comment instead, as [MySQL](#mysql) describes.
 
 A candidate call without a request ID gets a `502` and quarantines the candidate
 as `pairing`, as does one whose ID is malformed. A reference call without one
 belongs to no mirrored request, such as a call for a request ingress did not
 mirror or for background work. It is forwarded but never paired, so it
-never quarantines.
+never quarantines. MySQL statements are the exception: a reference statement
+without an ID quarantines the candidate, as [MySQL](#mysql) describes.
 
 Scripts declare dependency endpoints with `egress.http(pattern).match<Type>()`.
 Types come from `--schema-dir`; descriptors are only needed for protobuf traffic. A candidate call waits up to `--match-window` (5s by default) for an
@@ -264,8 +266,7 @@ mirrored request:
 - With several, the candidate is also quarantined as `unmatched`, and the reason
   says how many there were. SPECTRE does not guess which one the candidate meant.
 
-Calls to an endpoint that `replaces` another are never compared this way, and
-nor are MySQL statements.
+Calls to an endpoint that `replaces` another are never compared this way.
 
 A candidate call that gives up before it is answered, for example because its
 own client timed out, also quarantines the candidate, whether or not it matched a
@@ -377,23 +378,55 @@ it selected with `USE` or the select database command. The proxy answers the
 candidate's selections itself, and follows the reference's once the server
 accepts them. Selections are not paired.
 
+`SET` statements only change session state, so they are not paired either, and
+need no request ID. The proxy accepts the candidate's itself, and forwards the
+reference's. Neither side's settings are compared yet, so a candidate that sets
+up its session differently, such as with another `time_zone` or `sql_mode`, is
+not detected. A query is a `SET` statement only when every statement in it is
+one.
+
 The candidate can send only text statements and select a database. A prepared
 statement, a column listing, or any other command gets an error and quarantines
-the candidate as `unable`, with the route `command`. Reference prepared
-statements, pings and other commands are only forwarded. So are reference
-statements with several results, such as multiple statements or stored
+the candidate as `unable`, with the route `command`. A reference prepared
+statement reaches the server, and quarantines the candidate the same way,
+because no candidate statement can match it. Reference pings and other commands
+are only forwarded. So are reference statements with several results, such as multiple statements or stored
 procedure calls, and `LOAD DATA LOCAL INFILE`, which offer the candidate
 nothing to match. A statement that fails part way through its rows offers its
 error.
 
-Statements carry no request ID, so statements pair across all requests by text
-alone, within `--match-window`. Each reference statement answers one candidate
-statement. A candidate statement that no reference statement matches gets an
-error, and quarantines the candidate as `unmatched`, as does a reference
-statement that no candidate statement claims. Statements are never compared
-with a near match, because any other request could have sent it. Every text statement the
-reference sends through the proxy must therefore be one that the mirrored
-candidate also sends.
+Statements pair only with statements of the same mirrored request. Both
+services must copy the `spectre_request_id` from each request's `baggage` into a
+comment on every statement they send for it. The proxy finds the ID by its
+`srid_` prefix, so it may stand alone, as in `/* srid_... */`, or be any tag's
+value, as in `-- speleo-trace-id=... spectre_request_id=srid_...` or a
+sqlcommenter comment such as `/*spectre_request_id='srid_...'*/`. A word that
+starts with `srid_` but is not a valid ID counts as a malformed ID. The comment
+may be anywhere in the statement, but not in a string, a quoted name, an
+optimiser hint or an executable comment. The server receives the comment
+unchanged, and ignores it.
+
+A statement without a request ID that runs inside a transaction belongs to the
+request named by the transaction's last statement that had one. A `COMMIT` or
+`ROLLBACK` that a driver sends itself therefore still pairs. A `START
+TRANSACTION` that a driver sends itself runs in no transaction, so it needs an
+ID of its own.
+
+A candidate statement without a request ID gets an error and quarantines the
+candidate as `pairing`, as does one whose ID is malformed or that names
+different IDs. A reference statement without a valid request ID still reaches
+the server, but no candidate statement can pair with it, so it quarantines the
+candidate as `pairing` too. Only `SET` statements and database selections need
+no ID.
+
+Each reference statement answers one candidate statement of the same request.
+A candidate statement that no reference statement matches within
+`--match-window` gets an error, and quarantines the candidate as `unmatched`, as
+does a reference statement that no candidate statement claims. As for HTTP
+calls, a candidate statement with exactly one unclaimed reference statement of
+the same request and route is compared with it instead, and quarantines the
+candidate as `divergent`. The reason lists the paths where what the two
+statements pair by differs, such as `$.key.statement`, and never their values.
 
 A transaction's statements pair with one reference transaction's statements. A
 transaction runs from `BEGIN` or `START TRANSACTION` to `COMMIT` or `ROLLBACK`,

@@ -18,6 +18,10 @@ type requestPrefix struct{}
 
 func (requestPrefix) Prefix() string { return "srid" }
 
+// RequestIDKey names the W3C baggage member that carries a mirrored request's ID on its
+// dependency calls.
+const RequestIDKey = "spectre_request_id"
+
 // RequestID links a mirrored inbound request to the operations it causes.
 type RequestID struct {
 	typeid.TypeID[requestPrefix]

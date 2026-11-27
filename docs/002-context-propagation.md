@@ -16,27 +16,25 @@ We will propagate our own context.
 - Egress identifies the reference and candidate by the listener an operation arrives on, never by propagated context, so a candidate cannot claim to be the reference.
 - Propagate context through protocols with header support, such as HTTP, gRPC, and Kafka, as a `spectre_request_id` entry in the W3C `baggage` header, which services already propagate. Ingress adds the entry without disturbing other baggage, and egress removes only that entry before forwarding to a dependency. The sections below cover only protocols without header support.
 - A candidate operation without Spectre context quarantines the candidate, as with any other divergence.
-- A reference operation without Spectre context belongs to no mirrored request, such as one for a request ingress did not mirror or for work no request starts. It is forwarded but never paired, so no candidate operation is expected for it.
+- A reference operation without Spectre context belongs to no mirrored request, such as one for a request ingress did not mirror or for work no request starts. It is forwarded but never paired, so no candidate operation is expected for it. MySQL statements are the exception, as below.
 
 ### MySQL
 
-Use named query attributes, such as `spectre_request_id`, rather than SQL comments or connection-level state.
+Carry the request ID in a SQL comment on each statement, rather than in query attributes or connection-level state.
 
-- The proxy negotiates `CLIENT_QUERY_ATTRIBUTES` and extracts attributes from `COM_QUERY` and `COM_STMT_EXECUTE`.
-- Inject fresh context on every execution, including reused prepared statements. Attributes travel alongside parameters without changing or repreparing SQL.
-- Negotiate upstream capabilities separately; consume Spectre attributes and re-encode packets as required for the upstream connection. RDS does not need to emit traces or understand Spectre context.
-- Because the proxy reads and rewrites packets, it must terminate TLS and take part in authentication between the client and the upstream server.
-- Candidates are answered from reference recordings, either by replaying raw response packets or by decoding and re-encoding results. Raw replay requires both client connections to negotiate identical capabilities, such as `CLIENT_DEPRECATE_EOF`, which changes result set encoding. A candidate that negotiates different capabilities from the reference is quarantined.
+- Services copy the ID from each request's baggage into a comment on every statement they send for it. The proxy finds the ID by its own prefix in any of the statement's comments, so a bare ID, a sqlcommenter tag or a tag that an existing comment-tagging library writes all carry it.
+- The proxy relays reference statements unchanged, and the server ignores the comment, so the proxy never rewrites packets and needs no protocol extension. Query attributes would have needed a server library that reads them, rewritten reference packets, and forks of the Go and Ruby clients.
+- Comments are read outside strings, quoted names, optimiser hints and executable comments, with MySQL's default quoting rules. A session that turns off backslash escapes, or uses a character set such as GBK, could have its strings misread.
+- A statement without an ID inside a transaction belongs to the transaction's request, so a commit or rollback that a driver sends itself still pairs.
+- `SET` statements and database selections only change session state. They are never paired and need no ID.
+- Unlike operations of other protocols, every other reference statement without a valid ID quarantines the candidate, because no candidate statement could pair with it and it would go uncompared.
+- Prepared statements are not supported, because a comment cannot carry fresh context on each execution of a reused server-side prepared statement. The candidate cannot send them, and a reference prepared statement quarantines the candidate. Client-side prepared statements, which Connector/J uses by default, reach the server as text statements and work.
 
 | Client | Approach |
 | --- | --- |
-| Java: MySQL Connector/J | Query attributes supported since 8.0.26 through `JdbcStatement.setAttribute()`, including prepared statements. Standardize on a maintained compatible version and refresh/clear attributes on every execution. Native OTel support is irrelevant here. |
-| Go: `go-sql-driver/mysql` | Temporarily fork to expose attributes and encode them for ordinary queries and prepared-statement executions. No per-query attribute API in the checked v1.10.1 release. |
-| Ruby: `mysql2` | Temporarily fork the C extension to expose Oracle `libmysqlclient` attribute APIs. Use a compatible 8.4+ client library for both ordinary and prepared queries. |
-
-Oracle's open-source C APIs are `mysql_bind_param()` for ordinary queries (8.0.23+) and `mysql_stmt_bind_named_param()` for prepared statements (introduced in 8.2.0; that release had shared-library export issues). MariaDB Connector/C is not an interchangeable choice for these APIs.
-
-SQL comments cannot carry fresh context on each execution of a reused server-side prepared statement.
+| Java: MySQL Connector/J | Add the comment through the ORM's statement hooks, which Hibernate and jOOQ both offer, or a datasource proxy. Keep client-side prepared statements. Statements that the driver or pool sends itself carry no ID, so only their `SET` statements are accepted. |
+| Go: `go-sql-driver/mysql` | Add the comment to each statement. No fork is needed. |
+| Ruby: `mysql2`, Trilogy | Add the ID to the comment tags that services already write on each statement. |
 
 ### Redis
 
@@ -55,7 +53,7 @@ The client serializes Spectre context into the envelope; the proxy extracts it a
 
 ### Migration scope
 
-Maintain temporary Go/Ruby client forks while Spectre migrates services from the existing framework to the JVM. Retire them as those services migrate. Keep JVM MySQL drivers current and retain custom propagation in the JVM client integrations; Redis still requires the proxy extension.
+MySQL needs no client forks: services in every language add the ID to statements they already send, and retain that propagation in the JVM client integrations. Redis still requires the proxy extension.
 
 ## Open questions
 
@@ -63,7 +61,6 @@ Maintain temporary Go/Ruby client forks while Spectre migrates services from the
 
 ## References
 
-- [Connector/J query attributes](https://dev.mysql.com/doc/connector-j/en/connector-j-query-attributes.html)
-- [C API: ordinary query attributes](https://dev.mysql.com/doc/c-api/8.4/en/mysql-bind-param.html)
-- [C API: prepared-statement attributes](https://dev.mysql.com/doc/c-api/8.4/en/mysql-stmt-bind-named-param.html)
+- [MySQL comments](https://dev.mysql.com/doc/refman/8.4/en/comments.html)
+- [sqlcommenter specification](https://google.github.io/sqlcommenter/spec/)
 - [Redis protocol](https://redis.io/docs/latest/reference/protocol-spec/)

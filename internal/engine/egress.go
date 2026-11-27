@@ -247,11 +247,7 @@ func (q *egressQueue) match(ctx context.Context, requestID RequestID, protocol m
 	if err != nil {
 		return nil, model.QuarantineUnable, errors.Wrap(err, "identify candidate request")
 	}
-	near := Some(endpoint{protocol, string(route)})
-	if sharesRequestID(ctx) {
-		near = None[endpoint]()
-	}
-	delivery, err := q.claim(ctx, arrival, egressKey{request: requestID, hash: hash}, near)
+	delivery, err := q.claim(ctx, arrival, egressKey{request: requestID, hash: hash}, endpoint{protocol, string(route)})
 	if err != nil {
 		return nil, model.QuarantineUnmatched, err
 	}
@@ -428,19 +424,6 @@ func (e *requestDifferenceError) Error() string {
 		strings.Join(model.DifferenceLines(e.differences, e.truncated), ", ")
 }
 
-type sharedRequestIDKey struct{}
-
-// WithSharedRequestID marks candidate requests whose request ID spans unrelated work, so egress
-// never diffs them against a near match. Temporary: remove once MySQL statements carry SRIDs.
-func WithSharedRequestID(ctx context.Context) context.Context {
-	return context.WithValue(ctx, sharedRequestIDKey{}, true)
-}
-
-func sharesRequestID(ctx context.Context) bool {
-	shared, _ := ctx.Value(sharedRequestIDKey{}).(bool)
-	return shared
-}
-
 // misreported logs a candidate response, which is a server error because
 // candidate requests are never forwarded.
 func (q *egressQueue) misreported(ctx context.Context, exchange Exchange, failure Option[error]) {
@@ -535,7 +518,7 @@ func (q *egressQueue) pick(ctx context.Context, arrival uint64, key, sourceKey e
 
 // claim takes the earliest unused reference for key, waiting up to the window for one to arrive.
 // If none does, it takes the only unclaimed reference to near of the same request, as a near match.
-func (q *egressQueue) claim(ctx context.Context, arrival uint64, key egressKey, near Option[endpoint]) (egressDelivery, error) {
+func (q *egressQueue) claim(ctx context.Context, arrival uint64, key egressKey, near endpoint) (egressDelivery, error) {
 	q.mu.Lock()
 	if unused := q.unused[key]; len(unused) > 0 {
 		q.setUnused(key, unused[1:])
@@ -543,7 +526,7 @@ func (q *egressQueue) claim(ctx context.Context, arrival uint64, key egressKey, 
 		q.mu.Unlock()
 		return egressDelivery{pending: unused[0], direct: true}, nil
 	}
-	waiter := newEgressWaiter(arrival, key, None[egressKey](), near)
+	waiter := newEgressWaiter(arrival, key, None[egressKey](), Some(near))
 	q.waiting[key] = insertByArrival(q.waiting[key], waiter)
 	q.mu.Unlock()
 	return q.await(ctx, waiter, "no matching reference request")

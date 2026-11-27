@@ -9,6 +9,7 @@ import (
 	"github.com/pingcap/tidb/pkg/parser/test_driver"
 	"go.jetify.com/typeid"
 
+	"github.com/block/spectre/internal/engine"
 	"github.com/block/spectre/internal/protocols/mysql/normaliser"
 )
 
@@ -35,12 +36,13 @@ type pairing struct {
 	Transaction Option[transactionID] `json:"transaction,omitzero"`
 }
 
-// scopedUnit is a reference unit, what egress pairs it by, and the transaction it names
-// to the candidate that claims it, if any.
+// scopedUnit is a reference unit, the request and pairing egress pairs it by, and the
+// transaction it names to the candidate that claims it, if any.
 type scopedUnit struct {
 	normaliser.Unit
-	pairing pairing
-	names   Option[transactionID]
+	requestID Option[engine.RequestID]
+	pairing   pairing
+	names     Option[transactionID]
 }
 
 // transactions follows a connection's transactions through the statements it sends, as
@@ -50,14 +52,38 @@ type transactions struct {
 	open   bool
 	// started counts the connection's transactions, so a new one is told from the last.
 	started uint64
+	// requestID is the last request a statement of the current transaction named. A transaction
+	// belongs to one request, so it is the request of its statements that name none.
+	requestID Option[engine.RequestID]
 }
 
 func newTransactions() *transactions {
 	return &transactions{}
 }
 
-// next follows a command, and returns the transaction it ran in, if any.
-func (t *transactions) next(command normaliser.Command) (transaction uint64, inside bool) {
+// next follows a command that names a request, if any, and returns the transaction it ran
+// in and the request it belongs to. One inside a transaction that names none takes the transaction's.
+func (t *transactions) next(command normaliser.Command, named Option[engine.RequestID],
+) (transaction uint64, inside bool, requestID Option[engine.RequestID]) {
+	before := t.started
+	inside = t.follow(command)
+	if t.started != before {
+		t.requestID = None[engine.RequestID]()
+	}
+	if _, ok := named.Get(); ok {
+		if t.open {
+			t.requestID = named
+		}
+		return t.started, inside, named
+	}
+	if inside {
+		return t.started, inside, t.requestID
+	}
+	return t.started, inside, None[engine.RequestID]()
+}
+
+// follow follows a command, and reports whether it ran in a transaction.
+func (t *transactions) follow(command normaliser.Command) (inside bool) {
 	switch command := command.(type) {
 	case normaliser.Query:
 		for _, statement := range command.Statements {
@@ -68,7 +94,7 @@ func (t *transactions) next(command normaliser.Command) (transaction uint64, ins
 	case normaliser.UseDatabase:
 		inside = t.open
 	}
-	return t.started, inside
+	return inside
 }
 
 // statement follows one statement, and reports whether it ran in a transaction.
@@ -123,22 +149,25 @@ func newReferenceTransactions() *referenceTransactions {
 	return &referenceTransactions{transactions: newTransactions()}
 }
 
-// follow follows a command whose units are not offered.
-func (r *referenceTransactions) follow(command normaliser.Command) {
-	r.transactions.next(command)
+// follow follows a command whose units are not offered, and returns the request it belongs to.
+func (r *referenceTransactions) follow(command normaliser.Command, named Option[engine.RequestID]) Option[engine.RequestID] {
+	_, _, requestID := r.transactions.next(command, named)
+	return requestID
 }
 
-// scope follows a command, and keys its units by its transaction. The transaction's first
-// unit pairs with any transaction's first, and names the transaction to the candidate that claims it.
-func (r *referenceTransactions) scope(command normaliser.Command, units func() []normaliser.Unit) []scopedUnit {
-	started, inside := r.transactions.next(command)
+// scope follows a command, and returns its request and its units keyed by their request and transaction. The
+// transaction's first unit pairs with any transaction's first, and names the transaction to the candidate that claims it.
+func (r *referenceTransactions) scope(command normaliser.Command, named Option[engine.RequestID],
+	units func() []normaliser.Unit,
+) (Option[engine.RequestID], []scopedUnit) {
+	started, inside, requestID := r.transactions.next(command, named)
 	offered := units()
 	scoped := make([]scopedUnit, 0, len(offered))
 	if !inside {
 		for _, unit := range offered {
-			scoped = append(scoped, scopedUnit{Unit: unit, pairing: pairing{Key: unit.Key}})
+			scoped = append(scoped, scopedUnit{Unit: unit, requestID: requestID, pairing: pairing{Key: unit.Key}})
 		}
-		return scoped
+		return requestID, scoped
 	}
 	id, ok := r.current.Get()
 	if !ok || r.started != started {
@@ -148,35 +177,43 @@ func (r *referenceTransactions) scope(command normaliser.Command, units func() [
 	for _, unit := range offered {
 		if !r.named {
 			r.named = true
-			scoped = append(scoped, scopedUnit{Unit: unit, pairing: pairing{Key: unit.Key, Opens: true}, names: Some(id)})
+			scoped = append(scoped, scopedUnit{
+				Unit: unit, requestID: requestID, pairing: pairing{Key: unit.Key, Opens: true}, names: Some(id),
+			})
 			continue
 		}
-		scoped = append(scoped, scopedUnit{Unit: unit, pairing: pairing{Key: unit.Key, Transaction: Some(id)}})
+		scoped = append(scoped, scopedUnit{Unit: unit, requestID: requestID, pairing: pairing{Key: unit.Key, Transaction: Some(id)}})
 	}
-	return scoped
+	return requestID, scoped
 }
 
-// candidateTransactions keys a candidate connection's claims by the reference transaction
-// that its current transaction pairs with, once a claimed reply names one.
+// candidateTransactions keys a candidate connection's claims by the request the current
+// command belongs to, and the reference transaction that its transaction pairs with, once a claimed reply names one.
 type candidateTransactions struct {
 	transactions *transactions
 	started      uint64
 	// inside is whether the current command runs in a transaction.
-	inside bool
-	claims Option[transactionID]
+	inside  bool
+	request Option[engine.RequestID]
+	claims  Option[transactionID]
 }
 
 func newCandidateTransactions() *candidateTransactions {
 	return &candidateTransactions{transactions: newTransactions()}
 }
 
-// next follows the command whose units are claimed next.
-func (c *candidateTransactions) next(command normaliser.Command) {
-	started, inside := c.transactions.next(command)
+// next follows the command whose units are claimed next, which names a request, if any.
+func (c *candidateTransactions) next(command normaliser.Command, named Option[engine.RequestID]) {
+	started, inside, requestID := c.transactions.next(command, named)
 	if !inside || started != c.started {
 		c.started, c.claims = started, None[transactionID]()
 	}
-	c.inside = inside
+	c.inside, c.request = inside, requestID
+}
+
+// requestID is the request that the current command belongs to, if any.
+func (c *candidateTransactions) requestID() Option[engine.RequestID] {
+	return c.request
 }
 
 // key is what to claim a unit of the current command by.

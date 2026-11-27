@@ -21,6 +21,7 @@ import (
 
 	"github.com/block/spectre/internal/integration/it"
 	"github.com/block/spectre/internal/model"
+	"github.com/block/spectre/internal/protocols/mysql/scripted"
 )
 
 const (
@@ -93,7 +94,7 @@ func TestMySQLCandidateStatementTheReferenceNeverRanQuarantines(t *testing.T) {
 	m := startOrdersMirror(t)
 
 	// No reference statement read order 99's items, so the candidate gets an error, not rows.
-	_, err := selectItemsOf(t.Context(), m.MySQL().Candidate, 99)
+	_, err := selectItemsOf(t.Context(), m.MySQL().Candidate, it.InTestRequest, 99)
 	assert.Contains(t, err.Error(), "SPECTRE: no matching reference reply")
 	m.ExpectQuarantine(it.MySQLQuarantine(model.QuarantineUnmatched, "SELECT", "no matching reference request within 500ms"))
 	m.MySQL().ExpectStatements(map[string]uint64{})
@@ -103,10 +104,66 @@ func TestMySQLReferenceStatementTheCandidateNeverRanQuarantines(t *testing.T) {
 	m := startOrdersMirror(t)
 
 	// The reference reads order 7's items, and the candidate never asks for them.
-	items, err := selectItemsOf(t.Context(), m.MySQL().Reference, 7)
+	items, err := selectItemsOf(t.Context(), m.MySQL().Reference, it.InTestRequest, 7)
 	assert.NoError(t, err)
 	assert.Equal(t, []item{{ID: 1, SKU: Some("apple"), Quantity: 2}, {ID: 2, Quantity: 1}}, items)
 	m.ExpectQuarantine(it.MySQLQuarantine(model.QuarantineUnmatched, "SELECT", "no matching candidate request within 500ms"))
+}
+
+func TestMySQLCandidateStatementWithoutARequestIDQuarantines(t *testing.T) {
+	m := startOrdersMirror(t)
+
+	_, err := m.MySQL().Candidate.ExecContext(t.Context(), "SELECT sku FROM items WHERE id = 3")
+	assert.Contains(t, err.Error(), "SPECTRE: no matching reference reply")
+	m.ExpectQuarantine(it.MySQLQuarantine(model.QuarantinePairing, "SELECT", "candidate request carries no SPECTRE request ID"))
+}
+
+func TestMySQLCandidateStatementWithAMalformedRequestIDQuarantines(t *testing.T) {
+	m := startOrdersMirror(t)
+
+	_, err := m.MySQL().Candidate.ExecContext(t.Context(), "SELECT sku FROM items WHERE id = 3 /* srid_nonsense */")
+	assert.Contains(t, err.Error(), "SPECTRE: request ID is invalid")
+	m.ExpectQuarantine(it.MySQLQuarantine(model.QuarantinePairing, "SELECT", "statement carries a malformed SPECTRE request ID"))
+}
+
+// No candidate statement can pair with a reference statement that names no request, so it quarantines.
+func TestMySQLReferenceStatementWithoutARequestIDQuarantines(t *testing.T) {
+	m := startOrdersMirror(t)
+
+	items, err := selectItemsOf(t.Context(), m.MySQL().Reference, func(statement string) string { return statement }, 7)
+	assert.NoError(t, err)
+	assert.Equal(t, []item{{ID: 1, SKU: Some("apple"), Quantity: 2}, {ID: 2, Quantity: 1}}, items)
+	m.ExpectQuarantine(it.MySQLQuarantine(model.QuarantinePairing, "SELECT", "reference statement carries no SPECTRE request ID"))
+}
+
+// SET statements only change session state, so neither side's are paired, and they need no request ID.
+func TestMySQLSetStatementsAreNotPaired(t *testing.T) {
+	m := startOrdersMirror(t)
+
+	_, err := m.MySQL().Reference.ExecContext(t.Context(), "SET time_zone = '+00:00'")
+	assert.NoError(t, err)
+	_, err = m.MySQL().Candidate.ExecContext(t.Context(), "SET @@SESSION.sql_mode = CONCAT(@@sql_mode, ',STRICT_ALL_TABLES'), @mark = 1")
+	assert.NoError(t, err)
+
+	// The candidate is not quarantined, so ingress still compares a call.
+	m.Ingress.Get("/merchants/1/orders").ExpectStatus(http.StatusOK).ExpectBodyContains(merchantOneOrders)
+	m.ExpectCalls(it.Calls{merchantOneOrdersRoute: 1})
+}
+
+// The candidate reads another order's items than the reference read for the same request,
+// so egress reports how the two statements differ, without their values.
+func TestMySQLCandidateStatementWithOtherValuesDiverges(t *testing.T) {
+	m := startOrdersMirror(t)
+
+	_, err := selectItemsOf(t.Context(), m.MySQL().Reference, it.InTestRequest, 7)
+	assert.NoError(t, err)
+	_, err = selectItemsOf(t.Context(), m.MySQL().Candidate, it.InTestRequest, 9)
+	assert.Contains(t, err.Error(), "SPECTRE: no matching reference reply")
+	m.ExpectQuarantine(model.QuarantineReason{
+		Kind:        model.QuarantineDivergent,
+		Traffic:     Some(model.Traffic{Direction: model.Egress, Protocol: scripted.Protocol, Route: "SELECT"}),
+		Differences: []model.Difference{{Path: "$.key.statement", Change: model.ChangeChanged, Count: 1}},
+	})
 }
 
 func TestMySQLReferenceRepliesBeyondTheSavedSizeQuarantine(t *testing.T) {
@@ -139,38 +196,29 @@ func TestMySQLCandidateWritesReplayTheReferenceReplies(t *testing.T) {
 func TestMySQLCandidateTransactionsReadTheirOwnReferenceTransaction(t *testing.T) {
 	const selectOrders = "SELECT id, label FROM orders WHERE merchant_id = 3 ORDER BY id"
 	m := startOrdersMirror(t, it.Reference(idleService), it.Candidate(idleService))
-	begin := func(database *sql.DB) *sql.Tx {
-		transaction, err := database.BeginTx(t.Context(), nil)
+	insert := func(transaction *sql.Conn, id int, label string) {
+		_, err := transaction.ExecContext(t.Context(), it.InTestRequest("INSERT INTO orders (id, merchant_id, label) VALUES (?, 3, ?)"), id, label)
 		assert.NoError(t, err)
-		t.Cleanup(func() { _ = transaction.Rollback() })
-		return transaction
-	}
-	insert := func(transaction *sql.Tx, id int, label string) {
-		_, err := transaction.ExecContext(t.Context(), "INSERT INTO orders (id, merchant_id, label) VALUES (?, 3, ?)", id, label)
-		assert.NoError(t, err)
-	}
-	commit := func(transaction *sql.Tx) {
-		assert.NoError(t, transaction.Commit())
 	}
 
-	first, second := begin(m.MySQL().Reference), begin(m.MySQL().Reference)
+	first, second := begin(t, m.MySQL().Reference), begin(t, m.MySQL().Reference)
 	insert(first, 100, "first")
 	insert(second, 200, "second")
 	_, firstOrders := queried(t, first, selectOrders)
 	_, secondOrders := queried(t, second, selectOrders)
-	commit(first)
-	commit(second)
+	commit(t, first)
+	commit(t, second)
 	assert.Equal(t, [][]Option[string]{{Some("100"), Some("first")}}, firstOrders)
 	assert.Equal(t, [][]Option[string]{{Some("200"), Some("second")}}, secondOrders)
 
 	// The second request's transaction reads first, as the first's did on the reference.
-	candidateSecond, candidateFirst := begin(m.MySQL().Candidate), begin(m.MySQL().Candidate)
+	candidateSecond, candidateFirst := begin(t, m.MySQL().Candidate), begin(t, m.MySQL().Candidate)
 	insert(candidateSecond, 200, "second")
 	insert(candidateFirst, 100, "first")
 	_, candidateSecondOrders := queried(t, candidateSecond, selectOrders)
 	_, candidateFirstOrders := queried(t, candidateFirst, selectOrders)
-	commit(candidateSecond)
-	commit(candidateFirst)
+	commit(t, candidateSecond)
+	commit(t, candidateFirst)
 	assert.Equal(t, secondOrders, candidateSecondOrders)
 	assert.Equal(t, firstOrders, candidateFirstOrders)
 	m.ExpectCalls(it.Calls{})
@@ -182,11 +230,9 @@ func TestMySQLCandidateTransactionsPairOnlyWithReferenceTransactions(t *testing.
 	const selectOrders = "SELECT id, label FROM orders WHERE merchant_id = 1 ORDER BY id"
 	m := startOrdersMirror(t, it.Reference(idleService), it.Candidate(idleService))
 	inTransaction := func(database *sql.DB) {
-		transaction, err := database.BeginTx(t.Context(), nil)
-		assert.NoError(t, err)
-		defer transaction.Rollback() //nolint:errcheck // Rolling back after a commit does nothing.
+		transaction := begin(t, database)
 		queried(t, transaction, selectOrders)
-		assert.NoError(t, transaction.Commit())
+		commit(t, transaction)
 	}
 
 	queried(t, m.MySQL().Reference, selectOrders)
@@ -201,7 +247,7 @@ func TestMySQLCandidateReplaysTheReferenceDatabaseError(t *testing.T) {
 	m := startOrdersMirror(t)
 
 	for _, database := range []*sql.DB{m.MySQL().Reference, m.MySQL().Candidate} {
-		_, err := database.ExecContext(t.Context(), "SELECT id FROM missing")
+		_, err := database.ExecContext(t.Context(), it.InTestRequest("SELECT id FROM missing"))
 		assert.Contains(t, err.Error(), "Error 1146 (42S02): Table '"+m.MySQL().Name+".missing' doesn't exist")
 	}
 	m.MySQL().ExpectStatements(map[string]uint64{"SELECT `id` FROM `missing`": 1})
@@ -211,10 +257,10 @@ func TestMySQLStatementsPairWhateverTheirCommentsAndSpacing(t *testing.T) {
 	m := startOrdersMirror(t)
 
 	sku := ""
-	assert.NoError(t, m.MySQL().Reference.QueryRowContext(t.Context(), "SELECT sku FROM items WHERE id = 3 /* reference */").Scan(&sku))
+	assert.NoError(t, m.MySQL().Reference.QueryRowContext(t.Context(), it.InTestRequest("SELECT sku FROM items WHERE id = 3 /* reference */")).Scan(&sku))
 	assert.Equal(t, "pear", sku)
 	sku = ""
-	assert.NoError(t, m.MySQL().Candidate.QueryRowContext(t.Context(), "select sku\n  from items where id=3 -- candidate").Scan(&sku))
+	assert.NoError(t, m.MySQL().Candidate.QueryRowContext(t.Context(), it.InTestRequest("select sku\n  from items where id=3 -- candidate")).Scan(&sku))
 	assert.Equal(t, "pear", sku)
 	m.MySQL().ExpectStatements(map[string]uint64{"SELECT `sku` FROM `items` WHERE `id` = ?": 1})
 }
@@ -241,10 +287,10 @@ func TestMySQLStatementsPairExactlyAlongsideReplacements(t *testing.T) {
 	m.Ingress.Get("/merchants/1/orders").ExpectStatus(http.StatusOK).ExpectBodyContains(merchantOneOrders)
 	m.ExpectCalls(it.Calls{merchantOneOrdersRoute: 1})
 	sku := ""
-	assert.NoError(t, m.MySQL().Reference.QueryRowContext(t.Context(), "SELECT sku FROM items WHERE id = 3 /* reference */").Scan(&sku))
+	assert.NoError(t, m.MySQL().Reference.QueryRowContext(t.Context(), it.InTestRequest("SELECT sku FROM items WHERE id = 3 /* reference */")).Scan(&sku))
 	assert.Equal(t, "pear", sku)
 	sku = ""
-	assert.NoError(t, m.MySQL().Candidate.QueryRowContext(t.Context(), "select sku\n  from items where id=3 -- candidate").Scan(&sku))
+	assert.NoError(t, m.MySQL().Candidate.QueryRowContext(t.Context(), it.InTestRequest("select sku\n  from items where id=3 -- candidate")).Scan(&sku))
 	assert.Equal(t, "pear", sku)
 	reference, err := addItem(t.Context(), m.MySQL().Reference)
 	assert.NoError(t, err)
@@ -266,12 +312,12 @@ func TestMySQLStatementsPairExactlyAlongsideReplacements(t *testing.T) {
 func TestMySQLReplacementStatementWithOtherValuesQuarantines(t *testing.T) {
 	m := startOrdersMirror(t, it.Scripts(unusedJoinScript))
 
-	reference, err := selectItemsOf(t.Context(), m.MySQL().Reference, 7)
+	reference, err := selectItemsOf(t.Context(), m.MySQL().Reference, it.InTestRequest, 7)
 	assert.NoError(t, err)
-	candidate, err := selectItemsOf(t.Context(), m.MySQL().Candidate, 7)
+	candidate, err := selectItemsOf(t.Context(), m.MySQL().Candidate, it.InTestRequest, 7)
 	assert.NoError(t, err)
 	assert.Equal(t, reference, candidate)
-	_, err = selectItemsOf(t.Context(), m.MySQL().Candidate, 9)
+	_, err = selectItemsOf(t.Context(), m.MySQL().Candidate, it.InTestRequest, 9)
 	assert.Contains(t, err.Error(), "SPECTRE: no matching reference reply")
 	m.ExpectQuarantine(it.MySQLQuarantine(model.QuarantineUnmatched, "SELECT", "no matching reference request within 500ms"))
 	m.MySQL().ExpectStatements(map[string]uint64{selectItemsDigest: 1})
@@ -573,7 +619,7 @@ func TestMySQLCandidateUsesTheDatabaseItSelected(t *testing.T) {
 	reference := m.MySQL().ConnectReference()
 	_, err := reference.Execute("USE information_schema")
 	assert.NoError(t, err)
-	selected, err := reference.Execute("SELECT DATABASE()")
+	selected, err := reference.Execute(it.InTestRequest("SELECT DATABASE()"))
 	assert.NoError(t, err)
 	database, err := selected.GetString(0, 0)
 	assert.NoError(t, err)
@@ -585,7 +631,7 @@ func TestMySQLCandidateUsesTheDatabaseItSelected(t *testing.T) {
 	defer candidate.Close()
 	_, err = candidate.ExecContext(t.Context(), "USE `information_schema`")
 	assert.NoError(t, err)
-	assert.NoError(t, candidate.QueryRowContext(t.Context(), "SELECT DATABASE()").Scan(&database))
+	assert.NoError(t, candidate.QueryRowContext(t.Context(), it.InTestRequest("SELECT DATABASE()")).Scan(&database))
 	assert.Equal(t, "information_schema", database)
 }
 
@@ -594,11 +640,11 @@ func TestMySQLCandidateStatementInAnotherDatabaseIsNotPaired(t *testing.T) {
 	reference := m.MySQL().ConnectReference()
 	_, err := reference.Execute("USE information_schema")
 	assert.NoError(t, err)
-	_, err = reference.Execute("SELECT DATABASE()")
+	_, err = reference.Execute(it.InTestRequest("SELECT DATABASE()"))
 	assert.NoError(t, err)
 
 	// The candidate stays in the database it connected to.
-	_, err = m.MySQL().Candidate.ExecContext(t.Context(), "SELECT DATABASE()")
+	_, err = m.MySQL().Candidate.ExecContext(t.Context(), it.InTestRequest("SELECT DATABASE()"))
 	assert.Contains(t, err.Error(), "SPECTRE: no matching reference reply")
 }
 
@@ -627,20 +673,17 @@ func TestMySQLProxyReadsTheRotatedPassword(t *testing.T) {
 	assert.NoError(t, m.MySQL().OpenReference().PingContext(t.Context()))
 }
 
-func TestMySQLReferencePreparedStatementsOnlyReachTheDatabase(t *testing.T) {
+// The candidate cannot send prepared statements, so the reference's quarantine it once they reach the database.
+func TestMySQLReferencePreparedStatementQuarantines(t *testing.T) {
 	m := startOrdersMirror(t)
 
-	// Prepared statements are forwarded, and offer nothing for the candidate to match.
-	prepared, err := m.MySQL().Reference.PrepareContext(t.Context(), "SELECT sku FROM items WHERE id = ?")
+	prepared, err := m.MySQL().Reference.PrepareContext(t.Context(), it.InTestRequest("SELECT sku FROM items WHERE id = ?"))
 	assert.NoError(t, err)
 	defer prepared.Close()
 	var sku string
 	assert.NoError(t, prepared.QueryRowContext(t.Context(), 3).Scan(&sku))
 	assert.Equal(t, "pear", sku)
-
-	// The candidate is not quarantined, so ingress still compares a call.
-	m.Ingress.Get("/merchants/1/orders").ExpectStatus(http.StatusOK).ExpectBodyContains(merchantOneOrders)
-	m.ExpectCalls(it.Calls{merchantOneOrdersRoute: 1})
+	m.ExpectQuarantine(it.MySQLQuarantine(model.QuarantineUnable, "command", "prepared statements are not supported"))
 }
 
 func TestMySQLReferencePingReachesTheDatabase(t *testing.T) {
@@ -766,22 +809,48 @@ func startOrdersMirror(t *testing.T, settings ...it.Setting) *it.Mirror {
 	}, settings...)...)
 }
 
-// addItem adds an item to order 8 in a transaction, and returns the rows it added.
+// addItem adds an item to order 8 in a transaction of the test's mirrored request, and returns
+// the rows it added. Its COMMIT names no request, as one a driver sends itself does.
 func addItem(ctx context.Context, database *sql.DB) (int64, error) {
-	transaction, err := database.BeginTx(ctx, nil)
+	conn, err := database.Conn(ctx)
 	if err != nil {
+		return 0, errors.Wrap(err, "connect")
+	}
+	defer conn.Close()
+	// The driver's own START TRANSACTION would name no request, so the test sends its own.
+	if _, err := conn.ExecContext(ctx, it.InTestRequest("START TRANSACTION")); err != nil {
 		return 0, errors.Wrap(err, "begin")
 	}
-	defer transaction.Rollback() //nolint:errcheck // Rolling back after a commit does nothing.
-	result, err := transaction.ExecContext(ctx, "INSERT INTO items (id, order_id, sku, quantity) VALUES (?, ?, ?, ?)", 5, 8, "fig", 3)
+	result, err := conn.ExecContext(ctx, it.InTestRequest("INSERT INTO items (id, order_id, sku, quantity) VALUES (?, ?, ?, ?)"), 5, 8, "fig", 3)
 	if err != nil {
+		_, _ = conn.ExecContext(ctx, "ROLLBACK")
 		return 0, errors.Wrap(err, "insert item")
 	}
 	added, err := result.RowsAffected()
 	if err != nil {
 		return 0, errors.Wrap(err, "count added items")
 	}
-	return added, errors.Wrap(transaction.Commit(), "commit")
+	_, err = conn.ExecContext(ctx, "COMMIT")
+	return added, errors.Wrap(err, "commit")
+}
+
+// begin starts a transaction of the test's mirrored request on a connection of its own. The
+// driver's own START TRANSACTION would name no request, so the test sends its own.
+func begin(t *testing.T, database *sql.DB) *sql.Conn {
+	t.Helper()
+	conn, err := database.Conn(t.Context())
+	assert.NoError(t, err)
+	t.Cleanup(func() { _ = conn.Close() })
+	_, err = conn.ExecContext(t.Context(), it.InTestRequest("START TRANSACTION"))
+	assert.NoError(t, err)
+	return conn
+}
+
+// commit commits a transaction without naming a request, as a driver does.
+func commit(t *testing.T, transaction *sql.Conn) {
+	t.Helper()
+	_, err := transaction.ExecContext(t.Context(), "COMMIT")
+	assert.NoError(t, err)
 }
 
 // order is a merchant's order with its items, as the orders service returns it.
@@ -798,7 +867,7 @@ type item struct {
 }
 
 // ordersService serves a merchant's orders, read from the mirror's database with a
-// statement for the orders and one for the items of each order.
+// statement for the orders and one for the items of each order, each tagged with the request's ID.
 func ordersService() it.Service {
 	return func(t *testing.T, backend it.Backend) {
 		t.Helper()
@@ -809,7 +878,7 @@ func ordersService() it.Service {
 				http.Error(writer, "merchant must be a number", http.StatusBadRequest)
 				return
 			}
-			orders, err := selectOrders(request.Context(), database, merchant)
+			orders, err := selectOrders(request.Context(), database, it.RequestTagger(request), merchant)
 			if err != nil {
 				http.Error(writer, "orders cannot be read", http.StatusInternalServerError)
 				return
@@ -827,7 +896,7 @@ func joinedOrdersService() it.Service {
 		t.Helper()
 		database := backend.MySQL.MustGet()
 		backend.HTTP.HandleFunc("GET /merchants/{merchant}/orders", func(writer http.ResponseWriter, request *http.Request) {
-			orders, err := selectJoinedOrders(request.Context(), database, request.PathValue("merchant"))
+			orders, err := selectJoinedOrders(request.Context(), database, it.RequestTagger(request), request.PathValue("merchant"))
 			if err != nil {
 				http.Error(writer, "orders cannot be read", http.StatusInternalServerError)
 				return
@@ -839,9 +908,9 @@ func joinedOrdersService() it.Service {
 }
 
 // selectJoinedOrders selects the orders with their items in one statement.
-func selectJoinedOrders(ctx context.Context, database *sql.DB, merchant string) ([]order, error) {
-	rows, err := database.QueryContext(ctx, "SELECT o.id, o.label, i.id AS item, i.sku, i.quantity FROM orders o "+
-		"LEFT JOIN items i ON i.order_id = o.id WHERE o.merchant_id = ? ORDER BY o.id, i.id", merchant)
+func selectJoinedOrders(ctx context.Context, database *sql.DB, tag func(statement string) string, merchant string) ([]order, error) {
+	rows, err := database.QueryContext(ctx, tag("SELECT o.id, o.label, i.id AS item, i.sku, i.quantity FROM orders o "+
+		"LEFT JOIN items i ON i.order_id = o.id WHERE o.merchant_id = ? ORDER BY o.id, i.id"), merchant)
 	if err != nil {
 		return nil, errors.Wrap(err, "select orders")
 	}
@@ -887,10 +956,10 @@ type querier interface {
 	QueryContext(ctx context.Context, query string, arguments ...any) (*sql.Rows, error)
 }
 
-// queried runs a statement, and describes its reply.
+// queried runs a statement of the test's mirrored request, and describes its reply.
 func queried(t *testing.T, database querier, statement string, arguments ...any) ([]columnType, [][]Option[string]) {
 	t.Helper()
-	rows, err := database.QueryContext(t.Context(), statement, arguments...)
+	rows, err := database.QueryContext(t.Context(), it.InTestRequest(statement), arguments...)
 	assert.NoError(t, err)
 	return described(t, rows)
 }
@@ -958,12 +1027,12 @@ type orderTotal struct {
 }
 
 // totalsService serves the totals of a merchant's orders that have items, read by totals.
-func totalsService(totals func(ctx context.Context, database *sql.DB, merchant string) ([]orderTotal, error)) it.Service {
+func totalsService(totals func(ctx context.Context, database *sql.DB, tag func(statement string) string, merchant string) ([]orderTotal, error)) it.Service {
 	return func(t *testing.T, backend it.Backend) {
 		t.Helper()
 		database := backend.MySQL.MustGet()
 		backend.HTTP.HandleFunc("GET /merchants/{merchant}/totals", func(writer http.ResponseWriter, request *http.Request) {
-			read, err := totals(request.Context(), database, request.PathValue("merchant"))
+			read, err := totals(request.Context(), database, it.RequestTagger(request), request.PathValue("merchant"))
 			if err != nil {
 				http.Error(writer, "totals cannot be read", http.StatusInternalServerError)
 				return
@@ -975,9 +1044,9 @@ func totalsService(totals func(ctx context.Context, database *sql.DB, merchant s
 }
 
 // totalsGroupedInCode reads every item's quantity, and adds them up by order.
-func totalsGroupedInCode(ctx context.Context, database *sql.DB, merchant string) ([]orderTotal, error) {
+func totalsGroupedInCode(ctx context.Context, database *sql.DB, tag func(statement string) string, merchant string) ([]orderTotal, error) {
 	rows, err := database.QueryContext(ctx,
-		"SELECT i.order_id, i.quantity FROM items i JOIN orders o ON o.id = i.order_id WHERE o.merchant_id = ?", merchant)
+		tag("SELECT i.order_id, i.quantity FROM items i JOIN orders o ON o.id = i.order_id WHERE o.merchant_id = ?"), merchant)
 	if err != nil {
 		return nil, errors.Wrap(err, "select quantities")
 	}
@@ -1002,9 +1071,9 @@ func totalsGroupedInCode(ctx context.Context, database *sql.DB, merchant string)
 }
 
 // totalsGroupedInSQL reads the totals grouped by the database.
-func totalsGroupedInSQL(ctx context.Context, database *sql.DB, merchant string) ([]orderTotal, error) {
-	rows, err := database.QueryContext(ctx, "SELECT i.order_id, COUNT(*) AS line_count, SUM(i.quantity) AS total FROM items i "+
-		"JOIN orders o ON o.id = i.order_id WHERE o.merchant_id = ? GROUP BY i.order_id ORDER BY i.order_id", merchant)
+func totalsGroupedInSQL(ctx context.Context, database *sql.DB, tag func(statement string) string, merchant string) ([]orderTotal, error) {
+	rows, err := database.QueryContext(ctx, tag("SELECT i.order_id, COUNT(*) AS line_count, SUM(i.quantity) AS total FROM items i "+
+		"JOIN orders o ON o.id = i.order_id WHERE o.merchant_id = ? GROUP BY i.order_id ORDER BY i.order_id"), merchant)
 	if err != nil {
 		return nil, errors.Wrap(err, "select totals")
 	}
@@ -1021,8 +1090,8 @@ func totalsGroupedInSQL(ctx context.Context, database *sql.DB, merchant string) 
 }
 
 // selectOrders selects the orders, then the items of each order with a statement of its own.
-func selectOrders(ctx context.Context, database *sql.DB, merchant int64) ([]order, error) {
-	rows, err := database.QueryContext(ctx, "SELECT id, label FROM orders WHERE merchant_id = ? ORDER BY id", merchant)
+func selectOrders(ctx context.Context, database *sql.DB, tag func(statement string) string, merchant int64) ([]order, error) {
+	rows, err := database.QueryContext(ctx, tag("SELECT id, label FROM orders WHERE merchant_id = ? ORDER BY id"), merchant)
 	if err != nil {
 		return nil, errors.Wrap(err, "select orders")
 	}
@@ -1039,7 +1108,7 @@ func selectOrders(ctx context.Context, database *sql.DB, merchant int64) ([]orde
 		return nil, errors.Wrap(err, "read orders")
 	}
 	for index := range orders {
-		items, err := selectItemsOf(ctx, database, orders[index].ID)
+		items, err := selectItemsOf(ctx, database, tag, orders[index].ID)
 		if err != nil {
 			return nil, err
 		}
@@ -1048,8 +1117,8 @@ func selectOrders(ctx context.Context, database *sql.DB, merchant int64) ([]orde
 	return orders, nil
 }
 
-func selectItemsOf(ctx context.Context, database *sql.DB, orderID int64) ([]item, error) {
-	rows, err := database.QueryContext(ctx, "SELECT id, sku, quantity FROM items WHERE order_id = ? ORDER BY id", orderID)
+func selectItemsOf(ctx context.Context, database *sql.DB, tag func(statement string) string, orderID int64) ([]item, error) {
+	rows, err := database.QueryContext(ctx, tag("SELECT id, sku, quantity FROM items WHERE order_id = ? ORDER BY id"), orderID)
 	if err != nil {
 		return nil, errors.Wrap(err, "select items")
 	}

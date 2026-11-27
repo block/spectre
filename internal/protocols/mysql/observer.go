@@ -4,10 +4,13 @@ import (
 	"context"
 	"sync"
 
+	"github.com/alecthomas/errors"
 	. "github.com/alecthomas/types/optional"
 	"github.com/go-mysql-org/go-mysql/mysql"
 
+	"github.com/block/spectre/internal/engine"
 	"github.com/block/spectre/internal/logger"
+	"github.com/block/spectre/internal/model"
 	"github.com/block/spectre/internal/protocols/mysql/normaliser"
 )
 
@@ -46,8 +49,12 @@ func (o *observer) sent(payload []byte, whole bool) {
 	if !whole || len(payload) == 0 || !o.server.offering() {
 		return
 	}
-	if payload[0] == mysql.COM_QUERY || payload[0] == mysql.COM_INIT_DB {
+	switch payload[0] {
+	case mysql.COM_QUERY, mysql.COM_INIT_DB:
 		o.reading, o.pending = Some(newReplyReader(o.capability)), sentCommand{code: payload[0], text: string(payload[1:])}
+	case mysql.COM_STMT_PREPARE, mysql.COM_STMT_EXECUTE:
+		// The candidate cannot send prepared statements, so the reference's would never be matched.
+		o.server.unable(o.ctx, unsupportedRoute, "prepared statements are not supported")
 	}
 }
 
@@ -134,7 +141,8 @@ func (o *observer) units(sent sentCommand, reply normaliser.Reply,
 	return func() {
 		// A connection's offers run in order on one goroutine, so the session sees commands in order.
 		command := o.server.command(sent.code, sent.text)
-		units := o.transactions.scope(command, func() []normaliser.Unit {
+		named, malformed := o.requestID(sent)
+		requestID, units := o.transactions.scope(command, named, func() []normaliser.Unit {
 			units, err := o.session.Reference(o.ctx, command, reply)
 			if err != nil {
 				logger.FromContext(o.ctx).WarnContext(o.ctx, "Reference command is not offered", "event", logger.EventCorrelation, "reason", err)
@@ -143,6 +151,13 @@ func (o *observer) units(sent sentCommand, reply normaliser.Reply,
 			}
 			return units
 		})
+		route := unsupportedRoute
+		if len(units) > 0 {
+			route = units[0].Route
+		}
+		if !o.pairs(command, requestID, malformed, route) {
+			units = nil
+		}
 		use(o.ctx, units)
 	}
 }
@@ -150,8 +165,41 @@ func (o *observer) units(sent sentCommand, reply normaliser.Reply,
 // follow returns what follows a command whose reply is not offered through the connection's transactions.
 func (o *observer) follow(sent sentCommand) (deliver func()) {
 	return func() {
-		o.transactions.follow(o.server.command(sent.code, sent.text))
+		command := o.server.command(sent.code, sent.text)
+		named, malformed := o.requestID(sent)
+		o.pairs(command, o.transactions.follow(command, named), malformed, unsupportedRoute)
 	}
+}
+
+// pairs reports whether a command's units are paired. Commands that change session state never are, and any
+// other that names no valid request quarantines the candidate, because no candidate statement can pair with it.
+func (o *observer) pairs(command normaliser.Command, requestID Option[engine.RequestID], malformed Option[error],
+	route model.Route,
+) (paired bool) {
+	if sessionCommand(command) {
+		return false
+	}
+	if invalid, ok := malformed.Get(); ok {
+		o.server.unpaired(o.ctx, route, invalid)
+		return false
+	}
+	if !requestID.Ok() {
+		o.server.unpaired(o.ctx, route, errors.New("reference statement carries no SPECTRE request ID"))
+		return false
+	}
+	return true
+}
+
+// requestID returns the request that a statement names, if any, or why its ID is malformed.
+func (o *observer) requestID(sent sentCommand) (named Option[engine.RequestID], malformed Option[error]) {
+	if sent.code != mysql.COM_QUERY {
+		return None[engine.RequestID](), None[error]()
+	}
+	named, err := statementRequestID(sent.text)
+	if err != nil {
+		return named, Some(err)
+	}
+	return named, None[error]()
 }
 
 // sentCommand is a command the reference sent, before it is parsed.
