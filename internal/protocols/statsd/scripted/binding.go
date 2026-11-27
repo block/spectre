@@ -86,48 +86,25 @@ type Check struct {
 }
 
 // Tolerance bounds the candidate above and below the reference by fractions of the reference.
-// An absent bound is unlimited, and a difference up to Slack always passes.
 type Tolerance struct {
-	Above Option[float64]
-	Below Option[float64]
-	Slack float64
+	Upper float64
+	Lower float64
 }
 
 // Allows reports whether candidate is close enough to reference.
 func (t Tolerance) Allows(reference, candidate float64) bool {
-	gap := func(fraction float64) float64 { return max(t.Slack, fraction*math.Abs(reference)) }
-	if above, bounded := t.Above.Get(); bounded && candidate > reference+gap(above) {
-		return false
-	}
-	if below, bounded := t.Below.Get(); bounded && candidate < reference-gap(below) {
-		return false
-	}
-	return true
+	return candidate <= reference+t.Upper*math.Abs(reference) && candidate >= reference-t.Lower*math.Abs(reference)
 }
 
-// String says what the tolerance allows, as in "up to 20% above".
+// String says what the tolerance allows, as in "up to 20% above and 0% below".
 func (t Tolerance) String() string {
-	above, hasAbove := t.Above.Get()
-	below, hasBelow := t.Below.Get()
-	var allowed string
 	switch {
-	case !hasAbove && !hasBelow:
-		allowed = "any difference"
-	case hasAbove && hasBelow && above == 0 && below == 0:
-		allowed = "no difference"
-	case hasAbove && hasBelow && above == below:
-		allowed = "up to " + percent(above) + " above or below"
-	case hasAbove && hasBelow:
-		allowed = "up to " + percent(above) + " above and " + percent(below) + " below"
-	case hasAbove:
-		allowed = "up to " + percent(above) + " above"
-	default:
-		allowed = "up to " + percent(below) + " below"
+	case t.Upper == 0 && t.Lower == 0:
+		return "no difference"
+	case t.Upper == t.Lower:
+		return "up to " + percent(t.Upper) + " above or below"
 	}
-	if t.Slack > 0 {
-		allowed += ", or a difference of up to " + strconv.FormatFloat(t.Slack, 'g', -1, 64)
-	}
-	return allowed
+	return "up to " + percent(t.Upper) + " above and " + percent(t.Lower) + " below"
 }
 
 // percent writes a fraction as a percentage, as in "20%".

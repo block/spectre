@@ -552,10 +552,10 @@ egress.statsd("framework.actions.service_api.response_codes").map((m) => ({
   name: "framework.http.response_codes",
   tags: { endpoint: m.tags.api, code: m.tags.code },
 }));
-egress.statsd("framework.http.response_codes").compare({ total: { within: 0.05, slack: 5 } });
+egress.statsd("framework.http.response_codes").compare({ total: { upper: 0.05, lower: 0.05 } });
 egress.statsd("framework.http.response_times").compare({
-  count: { within: 0.05, slack: 5 },
-  p95: { above: 0.5 },
+  count: { upper: 0.05, lower: 0.05 },
+  p95: { upper: 0.5, lower: 1 },
 });
 egress.statsd("**").ignore();
 ```
@@ -578,20 +578,16 @@ compare counters and distributions. A rule whose statistics a series' type has
 none of quarantines it as `unable`.
 
 Each statistic takes a tolerance in fractions of the reference's value, where
-`0.1` is 10%:
-
-- `within` fails a candidate more than that fraction above or below the
-  reference.
-- `above` fails a candidate more than that fraction above the reference, and
-  `below` one more than that fraction below it. A direction without a bound
-  passes any amount. They cannot be combined with `within`.
-- `slack` is an absolute difference that always passes, for series too quiet
-  for fractions.
-- `{}` requires equal values.
+`0.1` is 10%. `upper` fails a candidate more than that fraction above the
+reference, and `lower` one more than that fraction below it. A bound left out
+is 0, so `{}` requires equal values, and `lower: 1` lets a non-negative value
+fall to 0.
 
 A series that only one side sends counts as 0 on the other side, so its
-`total`, `count` or `members` check decides whether that fails. Without such a
-check, and always for gauges, a series sent by one side only fails.
+`total`, `count` or `members` check decides whether that fails: only `lower: 1`
+lets the candidate leave it out, and a series only the candidate sends always
+fails. Without such a check, and always for gauges, a series sent by one side
+only fails.
 
 The first window that fails quarantines the candidate:
 
@@ -610,7 +606,7 @@ and comparison stops once the candidate is quarantined in either direction.
 Quarantine reasons name the series with its tags, the statistic's value on
 each side, and what the rule allows, for example `distribution http.latency p95
 is 340 on the candidate and 250 on the reference, 36% above; the rule allows up
-to 20% above, in the 1m0s window from 10:02:00`.
+to 20% above and 100% below, in the 1m0s window from 10:02:00`.
 
 ### Quarantine
 

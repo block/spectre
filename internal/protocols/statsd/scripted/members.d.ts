@@ -17,24 +17,12 @@ declare module "spectre" {
   }
   /** Selects by a tag's value, or by a function of it, which receives undefined when the tag is absent. */
   type TagSelect = string | ((value: string | undefined) => boolean);
-  /** How far a statistic may differ, in fractions of the reference's value: 0.1 is 10%. With no bound, the values must be equal. */
-  export type Tolerance = Within | Bounds;
-  export interface Within {
-    /** Fails when the candidate is more than this fraction above or below the reference. */
-    within: number;
-    above?: never;
-    below?: never;
-    /** A difference up to this absolute amount always passes, for series too quiet for fractions. */
-    slack?: number;
-  }
-  export interface Bounds {
-    within?: never;
-    /** Fails when the candidate is more than this fraction above the reference. Without it, any amount above passes. */
-    above?: number;
-    /** Fails when the candidate is more than this fraction below the reference. Without it, any amount below passes. */
-    below?: number;
-    /** A difference up to this absolute amount always passes, for series too quiet for fractions. */
-    slack?: number;
+  /** How far a statistic may differ, in fractions of the reference's value: 0.1 is 10%. A bound left out is 0. */
+  export interface Tolerance {
+    /** Fails when the candidate is more than this fraction above the reference. */
+    upper?: number;
+    /** Fails when the candidate is more than this fraction below the reference. */
+    lower?: number;
   }
   /** The statistics a rule checks in each window. A series is checked on the statistics its type has. */
   export interface MetricComparison {

@@ -114,23 +114,22 @@ func (d *definition) comparison(value sobek.Value) Comparison {
 	return comparison
 }
 
-// tolerance reads a statistic's Tolerance object. Within bounds both ways, and no bound
-// at all requires equal values.
+// tolerance reads a statistic's Tolerance object, whose absent properties are 0.
 func (d *definition) tolerance(statistic string, value sobek.Value) Tolerance {
 	object, isObject := value.(*sobek.Object)
 	if !isObject {
 		panic(d.runtime.NewTypeError("spectre.EgressStatsDRule.compare %s requires a tolerance", statistic))
 	}
-	properties := []string{"within", "above", "below", "slack"}
+	properties := []string{"upper", "lower"}
 	for _, key := range object.Keys() {
 		if !slices.Contains(properties, key) {
-			panic(d.runtime.NewTypeError("spectre.EgressStatsDRule.compare %s does not take %q; it takes within, above, below and slack", statistic, key))
+			panic(d.runtime.NewTypeError("spectre.EgressStatsDRule.compare %s does not take %q; it takes upper and lower", statistic, key))
 		}
 	}
-	number := func(property string) Option[float64] {
+	number := func(property string) float64 {
 		read := object.Get(property)
 		if read == nil || sobek.IsUndefined(read) {
-			return None[float64]()
+			return 0
 		}
 		number, isNumber := read.Export().(float64)
 		if integer, isInteger := read.Export().(int64); isInteger {
@@ -139,19 +138,9 @@ func (d *definition) tolerance(statistic string, value sobek.Value) Tolerance {
 		if !isNumber || number < 0 {
 			panic(d.runtime.NewTypeError("spectre.EgressStatsDRule.compare %s %s must be a number of at least 0", statistic, property))
 		}
-		return Some(number)
+		return number
 	}
-	within, above, below := number("within"), number("above"), number("below")
-	if within.Ok() && (above.Ok() || below.Ok()) {
-		panic(d.runtime.NewTypeError("spectre.EgressStatsDRule.compare %s takes within, or above and below, not both", statistic))
-	}
-	if within.Ok() {
-		above, below = within, within
-	}
-	if !above.Ok() && !below.Ok() {
-		above, below = Some(0.0), Some(0.0)
-	}
-	return Tolerance{Above: above, Below: below, Slack: number("slack").Default(0)}
+	return Tolerance{Upper: number("upper"), Lower: number("lower")}
 }
 
 // defineMethod binds one object method, panicking if sobek rejects it.
