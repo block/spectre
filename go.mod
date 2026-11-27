@@ -54,7 +54,7 @@ require (
 	github.com/klauspost/cpuid/v2 v2.4.0 // indirect
 	github.com/mdlayher/netlink v1.7.3-0.20250113171957-fbb4dce95f42 // indirect
 	github.com/mdlayher/socket v0.5.0 // indirect
-	github.com/microsoft/TypeScript/tsc v0.0.0-20261114002809-6bdcb54d23f4 // indirect
+	github.com/microsoft/TypeScript/tsc v0.0.0-20261121000825-01f1a759d92b // indirect
 	github.com/pelletier/go-toml v1.9.5 // indirect
 	github.com/pingcap/errors v0.11.5-0.20260310054046-9c8b3586e4b2 // indirect
 	github.com/pingcap/failpoint v0.0.0-20260406204437-bbc9d102c19e // indirect
