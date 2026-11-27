@@ -2,6 +2,7 @@ package statsd
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -101,20 +102,22 @@ func TestWindowVerdicts(t *testing.T) {
 		resolved    resolution
 		reference   []string
 		candidate   []string
+		minimum     float64
 		kind        model.QuarantineKind
 		differences []model.Difference
 		detail      string
 	}{
 		"WithinTolerance":    {resolved: responses, reference: []string{"r:10|c"}, candidate: []string{"r:9|c"}},
 		"SampleRateCounted":  {resolved: responses, reference: []string{"r:10|c"}, candidate: []string{"r:5|c|@0.5"}},
-		"CandidateLeftOut":   {resolved: responses, reference: []string{"r:10|c"}, kind: model.QuarantineUnmatched, detail: "candidate left out counter http.responses{code,endpoint} that the reference sent: total below the 10% lower bound"},
+		"CandidateLeftOut":   {resolved: responses, reference: []string{"r:10|c"}, kind: model.QuarantineUnmatched, detail: "candidate left out counter http.responses{code,endpoint} that the reference sent: running total below the 10% lower bound"},
 		"LeftOutWithinLower": {resolved: optional, reference: []string{"r:3|c"}},
-		"CandidateExtra":     {resolved: responses, candidate: []string{"r:3|c"}, kind: model.QuarantineUnmatched, detail: "candidate sent counter http.responses{code,endpoint} that the reference did not"},
-		"Divergent":          {resolved: responses, reference: []string{"r:20|c"}, candidate: []string{"r:10|c"}, kind: model.QuarantineDivergent, differences: changed(metric.Total), detail: "counter http.responses{code,endpoint}: total below the 10% lower bound"},
+		"CandidateExtra":     {resolved: responses, candidate: []string{"r:3|c"}, kind: model.QuarantineUnmatched, detail: "candidate sent counter http.responses{code,endpoint} that the reference did not: running total above the 10% upper bound"},
+		"Divergent":          {resolved: responses, reference: []string{"r:20|c"}, candidate: []string{"r:10|c"}, kind: model.QuarantineDivergent, differences: changed(metric.Total), detail: "counter http.responses{code,endpoint}: running total below the 10% lower bound"},
+		"BelowMinimumTotal":  {resolved: responses, reference: []string{"r:20|c"}, candidate: []string{"r:10|c"}, minimum: 50},
 		"FasterCandidate":    {resolved: latency, reference: []string{"r:100:100|ms"}, candidate: []string{"r:10:10|ms"}},
 		"SlowerCandidate":    {resolved: latency, reference: []string{"r:100:100|ms"}, candidate: []string{"r:200:200|ms"}, kind: model.QuarantineDivergent, differences: changed(metric.P95), detail: "distribution http.latency: p95 above the 20% upper bound"},
-		"FewerSamples":       {resolved: latency, reference: []string{"r:1:1:1:1|ms"}, candidate: []string{"r:1|ms"}, kind: model.QuarantineDivergent, differences: changed(metric.Count), detail: "distribution http.latency: count below the 50% lower bound"},
-		"FewerAndSlower":     {resolved: latency, reference: []string{"r:1:1:1:1|ms"}, candidate: []string{"r:5|ms"}, kind: model.QuarantineDivergent, differences: changed(metric.Count, metric.P95), detail: "distribution http.latency: count below the 50% lower bound, p95 above the 20% upper bound"},
+		"FewerSamples":       {resolved: latency, reference: []string{"r:1:1:1:1|ms"}, candidate: []string{"r:1|ms"}, kind: model.QuarantineDivergent, differences: changed(metric.Count), detail: "distribution http.latency: running count below the 50% lower bound"},
+		"FewerAndSlower":     {resolved: latency, reference: []string{"r:1:1:1:1|ms"}, candidate: []string{"r:5|ms"}, kind: model.QuarantineDivergent, differences: changed(metric.Count, metric.P95), detail: "distribution http.latency: running count below the 50% lower bound, p95 above the 20% upper bound"},
 		"WithinSlack":        {resolved: wholeMilliseconds, reference: []string{"r:0:1:1|ms"}, candidate: []string{"r:0:0:0|ms"}},
 		"BeyondSlack":        {resolved: wholeMilliseconds, reference: []string{"r:1:1:1|ms"}, candidate: []string{"r:3:3:3|ms"}, kind: model.QuarantineDivergent, differences: changed(metric.P95), detail: "distribution http.latency: p95 above the 20% upper bound with 1 of slack"},
 		"TooLargeForSketch":  {resolved: enlarged, reference: []string{"r:1e300|ms"}, candidate: []string{"r:1|ms"}, kind: model.QuarantineUnable, detail: "distribution http.latency has a scaled value too large to take percentiles of"},
@@ -134,7 +137,12 @@ func TestWindowVerdicts(t *testing.T) {
 					counted.add(side, samples[0], test.resolved)
 				}
 			}
-			reason, failed := counted.verdict(time.Minute).Get()
+			reason, failed := None[model.QuarantineReason]().Get()
+			for _, judged := range counted.judge(newRunningTotals(), test.minimum) {
+				if reason, failed = judged.reason.Get(); failed {
+					break
+				}
+			}
 			if test.kind == "" {
 				assert.False(t, failed, reason.Detail)
 				return
@@ -144,7 +152,7 @@ func TestWindowVerdicts(t *testing.T) {
 				Kind:        test.kind,
 				Traffic:     Some(model.Traffic{Direction: model.Egress, Protocol: scripted.Protocol, Route: test.resolved.series.Route()}),
 				Differences: test.differences,
-				Detail:      test.detail + ", in the 1m0s window from 12:00:00",
+				Detail:      test.detail,
 			}, reason)
 		})
 	}
@@ -156,6 +164,7 @@ func TestComparatorJudgesSettledWindowsAfterTheCandidateStarts(t *testing.T) {
 	quarantines := &recordingQuarantiner{}
 	config := NewConfig()
 	config.Window, config.Settle = time.Minute, 10*time.Second
+	config.FailingWindows, config.MinTotal = 1, 0
 	compare, err := newComparator(t.Context(), config, newTestResolver(t), quarantines, proxy.NewCandidates(proxy.NewCandidatesConfig()))
 	assert.NoError(t, err)
 	origin := compare.origin
@@ -173,8 +182,59 @@ func TestComparatorJudgesSettledWindowsAfterTheCandidateStarts(t *testing.T) {
 	assert.Equal(t, 0, len(quarantines.reasons))
 	compare.judge(t.Context(), at(190*time.Second))
 	assert.Equal(t, 1, len(quarantines.reasons))
-	assert.Equal(t, model.QuarantineUnmatched, quarantines.reasons[0].Kind)
-	assert.Contains(t, quarantines.reasons[0].Detail, "in the 1m0s window from "+at(2*time.Minute).UTC().Format(time.TimeOnly))
+	assert.Equal(t, model.QuarantineDivergent, quarantines.reasons[0].Kind)
+	assert.Contains(t, quarantines.reasons[0].Detail, "running total below the 10% lower bound, in the 1m0s window from "+at(2*time.Minute).UTC().Format(time.TimeOnly))
+}
+
+// Totals are compared since comparison started, so a candidate that falls behind in one
+// window and catches up in the next matches, once the totals are large enough to compare.
+func TestComparatorComparesRunningTotals(t *testing.T) {
+	quarantines := &recordingQuarantiner{}
+	config := NewConfig()
+	config.Window, config.Settle, config.CandidateStartupTimeout = time.Minute, 0, 0
+	config.FailingWindows, config.MinTotal = 1, 15
+	compare, err := newComparator(t.Context(), config, newTestResolver(t), quarantines, proxy.NewCandidates(proxy.NewCandidatesConfig()))
+	assert.NoError(t, err)
+	send := func(minute int, reference, candidate int) {
+		at := compare.origin.Add(time.Duration(minute)*time.Minute + time.Second)
+		compare.add(t.Context(), observation{side: model.Reference, at: at, datagram: fmt.Appendf(nil, "framework.http.response_codes:%d|c|#controller:fees,action:show,code:200", reference)})
+		compare.add(t.Context(), observation{side: model.Candidate, at: at, datagram: fmt.Appendf(nil, "framework.actions.service_api.response_codes:%d|c|#api:fees#show,code:200", candidate)})
+	}
+
+	send(0, 10, 5)
+	send(1, 10, 15)
+	compare.judge(t.Context(), compare.origin.Add(2*time.Minute))
+	assert.Equal(t, 0, len(quarantines.reasons))
+	send(2, 10, 0)
+	compare.judge(t.Context(), compare.origin.Add(3*time.Minute))
+	assert.Equal(t, 1, len(quarantines.reasons))
+	assert.Equal(t, "counter http.responses{code,endpoint}: running total below the 10% lower bound, in the 1m0s window from "+compare.origin.Add(2*time.Minute).UTC().Format(time.TimeOnly), quarantines.reasons[0].Detail)
+}
+
+// A difference quarantines only once it persists for the failing windows, and a window in
+// which the series matches ends the run.
+func TestComparatorQuarantinesOnlyAfterSuccessiveFailingWindows(t *testing.T) {
+	quarantines := &recordingQuarantiner{}
+	config := NewConfig()
+	config.Window, config.Settle, config.CandidateStartupTimeout = time.Minute, 0, 0
+	config.FailingWindows, config.MinTotal = 2, 0
+	compare, err := newComparator(t.Context(), config, newScriptResolver(t, `egress.statsd("depth").compare({ mean: {} });`), quarantines, proxy.NewCandidates(proxy.NewCandidatesConfig()))
+	assert.NoError(t, err)
+	send := func(minute int, reference, candidate int) {
+		at := compare.origin.Add(time.Duration(minute)*time.Minute + time.Second)
+		compare.add(t.Context(), observation{side: model.Reference, at: at, datagram: fmt.Appendf(nil, "depth:%d|g", reference)})
+		compare.add(t.Context(), observation{side: model.Candidate, at: at, datagram: fmt.Appendf(nil, "depth:%d|g", candidate)})
+	}
+
+	send(0, 3, 4)
+	send(1, 3, 3)
+	send(2, 3, 4)
+	compare.judge(t.Context(), compare.origin.Add(3*time.Minute))
+	assert.Equal(t, 0, len(quarantines.reasons))
+	send(3, 3, 4)
+	compare.judge(t.Context(), compare.origin.Add(4*time.Minute))
+	assert.Equal(t, 1, len(quarantines.reasons))
+	assert.Equal(t, "gauge depth: mean above the 0% upper bound, in 2 successive 1m0s windows from "+compare.origin.Add(2*time.Minute).UTC().Format(time.TimeOnly), quarantines.reasons[0].Detail)
 }
 
 // A candidate that never sends a compared metric is judged once its startup timeout passes.
@@ -182,6 +242,7 @@ func TestComparatorJudgesASilentCandidateAfterItsStartupTimeout(t *testing.T) {
 	quarantines := &recordingQuarantiner{}
 	config := NewConfig()
 	config.Window, config.Settle, config.CandidateStartupTimeout = time.Minute, 0, 2*time.Minute
+	config.FailingWindows, config.MinTotal = 1, 0
 	compare, err := newComparator(t.Context(), config, newTestResolver(t), quarantines, proxy.NewCandidates(proxy.NewCandidatesConfig()))
 	assert.NoError(t, err)
 	reference := []byte("framework.http.response_codes:10|c|#controller:fees,action:show,code:200")

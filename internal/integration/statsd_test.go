@@ -41,7 +41,7 @@ func TestMatchingStatsDMetricsAreForwardedWithoutQuarantine(t *testing.T) {
 	m.StatsD().SendReference("sentinel.requests:1|c")
 	m.StatsD().ExpectForwarded("framework.actions.search.responses:3|c|#code:200")
 	m.StatsD().ExpectForwarded("sentinel.requests:1|c")
-	m.ExpectQuarantineDetailPrefix(it.UnmatchedStatsD("sentinel.requests"), "candidate left out counter sentinel.requests that the reference sent: total below the 10% lower bound, in the 200ms window from ")
+	m.ExpectQuarantineDetailPrefix(it.UnmatchedStatsD("sentinel.requests"), "candidate left out counter sentinel.requests that the reference sent: running total below the 10% lower bound, in the 200ms window from ")
 }
 
 func TestCandidateLeavingOutStatsDMetricIsQuarantined(t *testing.T) {
@@ -50,7 +50,7 @@ func TestCandidateLeavingOutStatsDMetricIsQuarantined(t *testing.T) {
 	m.StatsD().SendCandidate("jvm.threads:20|g")
 	m.StatsD().SendReference("framework.actions.search.responses:5|c|#code:200")
 	m.StatsD().ExpectForwarded("framework.actions.search.responses:5|c|#code:200")
-	m.ExpectQuarantineDetailPrefix(it.UnmatchedStatsD("http.responses{code}"), "candidate left out counter http.responses{code} that the reference sent: total below the 10% lower bound, in the 200ms window from ")
+	m.ExpectQuarantineDetailPrefix(it.UnmatchedStatsD("http.responses{code}"), "candidate left out counter http.responses{code} that the reference sent: running total below the 10% lower bound, in the 200ms window from ")
 }
 
 func TestDivergentStatsDTotalQuarantinesCandidate(t *testing.T) {
@@ -59,5 +59,5 @@ func TestDivergentStatsDTotalQuarantinesCandidate(t *testing.T) {
 	m.StatsD().SendReference("framework.actions.search.responses:10|c|#code:200")
 	m.StatsD().SendCandidate("framework.actions.search.responses:20|c|#code:200")
 	m.StatsD().ExpectForwarded("framework.actions.search.responses:10|c|#code:200")
-	m.ExpectQuarantineDetailPrefix(it.DivergentStatsD("http.responses{code}", model.Difference{Path: "total", Change: model.ChangeChanged, Count: 1}), "counter http.responses{code}: total above the 10% upper bound, in the 200ms window from ")
+	m.ExpectQuarantineDetailPrefix(it.DivergentStatsD("http.responses{code}", model.Difference{Path: "total", Change: model.ChangeChanged, Count: 1}), "counter http.responses{code}: running total above the 10% upper bound, in the 200ms window from ")
 }

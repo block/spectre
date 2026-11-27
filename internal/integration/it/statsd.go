@@ -70,6 +70,8 @@ func (s *StatsD) flags() []string {
 		"--statsd-forward=unix:" + s.agentPath,
 		"--statsd-window=" + statsdWindow.String(),
 		"--statsd-settle=" + statsdSettle.String(),
+		"--statsd-failing-windows=1",
+		"--statsd-min-total=0",
 		"--statsd-candidate-startup-timeout=0",
 	}
 }

@@ -98,6 +98,7 @@ func TestServeQuarantinesACandidateThatLeavesOutAComparedMetric(t *testing.T) {
 	`)
 	config := relayConfig(dir)
 	config.Window, config.Settle, config.CandidateStartupTimeout = 200*time.Millisecond, 50*time.Millisecond, 0
+	config.FailingWindows, config.MinTotal = 1, 0
 	server, err := provider.New(t.Context(), config, runtime)
 	assert.NoError(t, err)
 	ctx, cancel := context.WithCancel(t.Context())
@@ -114,7 +115,7 @@ func TestServeQuarantinesACandidateThatLeavesOutAComparedMetric(t *testing.T) {
 	case quarantine := <-candidates.Quarantined():
 		assert.Equal(t, model.QuarantineUnmatched, quarantine.Reason.Kind)
 		assert.Equal(t, Some(model.Traffic{Direction: model.Egress, Protocol: "statsd", Route: "framework.http.response_codes"}), quarantine.Reason.Traffic)
-		assert.Contains(t, quarantine.Reason.Detail, "candidate left out counter framework.http.response_codes that the reference sent: total below the 10% lower bound")
+		assert.Contains(t, quarantine.Reason.Detail, "candidate left out counter framework.http.response_codes that the reference sent: running total below the 10% lower bound")
 	case <-time.After(receiveTimeout):
 		t.Fatal("candidate was not quarantined")
 	}

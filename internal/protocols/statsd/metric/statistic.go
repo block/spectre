@@ -47,6 +47,12 @@ func (s Statistic) Rank() (rank float64, percentile bool) {
 	return 0, false
 }
 
+// Accumulates reports whether the statistic is compared on running totals since comparison
+// started, rather than per window.
+func (s Statistic) Accumulates() bool {
+	return s == Total || s == Count
+}
+
 // Fits reports whether series of class have the statistic.
 func (s Statistic) Fits(class Class) bool {
 	switch s {

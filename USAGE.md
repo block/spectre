@@ -573,6 +573,12 @@ statistics it checks:
 | `count` | timer, histogram, distribution | How many values were sent. |
 | `p50`, `p75`, `p90`, `p95`, `p99` | timer, histogram, distribution | The percentile of the values, within 1%. |
 
+`total` and `count` are compared on running totals since comparison started,
+not per window. Both sides get the same requests, so their totals converge,
+and a metric that lands in the next window shifts them only briefly. Running
+totals are compared once either side's reaches `--statsd-min-total` (50). The
+other statistics are compared per window.
+
 A series is checked only on the statistics its type has, so one rule can
 compare counters and distributions. A rule whose statistics a series' type has
 none of quarantines it as `unable`.
@@ -586,13 +592,17 @@ Use it where values are small or whole numbers, such as a timer that records
 whole milliseconds: `p95: { upper: 0.2, lower: 0.2, slack: 1 }` lets a 1ms
 reference p95 meet a 0ms or 2ms one.
 
-A series that only one side sends counts as 0 on the other side, so its
-`total`, `count` or `members` check decides whether that fails: only `lower: 1`,
-or a slack of at least the reference's value, lets the candidate leave it out, and a series only the candidate sends always
-fails. Without such a check, and always for gauges, a series sent by one side
-only fails.
+A series that only one side has sent counts as 0 on the other side, so its
+`total` or `count` check, or a set's `members` check in the window, decides
+whether that fails. `lower: 1`, or a slack of at least the reference's value,
+lets the candidate leave it out, and a slack of at least the candidate's value
+lets it send a series the reference does not. Without such a check, and always
+for gauges, a series that one side leaves out of a window fails.
 
-The first window that fails quarantines the candidate:
+A series that fails in `--statsd-failing-windows` (3) of its windows in a row
+quarantines the candidate. A window in which it matches ends the run, and a
+window without it does not. A rule that cannot judge a series quarantines the
+candidate at once. The reasons are:
 
 - `unmatched` when the reference sends a compared series that the candidate
   leaves out, or the other way round, beyond the tolerance.
@@ -605,13 +615,14 @@ The first window that fails quarantines the candidate:
 
 Comparison starts with the window in which the candidate first sends a
 compared series, or once `--statsd-candidate-startup-timeout` (5m) passes.
-Windows in which the proxy could not keep up and dropped datagrams are skipped,
-and comparison stops once the candidate is quarantined in either direction.
+Windows in which the proxy could not keep up and dropped datagrams are skipped
+and restart the running totals and runs, and comparison stops once the candidate is quarantined in either direction.
 Quarantine reasons never quote values. They name the series by its name and
 tag names, such as `http.latency{endpoint}`, and say which bound each statistic
-exceeded, for example `distribution http.latency{endpoint}: p95 above the 20%
-upper bound, in the 1m0s window from 10:02:00`. A divergence also lists each
-statistic that differs, such as `~ p95`.
+exceeded, for example `distribution http.latency{endpoint}: running count
+below the 10% lower bound, p95 above the 20% upper bound, in 3 successive 1m0s
+windows from 10:02:00`. A divergence also lists each statistic that differs,
+such as `~ count` and `~ p95`.
 
 ### Quarantine
 

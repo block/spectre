@@ -30,8 +30,8 @@ type observation struct {
 	datagram []byte
 }
 
-// comparator compares both sides' metrics in windows, and quarantines the candidate on the
-// first window where a compared series is missing or differs beyond its tolerance.
+// comparator compares both sides' metrics in windows, and quarantines the candidate once a
+// compared series is missing or differs beyond its tolerance in enough windows in a row.
 type comparator struct {
 	config      Config
 	resolver    *resolver
@@ -42,6 +42,9 @@ type comparator struct {
 	origin      time.Time
 	windows     map[int64]*window
 	indexes     mapping.IndexMapping
+	totals      *runningTotals
+	// streaks are the failing runs of series, by key.
+	streaks map[string]streak
 	// candidateFrom is when the candidate first sent a compared series.
 	candidateFrom Option[time.Time]
 	stopped       bool
@@ -63,6 +66,8 @@ func newComparator(ctx context.Context, config Config, resolver *resolver, quara
 		origin:        time.Now(),
 		windows:       map[int64]*window{},
 		indexes:       indexes,
+		totals:        newRunningTotals(),
+		streaks:       map[string]streak{},
 		candidateFrom: None[time.Time](),
 		lost:          newLosses(),
 	}, nil
@@ -175,14 +180,57 @@ func (c *comparator) judge(ctx context.Context, now time.Time) {
 			continue
 		}
 		if settled.dropped() {
-			c.log.WarnContext(ctx, "Skipped a StatsD window that dropped datagrams", "start", settled.started())
+			c.log.WarnContext(ctx, "Skipped a StatsD window that dropped datagrams, and restarted the running totals", "start", settled.started())
+			c.totals.reset()
+			clear(c.streaks)
 			continue
 		}
-		if reason, failed := settled.verdict(c.config.Window).Get(); failed {
+		if reason, failed := c.verdict(settled).Get(); failed {
 			c.quarantine(ctx, reason)
 			return
 		}
 	}
+}
+
+// verdict extends each series' failing run with the window, and returns the first failure that
+// quarantines: a rule that cannot judge a series at once, a difference once it persists.
+func (c *comparator) verdict(settled *window) Option[model.QuarantineReason] {
+	for _, judged := range settled.judge(c.totals, c.config.MinTotal) {
+		reason, failed := judged.reason.Get()
+		switch {
+		case !failed:
+			delete(c.streaks, judged.key)
+		case reason.Kind == model.QuarantineUnable:
+			return Some(c.during(reason, streak{failures: 1, from: settled.started()}))
+		default:
+			run := c.streaks[judged.key]
+			if run.failures == 0 {
+				run.from = settled.started()
+			}
+			run.failures++
+			c.streaks[judged.key] = run
+			if run.failures >= c.config.FailingWindows {
+				return Some(c.during(reason, run))
+			}
+		}
+	}
+	return None[model.QuarantineReason]()
+}
+
+// during says which windows the reason's failure ran over.
+func (c *comparator) during(reason model.QuarantineReason, run streak) model.QuarantineReason {
+	windows := fmt.Sprintf("the %s window", c.config.Window)
+	if run.failures > 1 {
+		windows = fmt.Sprintf("%d successive %s windows", run.failures, c.config.Window)
+	}
+	reason.Detail = fmt.Sprintf("%s, in %s from %s", reason.Detail, windows, run.from.UTC().Format(time.TimeOnly))
+	return reason
+}
+
+// streak is a series' run of failing windows.
+type streak struct {
+	failures int
+	from     time.Time
 }
 
 // markLossy marks the windows that lost datagrams.

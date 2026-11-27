@@ -3,6 +3,7 @@ package statsd
 import (
 	"fmt"
 	"maps"
+	"math"
 	"slices"
 	"strings"
 	"time"
@@ -60,15 +61,24 @@ func (w *window) dropped() bool {
 	return w.lossy
 }
 
-// verdict is the first failure in the window, in series order.
-func (w *window) verdict(length time.Duration) Option[model.QuarantineReason] {
-	for _, key := range slices.Sorted(maps.Keys(w.series)) {
-		if reason, failed := w.series[key].verdict().Get(); failed {
-			reason.Detail = fmt.Sprintf("%s, in the %s window from %s", reason.Detail, length, w.start.UTC().Format(time.TimeOnly))
-			return Some(reason)
-		}
+// judgement is one series' verdict in a window.
+type judgement struct {
+	key    string
+	reason Option[model.QuarantineReason]
+}
+
+// judge adds the window's totals and counts to the running totals, then judges each series
+// in key order. Running totals are compared once either side's reaches minimum.
+func (w *window) judge(totals *runningTotals, minimum float64) []judgement {
+	keys := slices.Sorted(maps.Keys(w.series))
+	for _, key := range keys {
+		w.series[key].accumulate(key, totals)
 	}
-	return None[model.QuarantineReason]()
+	judgements := make([]judgement, 0, len(keys))
+	for _, key := range keys {
+		judgements = append(judgements, judgement{key: key, reason: w.series[key].verdict(totals.sides(key), minimum)})
+	}
+	return judgements
 }
 
 // windowSeries is one mapped series in a window, with each side's values.
@@ -91,9 +101,20 @@ func (s *windowSeries) add(side model.Side, sample metric.Sample, scale float64)
 	values.add(sample, scale)
 }
 
-// verdict is why the series quarantines the candidate, if it does. Reasons name the
-// series by its route and the rule's bounds, never by values.
-func (s *windowSeries) verdict() Option[model.QuarantineReason] {
+// accumulate adds each side's total or count to the running totals, if the rule compares it.
+func (s *windowSeries) accumulate(key string, totals *runningTotals) {
+	measure := s.resolution.series.Type.Class().Measure()
+	if s.resolution.outcome != compared || !measure.Accumulates() {
+		return
+	}
+	for side, values := range s.sides {
+		totals.add(key, side, values.statistic(measure))
+	}
+}
+
+// verdict is why the series quarantines the candidate, if it does. Totals and counts are
+// judged on the sides' running totals. Reasons never quote values.
+func (s *windowSeries) verdict(running map[model.Side]float64, minimum float64) Option[model.QuarantineReason] {
 	series := s.resolution.series
 	if s.resolution.outcome == uncovered {
 		sender := model.Reference
@@ -114,25 +135,44 @@ func (s *windowSeries) verdict() Option[model.QuarantineReason] {
 	}
 	reference, hasReference := s.sides[model.Reference]
 	candidate, hasCandidate := s.sides[model.Candidate]
-	if !hasReference || !hasCandidate {
+	bothSent := hasReference && hasCandidate
+	if !bothSent && !slices.ContainsFunc(checks, accumulates) {
 		return s.presence(checks)
 	}
 	differences, exceeded := []model.Difference{}, []string{}
 	for _, check := range checks {
-		bound, exceeds := check.Tolerance.Exceeds(reference.statistic(check.Statistic), candidate.statistic(check.Statistic)).Get()
-		if exceeds {
+		failure, label := None[string](), string(check.Statistic)
+		switch {
+		case check.Statistic.Accumulates():
+			if max(math.Abs(running[model.Reference]), math.Abs(running[model.Candidate])) >= minimum {
+				failure, label = check.Tolerance.Exceeds(running[model.Reference], running[model.Candidate]), "running "+label
+			}
+		case bothSent:
+			failure = check.Tolerance.Exceeds(reference.statistic(check.Statistic), candidate.statistic(check.Statistic))
+		}
+		if bound, exceeds := failure.Get(); exceeds {
 			differences = append(differences, model.Difference{Path: string(check.Statistic), Change: model.ChangeChanged, Count: 1})
-			exceeded = append(exceeded, fmt.Sprintf("%s %s", check.Statistic, bound))
+			exceeded = append(exceeded, label+" "+bound)
 		}
 	}
 	if len(differences) == 0 {
 		return None[model.QuarantineReason]()
 	}
-	return s.fail(model.QuarantineDivergent, differences, "%s %s: %s", class, series.Route(), strings.Join(exceeded, ", "))
+	reasons := strings.Join(exceeded, ", ")
+	_, referenceSent := running[model.Reference]
+	_, candidateSent := running[model.Candidate]
+	switch {
+	case bothSent:
+	case !referenceSent:
+		return s.fail(model.QuarantineUnmatched, nil, "candidate sent %s %s that the reference did not: %s", class, series.Route(), reasons)
+	case !candidateSent:
+		return s.fail(model.QuarantineUnmatched, nil, "candidate left out %s %s that the reference sent: %s", class, series.Route(), reasons)
+	}
+	return s.fail(model.QuarantineDivergent, differences, "%s %s: %s", class, series.Route(), reasons)
 }
 
-// presence judges a series that only one side sent. The other side's measure counts as 0,
-// so the measure's check decides; without one, and for gauges, the series fails.
+// presence judges a series that only one side sent in the window, and whose rule checks no
+// running total. A set's members check decides, with the other side's as 0; otherwise it fails.
 func (s *windowSeries) presence(checks []scripted.Check) Option[model.QuarantineReason] {
 	series := s.resolution.series
 	class := series.Type.Class()
@@ -162,6 +202,10 @@ func (s *windowSeries) presence(checks []scripted.Check) Option[model.Quarantine
 func (s *windowSeries) fail(kind model.QuarantineKind, differences []model.Difference, format string, arguments ...any) Option[model.QuarantineReason] {
 	traffic := Some(model.Traffic{Direction: model.Egress, Protocol: scripted.Protocol, Route: s.resolution.series.Route()})
 	return Some(model.QuarantineReason{Kind: kind, Traffic: traffic, Differences: differences, Detail: fmt.Sprintf(format, arguments...)})
+}
+
+func accumulates(check scripted.Check) bool {
+	return check.Statistic.Accumulates()
 }
 
 func isPercentile(check scripted.Check) bool {
